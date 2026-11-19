@@ -66,7 +66,7 @@ const CONFIG = JSON.stringify(
         tokenThresholds: { handoff: 1000, guard: 2000 },
         custom: true,
       },
-      // 第二个模型：只为了让「换模型 / 换思考档 ⇒ 驱动者退役」那条路能真走一遍（带出厂那张档位表）
+      // 第二个模型：只为了让「换模型 / 换思考档 ⇒ agent 退役」那条路能真走一遍（带出厂那张档位表）
       {
         id: "test-model-2",
         name: "Test Model 2",
@@ -141,7 +141,7 @@ async function startApp(fixture: Fixture, options: HostAppOptions = {}): Promise
 
 /** 直接调 handler 表（省掉网络：这几条断言看的是「接上了没有」） */
 /**
- * 建一段对话并让它落库（R56：`session.create` 只发 id 与身份，首次 `send` 才写行）。
+ * 建一段会话并让它落库（R56：`session.create` 只发 id 与身份，首次 `send` 才写行）。
  *
  * 这里的用例要看的是删除路径与钩子，所以直接把草稿落成真行，不跑一轮。
  */
@@ -155,7 +155,7 @@ async function seedSession(
     agentId: "default",
     modelId: options.modelId ?? "test-model",
   });
-  if (!created.session) throw new Error("session.create 没有建出对话");
+  if (!created.session) throw new Error("session.create 没有建出会话");
   await app.sessionService.ensurePersisted(created.session.id);
   return created.session;
 }
@@ -168,7 +168,7 @@ function localSections(...sections: LocalMessageContentSection[]): LocalMessageC
 /**
  * 造一条引用素材的用户消息，并写下那条关系行（等价于 `ChatRunner` 在消息落库那一刻做的事）。
  *
- * 素材行本身不记对话，所以「删对话会带走哪些素材」只能靠关系行回答。
+ * 素材行本身不记会话，所以「删会话会带走哪些素材」只能靠关系行回答。
  */
 async function seedAssetMessage(
   app: HostApp,
@@ -249,13 +249,13 @@ describe("HostApp 的组装", () => {
     // 运行时
     expect(app.scopeRegistry.workspaceIds().length).toBe(0);
     // 服务层要的运行时事实（模型与档位在会话行上，不在这里）：没有 agent 的那一份读数
-    expect(app.sessionRuntime.presence("没有这段对话")).toMatchObject({
+    expect(app.sessionRuntime.presence("没有这段会话")).toMatchObject({
       status: "idle",
       inputPaused: false,
       outputPaused: false,
       alive: false,
     });
-    expect(app.sessionRuntime.inboxPending("没有这段对话")).toBe(0);
+    expect(app.sessionRuntime.inboxPending("没有这段会话")).toBe(0);
     expect(typeof app.sessionRuntime.forget).toBe("function");
     // 服务
     expect(typeof app.workspaceService.create).toBe("function");
@@ -450,7 +450,7 @@ describe("Scope 工厂", () => {
       cwd: fixture.workspaceDir.path,
     });
 
-    // 能力目录由发现服务按 cwd 算好（R54）：MCP 是 5 层链，Skill 4 层、工具与子 Agent 各 2 层
+    // 能力目录由发现服务按 cwd 算好（R54）：MCP 是 5 层链，Skill 4 层、工具与 subagent 各 2 层
     const paths = app.discoveryService.scopeAbilityPaths(fixture.workspaceDir.path);
     expect(paths.mcpPaths).toHaveLength(5);
     expect(paths.skillsPaths).toHaveLength(4);
@@ -461,7 +461,7 @@ describe("Scope 工厂", () => {
     const scope = await app.scopeRegistry.create(workspace.id);
     expect(scope.cwd).toBe(fixture.workspaceDir.path);
 
-    // 临时对话按目录借同一个通道（D3：只借 Scope，与 Workspace 无关）
+    // 一次性会话按目录借同一个通道（D3：只借 Scope，与 Workspace 无关）
     const transientKey = transientScopeKey(fixture.workspaceDir.path);
     const transientScope = await app.scopeRegistry.create(transientKey);
     expect(transientScope.cwd).toBe(fixture.workspaceDir.path);
@@ -567,7 +567,7 @@ describe("收尾", () => {
 // ---------------------------------------------------------------------------
 
 describe("删除路径", () => {
-  it("删对话会清掉它的素材文件（R33）", async () => {
+  it("删会话会清掉它的素材文件（R33）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
@@ -590,7 +590,7 @@ describe("删除路径", () => {
     });
     const assetPath = join(app.paths.dataRoot, "assets", `${ref.assetId}.png`);
     expect(await exists(assetPath)).toBe(true);
-    // 归属只在关系行上：一条消息引用它，删对话时它才算「受影响的素材」
+    // 归属只在关系行上：一条消息引用它，删会话时它才算「受影响的素材」
     const assetMessageId = await seedAssetMessage(app, session.id, ref.assetId);
 
     const dryRun = await callMethod(app, "session.delete", {
@@ -610,11 +610,11 @@ describe("删除路径", () => {
     expect(await app.assetService.get(ref.assetId)).toBeUndefined();
     expect(await app.assets.countReferences(ref.assetId)).toBe(0);
     expect(assetMessageId.length).toBeGreaterThan(0);
-    // 运行时那边这段对话的现场被丢掉了（现在没有 agent 了）
+    // 运行时那边这段会话的现场被丢掉了（现在没有 agent 了）
     expect(app.chatRunner.state(session.id).alive).toBe(false);
   });
 
-  it("同一张图贴到两个对话：磁盘一份、素材一行、关系两行；删掉一个不算完，删掉最后一个才清字节", async () => {
+  it("同一张图贴到两个会话：磁盘一份、素材一行、关系两行；删掉一个不算完，删掉最后一个才清字节", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
@@ -654,7 +654,7 @@ describe("删除路径", () => {
       [`${firstAssetId}.png`],
     );
 
-    // 两个对话各有一条消息引用它 → 关系两行
+    // 两个会话各有一条消息引用它 → 关系两行
     await seedAssetMessage(app, first.id, firstAssetId, "a");
     await seedAssetMessage(app, second.id, firstAssetId, "b");
     expect(await app.assets.countReferences(firstAssetId)).toBe(2);
@@ -664,7 +664,7 @@ describe("删除路径", () => {
       [first.id, second.id].sort(),
     );
 
-    // 删掉其中一个对话：关系行消失，素材行与文件仍在
+    // 删掉其中一个会话：关系行消失，素材行与文件仍在
     await callMethod(app, "session.delete", { sessionId: first.id });
     expect(await app.assets.countSessions(firstAssetId)).toBe(1);
     expect(await app.assetService.get(firstAssetId)).toBeDefined();
@@ -677,7 +677,7 @@ describe("删除路径", () => {
     expect(await exists(assetPath)).toBe(false);
   });
 
-  it("删项目会销毁它的 Scope 并连名下对话一起清（R43）", async () => {
+  it("删项目会销毁它的 Scope 并连名下会话一起清（R43）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
@@ -692,7 +692,7 @@ describe("删除路径", () => {
     const result = await callMethod(app, "workspace.remove", { workspaceId: workspace.id });
     expect(result.removed).toBe(true);
     expect(result.consequences.sessions).toBe(1);
-    // Scope 被主动销毁（MCP 连接在这里断开），名下对话也没了
+    // Scope 被主动销毁（MCP 连接在这里断开），名下会话也没了
     expect(app.scopeRegistry.workspaceIds().length).toBe(0);
     const remaining = await callMethod(app, "session.list", { workspaceId: workspace.id });
     expect(remaining.total).toBe(0);
@@ -700,11 +700,11 @@ describe("删除路径", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 带图的第一条消息：草稿对话在上传这一步落库（R56 / F-H8）
+// 带图的第一条消息：草稿会话在上传这一步落库（R56 / F-H8）
 // ---------------------------------------------------------------------------
 
-describe("草稿对话上的上传（R56 / F-H8）", () => {
-  it("begin → chunk → end 走通：对话落库、只写一条隐藏的 cwd 消息、素材登记", async () => {
+describe("草稿会话上的上传（R56 / F-H8）", () => {
+  it("begin → chunk → end 走通：会话落库、只写一条隐藏的 cwd 消息、素材登记", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
@@ -732,7 +732,7 @@ describe("草稿对话上的上传（R56 / F-H8）", () => {
     });
     const uploadId = (began as { uploadId: string }).uploadId;
 
-    // 落库发生在 `asset.begin`：那一刻这段对话已经在库里，且带上了那条隐藏的 cwd 消息
+    // 落库发生在 `asset.begin`：那一刻这段会话已经在库里，且带上了那条隐藏的 cwd 消息
     expect((await app.db.all<{ id: string }>("SELECT id FROM sessions")).map((row) => row.id))
       .toEqual([sessionId]);
 
@@ -751,7 +751,7 @@ describe("草稿对话上的上传（R56 / F-H8）", () => {
     expect(await app.assetService.get(asset.assetId)).toBeDefined();
     expect(await app.assets.listAssetIdsBySession(sessionId)).toEqual([]);
 
-    // 库里只有一条隐藏消息，正文就是这段对话的 cwd（不是一句渲染过的话）
+    // 库里只有一条隐藏消息，正文就是这段会话的 cwd（不是一句渲染过的话）
     const hidden = await hiddenMessagesOf(app, sessionId);
     expect(hidden).toHaveLength(1);
     expect(hidden[0]?.content).toBe(JSON.stringify(fixture.workspaceDir.path));
@@ -785,7 +785,7 @@ describe("草稿对话上的上传（R56 / F-H8）", () => {
   });
 });
 
-/** 一段对话名下那条隐藏的 cwd 消息（`data.hidden` 为真的那些） */
+/** 一段会话名下那条隐藏的 cwd 消息（`data.hidden` 为真的那些） */
 async function hiddenMessagesOf(
   app: HostApp,
   sessionId: string,
@@ -980,7 +980,7 @@ describe("从磁盘重载（F-E1 / R63）", () => {
 });
 
 describe("到交接线才提问（R59 / F-D2）", () => {
-  /** 建一段对话、投一句，等它闲下来（交接线判断就挂在那一拍）；回这段对话的 id */
+  /** 建一段会话、投一句，等它闲下来（交接线判断就挂在那一拍）；回这段会话的 id */
   async function sendAndWaitIdle(app: HostApp, workspaceId: string): Promise<string> {
     const session = await seedSession(app, workspaceId);
     await callMethod(app, "session.send", {
@@ -992,7 +992,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
       if (now.status === "idle" && now.inbox.length === 0) return session.id;
       await wait(10);
     }
-    throw new Error("这段对话没有闲下来");
+    throw new Error("这段会话没有闲下来");
   }
 
   it("越过交接线才问，未到线不问", async () => {
@@ -1053,7 +1053,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     });
     const parent = await seedSession(app, workspace.id);
 
-    // 一段真的派生会话：父对话那边的模型开了一段（会话行上的 `autoHandoff` 就是判据）
+    // 一段真的派生会话：父会话那边的模型开了一段（会话行上的 `autoHandoff` 就是判据）
     const caller = new FakeAgent();
     app.peerSessions.bind(caller, parent.id);
     const created = await app.peerSessions.create({
@@ -1068,7 +1068,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
       await wait(10);
     }
 
-    // 用户本人接着在这段派生会话里说一句（同一段对话，来源是用户本人）
+    // 用户本人接着在这段派生会话里说一句（同一段会话，来源是用户本人）
     await app.chatRunner.deliver(created.sessionId, {
       content: "接着说",
       source: { kind: "user" },
@@ -1093,7 +1093,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
 // session.* 的三个跨服务钩子
 // ---------------------------------------------------------------------------
 
-describe("对话的三个钩子", () => {
+describe("会话的三个钩子", () => {
   it("有挡着的问题时 session.send 被拒（D23）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
@@ -1102,7 +1102,7 @@ describe("对话的三个钩子", () => {
     });
     const session = await seedSession(app, workspace.id);
 
-    // 一个挡着对话的问题（不可撤销动作的确认）
+    // 一个挡着会话的问题（不可撤销动作的确认）
     await app.questionService.ask({
       sessionId: session.id,
       kind: "confirmation",
@@ -1130,13 +1130,13 @@ describe("对话的三个钩子", () => {
     expect(snapshot.state.alive).toBe(false);
   });
 
-  it("临时对话：跑完把消息交回来，库里一条都没有，也不推流式事件（R1 / R49）", async () => {
+  it("一次性会话：跑完把消息交回来，库里一条都没有，也不推流式事件（R1 / R49）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture, {
       createAgent: async () =>
         new FakeAgent([{ deltas: [{ content: "一次性回答" }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }]),
     });
-    // 临时对话要一个 cwd 作为相对路径基准，但不需要登记成项目
+    // 一次性会话要一个 cwd 作为相对路径基准，但不需要登记成项目
     const client = await connect(app);
 
     client.request("session.transient", {
@@ -1146,12 +1146,12 @@ describe("对话的三个钩子", () => {
       modelId: "test-model",
     });
     const frame = await client.queue.next(5000);
-    if (!isSuccess(frame)) throw new Error(`临时对话没跑成：${JSON.stringify(frame)}`);
+    if (!isSuccess(frame)) throw new Error(`一次性会话没跑成：${JSON.stringify(frame)}`);
     const result = frame.result as SessionTransientResult;
     expect(result.message.content).toBe("一次性回答");
     expect(result.problem).toBeNull();
 
-    // 不落库：对话与消息表都是空的
+    // 不落库：会话与消息表都是空的
     expect((await callMethod(app, "session.list")).total).toBe(0);
     // 不推流式事件：回包之后队列里不该再冒出增量或六态
     await wait(120);
@@ -1453,10 +1453,10 @@ describe("升级自检（D4 / F-E3 / 裁定 R66）", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 题与死对话（PRD 4.10 / PLAN §5.2）
+// 题与死会话（PRD 4.10 / PLAN §5.2）
 // ---------------------------------------------------------------------------
 
-describe("题与死对话", () => {
+describe("题与死会话", () => {
   /** 投一句并等它闲下来（`onIdle` 那一拍就是这里触发的） */
   async function sendAndWaitIdle(app: HostApp, sessionId: string): Promise<void> {
     await callMethod(app, "session.send", {
@@ -1468,10 +1468,10 @@ describe("题与死对话", () => {
       if (now.status === "idle" && now.inbox.length === 0) return;
       await wait(10);
     }
-    throw new Error("这段对话没有闲下来");
+    throw new Error("这段会话没有闲下来");
   }
 
-  /** 一道挡着这段对话的题（题只由宿主内部产生，用例直接走服务的入口） */
+  /** 一道挡着这段会话的题（题只由宿主内部产生，用例直接走服务的入口） */
   async function askBlocking(app: HostApp, sessionId: string): Promise<string> {
     const asked = await app.questionService.ask({
       sessionId,
@@ -1505,7 +1505,7 @@ describe("题与死对话", () => {
       }),
     ).rejects.toMatchObject({ code: "question_pending" });
 
-    // 对话被删那条路（`forget` = 硬着陆）：桥灭 → 报「死」→ 挂在上面的题一起没
+    // 会话被删那条路（`forget` = 硬着陆）：桥灭 → 报「死」→ 挂在上面的题一起没
     app.chatRunner.forget(session.id);
     await wait(50);
 
@@ -1533,7 +1533,7 @@ describe("题与死对话", () => {
     await app.questionService.writePendingHandoff(session.id, "summary");
     expect(await app.questionService.readPendingHandoff(session.id)).toBe("summary");
 
-    // 换模型 = 出厂配置变了：空闲的驱动者当场退役（`invalidateSession` → `retired`）
+    // 换模型 = 出厂配置变了：空闲的 agent 当场退役（`invalidateSession` → `retired`）
     await callMethod(app, "session.setModel", {
       sessionId: session.id,
       modelId: "test-model-2",
@@ -1574,7 +1574,7 @@ describe("题与死对话", () => {
       level: "low",
     });
     await wait(50);
-    // 档位展开出来的参数也是装配事实：那个驱动者当场退役
+    // 档位展开出来的参数也是装配事实：那个 agent 当场退役
     expect(app.agentRegistry.get(session.id)).toBeUndefined();
 
     const listed = await callMethod(app, "question.list", { sessionId: session.id });
@@ -1634,7 +1634,7 @@ describe("题与死对话", () => {
     expect(await app.questionService.readPendingHandoff(session.id)).toBeNull();
   });
 
-  it("判据说还不能交接：待办原样留着，下一次变闲再看", async () => {
+  it("判据说还不能交接：待交接原样留着，下一次变闲再看", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture, {
       createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),

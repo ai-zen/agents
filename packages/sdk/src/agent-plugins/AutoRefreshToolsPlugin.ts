@@ -9,7 +9,7 @@ import type { SdkAgent } from "../runtime/SdkAgent.js";
  * | 档位 | 钩子 | 会话中新装的 MCP / skill / 工具什么时候能被模型看见 |
  * |------|------|---------------------------------------------|
  * | `inner-loop-start` | `onInnerLoopStart`（每次请求发出前） | 同一轮里下一次请求就看见（含工具回合的空档） |
- * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一圈只刷一次） | 下一轮对话才看见；一轮只刷一次，开销最小 |
+ * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一圈只刷一次） | 下一轮会话才看见；一轮只刷一次，开销最小 |
  * | `off` | 不装插件 | 只靠 `/reload` |
  *
  * 为什么不是「每轮固定刷一次」：一次 `refresh()` 会重扫 MCP 配置、按需建连接，

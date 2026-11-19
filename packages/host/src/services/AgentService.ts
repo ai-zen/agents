@@ -1,14 +1,14 @@
 /**
- * 助手服务：助手与子 Agent 定义的增删改查、改默认模型、改思考档位（F-B1…F-B7 / F-F5 / F-G3）。
+ * 助手服务：助手与 subagent 定义的增删改查、改默认模型、改思考档位（F-B1…F-B7 / F-F5 / F-G3）。
  *
  * 助手定义是**配置**而不是用户数据（F-G3）：一实体一文件，存在数据根的 `agents/` 与
  * `sub-agents/` 下，能进 git、能手改。所以这里的读写全走 SDK 的 `AgentRepository`，
- * 不碰数据库。有 `function` 字段的那些是子 Agent（SDK 的发现口径），落在 `sub-agents/`。
+ * 不碰数据库。有 `function` 字段的那些是 subagent（SDK 的发现口径），落在 `sub-agents/`。
  *
  * 产品的两条硬要求：
  *   - **不可用的也要列出并说明原因**（F-B5）：文件读不出来、模型没了、端点没配密钥，都算
  *     不可用，但都照样出现在清单里，带着一句为什么。
- *   - **删默认助手要连带清默认**（F-F5）：删完还留着一个指向空处的默认助手，下一次建对话
+ *   - **删默认助手要连带清默认**（F-F5）：删完还留着一个指向空处的默认助手，下一次建会话
  *     才会炸出来。
  */
 
@@ -87,7 +87,7 @@ export interface AgentServiceOptions {
   configManager: ConfigManager;
   /** 助手定义仓储；缺省按 `<basePath>/agents/` 造一个 */
   agents?: AgentRepository;
-  /** 子 Agent 定义仓储；缺省按 `<basePath>/sub-agents/` 造一个 */
+  /** subagent 定义仓储；缺省按 `<basePath>/sub-agents/` 造一个 */
   subAgents?: AgentRepository;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
@@ -228,7 +228,7 @@ function definedOnly<T extends Record<string, unknown>>(input: T): Partial<T> {
   return result;
 }
 
-/** 预设对话的校验：至少要有一条（没有 system 的助手定义跑起来没有行为约束） */
+/** 预设消息的校验：至少要有一条（没有 system 的助手定义跑起来没有行为约束） */
 function requireMessages(value: unknown): AgentNS.Message[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new HostError("invalid_params", {
@@ -310,7 +310,7 @@ export class AgentService {
   /**
    * 助手清单（F-B2 / F-B3 / F-B5）。
    *
-   * 主助手在前、子 Agent 在后，各自按 id 排 —— 同一份磁盘状态每次给同一个顺序。
+   * 主助手在前、subagent 在后，各自按 id 排 —— 同一份磁盘状态每次给同一个顺序。
    * 读不出来的定义文件也列出来（`available: false` + 原因）：藏起来会让人以为它没了。
    *
    * `workspaceId` 只做存在性校验：助手定义的可用性（模型、端点、密钥）是全局配置的事实，
@@ -343,7 +343,7 @@ export class AgentService {
    * 与 `get()` 走同一份 `load()` / `toView()` 口径，只是只回这两条事实：调用方（会话现场快照）
    * 要的是「这个 id 现在叫什么、还能不能跑」，不是整份定义。
    *
-   * 拿不到就回 `null`：定义文件已经没了（助手被删，而对话仍记着那个 id，L7），或者文件在但
+   * 拿不到就回 `null`：定义文件已经没了（助手被删，而会话仍记着那个 id，L7），或者文件在但
    * 读不出来（坏 JSON）。这两种情况下「名字」与「可用性」都没有可报的事实。
    */
   async describe(agentId: string): Promise<AgentDescription | null> {
@@ -468,7 +468,7 @@ export class AgentService {
   }
 
   /**
-   * 改助手的默认模型（F-B4 / F-B1：影响以后的对话，与「改这段会话的模型」是两个动作）。
+   * 改助手的默认模型（F-B4 / F-B1：影响以后的会话，与「改这段会话的模型」是两个动作）。
    *
    * 换了模型就同时把定义上「旧模型档位带来的那些参数」去掉：定义上的参数是给旧模型配的，
    * 旧模型才认的键（例如某个厂商的 `thinking` 形状）发给新模型只会换来一句 400。
@@ -618,7 +618,7 @@ export class AgentService {
     }
 
     await this.repos[home].write(restored);
-    // 出厂那份放在另一个目录时（比如被手改到 agents/ 里的子 Agent），旧文件跟着删掉
+    // 出厂那份放在另一个目录时（比如被手改到 agents/ 里的 subagent），旧文件跟着删掉
     if (home !== found.home) await this.repos[found.home].delete(id);
     return { agent: this.toView(config, presets, after), restored: true };
   }
@@ -639,7 +639,7 @@ export class AgentService {
         modelId: null,
         modelParams: {},
         permissions: null,
-        // 提示词与子 Agent 定义都读不出来：说「不知道」比编一个空数组诚实
+        // 提示词与 subagent 定义都读不出来：说「不知道」比编一个空数组诚实
         messages: null,
         function: null,
         isSubAgent: item.home === "sub-agents",
@@ -672,7 +672,7 @@ export class AgentService {
       modelId: definition.modelId ?? null,
       modelParams: definition.modelParams ?? {},
       permissions: definition.permissions ?? null,
-      // 定义本身的形状：提示词与子 Agent 定义原样给出（手改的文件可能没写 `messages`，那也归到 null）
+      // 定义本身的形状：提示词与 subagent 定义原样给出（手改的文件可能没写 `messages`，那也归到 null）
       messages: definition.messages ?? null,
       function: definition.function ?? null,
       isSubAgent: definition.function !== undefined,
@@ -744,7 +744,7 @@ export class AgentService {
     return usable[0]?.id ?? null;
   }
 
-  /** 哪个目录该放这条定义：有 `function` 的是子 Agent（SDK 的发现口径） */
+  /** 哪个目录该放这条定义：有 `function` 的是 subagent（SDK 的发现口径） */
   private homeOf(definition: AgentDefinition): AgentHome {
     return definition.function === undefined ? "agents" : "sub-agents";
   }
@@ -805,7 +805,7 @@ export class AgentService {
     return { ...found, definition: found.definition };
   }
 
-  /** 引用：默认助手 + 别的助手在权限里点名的子 Agent function */
+  /** 引用：默认助手 + 别的助手在权限里点名的 subagent function */
   private async referencesOf(
     config: AppConfig,
     agentId: string,
@@ -845,7 +845,7 @@ export class AgentService {
 // 纯函数
 // ---------------------------------------------------------------------------
 
-/** 别的助手的权限四维里有没有点名这个子 Agent（`allow` / `deny` 都算） */
+/** 别的助手的权限四维里有没有点名这个 subagent（`allow` / `deny` 都算） */
 function mentionsSubagent(definition: AgentDefinition, functionName: string): boolean {
   const policy = definition.permissions?.subagents;
   if (!policy) return false;

@@ -176,7 +176,7 @@ describe("调用与错误", () => {
   });
 });
 
-describe("镜像对真实例（打开一段空对话）", () => {
+describe("镜像对真实例（打开一段空会话）", () => {
   it("四件事读得回来，消息是空的", async () => {
     const client = await connect("zh");
     const { workspace } = await client.call("workspace.create", { cwd: workspaceDir });
@@ -184,7 +184,7 @@ describe("镜像对真实例（打开一段空对话）", () => {
       workspaceId: workspace.id,
       agentId: "default",
     });
-    if (!created.session) throw new Error("对话没建出来");
+    if (!created.session) throw new Error("会话没建出来");
     const sessionId = created.session.id;
 
     const mirror = await client.open(sessionId);
@@ -201,7 +201,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
   /** 一小段字节：内容不重要，重要的是长度与摘要能原样到达宿主 */
   const PAYLOAD = new Uint8Array(2048).map((_, index) => (index * 7) % 251);
 
-  /** 建一个项目 + 一段对话，并把这段对话**先落库**（R56：`session.create` 只是草稿） */
+  /** 建一个项目 + 一段会话，并把这段会话**先落库**（R56：`session.create` 只是草稿） */
   async function persistedSession(client: Client): Promise<string> {
     const cwd = await fs.mkdtemp(join(tmpdir(), "ai-zen-client-upload-"));
     const { workspace } = await client.call("workspace.create", { cwd });
@@ -209,11 +209,11 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
       workspaceId: workspace.id,
       agentId: "default",
     });
-    if (!created.session) throw new Error("对话没建出来");
+    if (!created.session) throw new Error("会话没建出来");
     const sessionId = created.session.id;
 
     // 草稿落库靠第一次 `session.send`（它内部调 `ensurePersisted`）：先发一句话，
-    // 再把这边停掉 —— 这一段的目的是「让对话在库里有一行」，不是为了跑模型
+    // 再把这边停掉 —— 这一段的目的是「让会话在库里有一行」，不是为了跑模型
     await client.call("session.send", { sessionId, input: { content: "先落库" } });
     await client.call("session.abort", { sessionId }).catch(() => undefined);
     await idle(client, sessionId);
@@ -337,14 +337,14 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
   }, 30_000);
 });
 
-/** 等这段对话不再忙（`session.send` 投进去之后它会忙一阵） */
+/** 等这段会话不再忙（`session.send` 投进去之后它会忙一阵） */
 async function idle(client: Client, sessionId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const { state } = await client.call("session.state", { sessionId });
     if (state.status !== "working") return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("这段对话一直没有闲下来");
+  throw new Error("这段会话一直没有闲下来");
 }
 
 describe("ensureHost 对真实例", () => {

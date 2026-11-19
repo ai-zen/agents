@@ -49,7 +49,7 @@ function sha256(bytes: Uint8Array): string {
 /**
  * 取本次 `begin` 的上传句柄。
  *
- * `uploadId` 在契约里可空：命中对话内去重时它没有句柄（客户端不必再传）。这几条用例走的都是
+ * `uploadId` 在契约里可空：命中会话内去重时它没有句柄（客户端不必再传）。这几条用例走的都是
  * 新上传，所以这里要一个非空值；`null` 就说明 behaviour 变了，直接让用例红。
  */
 function handleOf(began: AssetBeginResult): string {
@@ -187,7 +187,7 @@ describe("拒绝与清理", () => {
     expect(receiver.pendingCount()).toBe(0);
   });
 
-  it("缺对话归属时拒（库里的素材行要挂在一段对话上）", async () => {
+  it("缺会话归属时拒（库里的素材行要挂在一段会话上）", async () => {
     // 入参是网络上来的 JSON：类型上是必填字段，运行时仍然可能没带（契约不替客户端把关）
     const withoutSession = {
       purpose: "message_image",
@@ -305,8 +305,8 @@ describe("拒绝与清理", () => {
   });
 });
 
-describe("草稿对话的落库（R56）", () => {
-  it("begin 先让归属的对话落库、再开临时文件，语言跟着连接走", async () => {
+describe("草稿会话的落库（R56）", () => {
+  it("begin 先让归属的会话落库、再开临时文件，语言跟着连接走", async () => {
     const ensured: [string, string][] = [];
     const withHook = new UploadReceiver({
       assetsDir,
@@ -350,7 +350,7 @@ describe("草稿对话的落库（R56）", () => {
     await withHook.dispose();
   });
 
-  it("对话不存在：业务码原样出网，不建临时文件、不占上传句柄", async () => {
+  it("会话不存在：业务码原样出网，不建临时文件、不占上传句柄", async () => {
     const withHook = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
@@ -410,7 +410,7 @@ describe("草稿对话的落库（R56）", () => {
       sessionId: "draft-1",
     });
     // 原始错误也进了日志口子
-    expect(reported).toEqual(["让对话落库失败"]);
+    expect(reported).toEqual(["让会话落库失败"]);
     expect(await listDir(assetsDir)).toEqual([]);
     await withHook.dispose();
   });
@@ -522,7 +522,7 @@ describe("全局去重（begin 命中即结束）", () => {
     await deduping.dispose();
   });
 
-  it("去重命中也要先确认对话存在（不存在的对话一个字节也不收）", async () => {
+  it("去重命中也要先确认会话存在（不存在的会话一个字节也不收）", async () => {
     const ensured: string[] = [];
     const deduping = new UploadReceiver({
       assetsDir,
@@ -542,13 +542,13 @@ describe("全局去重（begin 命中即结束）", () => {
     });
 
     expect(began.deduped).toBe(true);
-    // 去重是全局的（按内容摘要），命中并不证明这段对话存在，所以落库这一步不能跳过
+    // 去重是全局的（按内容摘要），命中并不证明这段会话存在，所以落库这一步不能跳过
     expect(ensured).toEqual(["draft-1"]);
     expect(await listDir(assetsDir)).toEqual([]);
     await deduping.dispose();
   });
 
-  it("去重命中且对话不存在：仍然报 not_found（不静默回一份别人的素材）", async () => {
+  it("去重命中且会话不存在：仍然报 not_found（不静默回一份别人的素材）", async () => {
     const deduping = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,

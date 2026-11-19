@@ -1,5 +1,5 @@
 /**
- * 对话服务的验收：项目与助手创建时定死（R18）、侧栏顺序（D13）、改名与置顶各管一件事、
+ * 会话服务的验收：项目与助手创建时定死（R18）、侧栏顺序（D13）、改名与置顶各管一件事、
  * 硬删与代价（D17）、撤回（D24）、会话级模型与思考档位（F-B4 / F-B6 / D20）。
  */
 
@@ -29,7 +29,7 @@ import type {
 
 /**
  * 运行时只提供四件事实：这一刻那四件事（忙闲 / 两道闸 / 死活）、队里压着几条、删掉之后丢现场、
- * 换完模型让驱动者退役（模型与档位本身在会话行上）
+ * 换完模型让 agent 退役（模型与档位本身在会话行上）
  */
 class FakeRuntime implements SessionRuntimePort {
   /** 摆成「忙」的那几段（其余都是闲的） */
@@ -37,11 +37,11 @@ class FakeRuntime implements SessionRuntimePort {
   /** 每段队里压着几条（不摆就是 0） */
   readonly pending = new Map<string, number>();
   readonly forgotten: string[] = [];
-  /** 被要求「让这一段空闲的驱动者退役」的对话（换模型 / 换档位那一手） */
+  /** 被要求「让这一段空闲的 agent 退役」的会话（换模型 / 换档位那一手） */
   readonly invalidated: string[] = [];
 
   presence(sessionId: string): SessionPresence {
-    // 这一段有驱动者（`running` 只表示它手上有活），两道闸都开着
+    // 这一段有 agent（`running` 只表示它手上有活），两道闸都开着
     return {
       status: this.running.has(sessionId) ? "working" : "idle",
       inputPaused: false,
@@ -56,7 +56,7 @@ class FakeRuntime implements SessionRuntimePort {
     this.forgotten.push(sessionId);
   }
   agentState(sessionId: string): AgentNS.AgentState | null {
-    // 这一段没有驱动者时才是 `null`（死格）：用例里的 `running` 只表示忙
+    // 这一段没有 agent 时才是 `null`（死格）：用例里的 `running` 只表示忙
     return this.running.has(sessionId) ? "working" : "idle";
   }
   invalidateAgent(sessionId: string): void {
@@ -222,7 +222,7 @@ async function buildHarness(): Promise<Harness> {
 }
 
 /**
- * 建一段对话并让它落库。
+ * 建一段会话并让它落库。
  *
  * R56 之后 `create` 只发 id 与身份（草稿），落库发生在首次 `session.send`。这个文件里
  * 绝大多数用例要看的是「落库之后」的行为（排序、改名、撤回、换模型），所以造完直接
@@ -233,7 +233,7 @@ async function createPersisted(
   params: SessionCreateParams,
 ): Promise<{ session: SessionView }> {
   const created = await service.create(params);
-  if (!created.session) throw new Error("session.create 没有建出对话");
+  if (!created.session) throw new Error("session.create 没有建出会话");
   await service.ensurePersisted(created.session.id);
   return { session: created.session };
 }
@@ -494,9 +494,9 @@ describe("SessionService.get / rename / pin", () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const renamed = await harness.service.rename({
       sessionId: created.session.id,
-      name: "  我的对话  ",
+      name: "  我的会话  ",
     });
-    expect(renamed.session.name).toBe("我的对话");
+    expect(renamed.session.name).toBe("我的会话");
     expect(renamed.session.nameIsAuto).toBe(false);
     expect(renamed.session.modelId).toBe("m1");
     expect(renamed.session.agentId).toBe("a1");
@@ -527,7 +527,7 @@ describe("SessionService.get / rename / pin", () => {
 });
 
 describe("SessionService.delete（D17）", () => {
-  it("dryRun 只算代价；真删后对话与消息消失，引用归零的素材交给素材层清", async () => {
+  it("dryRun 只算代价；真删后会话与消息消失，引用归零的素材交给素材层清", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
     await harness.messages.upsert({
@@ -546,7 +546,7 @@ describe("SessionService.delete（D17）", () => {
       sha256: "sha256-1",
       createdAt: 3,
     });
-    // 归属只在关系行上：素材行本身不记对话
+    // 归属只在关系行上：素材行本身不记会话
     await harness.assets.linkAsset({
       sessionId: id,
       messageId: "msg-1",
@@ -591,7 +591,7 @@ describe("R56：create 不落库，首次发消息才写行", () => {
     const rows = await harness.db.all<{ id: string }>("SELECT id FROM sessions");
     expect(rows).toEqual([]);
 
-    // 但它不是一个「找不到的对话」：get 能拿到正确视图
+    // 但它不是一个「找不到的会话」：get 能拿到正确视图
     const opened = await harness.service.get({ sessionId: session.id });
     expect(opened.session.id).toBe(session.id);
     expect(opened.session.messageCount).toBe(0);
@@ -601,7 +601,7 @@ describe("R56：create 不落库，首次发消息才写行", () => {
     expect((await harness.service.list({ workspaceId: "w1" })).total).toBe(0);
   });
 
-  it("首次发消息时用同一个 id 落库（ensurePersisted），之后与普通对话无差别", async () => {
+  it("首次发消息时用同一个 id 落库（ensurePersisted），之后与普通会话无差别", async () => {
     const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
     const id = created.session?.id ?? "";
 
@@ -812,7 +812,7 @@ describe("SessionService.revert（D24）", () => {
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
-  it("消息不在这一段对话里时报 not_found", async () => {
+  it("消息不在这一段会话里时报 not_found", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await expect(
       harness.service.revert({ sessionId: created.session.id, beforeMessageId: "别处的" }),
@@ -887,7 +887,7 @@ async function writeAgentWithParams(params: Record<string, unknown>): Promise<vo
 }
 
 describe("SessionService.setModel（F-B4 / D20：会话级、落库）", () => {
-  it("换模型写进会话行，重开这段对话读到的还是新模型", async () => {
+  it("换模型写进会话行，重开这段会话读到的还是新模型", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
 
@@ -1021,7 +1021,7 @@ describe("SessionService.setThinking（F-B6 / F-B7：会话级、落库）", () 
       params: { reasoning_effort: "low" },
     });
     expect((await harness.sessions.get(id))?.thinkingLevel).toBe("low");
-    // 再打开这段对话读到的也是它（不是内存里的临时值）
+    // 再打开这段会话读到的也是它（不是内存里的临时值）
     const reopened = await harness.service.get({ sessionId: id });
     expect(reopened.session.thinking.selected).toBe("low");
     expect(reopened.session.thinking.source).toBe("manual");
@@ -1042,7 +1042,7 @@ describe("SessionService.setThinking（F-B6 / F-B7：会话级、落库）", () 
     });
   });
 
-  it("两段对话各设不同档位互不影响（一段关掉思考、一段开到最大）", async () => {
+  it("两段会话各设不同档位互不影响（一段关掉思考、一段开到最大）", async () => {
     const first = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const second = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
 
@@ -1069,13 +1069,13 @@ describe("SessionService.setThinking（F-B6 / F-B7：会话级、落库）", () 
     expect((await harness.sessions.get(created.session.id))?.thinkingLevel).toBeNull();
   });
 
-  it("助手定义上的默认档改了，不影响已有会话的会话级档位", async () => {
+  it("助手定义上的默认档改了，不影响已有会话上选的那一档", async () => {
     await writeAgentWithParams({ reasoning_effort: "high" });
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
     await harness.service.setThinking({ sessionId: id, level: "low" });
 
-    // 助手改成默认「high」：那是「以后的对话」的事
+    // 助手改成默认「high」：那是「以后的会话」的事
     await writeAgentWithParams({ reasoning_effort: "high", temperature: 0.1 });
     const existing = await harness.service.get({ sessionId: id });
     expect(existing.session.thinking).toMatchObject({
@@ -1084,7 +1084,7 @@ describe("SessionService.setThinking（F-B6 / F-B7：会话级、落库）", () 
       params: { reasoning_effort: "low" },
     });
 
-    // 新对话跟着助手定义走
+    // 新会话跟着助手定义走
     const fresh = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     expect(fresh.session.thinking).toMatchObject({
       selected: "high",
@@ -1217,7 +1217,7 @@ describe("SessionService.setThresholds（PRD 1.4 / 4.7：会话行上的覆盖�
     expect((await harness.sessions.get(id))?.handoffThreshold).toBeNull();
   });
 
-  it("只动这两格：模型与思考档位不受影响（它们才是驱动者的装配事实）", async () => {
+  it("只动这两格：模型与思考档位不受影响（它们才是agent的装配事实）", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
     await harness.service.setThinking({ sessionId: id, level: "high" });
@@ -1292,7 +1292,7 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     expect(all).toHaveLength(2);
   });
 
-  it("换了 Workspace 打开同一段对话，那条会话的 cwd 仍是它原来的那个", async () => {
+  it("换了 Workspace 打开同一段会话，那条会话的 cwd 仍是它原来的那个", async () => {
     const otherDir = join(harness.dir, "another-project");
     await mkdir(otherDir, { recursive: true });
     await harness.workspaces.create({ id: "w2", name: "项目二", cwd: otherDir, createdAt: 2 });
@@ -1307,12 +1307,12 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     const before = await readCwd();
     expect(before).toBe(harness.projectDir);
 
-    // 在另一个项目里开一段新对话、并把两个项目都列一遍（「当前项目」变了）
+    // 在另一个项目里开一段新会话、并把两个项目都列一遍（「当前项目」变了）
     await createPersisted(harness.service, { workspaceId: "w2", agentId: "a1" });
     await harness.service.list({ workspaceId: "w2" });
     await harness.service.list({});
 
-    // 原来那段对话的归属与那条 cwd 消息一个字都没变
+    // 原来那段会话的归属与那条 cwd 消息一个字都没变
     const opened = await harness.service.get({ sessionId: id });
     expect(opened.session.workspaceId).toBe("w1");
     expect(opened.session.folder.cwd).toBe(harness.projectDir);
@@ -1321,7 +1321,7 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
 });
 
 describe("对外失败一律是 HostError", () => {
-  it("不存在的对话在每个方法上都报 HostError", async () => {
+  it("不存在的会话在每个方法上都报 HostError", async () => {
     const calls = [
       harness.service.get({ sessionId: "x" }),
       harness.service.rename({ sessionId: "x", name: "名字" }),

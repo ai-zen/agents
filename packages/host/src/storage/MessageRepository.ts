@@ -11,7 +11,7 @@
  *    中文子串才搜得到；代价是查询词至少要 3 个字符，少于 3 个字符（典型是两字中文）
  *    在 trigram 下必然搜不到，这里退化到 `LIKE` 子串匹配。
  *
- * 3. **表里只有主线消息**：子 Agent 的话不入库（`CORE.md` §17），所以「这段对话有多少条消息」
+ * 3. **表里只有主线消息**：subagent 的话不入库（`CORE.md` §17），所以「这段会话有多少条消息」
  *    只有一条取法（`parentToolCallId` 那一列已随 v5 删除）。
  *
  * 4. **`hidden` 的两条读数**：`hidden` 是 core 的 `Message.hidden`，落在 `data` 列的 JSON 里
@@ -63,7 +63,7 @@ export interface MessageListOptions {
 }
 
 /**
- * 写入语句：`seq` 取同对话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
+ * 写入语句：`seq` 取同会话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
  *
  * `MAX(seq)` 与插入在同一条语句里完成，worker 又是单线程串行执行，所以不会出现两条
  * 消息抢到同一个 seq（`UNIQUE (sessionId, seq)` 是最后一道防线）。
@@ -95,7 +95,7 @@ const UPSERT_SQL = `
  *
  * 导出的理由：交接换记忆那一批要把「插存档会话行」「把消息搬走」「写 cwd 与断点两条消息」
  * 放进**同一个**事务（`SessionRepository.replaceMemory`）。就地复制一份 `UPSERT_SQL` 会让
- * `seq` 的口径多出第二份实现 —— 那正是「同一段对话里两条消息抢到同一个 seq」的来源。
+ * `seq` 的口径多出第二份实现 —— 那正是「同一段会话里两条消息抢到同一个 seq」的来源。
  */
 export function registerMessageUpsert(
   tx: TxClient,
@@ -266,7 +266,7 @@ export class MessageRepository {
   }
 
   /**
-   * 按对话取消息（`PLAN.md` A12 的 `message.list` 口径）。
+   * 按会话取消息（`PLAN.md` A12 的 `message.list` 口径）。
    *
    * - 不给 `after`：整段历史，按 `seq` 升序。
    * - 给了 `after` 且这个 id 存在：**从它本身开始**（含它，内容是最新的）+ 之后全部。
@@ -274,12 +274,12 @@ export class MessageRepository {
    *   它的内容已经变了，得重新拿最新的。
    * - 给了 `after` 但库里没有这个 id（已删除、或换了库）：退回整段历史。
    *
-   * 读到的是这段对话的全部行：子 Agent 的话不入库（`CORE.md` §17），所以这里不需要再筛
+   * 读到的是这段会话的全部行：subagent 的话不入库（`CORE.md` §17），所以这里不需要再筛
    * 一次归属（`parentToolCallId` 那一列已随 v5 删掉）。
    *
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
    *
-   * **它与 {@link countBySession} 数的是同一批行**（两边都只看 `hidden`）：同一段对话
+   * **它与 {@link countBySession} 数的是同一批行**（两边都只看 `hidden`）：同一段会话
    * 那句「有多少条消息」不应该有两个数。
    *
    * `hidden` 的消息默认不在结果里（侧栏条数、`message.list` 都用这条默认）。要看的那一侧
@@ -313,7 +313,7 @@ export class MessageRepository {
   /**
    * 全文搜索（PRD D16：按聊天内容、可只搜一个 Workspace）。
    *
-   * @param scope 一段对话内 / 一个 Workspace 下 / 不限（`undefined` 由调用方显式传入
+   * @param scope 一段会话内 / 一个 Workspace 下 / 不限（`undefined` 由调用方显式传入
    *              表示不限；本层不替调用方决定「不给条件就搜全库」是不是合理）
    * @param keyword 查询词：长度 >= 3 走 FTS5 trigram，< 3 走 LIKE 子串
    * @param limit 上限
@@ -376,10 +376,10 @@ export class MessageRepository {
   }
 
   /**
-   * 硬删一段对话里排在指定消息之后的消息（PRD D24 的撤回）。
+   * 硬删一段会话里排在指定消息之后的消息（PRD D24 的撤回）。
    * `includeSelf` 为真时连那条消息一起删。
    *
-   * 锚点不在该对话里时 `seq` 子查询为 NULL，条件不成立，一条也不会删。
+   * 锚点不在该会话里时 `seq` 子查询为 NULL，条件不成立，一条也不会删。
    */
   async deleteAfter(
     sessionId: string,
@@ -399,10 +399,10 @@ export class MessageRepository {
   }
 
   /**
-   * 数一段对话在 `messages` 表里的行数（PRD D17 / F-F9 的代价一侧用它）。
+   * 数一段会话在 `messages` 表里的行数（PRD D17 / F-F9 的代价一侧用它）。
    *
    * 与 {@link listBySession} 数的是**同一批行**（两边都只看 `hidden`）：同一个问题
-   * （「这段对话有多少条消息」）只应该有一个数。
+   * （「这段会话有多少条消息」）只应该有一个数。
    *
    * `hidden` 的消息两边都不算：它在界面上从来没出现过，删掉它数进代价里会让用户看到
    * 一个对不上的数字。

@@ -167,7 +167,7 @@ describe("调用", () => {
         "session.get": () => {
           throw new FakeMethodError({
             code: "not_found",
-            message: "这段对话不存在了",
+            message: "这段会话不存在了",
             detail: { sessionId: "c1" },
           });
         },
@@ -179,7 +179,7 @@ describe("调用", () => {
       .call("session.get", { sessionId: "c1" })
       .catch((caught: unknown) => caught);
     expect((error as ClientError).code).toBe("not_found");
-    expect((error as ClientError).message).toBe("这段对话不存在了");
+    expect((error as ClientError).message).toBe("这段会话不存在了");
     expect((error as ClientError).detail).toEqual({ sessionId: "c1" });
   });
 
@@ -274,7 +274,7 @@ describe("事件", () => {
   });
 });
 
-describe("镜像：打开一段对话", () => {
+describe("镜像：打开一段会话", () => {
   it("打开那一刻还没读到四件事：每一格都是 null", async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -370,7 +370,7 @@ describe("镜像：打开一段对话", () => {
     expect(client.mirror("c1")).toBe(mirror);
   });
 
-  it("同一段对话开两次：只拉一次快照，第二次拿的是同一个镜像", async () => {
+  it("同一段会话开两次：只拉一次快照，第二次拿的是同一个镜像", async () => {
     const host = await startFake({
       methods: {
         "session.state": (params) => ({
@@ -442,7 +442,7 @@ describe("镜像：打开一段对话", () => {
     // 之后到达的消息事件按 toolCallId 归进那一栏，**不调 message.list { toolCallId }**
     host.push("message.added", {
       sessionId: "c1",
-      message: assistantMessage("s1", "子 agent 说的话"),
+      message: assistantMessage("s1", "subagent 说的话"),
       toolCallId: "call-1",
       at: "2026-01-01T00:00:06.000Z",
     });
@@ -588,10 +588,10 @@ describe("镜像：打开一段对话", () => {
     const client = await connect(host);
     const mirror = await client.open("c1");
 
-    // 子 agent 那一栏的内容只来自事件（不入库，重拉也拉不回来）
+    // subagent 那一栏的内容只来自事件（不入库，重拉也拉不回来）
     host.push("message.added", {
       sessionId: "c1",
-      message: assistantMessage("s1", "子 agent 说的那句"),
+      message: assistantMessage("s1", "subagent 说的那句"),
       toolCallId: "call-1",
       at: "2026-01-01T00:00:06.000Z",
     });
@@ -608,7 +608,7 @@ describe("镜像：打开一段对话", () => {
     await waitFor(() => mirror.messages[0]?.id === "m2");
     // 全量替换沿用手上这一份（首载才建表）：换掉镜像对象的话，界面手里那份就停在旧样子上
     expect(client.mirror("c1")).toBe(mirror);
-    // 主线整段换掉，子 agent 那栏留在原处
+    // 主线整段换掉，subagent 那栏留在原处
     expect(mirror.messages.map((message) => message.id)).toEqual(["m2"]);
     expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
   });
@@ -774,7 +774,7 @@ describe("重连：把镜像补回来", () => {
     expect(client.connected).toBe(true);
   });
 
-  it("补不回来（那段对话没了）报在 onSync 上，连接照旧可用", async () => {
+  it("补不回来（那段会话没了）报在 onSync 上，连接照旧可用", async () => {
     // 「gone」这段：打开时还在，重连时已经没了
     const seen = new Map<string, number>();
     const host = await startFake({
@@ -784,7 +784,7 @@ describe("重连：把镜像补回来", () => {
           const times = (seen.get(sessionId) ?? 0) + 1;
           seen.set(sessionId, times);
           if (sessionId === "gone" && times > 1) {
-            throw new FakeMethodError({ code: "not_found", message: "这段对话不存在了" });
+            throw new FakeMethodError({ code: "not_found", message: "这段会话不存在了" });
           }
           return { state: sessionState(sessionId) };
         },

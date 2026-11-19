@@ -11,7 +11,7 @@ export interface Frontmatter {
   compatibility?: string;
   metadata?: Record<string, string>;
   allowedTools?: string[];
-  /** @extension Claude Code 启发：声明此 Skill 可作为子 Agent 运行 */
+  /** @extension Claude Code 启发：声明此 Skill 可作为 subagent 运行 */
   subAgent?: boolean;
 }
 
@@ -87,7 +87,7 @@ export async function discoverSkills(
   return items;
 }
 
-// ---- 完整读取（用于加载 Skill 正文和子 Agent 判断）----
+// ---- 完整读取（用于加载 Skill 正文和 subagent 判断）----
 
 /**
  * 读取单个 Skill 的完整内容与元数据。

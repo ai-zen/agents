@@ -1,5 +1,5 @@
 /**
- * `ChatRunner` —— 一段对话一条**常驻桥**（PLAN §5）。
+ * `ChatRunner` —— 一段会话一条**常驻桥**（PLAN §5）。
  *
  * ## 这里没有「轮」
  *
@@ -11,7 +11,7 @@
  * 于是本文件的结构小得反常：
  *
  * ```
- * 投递进来  → 判两件（对话在不在、agent 活不活）→ 塞进队列 → 回执只有消息 id
+ * 投递进来  → 判两件（会话在不在、agent 活不活）→ 塞进队列 → 回执只有消息 id
  * 事件到了  → 来一条处理一条：写库 + 推出去（不攒、不等「一圈收口」再统一写）
  * 变闲那一刻 → 先把写挂干净 → 让注册表看一眼要不要换人 → 报「闲了」→ onIdle 读一次当下事实
  * ```
@@ -20,19 +20,19 @@
  *
  * | 口 | 干什么 | 不等什么 |
  * |---|---|---|
- * | {@link ChatRunner.deliver} | 把一条内容塞进某段对话的队列 | 不等它被处理（`await` 的边界就是「已入队」） |
+ * | {@link ChatRunner.deliver} | 把一条内容塞进某段会话的队列 | 不等它被处理（`await` 的边界就是「已入队」） |
  * | {@link ChatRunner.abort} | 掐掉活着的 agent 手上那一批（并把输出闸关上，不是杀死） | —— |
- * | {@link ChatRunner.state} | 现读四件事 + 待办 | 不落库、不推算、不存镜像 |
+ * | {@link ChatRunner.state} | 现读四件事 + inbox | 不落库、不推算、不存镜像 |
  *
  * 另有两个是**闸**的动作：{@link ChatRunner.pause}（只翻输出闸，不掐在途）与
  * {@link ChatRunner.resume}（只开闸，不投任何东西）。
  *
- * 另有一手是**用户按杀死**：{@link ChatRunner.kill}（收掉 agent、在途掐断、待办作废，而会话行与
+ * 另有一手是**用户按杀死**：{@link ChatRunner.kill}（收掉 agent、在途掐断、inbox 里的条目作废，而会话行与
  * 消息一个字不动 —— 那不是删除）。
  *
  * 还有一条是**判据**：{@link ChatRunner.canHandoffNow} —— 「能不能立刻接手一批交接」全仓只此一处。
  *
- * 另外三件是**结构性**的，不属于「投递 / 中断 / 观测」那条路：`forget`（对话或项目被删）、
+ * 另外三件是**结构性**的，不属于「投递 / 中断 / 观测」那条路：`forget`（会话或项目被删）、
  * `killScope`（整个 Scope 被处置）、`reconcile`（装载即修复）。
  *
  * ## 状态是四件事，而且全是读出来的
@@ -52,20 +52,20 @@
  *
  * ## 常驻桥（{@link SessionBridge}）：生与灭
  *
- * 一段对话一个 agent，一个 agent 一条桥。桥只做两件事：**把订在 agent 上的事件照着写库、照着
+ * 一段会话一个 agent，一个 agent 一条桥。桥只做两件事：**把订在 agent 上的事件照着写库、照着
  * 推出去**，以及**把握在手上的那几条投递推进队列**。它没有 `done` promise、没有 `settle()`、
  * 没有「这一轮的产出清单」—— 那些都是「轮」的零件。
  *
- * - **生**：{@link ChatRunner.deliver} 第一次需要它时（那段对话还没有 agent，或者手里那个已经
+ * - **生**：{@link ChatRunner.deliver} 第一次需要它时（那段会话还没有 agent，或者手里那个已经
  *   换了人）创建，就地（同步）把监听订在 agent 上 —— agent 一被叫醒就立刻广播消息，迟一拍
  *   就漏。
  * - **灭**：agent 退役（`AgentRegistry` 的 `retired`）/ 被 kill / `forget` / `killScope` 时，
- *   先 `flushWrites()` 再摘监听、丢引用，**并且补报一条 `agent_gone`**。灭 = 这段对话没有
+ *   先 `flushWrites()` 再摘监听、丢引用，**并且补报一条 `agent_gone`**。灭 = 这段会话没有
  *   agent 了，客户端必须知道：`stopped` / `killed` 是 core 自己说的那两种，退役（`retired`
  *   的五种理由）也一样让 agent 从账上消失 —— 不补这一条，界面就一直以为它还在。
  *   同一次死亡只发一条。
  *
- * `bridges` 是**唯一**一张现场表：它记的恰好是「这段对话此刻有没有桥」，而桥在不在 = agent
+ * `bridges` 是**唯一**一张现场表：它记的恰好是「这段会话此刻有没有桥」，而桥在不在 = agent
  * 在不在（两者严丝合缝，所以不需要第二份账）。
  *
  * ## 投递的内容由调用方给
@@ -92,7 +92,7 @@
  *
  * 两处**不写库**，各有各的理由：
  *
- * - **子 agent 的消息一律不落库**（`CORE.md` §17 / PLAN §7）。子 agent 本质是一次同步工具
+ * - **subagent 的消息一律不落库**（`CORE.md` §17 / PLAN §7）。subagent 本质是一次同步工具
  *   调用，「恢复它」等于恢复一个跑到一半的工具调用 —— 副作用已经发生、不能重滚也不能重放，
  *   而工具调用这个抽象里没有「恢复」。所以它的话只在它自己那个对象里，要查就顺
  *   {@link ChatRunner.messagesOf} 的 `toolCallId` 那条路取；事件照推，客户端那几栏照样拼
@@ -159,7 +159,7 @@ import { systemClock } from "./ScopeRegistry.js";
  * inbox 仓储里本文件用到的部分（`InboxRepository` 结构上满足）。
  *
  * 只有四个动作，正好是「inbox 一有变化就入库」那三条事件 + 装配时读一遍：
- * 进来一条插一行、被取走删那几行、被清空清掉这段对话的行、装配时按顺序读回来。
+ * 进来一条插一行、被取走删那几行、被清空清掉这段会话的行、装配时按顺序读回来。
  *
  * 这个口不注入就不持久化（`inboxPending` 那半仍旧现读，界面一样看得见）—— 但那就回到
  * 「关掉就丢东西」了，所以 `app.ts` 一定给。
@@ -167,11 +167,11 @@ import { systemClock } from "./ScopeRegistry.js";
 export interface InboxStore {
   /** 进队就是一次变化：落一行 */
   insert(input: InboxInsertInput): Promise<void>;
-  /** 装配时按顺序读回这段对话还等着的那些（顺序即取件顺序） */
+  /** 装配时按顺序读回这段会话还等着的那些（顺序即取件顺序） */
   listBySession(sessionId: string): Promise<StoredInboxEntry[]>;
   /** 被取走 / 已经在记忆里（去重扔掉）：删那几行 */
   deleteMany(messageIds: readonly string[]): Promise<number>;
-  /** 作废（`/clear`）：这段对话一条不剩 */
+  /** 作废（`/clear`）：这段会话一条不剩 */
   clearBySession(sessionId: string): Promise<number>;
 }
 
@@ -187,7 +187,7 @@ export interface MessageStore {
    */
   delete(id: string): Promise<void>;
   /**
-   * 按对话取主线消息。
+   * 按会话取主线消息。
    *
    * 历史装载传 `includeHidden`（`hidden` 的消息也在模型的上下文里，只是不给人看）；
    * 其余用途默认只要用户看得到的那部分。
@@ -199,7 +199,7 @@ export interface MessageStore {
   ): Promise<StoredMessage[]>;
 }
 
-/** 对话仓储里本文件用到的部分（`SessionRepository` 结构上满足） */
+/** 会话仓储里本文件用到的部分（`SessionRepository` 结构上满足） */
 export interface SessionStore {
   get(id: string): Promise<Session | undefined>;
 }
@@ -216,7 +216,7 @@ export type ChatEventEmitter = <E extends EventName>(name: E, payload: EventMap[
 export interface AgentBuildContext {
   sessionId: string;
   workspaceId: string;
-  /** 这段对话创建时定死的助手（PRD L7） */
+  /** 这段会话创建时定死的助手（PRD L7） */
   agentId: string;
   /** 这段会话现在用的模型（存在会话行上）；`null` 时交给 SDK 三级解析 */
   modelId: string | null;
@@ -237,14 +237,14 @@ export type AgentFactory = (context: AgentBuildContext) => Promise<ChatAgent>;
 /**
  * 交接服务（SDK 口径）按装配事实现场取一个。
  *
- * 给 `undefined` 就是「这段对话不装交接线插件」（装卸点会推一条警告，不静默）。
+ * 给 `undefined` 就是「这段会话不装交接线插件」（装卸点会推一条警告，不静默）。
  */
 export type HandoffProvider = (context: AgentBuildContext) => HandoffService | undefined;
 
 /**
  * 「不能立刻接手交接」的四种缘由 —— **四个词，全仓唯一的一套拒因**（PLAN §5.3）。
  *
- * - `no_agent`：没有驱动者（死了），没有人可写；
+ * - `no_agent`：没有 agent（死了），没有人可写；
  * - `working`：手上有活（`agent.state !== "idle"`）；
  * - `output_paused`：输出闸关着（从下一批起不取件）；
  * - `handoff_in_progress`：这段已经在交接中。
@@ -328,7 +328,7 @@ export type MessageAssetLinker = (context: {
  * 两样必给的：`content`（发给模型的那一份，也是落库的那一份）与 `source`（谁说的）。另一样是
  * 特定那条路的产物：
  *
- * - `mayStart`：**允许把它叫起来**（给这段对话装上驱动者）。只有两个创建者给 `true` ——
+ * - `mayStart`：**允许把它叫起来**（给这段会话装上 agent）。只有两个创建者给 `true` ——
  *   界面上的发送按钮、刚建出来的那段会话的第一句；其它来源给了也白给（这里只认 `true`，
  *   不认「真值」）。
  *
@@ -340,32 +340,32 @@ export interface DeliveryInput {
   /** core 的判别结构：`{kind:"user"}` = 用户本人（不加来源注释），其余由 core 落地时加注释 */
   source: AgentNS.MessageSource;
   /**
-   * **允许把它叫起来**（给这段对话装上驱动者）。
+   * **允许把它叫起来**（给这段会话装上 agent）。
    *
    * 只有两个创建者给 `true`：界面上的发送按钮、刚建出来的那段会话的第一句。其它来源
-   * （`postMessage`、定时器、外部程序）一律不给 —— 死对话叫不醒。
+   * （`postMessage`、定时器、外部程序）一律不给 —— 死会话叫不醒。
    */
   mayStart?: boolean;
 }
 
-/** 装载/重启后的修复结果：修好之后的消息（顺序即对话顺序，core 原样） */
+/** 装载/重启后的修复结果：修好之后的消息（顺序即会话顺序，core 原样） */
 export type ReconcileResult = AgentNS.Message[];
 
 /**
- * 子 agent 那一栏的一行 —— **就是 wire 的 {@link SubAgentFact}**（`session.state` 的
+ * subagent 那一栏的一行 —— **就是 wire 的 {@link SubAgentFact}**（`session.state` 的
  * `subAgents` 那一段，客户端照同一份形状铺栏）。
  *
  * 形状只定义一次：这一栏就是现读 core 名册，宿主没有第二份，所以也不该有第二个类型。
- * 为什么名册上有了结束时刻就报 `ended`、而不是子 agent 自己那一格，见
+ * 为什么名册上有了结束时刻就报 `ended`、而不是 subagent 自己那一格，见
  * {@link SubAgentFact.state} —— 解释只留在那一处。
  */
 export type SubAgentReadout = SubAgentFact;
 
 /**
- * 一段对话此刻的读数（{@link ChatRunner.state} 的返回）—— **就是 wire 的
+ * 一段会话此刻的读数（{@link ChatRunner.state} 的返回）—— **就是 wire 的
  * {@link SessionState}**：同一个形状只在契约里定义一次，这里直接用它，不再维护第二份。
  *
- * 那几个字段全是**现读**：四件事读 agent（{@link SessionPresence}）、待办读队列、名册读
+ * 那几个字段全是**现读**：四件事读 agent（{@link SessionPresence}）、inbox 读队列、名册读
  * core 的登记、交接读本文件那张标记表。没有一份是对别的什么东西的副本，所以也没有「什么时候
  * 刷新」这回事。`at` 是这份读数的时刻。
  */
@@ -377,10 +377,10 @@ export type SessionReadout = SessionState;
  * 三格分得开，因为**死之后该跟着没的东西不一样**：
  *
  *   - `terminated`：**真的死了**。core 自己说的 `stopped` / `killed`，以及投递撞上一个已经关门
- *     的 agent。这段对话没有驱动者了，也不会再有 —— 挂在上面的题与待交接该跟着没；
- *   - `retired`：**换一个驱动者接着干**。配置变更 / 装配事实变化（换模型、换思考档位）之后旧的那
- *     个退役重建。对话还在，只是换了人 —— 题与待交接原样留着；
- *   - `forgotten`：对话被删（`forget`）。
+ *     的 agent。这段会话没有 agent 了，也不会再有 —— 挂在上面的题与待交接该跟着没；
+ *   - `retired`：**换一个 agent 接着干**。配置变更 / 装配事实变化（换模型、换思考档位）之后旧的那
+ *     个退役重建。会话还在，只是换了人 —— 题与待交接原样留着；
+ *   - `forgotten`：会话被删（`forget`）。
  *
  * 报出去的是「为什么」，**不替调用方决定后果**：`agent_gone` 在客户端看来都是「这段没有驱动
  * 者」，但「题还该不该留着」只有知道原因才判得对，所以原因必须跟着这一拍出门。
@@ -391,8 +391,8 @@ export type SessionDeathKind = "terminated" | "retired" | "forgotten";
  * 注册表那条 `retired` 报的「为什么」→ 报死那一拍的三格。
  *
  * `session-deleted` / `shutdown` 是**硬着陆**（`kill` / `killAll` / `disposeAll`）：那几段
- * 对话真的没了，所以算真死（`terminated`）；其余三种（配置变、装配事实变、变闲兑现陈旧）都是
- * 「换一个驱动者接着干」—— 对话还在，题与待交接都该留着。
+ * 会话真的没了，所以算真死（`terminated`）；其余三种（配置变、装配事实变、变闲兑现陈旧）都是
+ * 「换一个 agent 接着干」—— 会话还在，题与待交接都该留着。
  *
  * 两边的词表不合并：`AgentLifecycleReason` 回答「为什么这一段没有 agent」，本文件那一格回答
  * 「该跟着没的东西是不是真的跟着没」，后者比前者粗，也只关心那三格。
@@ -407,7 +407,7 @@ export interface ChatRunnerOptions {
   /**
    * Scope 的持有者（能力容器）。
    *
-   * 本文件只用它的 `create`（装配 agent 之前确保这段对话的 Scope 存在）。销毁 Scope 不是投递
+   * 本文件只用它的 `create`（装配 agent 之前确保这段会话的 Scope 存在）。销毁 Scope 不是投递
    * 的事：它活到显式 `dispose` 或进程退出。
    */
   scopes: ScopeRegistry;
@@ -415,7 +415,7 @@ export interface ChatRunnerOptions {
    * agent 存活管理的唯一拥有者（它是「agent 唯一的来源」）。
    *
    * 拿（`acquire`：在且合用就复用，不在 / 不合用就装配）、变闲那一刻（`complete`：陈旧才退役）、
-   * 对话被删（`kill`：硬着陆）、配置生效（`invalidate`）、收尾（`disposeAll`）都走它。
+   * 会话被删（`kill`：硬着陆）、配置生效（`invalidate`）、收尾（`disposeAll`）都走它。
    * 本文件既不看别的账本判「在不在跑」，也不自己判「复不复用」。
    */
   agents: AgentRegistry;
@@ -458,14 +458,14 @@ export interface ChatRunnerOptions {
    */
   onIdle?: (sessionId: string) => void;
   /**
-   * 一段对话**没有驱动者了**（报 `agent_gone` 那一拍，同一次死亡只报一条）。
+   * 一段会话**没有 agent 了**（报 `agent_gone` 那一拍，同一次死亡只报一条）。
    *
    * 四条灭点都会走到 `announceDead`：core 自己说的 `stopped` / `killed`、注册表的 `retired`
-   * （配置变了 / 装配事实变了 / 对话被删 / 收尾）、投递撞上已关的门、以及 `forget`。把这四条收
-   * 在一个口上的理由：那是一件**对话层**的事，而「这一刻该跟着没的东西」不只 agent 一个 ——
-   * 挂在这段上的题就是（PRD 4.10：题只在对话活着时存在）。本文件不碰题，只报这一拍。
+   * （配置变了 / 装配事实变了 / 会话被删 / 收尾）、投递撞上已关的门、以及 `forget`。把这四条收
+   * 在一个口上的理由：那是一件**会话层**的事，而「这一刻该跟着没的东西」不只 agent 一个 ——
+   * 挂在这段上的题就是（PRD 4.10：题只在会话活着时存在）。本文件不碰题，只报这一拍。
    *
-   * `kind` 说的是**为什么**（见 {@link SessionDeathKind}）：`retired` 那条路是「换个驱动者
+   * `kind` 说的是**为什么**（见 {@link SessionDeathKind}）：`retired` 那条路是「换个 agent
    * 接着干」，题与待交接都该留着；另外两条才是「这段没了」。所以收到这一拍的一方必须按 `kind`
    * 分叉，而不是一律当作「全清」。
    */
@@ -776,8 +776,8 @@ type DeliveryEntryInput = Omit<AgentNS.InboxEntryWithContent, "createdAt">;
  * 入参：要么在 core 的队列里，要么还在装配窗口里。
  *
  * `createdAt` 单独存一份是因为 `AgentNS.InboxInput` 没这一格（core 在 `push` 那一刻才盖时间戳），
- * 而这一行要带着「投递时刻」。它**不是**待办（`state().inbox`）的镜像：条目进了 core 的队列
- * 之后，待办一律现读 `agent.inboxPending`。
+ * 而这一行要带着「投递时刻」。它**不是** inbox（`state().inbox`）的镜像：条目进了 core 的队列
+ * 之后，inbox 一律现读 `agent.inboxPending`。
  */
 interface DeliveryEntry {
   input: DeliveryEntryInput;
@@ -785,11 +785,11 @@ interface DeliveryEntry {
 }
 
 // ---------------------------------------------------------------------------
-// 一段对话的桥
+// 一段会话的桥
 // ---------------------------------------------------------------------------
 
 /**
- * 一段对话的常驻桥：**订在 agent 上的监听** + **它自己那条写库链**。
+ * 一段会话的常驻桥：**订在 agent 上的监听** + **它自己那条写库链**。
  *
  * 一条桥活多久 = 那个 agent 活多久（agent 常驻，桥就常驻）。它没有「这一次」的概念：
  *
@@ -817,7 +817,7 @@ class SessionBridge {
    *
    * 串起来是**必须**的：三条事件是同步回调，接不住 Promise；并发发出去的话，「被取走」那一删
    * 可能比「进队」那一插先落地 —— 于是那一条会永远留在库里（明明已经被取走了），下一次装配
-   * 就把它当成待办放回队列（一次幽灵投递）。串起来就只剩事件顺序一种顺序。
+   * 就把它当成一条待投的条目放回队列（一次幽灵投递）。串起来就只剩事件顺序一种顺序。
    */
   private inboxChain: Promise<void> = Promise.resolve();
 
@@ -825,10 +825,10 @@ class SessionBridge {
    * 进程收尾中：`kill()` 作废存量时，库里的 inbox 行**留着**。
    *
    * 只有一条路会把它置起来（{@link markShuttingDown}，由宿主在 `disposeAll` 之前调）：
-   * 「关掉再打开，那几句还在等」（PRD 1.2 / 4.12）说的就是这一跳 —— 进程没了不等于用户把待办作废了。
+   * 「关掉再打开，那几句还在等」（PRD 1.2 / 4.12）说的就是这一跳 —— 进程没了不等于用户把 inbox 里的条目作废了。
    *
-   * 不用「输入闸关了」当判据：用户按杀死也会关它，而按杀死**要**把待办作废（库里也删）。
-   * 删对话 / 删项目靠外键级联，不走这一跳。
+   * 不用「输入闸关了」当判据：用户按杀死也会关它，而按杀死**要**把 inbox 里的条目作废（库里也删）。
+   * 删会话 / 删项目靠外键级联，不走这一跳。
    */
   private shuttingDown = false;
   /** 边流边写的节流计时器（到点把 `streaming` 那一笔写下去） */
@@ -844,9 +844,9 @@ class SessionBridge {
   /** 投递进来、还没落地的消息 id（落地那一刻写它的行、记它的素材关系） */
   private readonly landingIds = new Set<string>();
   /**
-   * 子 Agent 的消息 → 宿主分配的 id。
+   * subagent 的消息 → 宿主分配的 id。
    *
-   * 子 agent 的话**不落库**了，但这个映射照旧保留：客户端的 `message.delta` / `message.added`
+   * subagent 的话**不落库**了，但这个映射照旧保留：客户端的 `message.delta` / `message.added`
    * 都是按宿主 id 挂的，`message.removed` 也得按同一个 id 才删得对。id 在第一次见到那条消息时
    * 定死，之后一路用这一个（另给一个，客户端就会把同一条当成两条）。
    */
@@ -865,13 +865,13 @@ class SessionBridge {
    * 出去了（{@link announceDead}），再让两边各记一份「还在不在」就是第二份事实。
    *
    * 带进去的是**为什么**：这一路就是「投递撞上一个已经关门的 agent」，所以是真死
-   * （`terminated`）—— 不是退役（那段会换个驱动者接着干）。
+   * （`terminated`）—— 不是退役（那段会换个 agent 接着干）。
    */
   private readonly onDeath: (kind: SessionDeathKind) => void;
   /**
-   * 这段对话此刻在不在交接态（问 `ChatRunner`，不在桥里另存一份）。
+   * 这段会话此刻在不在交接态（问 `ChatRunner`，不在桥里另存一份）。
    *
-   * 为什么问外面：交接态是**对话**的属性，而桥会换（agent 被换掉、装配事实变了）。存在桥上的
+   * 为什么问外面：交接态是**会话**的属性，而桥会换（agent 被换掉、装配事实变了）。存在桥上的
    * 话，换一条桥就把「正在交接」这一格弄丢了 —— 于是交接写文档期间的那些消息就开始进库。
    */
   private readonly handoffActive: () => boolean;
@@ -914,7 +914,7 @@ class SessionBridge {
    *      那是用户的显式动作，投递只收不取（PRD 4.4）。已经在跑的自己会从队列里取，这里什么都不用做。
    *
    * 关门的 agent 抛的是 core 的 `AgentError("closed")`。那件事在宿主这里只意味着一种处境：
-   * **这段对话死了**（已经关门 = 死）。所以它不往投递方手上塞 core 的内部码，而是翻译成
+   * **这段会话死了**（已经关门 = 死）。所以它不往投递方手上塞 core 的内部码，而是翻译成
    * `HostError("session_dead")`，并顺手把这条桥当已死处理掉（丢引用 + 补一格 `dead`）。
    */
   push(entry: DeliveryEntry): void {
@@ -929,7 +929,7 @@ class SessionBridge {
       this.agent.push(entry.input);
     } catch (error) {
       if (error instanceof AgentError && error.code === "closed") {
-        // 它已经关门 = 死了：投递方该拿到的是「对话不在了」这个码，不是 core 的 `closed`
+        // 它已经关门 = 死了：投递方该拿到的是「会话不在了」这个码，不是 core 的 `closed`
         this.onDeath("terminated");
         throw new HostError("session_dead", { cause: error });
       }
@@ -944,14 +944,14 @@ class SessionBridge {
   /**
    * 灭火：报「死」（还没报过的话），再把挂着的那一笔写干净，最后摘监听、丢引用。
    *
-   * 为什么先报「死」：桥灭 = 这段对话没有 agent 了。core 的 `stopped` / `killed` 那条路
+   * 为什么先报「死」：桥灭 = 这段会话没有 agent 了。core 的 `stopped` / `killed` 那条路
    * （{@link onTerminated}）自己会报，同一次死亡不重发；剩下那些灭点（`AgentRegistry` 的
    * `retired`：`stale-on-idle` / `config-changed` / `assembly-facts-changed` /
    * `session-deleted` / `shutdown`，以及投递撞上已关的门）没有任何人报过 —— 客户端那一刻
    * 看见的还是「闲」，不补这一条，界面就一直停在那一格。
    *
-   * `kind` 是「为什么没有驱动者了」：它从**灭点**一路传到 {@link announceDead}，于是下游
-   * （题与待交接的去留）能分清「这段没了」与「换个驱动者接着干」。
+   * `kind` 是「为什么没有 agent 了」：它从**灭点**一路传到 {@link announceDead}，于是下游
+   * （题与待交接的去留）能分清「这段没了」与「换个 agent 接着干」。
    *
    * `closed` 先置位是不省的一步：否则「flush 完 → 摘监听」之间到达的事件会排进一条再没人
    * flush 的链上，那一笔就永远停在内存里。
@@ -981,12 +981,12 @@ class SessionBridge {
    *   - `messageAdded` / `messageChanged` / `messageRemoved`：**逐条** upsert / delete；
    *   - `responseFinished`：一次回应结束（那条 assistant 的 status / tool_calls / finish_reason /
    *     usage 都在上面）→ 整条覆盖写 + `message.changed`；
-   *   - `delta`：原始片（带着来源：自己的消息 / 某个子 agent 的某个工具调用）；
-   *   - `subAgentStarted`：委派边界。子 agent 开局手里的那几条（装好的历史 / 模板）由这里补推
-   *     一遍 `message.added` —— 它们不会再触发事件，而事件现在是客户端重建子 agent 那一栏的
+   *   - `delta`：原始片（带着来源：自己的消息 / 某个 subagent 的某个工具调用）；
+   *   - `subAgentStarted`：委派边界。subagent 开局手里的那几条（装好的历史 / 模板）由这里补推
+   *     一遍 `message.added` —— 它们不会再触发事件，而事件现在是客户端重建 subagent 那一栏的
    *     **唯一**来源（那些话不落库了，`PLAN §7`）；
    *   - `subAgentFinished` **不订**：结束只改 core 名册上的 `endedAt`，宿主这边没有任何要写、
-   *     要推的东西（子 agent 最后那句话已经随着 `message.changed` / `delta` 走过了）。
+   *     要推的东西（subagent 最后那句话已经随着 `message.changed` / `delta` 走过了）。
    *   - `failed` / `denied`：失败与被拒；
    *   - `inboxAdded` / `inboxTaken` / `inboxCleared`：inbox 的三个变化 → `inbox` 表（逐条实时写，
    *     `CORE.md` §3：持久化就挂在这三条上。不攒批也不靠定时快照：攒在手里的那一小会儿
@@ -1115,10 +1115,10 @@ class SessionBridge {
   }
 
   /**
-   * 作废（`/clear`）：这段对话一条不剩。
+   * 作废（`/clear`）：这段会话一条不剩。
    *
-   * 载荷里就是被丢掉的那些条目，本来可以照着 id 一条条删；这里按对话清，因为清空**就是**
-   * 「这段对话此刻一条待办都不该有」—— 对着「库里该有几行」这件事它比逐个 id 更准确
+   * 载荷里就是被丢掉的那些条目，本来可以照着 id 一条条删；这里按会话清，因为清空**就是**
+   * 「这段会话此刻 inbox 里一条都不该有」—— 对着「库里该有几行」这件事它比逐个 id 更准确
    * （事件丢过一条也不会留下孤行）。
    *
    * **例外：进程收尾时不删行。** 收尾走的是 `disposeAll` → `kill()`：它先关输入闸、再把存量
@@ -1155,7 +1155,7 @@ class SessionBridge {
     if (this.closed) return;
     if (subAgent) {
       const toolCallId = via?.id ?? "";
-      // 子 Agent 的消息**不落库**（`CORE.md` §17）：它的话只在子 agent 自己那个对象里，要查就顺
+      // subagent 的消息**不落库**（`CORE.md` §17）：它的话只在 subagent 自己那个对象里，要查就顺
       // `messagesOf(sessionId, { toolCallId })`。这一路由推事件 —— 事件是客户端重建那一栏的
       // 唯一来源。core 的对象原样不动：出网用一份换了 id 的副本（`hostCopyOf`）
       this.options.emit("message.added", {
@@ -1227,7 +1227,7 @@ class SessionBridge {
   ): void {
     if (this.closed) return;
     const toolCallId = subAgent ? via?.id ?? "" : undefined;
-    // 子 Agent 的消息 id 在 WeakMap 里：没见过的那条（压根没落过库）不必删
+    // subagent 的消息 id 在 WeakMap 里：没见过的那条（压根没落过库）不必删
     const id = subAgent ? this.subAgentIds.get(message) : message.id;
     if (id === undefined) return;
     this.writeChain = this.writeChain
@@ -1318,17 +1318,17 @@ class SessionBridge {
     });
   }
 
-  // ---- 子 Agent（委派） ----
+  // ---- subagent（委派） ----
 
   /**
-   * 委派那一拍要补的事：子 agent 开局手里那几条消息（装好的历史 / 模板）**推一遍 `message.added`**。
+   * 委派那一拍要补的事：subagent 开局手里那几条消息（装好的历史 / 模板）**推一遍 `message.added`**。
    *
    * 为什么要补这一推：它们不会再触发任何事件（模板是直接装进 `agent.messages` 的，比如
-   * `AgentToolLazy.injectArgs` 换引用那一步），而子 agent 的话现在**不入库** —— 不补的话，
+   * `AgentToolLazy.injectArgs` 换引用那一步），而 subagent 的话现在**不入库** —— 不补的话，
    * 客户端那一栏就只剩下它后来吐的字，它开局拿到的任务描述永远看不见。
    *
-   * 这三条一起说明了本文件对子 agent 的口径：**事件给界面重建，库是这条对话的转录**，
-   * 子 agent 的话只进前者（`CORE.md` §17）。
+   * 这三条一起说明了本文件对 subagent 的口径：**事件给界面重建，库是这条会话的转录**，
+   * subagent 的话只进前者（`CORE.md` §17）。
    */
   private onSubAgentStart(subAgent: ChatAgent, toolCall?: AgentNS.ToolCall): void {
     if (this.closed) return;
@@ -1343,7 +1343,7 @@ class SessionBridge {
     }
   }
 
-  /** 子 Agent 的一片增量：推成 `message.delta`（带 `toolCallId`，客户端据此分栏）；不写库 */
+  /** subagent 的一片增量：推成 `message.delta`（带 `toolCallId`，客户端据此分栏）；不写库 */
   private onSubAgentChunk(
     toolCallId: string,
     receiver: AgentNS.Message,
@@ -1360,9 +1360,9 @@ class SessionBridge {
   }
 
   /**
-   * 子 Agent 那条消息的 id：第一次见就定下来，之后一直用这一个。
+   * subagent 那条消息的 id：第一次见就定下来，之后一直用这一个。
    *
-   * 与主线同一条规矩（消息 id 由宿主分配）：子 agent 的消息在**它自己的内存**里，而客户端要按
+   * 与主线同一条规矩（消息 id 由宿主分配）：subagent 的消息在**它自己的内存**里，而客户端要按
    * id 才拼得起来；id 必须在第一次见到这条消息时定死 —— 否则「流式时推出去的那个 id」与「后面
    * 那条改事件里的 id」会是两个，客户端就把同一句话当成两条消息。
    *
@@ -1380,9 +1380,9 @@ class SessionBridge {
   }
 
   /**
-   * 子 Agent 的消息 → 一份**换了 id 的副本**（发事件与落库都用它）。
+   * subagent 的消息 → 一份**换了 id 的副本**（发事件与落库都用它）。
    *
-   * 为什么不就地改写 `message.id`：那个对象是 core 的财产（装在子 agent 自己的历史里，
+   * 为什么不就地改写 `message.id`：那个对象是 core 的财产（装在 subagent 自己的历史里，
    * `subAgent.messages` 交回来的也是同一个引用）。宿主就地改 id，等于替 core 改了它自己的消息 ——
    * core 哪一天按 id 做匹配（重试 / 去重 / 修历史），那就是一个只在这里才存在的错。副本只借
    * 宿主需要的那一格，映射照旧记在 {@link subAgentIds}。
@@ -1412,8 +1412,8 @@ class SessionBridge {
       } catch (error) {
         this.options.onError?.(error, "idle-flush");
       }
-      // flush 是一次 await：这期间它可能已经被杀掉（用户按杀死 / 对话被删）。桥都没了就不该再
-      // 往回报「闲了」，更不该去问一个已经不存在的对话要不要交接。
+      // flush 是一次 await：这期间它可能已经被杀掉（用户按杀死 / 会话被删）。桥都没了就不该再
+      // 往回报「闲了」，更不该去问一个已经不存在的会话要不要交接。
       if (this.closed) return;
       this.options.agents.complete(this.sessionId);
       // 陈旧（`stale-on-idle`）就是在这一跳兑现的：登记被丢掉 → 桥跟着灭，那一刻已经报过
@@ -1427,7 +1427,7 @@ class SessionBridge {
   /**
    * agent 自己说没了（core 的 `stopped` / `killed`）：桥自己灭，`close` 顺手报「没了」。
    *
-   * 这两条是真死（`terminated`）：core 说没了就是没了，不会有驱动者接上来。
+   * 这两条是真死（`terminated`）：core 说没了就是没了，不会有 agent 接上来。
    *
    * 不在这里直接推 `agent_gone`：报「没有 agent 了」只有一个口（{@link announceDead}），否则
    * 「killed 报了、退役又报一遍」这种重发就没地方防。
@@ -1447,7 +1447,7 @@ class SessionBridge {
    * 「手上没活」，两件事各有各的事件（PRD 4.4）。
    *
    * `kind` 原样交给调用方（{@link ChatRunnerOptions.onDead}）：本文件不管「题该不该跟着没」，
-   * 但它把「为什么没有驱动者了」一并交出去 —— 退役那一条不是「这段没了」。
+   * 但它把「为什么没有 agent 了」一并交出去 —— 退役那一条不是「这段没了」。
    */
   private announceDead(kind: SessionDeathKind): void {
     if (this.deadAnnounced) return;
@@ -1521,7 +1521,7 @@ class SessionBridge {
    * prompt caching 要的是前后两次请求的前缀逐字一致，落库时清掉厂商产物，重启或换端点之后
    * 前缀就变了，缓存全 miss。
    *
-   * 子 agent 的消息走不到这里：它们不落库（`CORE.md` §17）。
+   * subagent 的消息走不到这里：它们不落库（`CORE.md` §17）。
    */
   private rowOf(message: AgentNS.Message, problem?: ProblemFact): MessageUpsertInput {
     return toRow(
@@ -1569,13 +1569,13 @@ class SessionBridge {
    *
    * 为什么必须是这一刻而不是「以后某个统一写的时点」：`seq` 由存储层按插入顺序给
    * （`MAX(seq)+1`），而助手消息是边流边写的 —— 这一句若要等到某个收尾时点才第一次写，它的
-   * `seq` 就排在**它引出的那条回答之后**，重开这段对话时读到的转录成了「助手说完 → 用户冒一句」。
+   * `seq` 就排在**它引出的那条回答之后**，重开这段会话时读到的转录成了「助手说完 → 用户冒一句」。
    *
    * 为什么写行与记素材关系绑在一起：`session_assets.messageId` 的外键指着 `messages.id`，
    * 所以只能「先写行、再记关系」。
    *
    * **交接态下同样整条跳过**：交接期间落地的那几条（SDK 投的那条交接指令与它引出的工具结果）
-   * 属于「关于交接的那场对话」，它们与写文档的助手消息一样要随旧记忆一起被替掉（PLAN §5.3）。
+   * 属于「关于交接的那场会话」，它们与写文档的助手消息一样要随旧记忆一起被替掉（PLAN §5.3）。
    * 事件照推（`message.added` 等）—— 用户看得见它在写，只是不入库。
    * （这一段时期的 `deliver` 一律拒，所以「投递进来的话」根本不会落地 —— 也就不用担心它们
    * 跟着旧记忆一起被挑走。）
@@ -1634,25 +1634,25 @@ class SessionBridge {
 // ---------------------------------------------------------------------------
 
 /**
- * 一段对话 ⇄ 它的 agent 之间的那层：**投递 / 中断 / 现读**，外加三件结构性的动作。
+ * 一段会话 ⇄ 它的 agent 之间的那层：**投递 / 中断 / 现读**，外加三件结构性的动作。
  *
  * 它自己不长记性：手上只有三张表 ——
- *   - {@link bridges}：这段对话此刻有没有桥（桥在不在 = agent 在不在，严丝合缝）；
+ *   - {@link bridges}：这段会话此刻有没有桥（桥在不在 = agent 在不在，严丝合缝）；
  *   - {@link assemblingBuffers}：装配窗口里收着的那几条投递（还没推进 core 的队列，装好按到达
  *     顺序一次推给它）。那是**真的缓冲**，不是排队区的镜像；
- *   - {@link handoffs}：哪几段对话在交接态（`beginHandoff` / `endHandoff` 两个口）。
+ *   - {@link handoffs}：哪几段会话在交接态（`beginHandoff` / `endHandoff` 两个口）。
  *
  * 三张表都是「此刻的现场」，没有一张是另一份事实的副本。
  */
 export class ChatRunner {
   private readonly options: ChatRunnerOptions;
   private readonly clock: Clock;
-  /** 活着的那几条桥（对话 id → 桥） */
+  /** 活着的那几条桥（会话 id → 桥） */
   private readonly bridges = new Map<string, SessionBridge>();
   /**
-   * 在交接态的对话（对话 id → 开始时刻）。
+   * 在交接态的会话（会话 id → 开始时刻）。
    *
-   * 存在这里而不是 agent 上：交接是**对话**的处境，而 agent 会换（配置改了、装配事实变了）。
+   * 存在这里而不是 agent 上：交接是**会话**的处境，而 agent 会换（配置改了、装配事实变了）。
    *
    * 它管三件事：
    *   - 桥**不写库**（{@link SessionBridge} 的 `handoffActive`）—— 写文档那一趟马上要随旧记忆
@@ -1667,16 +1667,16 @@ export class ChatRunner {
    */
   private readonly handoffs = new Map<string, { since: string }>();
   /**
-   * 装配窗口里收着的投递（对话 id → 条目，保持到达顺序）。
+   * 装配窗口里收着的投递（会话 id → 条目，保持到达顺序）。
    *
    * 只有一条路会往里放东西：agent 不在、调用方又允许把它叫起来（`mayStart`：两个创建者）。装好之后
    * 「按到达顺序一次推给它」—— 不等待、没有超时、不丢。
    */
   private readonly assemblingBuffers = new Map<string, DeliveryEntry[]>();
   /**
-   * 同一段对话的装配串行链：同时进来三条投递，只会装配一次，而且三条的顺序 = 到达顺序。
+   * 同一段会话的装配串行链：同时进来三条投递，只会装配一次，而且三条的顺序 = 到达顺序。
    *
-   * 链尾自我清理：没有在途装配时把登记删掉，免得一张 Map 跟着对话数一直长。
+   * 链尾自我清理：没有在途装配时把登记删掉，免得一张 Map 跟着会话数一直长。
    */
   private readonly assembling = new Map<string, Promise<void>>();
 
@@ -1688,8 +1688,8 @@ export class ChatRunner {
     // 那一刻核心可能已经报过 `killed`，也可能什么都没报（退役不 kill）：桥灭时统一补一格「死」
     options.agents.observeLifecycle((event) => {
       if (event.action !== "retired") return;
-      // 理由决定这是哪一种「没有驱动者了」：退役不是「这段没了」（会重建一个接着干），
-      // 而「对话 / 项目被删」「进程收尾」是硬着陆 —— 那就是真死。
+      // 理由决定这是哪一种「没有 agent 了」：退役不是「这段没了」（会重建一个接着干），
+      // 而「会话 / 项目被删」「进程收尾」是硬着陆 —— 那就是真死。
       this.dropBridge(event.sessionId, deathKindOfRetire(event.reason));
     });
   }
@@ -1702,15 +1702,15 @@ export class ChatRunner {
   // ---- 投递 ----
 
   /**
-   * 投一条内容给某段对话 —— **投递唯一的入口**（PLAN §5.1 / A15）。
+   * 投一条内容给某段会话 —— **投递唯一的入口**（PLAN §5.1 / A15）。
    *
-   * 只判两件事：**对话在不在**（不在 → `not_found`）、**agent 活不活**（不在 → 只有
-   * `mayStart` 才装上驱动者把它叫起来，否则 `session_dead`）。不判「有没有资格发给我」
+   * 只判两件事：**会话在不在**（不在 → `not_found`）、**agent 活不活**（不在 → 只有
+   * `mayStart` 才装上 agent 把它叫起来，否则 `session_dead`）。不判「有没有资格发给我」
    * （投递不看关系）、不判「它在不在干」（在不在干不是拒绝的理由，队列本来就收）、不判「这条会不会
    * 被处理」（不承诺）。
    *
    * **交接期间照收**（PLAN §5.3 / PRD 4.5）：那期间只关输出闸、不关输入闸 —— 话进 inbox 排着，
-   * 这一任不取；记忆换完之后新驱动者按原顺序取走。所以这里没有「正在交接」这个拒因，
+   * 这一任不取；记忆换完之后新 agent 按原顺序取走。所以这里没有「正在交接」这个拒因，
    * 也没有任何别的「状态不对」的拒因。
    *
    * 回执里**没有状态、没有「叫醒了没有」、没有结果**：那三样都是对未来的断言，而未来只能靠
@@ -1743,7 +1743,7 @@ export class ChatRunner {
     const live = this.options.agents.get(sessionId);
     if (live) {
       // 用户点「发送」就是「继续」：中断之后闸还关着，先把闸开开再投 —— 不然这条只能排队，
-      // 而他等的是一句回答。别的来源（自动推送 / 子 agent 回件）不开闸：那不是他按的。
+      // 而他等的是一句回答。别的来源（自动推送 / subagent 回件）不开闸：那不是他按的。
       // 交接期间不开：那阵子输出闸归交接收口管（收口自己会开），投递只收不取。
       if (input.mayStart === true && !this.handoffs.has(sessionId)) live.resumeOutput();
       this.bridgeFor(sessionId, live).push(entry);
@@ -1762,7 +1762,7 @@ export class ChatRunner {
   /**
    * 装配出 agent 并把装配窗口里收着的投递一次推给它。
    *
-   * 同一段对话串成一条链：三条同时到达的投递只会装配一次，推的顺序 = 到达顺序。
+   * 同一段会话串成一条链：三条同时到达的投递只会装配一次，推的顺序 = 到达顺序。
    * 装配失败就把缓冲清掉再把错抛回去 —— 留着只会在下一次装配之后凭空多推一遍。
    */
   private assembleAndDrain(
@@ -1799,7 +1799,7 @@ export class ChatRunner {
    * 中断：打到**活着的** agent 上，返回打到没有。
    *
    * 它是「掐在途」，不是「杀死」：core 的 `abort()` = 掐掉在途请求与工具 + `pauseOutput()`
-   * （把输出闸关上，掐完不能再往下走）。于是中断完落在「闲 + 输出闸关」—— 还能继续，待办一条不丢
+   * （把输出闸关上，掐完不能再往下走）。于是中断完落在「闲 + 输出闸关」—— 还能继续，inbox 里一条不丢
    * （PRD 4.4）。`abort` **必然**伴随不取件，反之不成立：`pauseOutput()` 只翻开关、不掐在途。
    *
    * 不收 `reason`：core 的 `abort()` 本来就不收原因（它只说「掐断」）。契约面那侧
@@ -1819,7 +1819,7 @@ export class ChatRunner {
    * 手上那一批算已经开始，让它跑完；从下一批起不再取。它不打断任何正在跑的东西 —— 要立刻停
    * 就用 {@link abort}（那道是「掐在途 + 翻闸」）。
    *
-   * 没有 agent（死的）就回 `false`：不是错误，那段对话真的一条待办都没有、也无闸可翻。
+   * 没有 agent（死的）就回 `false`：不是错误，那段会话 inbox 里真的一条都没有、也无闸可翻。
    * 交接期间拒（`busy` / `handoff_in_progress`）：那期间输出闸的开与关是交接收口的事。
    * （投递不拒 —— 输入闸在交接期间一直开着，见 {@link deliver}。）
    */
@@ -1834,7 +1834,7 @@ export class ChatRunner {
   /**
    * 继续：**只开闸，不投任何东西**（`session.resume`）。
    *
-   * 压着的待办按原顺序接着跑。回 `false` 同 {@link pause}：没有 agent 就不是错误。
+   * inbox 里压着的条目按原顺序接着跑。回 `false` 同 {@link pause}：没有 agent 就不是错误。
    */
   resume(sessionId: string): boolean {
     this.rejectIfHandingOff(sessionId);
@@ -1845,9 +1845,9 @@ export class ChatRunner {
   }
 
   /**
-   * 这段对话**能不能立刻接手一批交接** —— 全仓只有这一份判据（PLAN §5.3）。
+   * 这段会话**能不能立刻接手一批交接** —— 全仓只有这一份判据（PLAN §5.3）。
    *
-   * 四条，别的都不算：没有驱动者（`no_agent`）、手上有活（`working`）、输出闸关着
+   * 四条，别的都不算：没有 agent（`no_agent`）、手上有活（`working`）、输出闸关着
    * （`output_paused`）、已经在交（`handoff_in_progress`）。
    *
    * 判序有理由：没有 agent 时别的都无从谈起；**交接态排在输出闸前面** —— 交接期间闸本来就被
@@ -1880,12 +1880,12 @@ export class ChatRunner {
   }
 
   /**
-   * 清空这段对话的待办，返回清掉几条（core 的 `agent.clearInbox()`）。
+   * 清空这段会话的 inbox，返回清掉几条（core 的 `agent.clearInbox()`）。
    *
-   * 待办只有两处，与 {@link ChatRunner.state} 读的是同一对：agent 身上那个队列，以及装配
+   * inbox 只有两处，与 {@link ChatRunner.state} 读的是同一对：agent 身上那个队列，以及装配
    * 窗口里还没推进去的那几条。两处一起清 —— 读完马上清与清完再看是同一件事。
    *
-   * 没有 agent 就没有队列可清：回 `0`，不是错误（那段对话真的一条待办都没有）。
+   * 没有 agent 就没有队列可清：回 `0`，不是错误（那段会话 inbox 里真的一条都没有）。
    */
   clearInbox(sessionId: string): number {
     const buffered = this.assemblingBuffers.get(sessionId)?.length ?? 0;
@@ -1898,27 +1898,27 @@ export class ChatRunner {
   // ---- 现读 ----
 
   /**
-   * 现读：**四件事** + 待办 + 子 agent 名册 + 交接态。**不落库、不推算、不存镜像**。
+   * 现读：**四件事** + inbox + subagent 名册 + 交接态。**不落库、不推算、不存镜像**。
    *
    * 四件事各占一格（{@link SessionPresence}），一件也不合成另一件：
    *
    * - `alive`：这一段此刻有没有 agent 对象。没有就是 `false` —— 忙闲照样报（`idle`：没有人，
    *   手上当然没有活），两道闸报「没关着」（`false`：没有对象就没有闸可关，与 `session.pause`
-   *   对死对话回 `{ paused: false }` 同一个口径）；
+   *   对死会话回 `{ paused: false }` 同一个口径）；
    * - `status`：core 的 `agent.state` 原样（`working` / `idle`）；
    * - `inputPaused` / `outputPaused`：`agent.isInputPaused` / `agent.isOutputPaused`；
-   * - 待办现读 `agent.inboxPending`（顺序即取件顺序），再加上装配窗口里还没推进 core 的那几条
+   * - inbox 现读 `agent.inboxPending`（顺序即取件顺序），再加上装配窗口里还没推进 core 的那几条
    *   —— 装配窗口那几条虽然还没有 agent 取（`alive: false`），但它们确实排着，所以在 `inbox` 里。
    *
    * 钥匙（没有正文的条目）不列进来：它不落地、没有来源，硬塞进一行只能给它编一个假 id。
    *
    * `subAgents` / `handoff` 两格同样是**现读**：前者读 core 名册（`agent.subAgents`），后者
-   * 读本文件那张交接标记表（不是 agent 的事 —— 交接是对话在这一刻的处境）。
+   * 读本文件那张交接标记表（不是 agent 的事 —— 交接是会话在这一刻的处境）。
    */
   state(sessionId: string): SessionReadout {
     const at = this.nowIso();
     const agent = this.options.agents.get(sessionId);
-    // 交接态与 agent 在不在无关：标记是这段对话的，读完就丢，不存第二份
+    // 交接态与 agent 在不在无关：标记是这段会话的，读完就丢，不存第二份
     const handoff = this.handoffs.get(sessionId);
     const handoffReadout = handoff === undefined ? null : { since: handoff.since };
     // 装配窗口里那几条（装好之后按到达顺序一次推给 agent，顺序即取件顺序）
@@ -1928,7 +1928,7 @@ export class ChatRunner {
 
     if (!agent) {
       // 没有 agent：死活那一格是 `false`，忙闲与两道闸按「没有对象」报（见方法注释）。
-      // 死了就没有名册：子 agent 的话只在它自己那个对象里，agent 都没了，那些话也就一起没了
+      // 死了就没有名册：subagent 的话只在它自己那个对象里，agent 都没了，那些话也就一起没了
       // （`CORE.md` §17）
       return {
         sessionId,
@@ -1961,8 +1961,8 @@ export class ChatRunner {
       subAgents: agent.subAgents.map((entry) => ({
         toolCallId: entry.toolCallId,
         name: entry.name,
-        // 子 agent 的两格直读；但「跑完了」是本文件比它自己那个格更诚实的一格：
-        // 一次性子 agent 死透了 state 也还是 `idle`，把它报成「闲」等于告诉界面它还在。
+        // subagent 的两格直读；但「跑完了」是本文件比它自己那个格更诚实的一格：
+        // 一次性 subagent 死透了 state 也还是 `idle`，把它报成「闲」等于告诉界面它还在。
         // 所以只要名册上有了 `endedAt`，就报 `ended`。
         state: entry.endedAt === null ? entry.agent.state : ("ended" as const),
       })),
@@ -1972,12 +1972,12 @@ export class ChatRunner {
   }
 
   /**
-   * 这段对话此刻的消息 —— **列表读取只有一个来源**（PLAN §7）：活着读内存，死了读库。
+   * 这段会话此刻的消息 —— **列表读取只有一个来源**（PLAN §7）：活着读内存，死了读库。
    *
-   * - 没有 agent → `null`。那不是「空」，是「我这边没有」：调用方据此去读库（这段对话已经没有
-   *   驱动者了，库就是它的全部）；
-   * - 给了 `toolCallId` → 顺「父的名册 → 那一个子 agent → 它的 `messages`」取。名册上没有那一项
-   *   （这一批已经翻过去了、或者进程重启过）同样回 `null` —— 子 agent 不落库，它的话只在它自己
+   * - 没有 agent → `null`。那不是「空」，是「我这边没有」：调用方据此去读库（这段会话已经没有
+   *   agent 了，库就是它的全部）；
+   * - 给了 `toolCallId` → 顺「父的名册 → 那一个 subagent → 它的 `messages`」取。名册上没有那一项
+   *   （这一批已经翻过去了、或者进程重启过）同样回 `null` —— subagent 不落库，它的话只在它自己
    *   那个对象里（`CORE.md` §17）；
    * - 否则就是 `agent.messages`，**顺序即数组顺序**（不再排 `seq`：内存里没有第二份顺序）。
    *
@@ -2001,7 +2001,7 @@ export class ChatRunner {
   // ---- 交接态 ----
 
   /**
-   * 进入交接态：从此这段对话的消息**不写库**，但事件照推（PLAN §5.3）。
+   * 进入交接态：从此这段会话的消息**不写库**，但事件照推（PLAN §5.3）。
    *
    * 三件事：
    *   1. 幂等：已在交接态就什么也不做 —— `since` 保留第一次那一拍（重入不该把「什么时候开始的」
@@ -2012,7 +2012,7 @@ export class ChatRunner {
    *      只留中断），而 `memory_replaced` 是收口那一片才有的事 —— 开始这一拍必须自己说一声。
    *      冲写不等（本方法是同步的）：它是收尾动作，没有调用方需要等它；失败只记日志。
    *
-   * 为什么不把标记存到 agent 上：交接是**对话**在这一刻的处境，不是 agent 的属性 —— agent 中途被
+   * 为什么不把标记存到 agent 上：交接是**会话**在这一刻的处境，不是 agent 的属性 —— agent 中途被
    * 换掉（配置改了、装配事实变了）时标记不该跟着消失。
    *
    * `workspaceId` 给不出来（本方法同步，而会话行是异步读的）就给 `null` —— 载荷里那一格本来
@@ -2046,7 +2046,7 @@ export class ChatRunner {
   // ---- 桥的生灭 ----
 
   /**
-   * 拿到这段对话的桥（没有就造一条，就地订上 agent 的事件）。
+   * 拿到这段会话的桥（没有就造一条，就地订上 agent 的事件）。
    *
    * 手里那条如果是**上一个** agent 的（装配事实变了被重建、配置改过被换掉），就地换一条：
    * 旧的那条先灭（它订的是一个已经退役的 agent，再也不会有人往里推东西），新的那条接着报。
@@ -2070,7 +2070,7 @@ export class ChatRunner {
       agent,
       // 桥自己发现投递撞上一个已经关门的 agent：那一路是真死
       (kind) => this.dropBridge(sessionId, kind),
-      // 交接态问 `ChatRunner`（标记是对话的，桥会换）：换一条桥不把「正在交接」弄丢
+      // 交接态问 `ChatRunner`（标记是会话的，桥会换）：换一条桥不把「正在交接」弄丢
       () => this.handoffs.has(sessionId),
     );
     this.bridges.set(sessionId, bridge);
@@ -2080,16 +2080,16 @@ export class ChatRunner {
   }
 
   /**
-   * 拆掉一段对话的桥（agent 退役 / 被 kill / 对话被删 / Scope 被处置 / 投递撞上已关的门都走这里）。
+   * 拆掉一段会话的桥（agent 退役 / 被 kill / 会话被删 / Scope 被处置 / 投递撞上已关的门都走这里）。
    *
    * `kind` 从灭点一路带到报死那一拍（{@link SessionDeathKind}）：同一个 `dropBridge` 既是
-   * 「换个驱动者」也是「这段没了」，两件事的后果不一样。
+   * 「换个 agent」也是「这段没了」，两件事的后果不一样。
    */
   private dropBridge(sessionId: string, kind: SessionDeathKind): void {
     const bridge = this.bridges.get(sessionId);
     if (!bridge) return;
     this.bridges.delete(sessionId);
-    // 桥灭 = 这段对话没有 agent 了：`close` 会补报一格「死」（`stopped` / `killed` 已报过的不重报）
+    // 桥灭 = 这段会话没有 agent 了：`close` 会补报一格「死」（`stopped` / `killed` 已报过的不重报）
     bridge.close(kind);
   }
 
@@ -2115,11 +2115,11 @@ export class ChatRunner {
    * 走的是「装载即修复 + 按当前模型还原素材 + `acquire`」这一条：历史读一遍库（`reconcile`
    * 修掉上一次进程崩在写它路上的那些行），`resolveHistory` 把 `__asset_id` 换成本模型能吃的段，
    * 然后交给注册表（在且合用就复用，不在就装配）。新装配的那个手里还是空的，历史要
-   * push 进去 —— 复用的那个不 push（它的 `messages` 就是这段对话的真相）。
+   * push 进去 —— 复用的那个不 push（它的 `messages` 就是这段会话的真相）。
    *
    * 换模型 / 换思考档位**不走这里**：那两手在改完会话行那一刻就调了
    * `AgentRegistry.invalidateSession`（`SessionService.setModel` / `setThinking`），
-   * 空闲的驱动者当场退役，于是投递到这里时它已经不在了 —— 不是靠「投递时发现手里那个不合用」。
+   * 空闲的 agent 当场退役，于是投递到这里时它已经不在了 —— 不是靠「投递时发现手里那个不合用」。
    * `acquire` 里那一条「在但装配事实变了 → 丢掉重建」因此只是兜底（见下面 `agent !== live`）。
    */
   private async ensureAgent(
@@ -2146,11 +2146,11 @@ export class ChatRunner {
     // 交回来的不是原来那个 = 真的装了一个新的：它手里是空的，历史得 push 进去。
     //
     // 「手里那个还活着、但装配事实变了」这一支（`live` 非空而 `agent !== live`）**留着**，但它
-    // 不再是换模型 / 换思考档位的正路：那两手在改完会话行那一刻就把驱动者退役了（见上面那段）。
+    // 不再是换模型 / 换思考档位的正路：那两手在改完会话行那一刻就把 agent 退役了（见上面那段）。
     // 能撞上这一支的只剩两件事：别的入口改了会话行上的装配事实，或者「退役」与「投递」之间那一
     // 小段空档（判过空闲之后它自己又跑起来了，注册表只给它打了标记）。它也是首次装配与复活那条
     // 路共用的同一个出口，所以不能拆。活着但不合用这一路上面没读库 —— 那一份是按旧事实还原的，
-    // 这里按现在的事实重读一次（这一刻这段对话没有在跑的活，`reconcile` 安全）。
+    // 这里按现在的事实重读一次（这一刻这段会话没有在跑的活，`reconcile` 安全）。
     if (agent !== live && agent.messages.length === 0) {
       const assembled =
         live === undefined
@@ -2160,7 +2160,7 @@ export class ChatRunner {
     }
 
     // 历史装好之后才放回 inbox（PRD 4.12）：**顺序不能反** —— 去重要拿「记忆里现在有哪些
-    // messageId」来判，历史还没装进去就去看，落地过的那几条会被当成待办又放回队列。
+    // messageId」来判，历史还没装进去就去看，落地过的那几条会被当成 inbox 里排着的条目又放回队列。
     // 只在新装出来的那个 agent 上做（`agent === live` 是复用：它手上那几条本来就在队列里，
     // 再放一次就是两份）。
     if (agent !== live) await this.restoreInbox(sessionId, agent);
@@ -2176,7 +2176,7 @@ export class ChatRunner {
    *
    * 1. **顺序按库里的 `seq`**（`listBySession` 就是那个顺序）：入队顺序 = 取件顺序，
    *    还原它才算「上次的样子」。
-   * 2. **去重**：某条待办的 `messageId` 已经在记忆里（`agent.messages`，就是 `messages` 表刚
+   * 2. **去重**：某条条目的 `messageId` 已经在记忆里（`agent.messages`，就是 `messages` 表刚
    *    读回来的那一份）= 它其实落地过了，只是 `inboxTaken` 那一删丢了（那条事件排在落地之后，
    *    崩在两者之间就是这个样子）。**已经在记忆里了，扔掉它**，并且删掉那一行 —— 留着会在
    *    历史里出现第二条一模一样的话，而前一条已经回答过了。
@@ -2188,7 +2188,7 @@ export class ChatRunner {
    * 刻才发的），所以这一跳看不见它们、也就不会把它们当成孤儿删掉 —— 它们在恢复之后才被推到
    * 队尾（`assembleAndDrain`），那时才落行，顺序正好排在恢复回来的这几条后面。
    *
-   * 失败不让装配失败（读不出来就当没有待办）：装配是为了让人接着说话，不能被这一跳拦下。
+   * 失败不让装配失败（读不出来就当 inbox 是空的）：装配是为了让人接着说话，不能被这一跳拦下。
    */
   private async restoreInbox(sessionId: string, agent: ChatAgent): Promise<void> {
     const store = this.options.inbox;
@@ -2206,7 +2206,7 @@ export class ChatRunner {
       }
 
       // 先删那些「其实已经落地」的行，再把剩下的原样放回队列：删在前，崩在中间也只是多留一行
-      // （下一次装配照样会把它认出来扔掉），反过来先放回队列则会多出一条待办。
+      // （下一次装配照样会把它认出来扔掉），反过来先放回队列则会多出一条重复的条目。
       if (dropped.length > 0) await store.deleteMany(dropped);
       if (keep.length > 0) {
         agent.restore(keep.map((entry) => ({ ...entry, priority: "high" as const })));
@@ -2223,16 +2223,16 @@ export class ChatRunner {
    * 那几句还在等」）。
    *
    * 由宿主在 `agentRegistry.disposeAll()` **之前**调一次。放在这里而不是逐条传参：收尾是一个
-   * 进程级事实，它不属于某段对话。
+   * 进程级事实，它不属于某段会话。
    */
   markShuttingDown(): void {
     for (const bridge of this.bridges.values()) bridge.markShuttingDown();
   }
 
   /**
-   * 对话（或它所在的项目）被删：**硬着陆**它那个 agent，丢掉桥。
+   * 会话（或它所在的项目）被删：**硬着陆**它那个 agent，丢掉桥。
    *
-   * 为什么是 `kill` 而不是 `stop`：`stop` 是「关门，存量走完」—— 而这段对话已经不在了，把队列
+   * 为什么是 `kill` 而不是 `stop`：`stop` 是「关门，存量走完」—— 而这段会话已经不在了，把队列
    * 里那几句跑完等于对着一片空地烧 token、往库里写没人会读的行。`kill` 把存量直接作废，正好
    * 是「用户删了它」的意思。它从注册表上消失之后，紧接着的 `scopes.dispose`（删项目）也就不会
    * 被一个还活着的 agent 挡下来。
@@ -2241,7 +2241,7 @@ export class ChatRunner {
     // 装配窗口里那几条也没有去处了：留着只会在下一次（不可能的）装配之后凭空跑出来
     this.assemblingBuffers.delete(sessionId);
     // 先拆桥、再硬着陆：顺序不能换。`kill` 会**同步**广播 `killed`（那一路的 kind 是
-    // `terminated`），而这一段真正的原因是「对话被删了」—— 先报死就抢在它前面把 `forgotten`
+    // `terminated`），而这一段真正的原因是「会话被删了」—— 先报死就抢在它前面把 `forgotten`
     // 发出去（同一次死亡只报一条），下游才能分清「这段没了」与「意外死」。
     this.dropBridge(sessionId, "forgotten");
     // 硬着陆：桥已经灭了，`killed` 没人接；注册表随后报 `retired` 再走一次 `dropBridge`
@@ -2252,7 +2252,7 @@ export class ChatRunner {
   /**
    * 杀死：**用户按的那一手**（`session.kill`；PRD 4.4「会让它死的三件」之一）。
    *
-   * 与 {@link forget}（删对话）的差别只有一处：**会话行、消息、记忆一个字都不动**。杀死之后
+   * 与 {@link forget}（删会话）的差别只有一处：**会话行、消息、记忆一个字都不动**。杀死之后
    * 这一段只是「没有 agent 了」（`state().alive === false`）—— 下一句话由人点发送时按库里的
    * 事实重新装配，历史一句不少（PRD 4.2：投递不复活，只有创建者能把它叫起来）。
    *
@@ -2260,7 +2260,7 @@ export class ChatRunner {
    *   1. 交接期间拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断（PRD 4.5），与
    *      {@link pause} / {@link resume} 同一道门；
    *   2. 没有 agent（没有桥）→ 回 `false`，什么都不做 —— 这一段本来就是死的，不是错误（与那两
-   *      手对死对话回 `false` 同一口径）；
+   *      手对死会话回 `false` 同一口径）；
    *   3. 有 agent → **先 `agents.kill()`，再 `dropBridge("terminated")`**。顺序不能反：
    *      `agent.kill()` 会同步广播 `inboxCleared`，桥上那条听见了才会去删库里的 inbox 行
    *      （`onInboxCleared`）。桥先拆掉就听不到，那些行留成孤行 —— 下一次装配又被放回队列，
@@ -2273,7 +2273,7 @@ export class ChatRunner {
     const agent = this.options.agents.get(sessionId);
     if (!agent) return false;
     // 先硬着陆、再拆桥（理由见上：`inboxCleared` 得有人听）。
-    // 会话行 / 消息 / 记忆一概不碰 —— 这是杀死与删对话的唯一区别。
+    // 会话行 / 消息 / 记忆一概不碰 —— 这是杀死与删会话的唯一区别。
     this.options.agents.kill(sessionId);
     this.dropBridge(sessionId, "terminated");
     return true;
@@ -2340,7 +2340,7 @@ export class ChatRunner {
   // ---- 历史 ----
 
   /**
-   * 库里这段对话的历史 + 按当前模型还原过的素材（F-H7）。
+   * 库里这段会话的历史 + 按当前模型还原过的素材（F-H7）。
    *
    * `repair`：读之前先跑一次 `reconcile`（装载即修复，PRD D15）。它只用在「装配之前」——
    * 那一刻 agent 都还没有，库里不该有正在写的行。
@@ -2401,7 +2401,7 @@ export interface SdkAgentFactoryOptions {
    *
    * 不传 = 一律当关着（越线之后交还给宿主的提问路径）。开关是会变化的列（用户能改、交接存档
    * 时照抄），所以这里给的是**取值口而不是取好的值**：插件在越线那一刻才问它，于是改开关不必
-   * 重建驱动者（PRD 1.4：「能改且不用重建驱动者」那一行）。判据只能由接线层给：开关在会话行上，
+   * 重建 agent（PRD 1.4：「能改且不用重建 agent」那一行）。判据只能由接线层给：开关在会话行上，
    * 本文件不碰库。
    */
   wantsAutoHandoff?: (context: AgentBuildContext) => boolean | Promise<boolean>;
@@ -2418,7 +2418,7 @@ export interface SdkAgentFactoryOptions {
    * 宿主用它把输出闸开回来 —— 闸是交接那一批的批头关上的（`HandoffGuardPlugin`），而
    * **开闸只在宿主交接收口**（`PLAN.md` §5.3）：SDK 不替这一趟开，它不认识「记忆换完了」这件事。
    * 手动那条路在 `HandoffDocumentService.runToEnd` 的收尾里开，自动那条路只有这一处能开 ——
-   * 漏了就是「兄弟会话越一次线就再也不取件」。
+   * 漏了就是「平级会话越一次线就再也不取件」。
    */
   onHandoffSettled?: (context: AgentBuildContext) => void | Promise<void>;
   /**
@@ -2507,7 +2507,7 @@ async function readAgentDefinition(
  *
  * 装的东西与阈值来源（PRD D27：阈值属 SDK 的 `AppConfig` / 模型配置，不在这里另起一套）：
  *   - `ContextGuardPlugin`：硬线，`tokenThresholds.guard`；
- *   - `SubAgentGuardInstallerPlugin`：同一个硬线递归装到子 Agent 与孙级（PRD F-D8）；
+ *   - `SubAgentGuardInstallerPlugin`：同一个硬线递归装到 subagent 与孙级（PRD F-D8）；
  *   - `AutoMigratePlugin`：交接线，`tokenThresholds.handoff`（需注入交接服务）。
  *     越线自压的只有**自动交接开着**的那一段（`wantsAutoHandoff`）；关着的那一段交还给宿主的
  *     提问路径；
@@ -2516,7 +2516,7 @@ async function readAgentDefinition(
  */
 export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): AgentFactory {
   return async (context: AgentBuildContext): Promise<ChatAgent> => {
-    // 会话行上的模型就是这段对话的模型（`session.setModel` 写的就是它），
+    // 会话行上的模型就是这段会话的模型（`session.setModel` 写的就是它），
     // 再往下的三级解析（助手定义 → 全局兜底）仍由 SDK 那一处算
     const modelId = context.modelId ?? undefined;
     const sessionModel = context.scope.config.models.find(
@@ -2542,7 +2542,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
     const thresholds = model?.tokenThresholds;
     const handoff = options.handoff?.(context);
     // 交接回合本身就是上下文最满的时刻：硬线要对它让行，否则「交接触发拦截 → 拦截又触发交接」
-    // （`handingOff` 说的是「这个服务这一趟在跑」，不是「这段对话在交接」—— 后者在宿主那边）
+    // （`handingOff` 说的是「这个服务这一趟在跑」，不是「这段会话在交接」—— 后者在宿主那边）
     const isSuspended = handoff ? () => handoff.handingOff : undefined;
 
     if (thresholds) {
@@ -2559,7 +2559,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
             handoffTokens: thresholds.handoff,
             // 归一规则按**会话行上的自动交接开关**分：开着的那一段没人盯着它，越线就自己压
             // （`"self"`）；关着的那一段把「要不要压」交还给宿主（变闲那一刻问用户），这里回
-            // `null` = 本次不迁移。开关在越线那一刻现读（它能改，改了不必重建驱动者）。
+            // `null` = 本次不迁移。开关在越线那一刻现读（它能改，改了不必重建 agent）。
             resolveMode: async () =>
               (await options.wantsAutoHandoff?.(context)) === true ? "self" : null,
             // 压完记一笔：宿主写会话行上的 `compactedAt` / `compactionMode = "auto"`；

@@ -60,7 +60,7 @@ export function template(language: Language, key: MessageKey): string | undefine
 const PLACEHOLDER = /\{(\w+)\}/g;
 
 /**
- * 渲染一条文案：`render("zh", "error.notFound", { entity: "对话" })`。
+ * 渲染一条文案：`render("zh", "error.notFound", { entity: "会话" })`。
  *
  * 占位符 `{name}` 从 `params` 里取。取不到值时**原样留下占位符**：把 `undefined` 拼进
  * 句子会让界面出现「存在 undefined」这种更难解释的东西，留下 `{name}` 至少指明了缺什么。

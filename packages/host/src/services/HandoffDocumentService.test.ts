@@ -1,17 +1,17 @@
 /**
- * 交接的验收：谁写文档（自交接＝同一个驱动者接着写 / 独立摘要＝拿这段记忆去问模型）、文档真的落进
+ * 交接的验收：谁写文档（自交接＝同一个 agent 接着写 / 独立摘要＝拿这段记忆去问模型）、文档真的落进
  * `<cwd>/.ai-zen/handoffs/`（D19）、模板来自磁盘上的 `handoff` Skill（读不到用兜底）、
- * 降级要说明（F-D7）、取消不报错（F-D7）、换记忆与存档会话（PRD 4.5）、只产文档不另开对话（F-D4）。
+ * 降级要说明（F-D7）、取消不报错（F-D7）、换记忆与存档会话（PRD 4.5）、只产文档不另开会话（F-D4）。
  *
  * 四件口径：
  *
  * 1. `start()` 只回「已经开始」，那一趟在后台跑。所以每个用例都靠那条**摘牌**（`endHandoff`，
  *    `runToEnd` 的 `finally` 里最后一个动作）等它收尾 —— 提交与回滚都从那里过去，于是「跑完了没有」
  *    这件事有一个确定的答案，而不是靠睡一会儿。只看 `memory_replaced` 不够：那条在提交点就推了，
- *    后面还有 `afterCommit`（开新对话 / 标压缩 / 把题标已答）。
+ *    后面还有 `afterCommit`（开新会话 / 标压缩 / 把题标已答）。
  * 2. 「写完了没有」由 SDK 判（那次写文档的工具调用的输入与结果）；宿主只做提交之后那一半 ——
  *    文档在盘上、够长，就换记忆。
- * 3. 入口判据只有一条：**那段对话闲着才发起**。非空闲（忙 / 暂停 / 没有 agent）直接拒，
+ * 3. 入口判据只有一条：**那段会话闲着才发起**。非空闲（忙 / 暂停 / 没有 agent）直接拒，
  *    交接全程不碰暂停、也不替谁放行。
  * 4. 提交之后**旧记忆是另一段会话**（`已存档_<原名>`）、原会话只留「系统提示 + 断点消息」；
  *    而「换完之后记忆长什么样」是**SDK 算的**（宿主不拼断点、不量文档长短，PRD 4.5），
@@ -62,7 +62,7 @@ type SummaryClient = Parameters<typeof completeOnce>[0]["client"];
 /** 文档正文（要过 400 字节那道坎，所以写长一点） */
 const DOCUMENT_BODY = `## 任务目标\n\n把交接写完。\n\n${"正文。".repeat(200)}`;
 
-/** 驱动者开局手里那条系统提示（来自助手定义）：换记忆之后它得还在 */
+/** agent 开局手里那条系统提示（来自助手定义）：换记忆之后它得还在 */
 const DRIVER_SYSTEM_PROMPT = "你是这个项目的助手";
 
 /** 摘要那一跳的请求体（用例据此看「拿的是什么记忆去问的」） */
@@ -90,7 +90,7 @@ function echoingClient(onRequest?: (body: SummaryBody) => void): SummaryClient {
   return client as unknown as SummaryClient;
 }
 
-/** 对话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位，也没有活着的驱动者 */
+/** 会话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位，也没有活着的 agent */
 class FakeRuntime implements SessionRuntimePort {
   presence(): SessionPresence {
     // 没有 agent（死的）：忙闲报 `idle`（没有人，手上当然没活）、两道闸没关着
@@ -107,7 +107,7 @@ class FakeRuntime implements SessionRuntimePort {
   invalidateAgent(): void {}
 }
 
-/** 记账的驱动者：它就是 core 的 `Agent`（真的循环、真的取件），把「翻上/翻回不取件开关」接过来记一笔 */
+/** 记账的 agent：它就是 core 的 `Agent`（真的循环、真的取件），把「翻上/翻回不取件开关」接过来记一笔 */
 class RecordingAgent extends FakeAgent {
   readonly calls: string[] = [];
   /**
@@ -168,7 +168,7 @@ interface Built {
   driver: RecordingAgent;
   driverCalls: string[];
   runnerCalls: string[];
-  /** 投出去的指令（SDK 投的：从驱动者的消息里认出来，一条一条看得到） */
+  /** 投出去的指令（SDK 投的：从 agent 的消息里认出来，一条一条看得到） */
   instructions: string[];
   events: EventLog;
   /**
@@ -176,7 +176,7 @@ interface Built {
    *
    * 「收尾了」= 挂的那块牌子摘了（`endHandoff`）：它是 `runToEnd` 的 `finally` 里最后一步，
    * 四条结局（成功 / 降级 / 失败 / 取消）都从那里过。不能只看 `memory_replaced` —— 那条在**提交点**
-   * 就推了，而它后面还有 `afterCommit`（开新对话 / 标压缩 / 把题标已答），以及在 `finally` 里的
+   * 就推了，而它后面还有 `afterCommit`（开新会话 / 标压缩 / 把题标已答），以及在 `finally` 里的
    * 截记忆与摘牌：停在那里断言等于只测了一半（而 `afterCommit` 里的差错是吞掉上报的，看不见）。
    */
   settle(): Promise<void>;
@@ -194,7 +194,7 @@ interface Harness {
     execute?: HandoffExecutor;
     notices?: NoticeService;
     driver?: RecordingAgent;
-    /** 驱动者的持有者（缺省就是手上这个 driver；给 `{ get: () => undefined }` 验「没有 agent」那条） */
+    /** agent 的持有者（缺省就是手上这个 driver；给 `{ get: () => undefined }` 验「没有 agent」那条） */
     holder?: HandoffAgentHolder;
     /** 交接模板的查找目录（不给就用磁盘上那份 Skill） */
     skillDirs?: string[];
@@ -273,8 +273,8 @@ async function prepareStatic(): Promise<void> {
 }
 
 /**
- * 每用例那一份：项目行、一段有内容的对话，以及实例级状态（Scope 记账、agent 上下文、
- * 对话服务的草稿表）。库与配置不在这里重做。
+ * 每用例那一份：项目行、一段有内容的会话，以及实例级状态（Scope 记账、agent 上下文、
+ * 会话服务的草稿表）。库与配置不在这里重做。
  */
 async function seedHarness(): Promise<Harness> {
   await workspaces.create({ id: "w1", name: "项目一", cwd: projectDir, createdAt: 1 });
@@ -292,12 +292,12 @@ async function seedHarness(): Promise<Harness> {
   });
 
   const created = await sessionService.create({ workspaceId: "w1", agentId: "a1" });
-  if (!created.session) throw new Error("session.create 没有建出对话");
+  if (!created.session) throw new Error("session.create 没有建出会话");
   const sessionId = created.session.id;
   // R56：`create` 只发 id，落库发生在首次 `send`；夹具里直接落库（后面要往它名下写消息）
   await sessionService.ensurePersisted(sessionId);
 
-  // 一段有内容的对话：用户说一句 + 助手回一句
+  // 一段有内容的会话：用户说一句 + 助手回一句
   await messages.upsertMany([
     {
       id: "msg-user",
@@ -327,7 +327,7 @@ async function seedHarness(): Promise<Harness> {
     sessionService,
     build: (options = {}) => {
       /**
-       * 驱动者的脚本：先要一次写工具调用，工具跑完再回一句「写好了」。
+       * agent 的脚本：先要一次写工具调用，工具跑完再回一句「写好了」。
        *
        * 那次调用的参数按**这一次请求体**现算：文档路径写在刚推进去的交接指令里，模型（脚本）
        * 那一刻才看得见它，于是它写的就是服务要的那一份。`write` 工具是真写盘的那个（见
@@ -354,7 +354,7 @@ async function seedHarness(): Promise<Harness> {
       const runnerCalls: string[] = [];
       const instructions: string[] = [];
       /**
-       * 这一次交接投出去的指令（SDK 投的，宿主不居中转发）：从驱动者的消息里认出来 ——
+       * 这一次交接投出去的指令（SDK 投的，宿主不居中转发）：从 agent 的消息里认出来 ——
        * 来源是「宿主 / handoff」的那条 user 消息就是它。正文前面会带一行来源注释（core 给非
        * 用户来源的消息加的），断言只看里面有没有那几段字。
        */
@@ -373,7 +373,7 @@ async function seedHarness(): Promise<Harness> {
       /**
        * 交接要的那两个口（真 `ChatRunner` 结构上就是它）。
        *
-       * `canHandoffNow` 的四个答案里三个直接读那个驱动者（没有 / 忙 / 暂停），第四个读这块牌子
+       * `canHandoffNow` 的四个答案里三个直接读那个 agent（没有 / 忙 / 暂停），第四个读这块牌子
        * —— 生产上这四条收在 `ChatRunner.canHandoffNow` 一处，这里只是把那个口的契约演出来。
        */
       const runner: HandoffRunnerPort = {
@@ -491,13 +491,13 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("自交接：同一个驱动者写（PRD 4.5）", () => {
-  it("不另造驱动者：文档由这段对话自己的那个 agent 写出来", async () => {
+describe("自交接：同一个agent写（PRD 4.5）", () => {
+  it("不另造agent：文档由这段会话自己的那个 agent 写出来", async () => {
     const built = harness.build();
     await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
-    // 指令确实投给了它（宿主没有另起一个驱动者），而且带着磁盘上那份 Skill 的正文
+    // 指令确实投给了它（宿主没有另起一个 agent），而且带着磁盘上那份 Skill 的正文
     expect(built.instructions).toHaveLength(1);
     expect(built.instructions[0]).toContain(SKILL_MARKER);
     const dir = handoffDirFor(harness.projectDir);
@@ -595,7 +595,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     ).toBe(true);
   });
 
-  it("不收件的对话也不让跑：不替用户恢复收件", async () => {
+  it("不收件的会话也不让跑：不替用户恢复收件", async () => {
     const built = harness.build();
     // 用户按过中断 / 让停下：不收件就是他的意愿，交接不得去开那个开关
     built.driver.pauseOutput();
@@ -639,7 +639,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
   });
 });
 
-describe("独立交接（一次性驱动者 + 记忆副本）", () => {
+describe("独立交接（一次性agent + 记忆副本）", () => {
   it("文档真的落在 <cwd>/.ai-zen/handoffs/ 下，大小从磁盘取，写完落一条通知", async () => {
     const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
     const built = harness.build({ notices });
@@ -662,8 +662,8 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect((await stat(path)).size).toBeGreaterThan(0);
   });
 
-  it("摘要拿的是这段对话的记忆（omit 的不给）", async () => {
-    // 驱动者的记忆就是这段对话的记忆（真实现里由 `ChatRunner` 装配时把历史装进去）
+  it("摘要拿的是这段会话的记忆（omit 的不给）", async () => {
+    // agent 的记忆就是这段会话的记忆（真实现里由 `ChatRunner` 装配时把历史装进去）
     const driver = new RecordingAgent([{ deltas: [{ content: "写好了" }] }], {
       system: DRIVER_SYSTEM_PROMPT,
     });
@@ -689,7 +689,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(asked).not.toContain("这条已经不在上下文里了");
   });
 
-  it("交接之后开新对话（D18）：身份照抄，开场是那条交接摘要", async () => {
+  it("交接之后开新会话（D18）：身份照抄，开场是那条交接摘要", async () => {
     const built = harness.build();
     await built.service.start({ sessionId, mode: "summary", then: "new_session" });
     await built.settle();
@@ -706,7 +706,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(newRow?.agentId).toBe(oldRow?.agentId);
     expect(newRow?.modelId).toBe(oldRow?.modelId);
 
-    // 新对话开场：先是会话创建时那条 hidden 的 cwd 消息，再是一条宿主注入的交接摘要
+    // 新会话开场：先是会话创建时那条 hidden 的 cwd 消息，再是一条宿主注入的交接摘要
     const newId = newRow?.id ?? "";
     const seeded = await harness.messages.listBySession(newId, undefined, {
       includeHidden: true,
@@ -717,7 +717,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(seeded[1]?.role).toBe(AgentNS.Role.System);
     expect(seeded[1]?.data).toMatchObject({ hidden: true });
 
-    // 开新对话这件事靠一条 `session.changed(created)` 告知界面
+    // 开新会话这件事靠一条 `session.changed(created)` 告知界面
     expect(
       built.events.changed.some(
         (change) => change.change === "created" && change.sessionId === newId,
@@ -742,7 +742,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(typeof row?.compactedAt).toBe("number");
   });
 
-  it("只产文档就只多出那段存档（F-D4）：不另开新对话", async () => {
+  it("只产文档就只多出那段存档（F-D4）：不另开新会话", async () => {
     const built = harness.build();
     await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
@@ -802,7 +802,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
 
   it("内存里原地换：不重建 agent、不动队列与两个开关，系统提示还在、断点是 SDK 那一条", async () => {
     const built = harness.build();
-    // 这段对话的记忆就是这个数组（换记忆是原地换，不是换一个数组、更不是换一个 agent）
+    // 这段会话的记忆就是这个数组（换记忆是原地换，不是换一个数组、更不是换一个 agent）
     const memory = built.driver.messages;
     await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
@@ -889,9 +889,9 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
   });
 
-  it("驱动者在这期间没了：按失败收尾，不留存档会话", async () => {
+  it("agent在这期间没了：按失败收尾，不留存档会话", async () => {
     const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
-    // 入口判据那一次还看得见它，后台那一趟开始时它已经不在了（对话被删 / 被硬杀）
+    // 入口判据那一次还看得见它，后台那一趟开始时它已经不在了（会话被删 / 被硬杀）
     const driver = new RecordingAgent();
     let lookups = 0;
     const built = harness.build({
@@ -937,13 +937,13 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
         ).length,
       ),
     );
-    // 第一段是交接前那一整段（创建时的 cwd 消息 + 两条对话），第二段只有上一次那一条（断点）：
+    // 第一段是交接前那一整段（创建时的 cwd 消息 + 两条会话），第二段只有上一次那一条（断点）：
     // 系统提示不被搬走（它不在库里，也不是旧记忆的一部分），旧的那一条也没被当成提示留下
     expect(counts.sort((left, right) => left - right)).toEqual([1, 3]);
   });
 });
 
-describe("自动交接：兄弟会话越线（插件那一路）", () => {
+describe("自动交接：平级会话越线（插件那一路）", () => {
   /**
    * 把**自动交接那条路**装起来：SDK 服务用宿主自己的 `createSdkHandoffService` 造（它会注入
    * 落库接缝），插件用真的 `AutoMigratePlugin`，两个回声照 `ChatRunner` + `app.ts` 那两格接 ——
@@ -964,7 +964,7 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     return new AutoMigratePlugin({
       service,
       handoffTokens: 1_000,
-      // 兄弟会话：会话行上的自动交接开着，越线就自己交班（`resolveMode` 回 `self`）
+      // 平级会话：会话行上的自动交接开着，越线就自己交班（`resolveMode` 回 `self`）
       resolveMode: async () => "self" as const,
       onMigrated: async (info) => {
         onMode?.(info.mode);
@@ -989,7 +989,7 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
   }
 
   it("越线：记忆真的换了、闸开了、压缩标记记了", async () => {
-    // 这一段的会话行上写着「自动交接开」（兄弟会话就是这么建出来的）
+    // 这一段的会话行上写着「自动交接开」（平级会话就是这么建出来的）
     await harness.sessions.setAutoHandoff(sessionId, true, 1_700_000_005_000);
     const before = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
@@ -1087,7 +1087,7 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
 });
 
 describe("取消与失败（F-D7）", () => {
-  it("用户取消：说不交接了，不留文档、不开新对话", async () => {
+  it("用户取消：说不交接了，不留文档、不开新会话", async () => {
     const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
     const built = harness.build({
       notices,
@@ -1198,7 +1198,7 @@ describe("取消与失败（F-D7）", () => {
 
 describe("前置条件", () => {
   it("在干的时候不让跑：handoff.start 直接拒（busy + working）", async () => {
-    // 第一片永远不来：它一直在干（手上的活没完，待办里也不该被插一条交接指令）
+    // 第一片永远不来：它一直在干（手上的活没完，inbox 里也不该被插一条交接指令）
     const driver = new RecordingAgent([{ gate: new Promise<void>(() => undefined) }]);
     const built = harness.build({ driver });
     const working = new Promise<void>((resolve) => {
@@ -1212,7 +1212,7 @@ describe("前置条件", () => {
       built.service.start({ sessionId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "working" } });
 
-    // 拒绝就是拒绝：没挂牌、没投递，驱动者也没被打断（掐在途那套编排已经作废）
+    // 拒绝就是拒绝：没挂牌、没投递，agent 也没被打断（掐在途那套编排已经作废）
     expect(built.runnerCalls).toEqual([]);
     expect(built.instructions).toEqual([]);
     expect(driver.abortCalls).toBe(0);
@@ -1229,7 +1229,7 @@ describe("前置条件", () => {
     expect(built.instructions).toEqual([]);
   });
 
-  it("对话不存在报 not_found（这一条在返回「已经开始」之前）", async () => {
+  it("会话不存在报 not_found（这一条在返回「已经开始」之前）", async () => {
     const built = harness.build();
     await expect(
       built.service.start({ sessionId: "没有这段", mode: "summary", then: "document_only" }),
@@ -1294,7 +1294,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 等这个驱动者真的落到闲（再发起一次交接要它闲着，也要服务收完上一趟） */
+/** 等这个 agent 真的落到闲（再发起一次交接要它闲着，也要服务收完上一趟） */
 async function waitIdle(agent: ChatAgent): Promise<void> {
   for (let attempt = 0; attempt < 500; attempt += 1) {
     if (agent.state === "idle") {
@@ -1303,5 +1303,5 @@ async function waitIdle(agent: ChatAgent): Promise<void> {
     }
     await flushMicrotasks();
   }
-  throw new Error("驱动者没有回到空闲");
+  throw new Error("agent没有回到空闲");
 }

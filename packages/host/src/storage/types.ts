@@ -80,7 +80,7 @@ export interface SessionRow {
   /**
    * 待交接的 mode：答完交接题当时这段不闲、于是留到「下一次变闲」再兑现的那一格（PLAN §5.2）。
    *
-   * `null` = 没有待办（常态）；`"self"` / `"summary"` = 下一次变闲时用哪一种执行者交接。
+   * `null` = 没有待交接（常态）；`"self"` / `"summary"` = 下一次变闲时用哪一种执行者交接。
    * 它必须落库：「等下一次变闲」可能跨重启，而题本身不落库（PRD 4.10），重启之后这是**唯一**
    * 能带着走的那份事实。
    */
@@ -88,8 +88,8 @@ export interface SessionRow {
   /**
    * 0 / 1：自动交接开关（PRD 1.4 的「自动交接开关」那一格）。
    *
-   * 1 = 开：撞线自己交班、不问（兄弟会话那一侧）；0 = 关：装不下时问用户一次（用户建的那一侧）。
-   * 初值由**谁开的这段会话**决定，创建那一刻写死（用户建 0 / 兄弟会话 1）。
+   * 1 = 开：撞线自己交班、不问（平级会话那一侧）；0 = 关：装不下时问用户一次（用户建的那一侧）。
+   * 初值由**谁开的这段会话**决定，创建那一刻写死（用户建 0 / 平级会话 1）。
    */
   autoHandoff: number;
   /**
@@ -111,7 +111,7 @@ export interface Session
   nameIsAuto: boolean;
   /** 自动交接开关（真值来自 `sessions.autoHandoff` 列）：开 = 撞线自己交班、不问 */
   autoHandoff: boolean;
-  /** 待交接的 mode（真值来自 `sessions.pendingHandoff` 列）；`null` = 没有待办 */
+  /** 待交接的 mode（真值来自 `sessions.pendingHandoff` 列）；`null` = 没有待交接 */
   pendingHandoff: HandoffMode | null;
 }
 
@@ -119,7 +119,7 @@ export interface SessionCreateInput {
   id: string;
   workspaceId: string;
   name: string;
-  /** 助手是对话身份的一部分，创建时必须已知（解析不出来就先解析、不建行） */
+  /** 助手是会话身份的一部分，创建时必须已知（解析不出来就先解析、不建行） */
   agentId: string;
   /** 模型创建时也必须有值（取助手定义上那个，或创建时点名的那一个） */
   modelId: string;
@@ -131,7 +131,7 @@ export interface SessionCreateInput {
   /**
    * 自动交接开关的初值；不给 = `false`（用户建的那一侧：装不下时问一次）。
    *
-   * **创建那一刻写死**：兄弟会话那条路显式给 `true`，之后就只跟着会话行走。
+   * **创建那一刻写死**：平级会话那条路显式给 `true`，之后就只跟着会话行走。
    */
   autoHandoff?: boolean;
   /** 谁开的这段会话（父会话 id）；不给 = 用户建的 */
@@ -166,7 +166,7 @@ export interface SessionMemorySwap {
 export interface MessageRow {
   id: string;
   sessionId: string;
-  /** 同一对话内单调递增的序号，用于稳定排序与 `after` 游标 */
+  /** 同一会话内单调递增的序号，用于稳定排序与 `after` 游标 */
   seq: number;
   role: string;
   status: string;
@@ -219,14 +219,14 @@ export interface MessageUpsertInput {
 }
 
 /**
- * 全文搜索的范围：一段对话内，或一个 Workspace 下的全部对话。
+ * 全文搜索的范围：一段会话内，或一个 Workspace 下的全部会话。
  *
  * 之所以做成二选一的联合类型而不是两个可选字段，是因为「两个都没给」在语义上等于
  * 全库搜索，而 PRD D16 只要求「按 Workspace 过滤」，不给就不该搜全库。
  */
 export type MessageSearchScope = { sessionId: string } | { workspaceId: string } | undefined;
 
-/** 全文搜索命中项：带上对话名与命中附近的片段，前端不用再查一遍 */
+/** 全文搜索命中项：带上会话名与命中附近的片段，前端不用再查一遍 */
 export interface MessageSearchHit {
   id: string;
   sessionId: string;
@@ -275,7 +275,7 @@ export interface AssetCreateInput {
  * 关系行：某条消息引用了某份素材。
  *
  * 一行就是一次「引用」；同一对 `(messageId, assetId)` 只有一行（唯一约束）。
- * 素材的归属、以及「几张会话引用了它」都从这张表算，`assets` 行上不再记对话 / 消息。
+ * 素材的归属、以及「几张会话引用了它」都从这张表算，`assets` 行上不再记会话 / 消息。
  */
 export interface SessionAssetRow {
   sessionId: string;
@@ -318,7 +318,7 @@ export interface NoticeRow {
   params: string | null;
   /** 毫秒数；null 表示永久存在，只能手动清（PRD L3） */
   durationMs: number | null;
-  /** 这条通知与哪段对话有关；null 表示全局通知（对话删掉时随之级联删除） */
+  /** 这条通知与哪段会话有关；null 表示全局通知（会话删掉时随之级联删除） */
   sessionId: string | null;
   createdAt: number;
 }
@@ -329,7 +329,7 @@ export interface Notice {
   code: string;
   params: Record<string, unknown> | null;
   durationMs: number | null;
-  /** 这条通知与哪段对话有关；null 表示全局通知 */
+  /** 这条通知与哪段会话有关；null 表示全局通知 */
   sessionId: string | null;
   createdAt: number;
 }
@@ -340,7 +340,7 @@ export interface NoticeCreateInput {
   code: string;
   params?: Record<string, unknown> | null;
   durationMs?: number | null;
-  /** 挂在哪段对话上；不给表示全局通知 */
+  /** 挂在哪段会话上；不给表示全局通知 */
   sessionId?: string | null;
   createdAt: number;
 }

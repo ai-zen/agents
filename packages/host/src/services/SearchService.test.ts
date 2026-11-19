@@ -1,5 +1,5 @@
 /**
- * 搜索服务的验收：按名称搜对话（含高亮片段与摘要顺序）、按内容全文搜消息
+ * 搜索服务的验收：按名称搜会话（含高亮片段与摘要顺序）、按内容全文搜消息
  * （中文子串、范围过滤、分页与总数），D16 / F-C6。
  */
 
@@ -27,7 +27,7 @@ let sessions: SessionRepository;
 let messages: MessageRepository;
 
 /**
- * 摘要由对话服务提供；这里按「入参顺序即出参顺序」的约定给一份最小实现，
+ * 摘要由会话服务提供；这里按「入参顺序即出参顺序」的约定给一份最小实现，
  * 顺便记录服务是不是真的把它传了下来。
  */
 function fakeSummarizer(): SessionSummarizer & { calls: string[][] } {
@@ -201,7 +201,7 @@ describe("SearchService.sessions（按名称）", () => {
 });
 
 describe("SearchService.messages（按内容）", () => {
-  it("3 个字以上的中文子串能命中，并带上对话名与角色", async () => {
+  it("3 个字以上的中文子串能命中，并带上会话名与角色", async () => {
     const result = await service.messages({ query: "天气不" });
     expect(result.hits.map((hit) => hit.messageId)).toEqual(["msg-1"]);
     expect(result.hits[0]).toMatchObject({
@@ -223,7 +223,7 @@ describe("SearchService.messages（按内容）", () => {
     expect(result.hits.map((hit) => hit.messageId)).toEqual(["msg-2"]);
   });
 
-  it("可按对话过滤", async () => {
+  it("可按会话过滤", async () => {
     const result = await service.messages({ query: "天气", sessionId: "c1" });
     expect(result.hits.map((hit) => hit.messageId)).toEqual(["msg-1"]);
   });

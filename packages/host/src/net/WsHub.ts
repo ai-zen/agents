@@ -155,7 +155,7 @@ export interface WsHubOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * 一段对话的推送：`depth` 是「还有几个请求没回包」，归零时把压着的帧按序放行。
+ * 一段会话的推送：`depth` 是「还有几个请求没回包」，归零时把压着的帧按序放行。
  *
  * 压着的是「怎么造这一帧」的意图（惰性构造）而不是渲染好的帧：放行时才按那时的连接语言渲染。
  */
@@ -307,7 +307,7 @@ export class WsHub {
    * 推一个事件给所有已握手的连接。
    *
    * 形状与 `ChatRunner` 的 `ChatEventEmitter` 一致，所以单根可以把它直接当 `emit` 注入。
-   * 事件里带 `sessionId` 的（全部事件都带）会受该对话的缓冲控制：有请求还没回包时先排队。
+   * 事件里带 `sessionId` 的（全部事件都带）会受该会话的缓冲控制：有请求还没回包时先排队。
    */
   push<E extends EventName>(event: E, payload: EventMap[E]): void {
     const key = sessionKeyOf(event, payload);
@@ -477,7 +477,7 @@ export class WsHub {
   }
 
   /**
-   * 请求帧：先按对话挂起推送，再分发，最后写回包，回包写完按序放行该对话的推送（R47）。
+   * 请求帧：先按会话挂起推送，再分发，最后写回包，回包写完按序放行该会话的推送（R47）。
    *
    * 「先挂起再分发」是关键：事件可能在分发的第一行就产生（受理即返回的方法正是这样），
    * 挂起晚一步就会出现「客户端还没拿到 id 就收到事件」。
@@ -549,7 +549,7 @@ export class WsHub {
 
     if (this.options.uploads) {
       if (method === "asset.begin") {
-        // 语言是连接状态：草稿对话落库时要靠它渲染那条隐藏的 cwd 消息（D8）
+        // 语言是连接状态：草稿会话落库时要靠它渲染那条隐藏的 cwd 消息（D8）
         return await this.options.uploads.begin(
           state.id,
           params as AssetBeginParams,
@@ -650,7 +650,7 @@ export class WsHub {
   // 推送：该压就压、该写就写（R47）
   // -------------------------------------------------------------------------
 
-  /** 压住一段对话的推送：每来一个带 `sessionId` 的请求，这一段的深度加一 */
+  /** 压住一段会话的推送：每来一个带 `sessionId` 的请求，这一段的深度加一 */
   private defer(state: ConnectionState, key: string): void {
     const existing = state.deferred.get(key);
     if (existing) {
@@ -661,9 +661,9 @@ export class WsHub {
   }
 
   /**
-   * 放行一段对话压着的推送。
+   * 放行一段会话压着的推送。
    *
-   * 只有最后一层请求回包之后才真的放（同一对话同时有两个请求在飞时，先回包的那一个不该把
+   * 只有最后一层请求回包之后才真的放（同一会话同时有两个请求在飞时，先回包的那一个不该把
    * 后一个还没回包时产生的事件抢在前面发出去）。
    */
   private flush(state: ConnectionState, key: string): void {
@@ -682,7 +682,7 @@ export class WsHub {
    *
    *   - **压**（{@link defer} 压出来的那一格还在）：这一段有请求没回包，先把「怎么造这一帧」
    *     的意图塞进队列，等回包写完那一拍由 {@link flush} 按序放行 —— 客户端不该在拿到 id
-   *     之前就收到这段对话的事件（R47）；
+   *     之前就收到这段会话的事件（R47）；
    *   - **写**（{@link writeFrame}）：没有要等的回包，帧直接出去。
    *
    * 还没握手的连接一帧都不写（连推送都不给）。
@@ -825,7 +825,7 @@ function asId(value: unknown): JsonRpcId | null {
   return null;
 }
 
-/** 请求参数里的 `sessionId`：有就按它缓冲该对话的推送（R47） */
+/** 请求参数里的 `sessionId`：有就按它缓冲该会话的推送（R47） */
 function sessionKeyOfParams(params: unknown): string | null {
   if (typeof params !== "object" || params === null || Array.isArray(params)) return null;
   const value = (params as Record<string, unknown>).sessionId;
@@ -833,11 +833,11 @@ function sessionKeyOfParams(params: unknown): string | null {
 }
 
 /**
- * 事件载荷里的对话 id。
+ * 事件载荷里的会话 id。
  *
  * 多数事件直接在顶层带 `sessionId`（忙闲、两道闸、出错、结构变化、三条消息事件）；通知与
  * 问题是嵌套的，而且那个字段可以是
- * `null`（全局的：不受任何对话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
+ * `null`（全局的：不受任何会话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
  */
 function sessionKeyOf<E extends EventName>(event: E, payload: EventMap[E]): string | null {
   switch (event) {

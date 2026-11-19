@@ -1,11 +1,11 @@
 /**
- * 运行时的出口：Scope 的持有、agent 的持有、一段对话的桥、一次性对话的执行者。
+ * 运行时的出口：Scope 的持有、agent 的持有、一段会话的桥、一次性会话的执行者。
  *
  * 这几块是「比 service 更长寿」的那一层（PLAN §3）：`ScopeRegistry` / `AgentRegistry` /
  * `ChatRunner`（它手上那张 bridge 表跟着 agent 活）随进程存活，都由单根注入依赖，不导出任何
  * 模块级单例。
  *
- * **这里没有「轮次占位」这种东西**（从前那本账叫 `RunRegistry`）：一段对话现在忙不忙，直接读
+ * **这里没有「轮次占位」这种东西**（从前那本账叫 `RunRegistry`）：一段会话现在忙不忙，直接读
  * agent 身上那一格；要观测就读 `ChatRunner.state`。
  */
 

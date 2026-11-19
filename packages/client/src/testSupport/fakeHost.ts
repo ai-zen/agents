@@ -173,8 +173,8 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
 }
 
 /**
- * 一份 `session.state` 的 `state`：一段对话此刻的读数 = **四件事各一格** + 队里还压着什么 +
- * 子 agent 名册 + 交接态 + 读数的时刻。
+ * 一份 `session.state` 的 `state`：一段会话此刻的读数 = **四件事各一格** + 队里还压着什么 +
+ * subagent 名册 + 交接态 + 读数的时刻。
  *
  * 默认摆的是「刚建出来、还没有 agent」那一份：忙闲 `idle`（没有人，手上当然没活）、两道闸都
  * 没关着、`alive: false`。要摆别的处境就在 `overrides` 里给那几格。
@@ -194,7 +194,7 @@ export function sessionState(
     alive: false,
     // 空闲时队里没有东西（契约：空闲是空数组，不是「未知」）
     inbox: [],
-    // 名册与交接态都是现读：默认没有子 agent、不在交接
+    // 名册与交接态都是现读：默认没有 subagent、不在交接
     subAgents: [],
     handoff: null,
     at: "2026-01-01T00:00:00.000Z",

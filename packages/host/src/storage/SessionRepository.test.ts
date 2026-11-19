@@ -16,7 +16,7 @@ let dir: string;
 let db: Database;
 let repo: SessionRepository;
 
-/** 对话身份（助手 / 模型）是必填的：不关心这两列的用例摊上这一份 */
+/** 会话身份（助手 / 模型）是必填的：不关心这两列的用例摊上这一份 */
 const IDENTITY = { agentId: "agent-1", modelId: "model-1" } as const;
 
 function input(fields: Omit<SessionCreateInput, "agentId" | "modelId">): SessionCreateInput {
@@ -93,7 +93,7 @@ describe("SessionRepository", () => {
       // 这条是 `repo.create` 直接建的（没传 autoHandoff / lineage）＝ 用户建的那一侧
       autoHandoff: false,
       lineage: null,
-      // 待交接：创建那一刻没有待办（只有「答完交接题、当时不闲」才会写）
+      // 待交接：创建那一刻没有待交接（只有「答完交接题、当时不闲」才会写）
       pendingHandoff: null,
       createdAt: 500,
       updatedAt: 500,
@@ -105,7 +105,7 @@ describe("SessionRepository", () => {
       input({
         id: "c-owner",
         workspaceId: "w1",
-        name: "父对话",
+        name: "父会话",
         createdAt: 100,
         // 用户建的那一侧：开关关、没有血缘
         handoffThreshold: 1_000,
@@ -116,7 +116,7 @@ describe("SessionRepository", () => {
       input({
         id: "c-peer",
         workspaceId: "w1",
-        name: "兄弟会话",
+        name: "平级会话",
         createdAt: 200,
         lineage: "c-owner",
         autoHandoff: true,
@@ -156,7 +156,7 @@ describe("SessionRepository", () => {
     await repo.markCompacted("c1", "manual", 1500);
     expect(await repo.get("c1")).toMatchObject({ compactedAt: 1500, compactionMode: "manual" });
 
-    // 对话不存在时是 0 行，不是错
+    // 会话不存在时是 0 行，不是错
     expect(await repo.markCompacted("c-missing", "auto", 1)).toBe(0);
   });
 
@@ -185,8 +185,8 @@ describe("SessionRepository", () => {
     expect((await repo.get("c1"))?.nameIsAuto).toBe(true);
 
     // 用户改名：名字从此归用户，即使改成一个跟原名无关的字串也不靠内容推断
-    await repo.renameByUser("c1", "我的对话", 200);
-    expect((await repo.get("c1"))?.name).toBe("我的对话");
+    await repo.renameByUser("c1", "我的会话", 200);
+    expect((await repo.get("c1"))?.name).toBe("我的会话");
     expect((await repo.get("c1"))?.nameIsAuto).toBe(false);
 
     // 自动命名：写新名并把它标回自动
@@ -263,7 +263,7 @@ describe("SessionRepository", () => {
     expect(await repo.searchByName("", undefined, 1)).toHaveLength(1);
   });
 
-  it("删对话是硬删（PRD D17）", async () => {
+  it("删会话是硬删（PRD D17）", async () => {
     await repo.create(input({ id: "c1", workspaceId: "w1", name: "甲", createdAt: 100 }));
     expect(await repo.delete("c1")).toBe(1);
     expect(await repo.get("c1")).toBeUndefined();

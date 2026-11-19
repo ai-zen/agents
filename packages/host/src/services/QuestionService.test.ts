@@ -218,7 +218,7 @@ describe("题只活在进程里（PRD 4.10）", () => {
       });
       expect(asked.state).toBe("pending");
 
-      // 关库再重开：题不在（题的生命 = 这段对话活着的这段时间，而「进程重启」不算）
+      // 关库再重开：题不在（题的生命 = 这段会话活着的这段时间，而「进程重启」不算）
       await own.close();
       reopened = new Database(ownFile);
       await migrate(reopened);
@@ -245,7 +245,7 @@ describe("题只活在进程里（PRD 4.10）", () => {
     expect(chinese.questions[0]?.options.map((option) => option.label.message)).toEqual([
       "让助手自己写交接",
       "改成摘要历史",
-      "就在这段对话里继续",
+      "就在这段会话里继续",
     ]);
     expect(english.questions[0]?.options.map((option) => option.label.message)).toEqual([
       "Let the assistant write the handoff itself",
@@ -255,7 +255,7 @@ describe("题只活在进程里（PRD 4.10）", () => {
     expect(chinese.questions[0]?.prompt.params).toEqual({ percent: 80 });
   });
 
-  it("list 只看这一段对话（没有跨对话的那个入口）", async () => {
+  it("list 只看这一段会话（没有跨会话的那个入口）", async () => {
     const first = await askHandoff(harness);
     const second = (
       await harness.service.askHandoff({ sessionId: "c2", promptTokens: 800, handoffTokens: 1000 })
@@ -290,9 +290,9 @@ describe("题只活在进程里（PRD 4.10）", () => {
 
   it("不给 sessionId 是类型错误（没有「全库问题列表」这种读法）", async () => {
     await askHandoff(harness);
-    // @ts-expect-error `sessionId` 必填：题只属于某一段对话（PRD 4.10 的「明确不做」）
+    // @ts-expect-error `sessionId` 必填：题只属于某一段会话（PRD 4.10 的「明确不做」）
     const listed = await harness.service.list({});
-    // 运行时也读不到别人的题：没有「跨对话」这个入口
+    // 运行时也读不到别人的题：没有「跨会话」这个入口
     expect(listed.questions).toEqual([]);
   });
 });
@@ -321,7 +321,7 @@ describe("死的那一刻跟着没（PRD 4.10）", () => {
     await expect(harness.service.assertSendable("c1")).resolves.toBeUndefined();
   });
 
-  it("已经答过的题也一起清（题的生命只有这段对话活着的时间）", async () => {
+  it("已经答过的题也一起清（题的生命只有这段会话活着的时间）", async () => {
     const id = await askHandoff(harness);
     await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE });
     await harness.service.dropSession("c1");
@@ -332,7 +332,7 @@ describe("死的那一刻跟着没（PRD 4.10）", () => {
 describe("答题不被「忙」拦住（PRD 4.10）", () => {
   it("这段正忙着：题照答，答完把「待交接」写进会话行", async () => {
     const id = await askHandoff(harness);
-    // 这段手上有活（或没有驱动者）：不能立刻交接
+    // 这段手上有活（或没有 agent）：不能立刻交接
     harness.availability.result = { ok: false, reason: "working" };
 
     const answered = await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_SELF });
@@ -376,7 +376,7 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
     // 交接回合说的是这条连接的语言
     expect(harness.handoffCalls[0]?.language).toBe("zh");
     expect(answered.effects).toEqual({ handoffStarted: true, handoffDeferredReason: null });
-    // 当场交接了：不留待办
+    // 当场交接了：不留待交接
     expect(await harness.service.readPendingHandoff("c1")).toBeNull();
   });
 
@@ -546,7 +546,7 @@ describe("硬线判定（createSessionGuardProbe）", () => {
     });
     expect(await probe.overGuard("c1")).toBe(true);
 
-    // 对话不存在时不算过线
+    // 会话不存在时不算过线
     expect(await probe.overGuard("没有这段")).toBe(false);
   });
 });

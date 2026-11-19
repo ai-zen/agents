@@ -14,7 +14,7 @@ export const en = {
   "error.invalidParams": "Part of this request doesn't look right: {field}.",
   "error.notFound": "There's no {entity} with that id.",
   "error.busy": "This session is still working on the previous turn. Stop it or wait for it to finish.",
-  // 对话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
+  // 会话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
   "error.sessionDead":
     "This session has nothing driving it right now, so nothing can be sent into it from outside. Sending from the app wakes it up first.",
   "error.payloadTooLarge": "That file is {size}, which is over the {limit} limit.",
@@ -105,14 +105,14 @@ export const en = {
   "handoff.degraded": "The handoff fell back to {mode}: {reason}",
   "attachment.tooMany": "A message carries at most {limit} images.",
 
-  // ---- 通知 / 问题 / 交接 / 自动命名 / 临时对话（W4-H）----
+  // ---- 通知 / 问题 / 交接 / 自动命名 / 一次性会话（W4-H）----
   // 库里那条通知的码认不出来（配置被手改坏、旧版本写进去的码）时的兜底句
   "notice.unknown": "A notice from the host ({code}).",
   // 交接本身失败（写不出文档、摘要请求出错）；用户取消不算失败，走 `error.handoffDeclined`
   "error.handoffFailed": "The handoff didn't go through: {reason}",
-  // 临时对话（D3）：一次请求跑一轮，失败时没有会话可回看，只能在这一句里说清
+  // 一次性会话（D3）：一次请求跑一轮，失败时没有会话可回看，只能在这一句里说清
   "error.transientFailed": "That one-off request didn't finish: {reason}",
-  // 交接之后新开的那段对话，开场带上交接文档的位置与摘要（D18）
+  // 交接之后新开的那段会话，开场带上交接文档的位置与摘要（D18）
   "handoff.newSessionSummary":
     "This session continues an earlier one. The handoff document is at {path} — read it first, then carry on with the task.\n\nSummary of the handoff:\n{summary}",
   // 降级的原因（`handoff.degraded` 的 {reason} 就是这句话）

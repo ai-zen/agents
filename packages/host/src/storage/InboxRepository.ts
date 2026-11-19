@@ -1,8 +1,8 @@
 /**
  * `inbox` 表仓储：队列里**还没被取走**的那些条目（PRD 1.2 / 4.12）。
  *
- * 一行 = 一条还在等的待办。它由 core 的三条事件驱动着**逐条实时**增减
- * （`inboxAdded` → 插一行、`inboxTaken` → 删那一行、`inboxCleared` → 清掉这段对话的行），
+ * 一行 = 一条还在等的条目。它由 core 的三条事件驱动着**逐条实时**增减
+ * （`inboxAdded` → 插一行、`inboxTaken` → 删那一行、`inboxCleared` → 清掉这段会话的行），
  * 装配出一条新 agent 时按 `seq` 原样读回来（`ChatRunner` 恢复那一跳）。
  *
  * ## 存什么
@@ -13,7 +13,7 @@
  *     （与 `messages` 的 `content` / `source` 列同一个口径）；
  *   - `createdAt` 是条目自带的那个 ISO 串，**原样**进出 —— 它是给模型判断时效用的
  *     （`CORE.md` §3），换成「读库那一刻」等于把一条陈年通知说成刚发生的；
- *   - `seq` 是入队顺序（一段对话内递增）。为什么不能只靠 `createdAt`：它只到毫秒，同一毫秒
+ *   - `seq` 是入队顺序（一段会话内递增）。为什么不能只靠 `createdAt`：它只到毫秒，同一毫秒
  *     进来的两条会撞在一起，那样就还原不回它们本来的先后。
  *
  * ## 不存什么
@@ -36,12 +36,12 @@ export interface InboxRow {
   content: string;
   /** 入队那一刻的 ISO 串，原样 */
   createdAt: string;
-  /** 这一段对话内的入队顺序 */
+  /** 这一段会话内的入队顺序 */
   seq: number;
 }
 
 /**
- * 读回来的一条待办：除了表里那几格以外**什么都没补**。
+ * 读回来的一个条目：除了表里那几格以外**什么都没补**。
  *
  * 没有 `priority`：宿主推的每一条都是 `high`（`ChatRunner.deliver` 写死的那一格），
  * 恢复时由调用方按它放回 —— 表里不存这一格，也就不会伪造出一份「存下来的优先级」。
@@ -75,9 +75,9 @@ export class InboxRepository {
   }
 
   /**
-   * 落一行（一条刚进队的待办）。
+   * 落一行（一条刚进队的条目）。
    *
-   * `seq` 由这条语句自己算（这一段对话当前最大值 + 1）：插入是串行的，所以「先读最大再写」
+   * `seq` 由这条语句自己算（这一段会话当前最大值 + 1）：插入是串行的，所以「先读最大再写」
    * 不会插进两条一样的顺序；而把它放进同一条语句里，就没有「读完了、写之前别人又插了一条」
    * 那道缝。
    */
@@ -98,7 +98,7 @@ export class InboxRepository {
   }
 
   /**
-   * 一段对话里还等着的待办，**按 `seq` 升序**（顺序即取件顺序）。
+   * 一段会话里还等着的条目，**按 `seq` 升序**（顺序即取件顺序）。
    *
    * 反序列化只做「JSON 文本 → 值」这一件事：存进去是什么形状，读回来就是什么形状。
    */
@@ -121,7 +121,7 @@ export class InboxRepository {
     return result.changes;
   }
 
-  /** 清掉一段对话的全部待办（`inboxCleared` 的落点）。返回真的删掉几条 */
+  /** 清掉一段会话 inbox 里的全部条目（`inboxCleared` 的落点）。返回真的删掉几条 */
   async clearBySession(sessionId: string): Promise<number> {
     const result = await this.db.run("DELETE FROM inbox WHERE sessionId = ?", [sessionId]);
     return result.changes;
@@ -129,7 +129,7 @@ export class InboxRepository {
 }
 
 /**
- * 一行 → 一条待办。`JSON.parse` 之外什么都不做：内容不清理、来源不推导、时间不换算。
+ * 一行 → 一个条目。`JSON.parse` 之外什么都不做：内容不清理、来源不推导、时间不换算。
  */
 function toEntry(row: InboxRow): StoredInboxEntry {
   return {

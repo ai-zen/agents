@@ -10,10 +10,10 @@ describe("fromHostError", () => {
   it("把 error.data 的三样原样搬进来", () => {
     const error = fromHostError({
       code: -32004,
-      message: "这段对话不存在了",
+      message: "这段会话不存在了",
       data: {
         code: "not_found",
-        message: "这段对话不存在了",
+        message: "这段会话不存在了",
         detail: { sessionId: "c1" },
         params: { what: "session" },
       },
@@ -21,7 +21,7 @@ describe("fromHostError", () => {
 
     expect(error).toBeInstanceOf(ClientError);
     expect(error.code).toBe("not_found");
-    expect(error.message).toBe("这段对话不存在了");
+    expect(error.message).toBe("这段会话不存在了");
     expect(error.detail).toEqual({ sessionId: "c1" });
     expect(error.params).toEqual({ what: "session" });
     expect(error.rpcCode).toBe(-32004);

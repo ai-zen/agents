@@ -74,7 +74,7 @@ export class AgentToolLazy implements Tool {
     const before = agent.messages.length;
     const forwarded = this.forward(agent, ctx);
 
-    // 子 agent 自己那一圈被拒时，它一个字都不会产出；理由只在 `denied` 事件里
+    // subagent 自己那一圈被拒时，它一个字都不会产出；理由只在 `denied` 事件里
     let refused: string | undefined;
     const offDenied = agent.on("denied", (payload) => {
       refused = payload.reason;
@@ -82,7 +82,7 @@ export class AgentToolLazy implements Tool {
 
     try {
       // 跑它、等它闲、收尸 —— 全在 runOnce 里。中断信号直接交过去，
-      // 不再需要手工把父的 abort 转成子 agent 的 abort。
+      // 不再需要手工把父的 abort 转成 subagent 的 abort。
       await agent.runOnce(undefined, { signal: ctx.signal });
     } finally {
       offDenied();
@@ -91,21 +91,21 @@ export class AgentToolLazy implements Tool {
     }
 
     // 被拒的一圈不产生任何消息。此时交回「最后一条消息的内容」，父模型读到的会是**它自己
-    // 那句问题原文** —— 等于子 agent 装傻复读了一遍。这种情况必须显式说「没产出」。
+    // 那句问题原文** —— 等于 subagent 装傻复读了一遍。这种情况必须显式说「没产出」。
     if (agent.messages.length <= before) {
-      return refused ?? "子 agent 没有产出：这一圈被拒绝了，或者它一个字也没说";
+      return refused ?? "subagent 没有产出：这一圈被拒绝了，或者它一个字也没说";
     }
 
     return agent.messages.at(-1)?.content ?? "";
   }
 
   /**
-   * 把子 agent 的事件按**同一套名字**转发到父身上（§9-3）。
+   * 把 subagent 的事件按**同一套名字**转发到父身上（§9-3）。
    *
    * 不另起一套平行名字：父和宿主的订阅方只多认两格 —— `subAgent`（这些事发生在谁身上）
    * 与 `via`（是哪一次委派引起的）。`delta` 走它的 `source` 第二格。
    *
-   * 只转发「子 agent 内部发生了什么」这三类（消息、原始片、工具）；`state` 不转发 ——
+   * 只转发「subagent 内部发生了什么」这三类（消息、原始片、工具）；`state` 不转发 ——
    * 父自己的那一格（`state`）是父的，混进来会让「这个 agent 现在在不在干」变得没法回答。
    */
   private forward(sub: Agent, ctx: ToolCallContext): Array<() => void> {

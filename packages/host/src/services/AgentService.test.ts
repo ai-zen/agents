@@ -133,7 +133,7 @@ afterEach(async () => {
 });
 
 describe("AgentService.list", () => {
-  it("主助手与子 Agent 一起列，坏文件也占一行并说明原因（F-B5）", async () => {
+  it("主助手与subagent 一起列，坏文件也占一行并说明原因（F-B5）", async () => {
     const { agents, defaultAgentId } = await service.list();
     expect(agents.map((agent) => agent.id)).toEqual([
       "broken",
@@ -211,7 +211,7 @@ describe("AgentService.describe", () => {
       available: false,
     });
 
-    // 文件不在：助手已经被删（对话可能还记着那个 id，L7）
+    // 文件不在：助手已经被删（会话可能还记着那个 id，L7）
     expect(await service.describe("gone")).toBeNull();
     // 文件在但读不出来：同样没有可报的名字与可用性
     expect(await service.describe("broken")).toBeNull();
@@ -410,13 +410,13 @@ describe("AgentService.setModel / setThinking", () => {
 });
 
 describe("AgentService：定义要能读回来（F-B2 / F-F5）", () => {
-  it("AgentView 带 messages 与 function；非子 Agent 的 function 是 null", async () => {
+  it("AgentView 带 messages 与 function；非subagent 的 function 是 null", async () => {
     const plain = await service.get({ agentId: "default" });
     expect(plain.agent.messages).toEqual(SYSTEM);
     expect(plain.agent.function).toBeNull();
     expect(plain.agent.isSubAgent).toBe(false);
 
-    // 子 Agent：function 的内容原样读回来，不是只有 `isSubAgent: true`
+    // subagent：function 的内容原样读回来，不是只有 `isSubAgent: true`
     const sub = await service.get({ agentId: "sub-one" });
     expect(sub.agent.isSubAgent).toBe(true);
     expect(sub.agent.messages).toEqual(SYSTEM);
@@ -481,14 +481,14 @@ describe("AgentService：定义要能读回来（F-B2 / F-F5）", () => {
     expect(onDisk.modelId).toBe(before.agent.modelId);
   });
 
-  it("读-改-写往返：子 Agent 的 function 原样写回也不变", async () => {
+  it("读-改-写往返：subagent 的 function 原样写回也不变", async () => {
     const before = await service.get({ agentId: "sub-one" });
     const fn = before.agent.function;
     if (fn === null) throw new Error("function 没读回来，往返无从谈起");
 
     const after = await service.update({ agentId: "sub-one", patch: { function: fn } });
     expect(after.agent.function).toEqual(before.agent.function);
-    // 仍然是子 Agent，落在 sub-agents/ 里（没被搬到 agents/）
+    // 仍然是 subagent，落在 sub-agents/ 里（没被搬到 agents/）
     expect(after.agent.isSubAgent).toBe(true);
     expect((await readAgent("sub-agents", "sub-one")).function).toEqual(before.agent.function);
   });

@@ -66,22 +66,22 @@ export interface SubAgentHookContext {
 /**
  * 父 agent 名册上的一项：**一次委派的一笔账**（`CORE.md` §17）。
  *
- * 子 agent 不是一段会话、不入库，跑完就散；但「这段对话派过几个子 agent、它们各自说了什么」
- * 必须答得出来。所以派遣时在父身上留这一项，要查子 agent 说过的话就顺
- * 「父的名册 → `agent` → 它的 `messages`」取 —— 那些话只在**子 agent 自己那个对象**里。
+ * subagent 不是一段会话、不入库，跑完就散；但「这段会话派过几个 subagent、它们各自说了什么」
+ * 必须答得出来。所以派遣时在父身上留这一项，要查 subagent 说过的话就顺
+ * 「父的名册 → `agent` → 它的 `messages`」取 —— 那些话只在**subagent 自己那个对象**里。
  *
  * `agent` 是**活引用**（和事件里带出去的是同一个东西，不是拷贝）：它就是那一栏消息的唯一真相。
  * 于是这一项不能序列化、不能进库 —— 与 `source` 里不许放 `Agent` 引用是同一条理由。
  */
 export interface SubAgentEntry {
-  /** 委派那次工具调用的 id：客户端据此把子 agent 的话分到那一栏（§10） */
+  /** 委派那次工具调用的 id：客户端据此把 subagent 的话分到那一栏（§10） */
   toolCallId: string;
   /** 被委派的那个 agent 本身（活引用） */
   agent: Agent;
   /**
    * 这次委派用的工具名（= 模型调用的那个委派工具的名字）。
    *
-   * core 只认识这一个「名字」：子 agent 的助手名在助手定义里，那是外部的财产（`buildAgent`
+   * core 只认识这一个「名字」：subagent 的助手名在助手定义里，那是外部的财产（`buildAgent`
    * 交出来的），core 不读定义文件。所以这里报的是「谁被调用来干的这活」，不是「它是谁」。
    */
   name: string;
@@ -105,7 +105,7 @@ export interface SubAgentEntry {
  * | `onToolStart` | **能拒** | 拒了就是「这个工具没给出有效结果」，原因作为 tool 消息回给模型 |
  * | `onToolEnd` | 不能 | 工具跑完了 |
  * | `onSubAgentStart` | **能拒** | 拒了这次委派不跑 |
- * | `onSubAgentEnd` | 不能 | 委派结束（子 agent 已经跑完，撤不回来了） |
+ * | `onSubAgentEnd` | 不能 | 委派结束（subagent 已经跑完，撤不回来了） |
  *
  * `onOuterLoopStart` **不能拒**：此刻这一批已经从队列里取出来了，拒了这批就没主了。
  * 「要不要处理这一批」的判决应该发生在投递之前 —— 投了就得有人跑。
@@ -211,14 +211,14 @@ export interface InboxClearedEvent {
 export interface MessageEvent {
   agent: Agent;
   message: AgentNS.Message;
-  /** 这条消息属于某个子 agent（委派工具转发上来时才有） */
+  /** 这条消息属于某个 subagent（委派工具转发上来时才有） */
   subAgent?: Agent;
   /** 是哪一次委派引起的（与 `subAgent` 同现） */
   via?: AgentNS.ToolCall;
 }
 /**
  * 原始片的来源。三格让接收方直接知道往哪儿放：
- * 自己的消息、某个子 agent 的、还是子 agent 某个工具调用里的。
+ * 自己的消息、某个 subagent 的、还是 subagent 某个工具调用里的。
  */
 export type DeltaSource =
   | { message: AgentNS.Message }
@@ -242,7 +242,7 @@ export interface ResponseFinishedEvent {
 export interface ToolStartedEvent {
   agent: Agent;
   toolCall: AgentNS.ToolCall;
-  /** 这个工具跑在某个子 agent 里（委派工具转发上来时才有） */
+  /** 这个工具跑在某个 subagent 里（委派工具转发上来时才有） */
   subAgent?: Agent;
   /** 是哪一次委派引起的 */
   via?: AgentNS.ToolCall;
@@ -451,8 +451,8 @@ export class Agent extends AgentContext {
   /**
    * 发一个事件。
    *
-   * 公开是因为委派工具要把子 agent 的事件**按同一套名字**发到父身上（§9-3）：
-   * 不为子 agent 另起一套平行名字，只多「哪个子 agent + 哪个工具调用」两格。
+   * 公开是因为委派工具要把 subagent 的事件**按同一套名字**发到父身上（§9-3）：
+   * 不为 subagent 另起一套平行名字，只多「哪个 subagent + 哪个工具调用」两格。
    */
   emit<K extends keyof AgentEvents>(type: K, payload: AgentEvents[K]): void {
     this.bus.emit(type as string, payload);
@@ -876,14 +876,14 @@ export class Agent extends AgentContext {
   /**
    * 投递并**等到空闲**再返回 —— **不关门**。
    *
-   * 它是「能等」那个形状本身，只给**一次性对话**（走一条因果链、没有第二个触发方）：常驻对话
+   * 它是「能等」那个形状本身，只给**一次性会话**（走一条因果链、没有第二个触发方）：常驻会话
    * 随时可能被任意触发方从闲推到忙，「我等它跑完」在那个形状里根本不成立，所以那边只有
    * {@link push}（`CORE.md` §1 / PRD 4.3）。
    *
    * 「等到空闲」= {@link waitForState} 那一格：`state` 到了 `idle` **且**队列真空 —— 只看
    * `state` 的话，`push()` 之后、外循环取到那批之前它还是 `idle`，那等于没等。
    *
-   * 没起来就先起来（一次性对话的寿命在调用栈里，没有人会替它 `start()`）。返回的 `messages`
+   * 没起来就先起来（一次性会话的寿命在调用栈里，没有人会替它 `start()`）。返回的 `messages`
    * 就是 `this.messages` 本身，不拷贝。
    *
    * {@link runOnce} 就是它 + `stop()`：本方法不做任何收尾动作 —— 关不关门、什么时候关，是调用方
@@ -895,7 +895,7 @@ export class Agent extends AgentContext {
   ): Promise<AgentNS.Message[]> {
     if (this.lifetime !== "one-shot") {
       throw new Error(
-        `send() 只能用在 lifetime 为 "one-shot" 的 agent 上：常驻对话没有「等到跑完」这回事，那边只有 push()`,
+        `send() 只能用在 lifetime 为 "one-shot" 的 agent 上：常驻会话没有「等到跑完」这回事，那边只有 push()`,
       );
     }
     if (input?.content === undefined && this.messages.length === 0) {
@@ -912,7 +912,7 @@ export class Agent extends AgentContext {
    * 跑一次到死：起 → **`send`** → 关门 → 死透 → 交回消息。
    *
    * **不是第六个死活动作**：它就是 {@link send} 外面套一层收尾，而 `send` 自己又是
-   * `start` + `push` + 等闲 的复合。一次性对话那几步由它收成一句。跑完之后这个 agent 就没了
+   * `start` + `push` + 等闲 的复合。一次性会话那几步由它收成一句。跑完之后这个 agent 就没了
    * （死了就死透，复活 = 新建）。
    *
    * 返回的 `messages` 就是 `agent.messages` 本身，不拷贝。
@@ -981,14 +981,14 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 子 agent 的名册：**只给外面读**（`CORE.md` §17）。
+   * subagent 的名册：**只给外面读**（`CORE.md` §17）。
    *
    * 三个时刻：派遣时加一项、结束时把 `endedAt` 填上（不移除）、外循环每一批的开头清空上一批。
    *
    * 三条纪律：
    * - **它不参与任何内部判断**：内循环、取件、续圈、`state` 那一格、中断都不看它。清空点选在哪儿
    *   因此不影响正确性，只影响「外面什么时候读到空」；
-   * - **它是名册，不是消息的唯一真相**：子 agent 说过的话在 `entry.agent.messages` 里，
+   * - **它是名册，不是消息的唯一真相**：subagent 说过的话在 `entry.agent.messages` 里，
    *   这里只存指针；所以它跟着 agent 活在内存里，一死、一重启就一起没了（不入库）；
    * - **给出去的是拷贝的数组 + 活的项**：读到的是一份临时数组，`push` / `splice` 它改不到名册
    *   本身；而读到的项就是内部那一项（`endedAt` 什么时候填上，读到就是什么）。
@@ -1051,7 +1051,7 @@ export class Agent extends AgentContext {
    */
   private async outerLoop(): Promise<void> {
     for await (const entries of this.inbox.asTakeAll()) {
-      // 名册的清空点：外循环每一批的开头（上一批的子 agent 到这儿就不再登记，`CORE.md` §17）。
+      // 名册的清空点：外循环每一批的开头（上一批的 subagent 到这儿就不再登记，`CORE.md` §17）。
       // 放在这里是因为它是**这批活的开头**，而且是唯一一个「上一批已经彻底跑完、这批还没动」
       // 的时刻。它只是给外面读的便利 —— 下面没有任何一行代码回头看这份名册。
       this.subAgentRegistry.length = 0;

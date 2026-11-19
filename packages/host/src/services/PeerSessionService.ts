@@ -1,5 +1,5 @@
 /**
- * 平级会话服务 —— 一段对话里的模型**开另一段对话**，之后还能**接着跟它说话**、能**问它现在怎么样**。
+ * 平级会话服务 —— 一段会话里的模型**开另一段会话**，之后还能**接着跟它说话**、能**问它现在怎么样**。
  *
  * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md`。本文件只做四件事：
  *
@@ -20,7 +20,7 @@
  * ## 为什么只剩一个名字在进程内
  *
  * 从前这里存「谁开的、几层、什么时候开的」，那些都是**身份**，而身份只在进程里活着的后果是
- * 重启就大面积说假话（父会话找不到自己的孩子、子会话自己也不认得）。v4 把它们搬到会话行上：
+ * 重启就大面积说假话（开它的那段会话找不到它，它自己也不认得是谁开的）。v4 把它们搬到会话行上：
  * 血缘是 `sessions.lineage`、自动交接开关是 `sessions.autoHandoff`、开启时刻就是
  * `createdAt`。「只限一层」不再看进程内记的深度，而是看**父会话自己有没有血缘**。
  *
@@ -61,7 +61,7 @@ import type { SessionCreateParams, SessionCreateResult } from "../wire/index.js"
 import type { SessionPresence } from "../wire/states.js";
 
 /**
- * 创建子会话时额外带上「谁开的、自动交接开不开」：这两项**创建那一刻写死**，之后只跟着行。
+ * 创建平级会话时额外带上「谁开的、自动交接开不开」：这两项**创建那一刻写死**，之后只跟着行。
  *
  * 它们是宿主内部的事实（`SessionOriginInput`），不从客户端收：谁也不能从外面把一段会话
  * 认成「不是我建的」。
@@ -69,17 +69,17 @@ import type { SessionPresence } from "../wire/states.js";
 type PeerSessionOriginInput = {
   /** 谁开的这段会话（父会话 id） */
   lineage: string;
-  /** 自动交接开关的初值：兄弟会话默认开（撞线自己交班、不问） */
+  /** 自动交接开关的初值：平级会话默认开（撞线自己交班、不问） */
   autoHandoff: boolean;
 };
 
 /**
- * 子会话第一句的用户输入是谁推来的（core 在正文最前面那行注释里写的就是这个 `label`）。
+ * 平级会话的第一句用户输入是谁推来的（core 在正文最前面那行注释里写的就是这个 `label`）。
  *
  * 形状是 core 的 `AgentNS.MessageSource` 判别结构：`kind: "agent"` 说的是「另一个 agent 推来的」，
  * `label` 是给人看的那个名字。宿主不拿字符串比来源。
  */
-const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父对话" };
+const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父会话" };
 
 /**
  * `read_session_status` 里那条摘要的截断长度。
@@ -90,7 +90,7 @@ const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父�
 const STATUS_CHARS = 300;
 
 /**
- * 每个**父对话**同时最多能有多少个平级会话在忙着。
+ * 每个**父会话**同时最多能有多少个平级会话在忙着。
  *
  * 超出了就是一条结构化拒绝 `too_many_peers`：让模型先等一批干完、或者把活分给更少的会话，
  * 比让它一口气开 20 段把端点和额度烧光要好。
@@ -142,7 +142,7 @@ function clip(text: string, limit: number): string | null {
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
 }
 
-/** 子会话的诞生：与 `session.create` 处理器同一条路（草稿 + 三级模型解析） */
+/** 平级会话的诞生：与 `session.create` 处理器同一条路（草稿 + 三级模型解析） */
 export interface PeerSessionSessionCreator {
   /**
    * 开一段会话，并当场把「谁开的」（血缘）与自动交接开关的初值写进去 ——
@@ -154,7 +154,7 @@ export interface PeerSessionSessionCreator {
   /**
    * 草稿落成库里那一行。
    *
-   * 消息行、素材关系行都按 `sessionId` 挂外键，所以子会话收到第一句之前必须走这一道 ——
+   * 消息行、素材关系行都按 `sessionId` 挂外键，所以平级会话收到第一句之前必须走这一道 ——
    * 与 `session.send` 里那一句同义。
    */
   ensurePersisted(sessionId: string): Promise<unknown>;
@@ -163,9 +163,9 @@ export interface PeerSessionSessionCreator {
 /** 执行者（`ChatRunner` 结构上满足）：本文件只用它的两个口 —— 投一句、现读一格 */
 export interface PeerSessionRunner {
   /**
-   * 把一条内容投给某段对话（**唯一**的投递入口）。
+   * 把一条内容投给某段会话（**唯一**的投递入口）。
    *
-   * 它自己判「对话在不在、agent 活不活」；`await` 的边界就是「已入队」，回执只有消息 id。
+   * 它自己判「会话在不在、agent 活不活」；`await` 的边界就是「已入队」，回执只有消息 id。
    * 目标不存在时按 `HostError` 抛（`not_found` / `session_dead`）。
    */
   deliver(
@@ -214,7 +214,7 @@ export interface PeerSessionServiceDeps {
      */
     listByLineage(lineage: string): Promise<{ id: string }[]>;
   };
-  /** 子会话的诞生 */
+  /** 平级会话的诞生 */
   sessionCreator: PeerSessionSessionCreator;
   /**
    * 消息仓储。
@@ -246,7 +246,7 @@ function rejected(reason: PeerSessionRejectReason, hint: string): PeerSessionCre
  * 找不到那一段不是第五种情形：它是判别式的另一支（`{ found: false, status: null }`）。
  *
  * 所以本文件没有 `failed`：失败是某一次回答上的事实（消息上的 `error` 与结束原因），不是
- * 一段对话此刻的状态；把「上一次失败了」挂在状态上，就会在它下一次好好回答时继续说假话。
+ * 一段会话此刻的状态；把「上一次失败了」挂在状态上，就会在它下一次好好回答时继续说假话。
  */
 
 export class PeerSessionService implements PeerSessionPort {
@@ -292,18 +292,18 @@ export class PeerSessionService implements PeerSessionPort {
    * 开一段平级会话：建会话 → 落真行 → 把第一句交出去 → **立刻**回 `{ sessionId, label }`。
    *
    * 三种失败是**结构化拒绝**（返回结果，不抛错）：调用方自己已经是平级会话（`depth_exceeded`，
-   * 防无限分身）、这个父对话手头忙着 4 个平级会话（`too_many_peers`）、子会话三级解析拿不到
+   * 防无限分身）、这个父会话手头忙着 4 个平级会话（`too_many_peers`）、平级会话三级解析拿不到
    * 模型（`model_unresolved`）。其余错误照抛 —— 那是接线或环境出了真问题，编一个「拒绝」给
    * 模型反而误导它。
    *
-   * 这里**不挂任何「等它答完」的东西**：回答本身会以消息的形式出现，父对话要看就说一句
+   * 这里**不挂任何「等它答完」的东西**：回答本身会以消息的形式出现，父会话要看就说一句
    * `postMessage`、或者自己接着干活。等待等于子代理，而那已经存在了。
    */
   async create(input: PeerSessionCreateInput): Promise<PeerSessionCreated> {
     const parentSessionId = this.identityOf(input.caller);
     const parent = await this.deps.sessions.get(parentSessionId);
     if (!parent) {
-      // 父对话已经不在了（被删）：没有可继承的项目 / 助手，也没有可回的地方
+      // 父会话已经不在了（被删）：没有可继承的项目 / 助手，也没有可回的地方
       throw new HostError("not_found", {
         params: { entity: "session" },
         detail: { sessionId: parentSessionId, reason: "parent_gone" },
@@ -323,7 +323,7 @@ export class PeerSessionService implements PeerSessionPort {
       );
     }
 
-    // 2. 并发限额：这个父对话手头忙着的平级会话满了就不建（在 `create` 之前判：拒绝不许留下
+    // 2. 并发限额：这个父会话手头忙着的平级会话满了就不建（在 `create` 之前判：拒绝不许留下
     //    副作用 —— 一段建出来又没人管的会话比一条拒绝糟得多）。
     //    数的是血缘列反查出来的那批（库里的事实），忙不忙现读执行者。
     if ((await this.busyPeersOf(parentSessionId)) >= MAX_RUNNING_PEERS) {
@@ -334,7 +334,7 @@ export class PeerSessionService implements PeerSessionPort {
       );
     }
 
-    // 3. 子会话：与 `session.create` 同一条路（`agentId` 缺省 = 父对话那一个，模型走三级解析）。
+    // 3. 平级会话：与 `session.create` 同一条路（`agentId` 缺省 = 父会话那一个，模型走三级解析）。
     //    血缘与自动交接开关在这里给：谁开的这段会话 + 默认开（撞线自己交班、不问）——
     //    这两项在创建那一刻写进会话行，之后不再从进程内读。
     let created: SessionCreateResult;
@@ -359,7 +359,7 @@ export class PeerSessionService implements PeerSessionPort {
     }
 
     const sessionId = created.session.id;
-    // 4. 草稿落成真行：消息要挂在这段对话上（外键）
+    // 4. 草稿落成真行：消息要挂在这段会话上（外键）
     await this.deps.sessionCreator.ensurePersisted(sessionId);
 
     // 5. 先记名字：投出去之后马上就有工具回执，名字必须在那一刻之前就在（`read_session_status`
@@ -367,10 +367,10 @@ export class PeerSessionService implements PeerSessionPort {
     const label = input.label ?? this.nextLabel();
     this.labels.set(sessionId, label);
 
-    // 6. 把第一句交出去（受理即回）：来源写「父对话」，正文最前面那行注释由 core 加。
+    // 6. 把第一句交出去（受理即回）：来源写「父会话」，正文最前面那行注释由 core 加。
     //
-    //    `mayStart: true` 是因为这里就是创建者：**刚建出来的对话由创建者装上驱动者**。
-    //    执行者的判据一个字不改 —— 「投给已存在但没有驱动者的对话」仍然是 `session_dead`，
+    //    `mayStart: true` 是因为这里就是创建者：**刚建出来的会话由创建者装上 agent**。
+    //    执行者的判据一个字不改 —— 「投给已存在但没有 agent 的会话」仍然是 `session_dead`，
     //    那条判据是这套模型的一部分。
     await this.deps.chatRunner.deliver(sessionId, {
       content: input.prompt,
@@ -390,7 +390,7 @@ export class PeerSessionService implements PeerSessionPort {
    * 已经不存在的会话而断掉它手上的活）：判据只剩一条 —— **会话行在不在**（被用户删了就不在）。
    *
    * 从前这里还要求「进程内有它的记录」：那时血缘只在进程里，重启之后连自己开过哪一段都认不出。
-   * 现在血缘在会话行上（`lineage`），重启前后一段会话是不是兄弟会话是库里的事实，所以这里不再
+   * 现在血缘在会话行上（`lineage`），重启前后一段会话是不是平级会话是库里的事实，所以这里不再
    * 看进程内那张表 —— 它只提供可读名，没有就退回行上的 `name`（那也是一句真话）。
    *
    * 三格全**现读**，不存镜像：状态读执行者那一格，摘要读那一段 `agent.messages` 里最后一条
@@ -466,7 +466,7 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * 这个父对话手头**忙着**的平级会话有几个（限额的判据：先按血缘列反查出那批，再现读执行者）。
+   * 这个父会话手头**忙着**的平级会话有几个（限额的判据：先按血缘列反查出那批，再现读执行者）。
    *
    * 「谁是我的孩子」不再数进程内记录：血缘落库之后它是库里的事实，重启也不丢。
    */

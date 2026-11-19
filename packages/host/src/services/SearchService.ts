@@ -1,12 +1,12 @@
 /**
- * 搜索服务：按名称找对话、按聊天内容全文找消息，都能按 Workspace 过滤。
+ * 搜索服务：按名称找会话、按聊天内容全文找消息，都能按 Workspace 过滤。
  *
  * 对应能力编号：F-C6 / D16（名称搜索 + 全文搜索 + 项目过滤；中文分词成本接受）。
  *
  * 两条实现上的边界：
  *   1. 全文检索走 `MessageRepository.search`（FTS5 trigram，短查询它自己退化到 `LIKE`），
  *      服务层不写 SQL、也不自己分词 —— 分词口径随库一起改。
- *   2. 对话命中的形状要和侧栏一致（`SessionSummary`），所以摘要由
+ *   2. 会话命中的形状要和侧栏一致（`SessionSummary`），所以摘要由
  *      {@link SessionSummarizer} 注入，服务之间不各自拼一份。
  */
 
@@ -25,9 +25,9 @@ import type {
 import { toCoreRole } from "./MessageService.js";
 
 /**
- * 把一批对话行拼成侧栏摘要；入参顺序即出参顺序。
+ * 把一批会话行拼成侧栏摘要；入参顺序即出参顺序。
  *
- * 实现由 `SessionService.summarize` 提供 —— 搜索命中里的对话与侧栏里的同一段对话，
+ * 实现由 `SessionService.summarize` 提供 —— 搜索命中里的会话与侧栏里的同一段会话，
  * 必须长得一模一样（消息数、是否在跑、有没有问题挂着）。
  */
 export type SessionSummarizer = (rows: Session[]) => Promise<SessionSummary[]>;
@@ -74,7 +74,7 @@ export class SearchService {
   }
 
   /**
-   * 按名字搜对话（PRD F-C6 / D16）。
+   * 按名字搜会话（PRD F-C6 / D16）。
    *
    * 名字搜索走子串匹配而不是全文索引：名字短，还要能搜到一两个字的查询。空查询直接回空
    * 结果（用户还没输入完），不当作错误。
@@ -109,8 +109,8 @@ export class SearchService {
   /**
    * 按聊天内容全文搜消息（PRD F-C6 / D16）。
    *
-   * 过滤范围：给了 `sessionId` 就搜这一段对话，否则给了 `workspaceId` 就搜这个项目下
-   * 的全部对话，都没给就是不限范围。
+   * 过滤范围：给了 `sessionId` 就搜这一段会话，否则给了 `workspaceId` 就搜这个项目下
+   * 的全部会话，都没给就是不限范围。
    *
    * `offset` 由服务层切片：仓储的搜索按相关度/时间排好序后一次取 `offset + limit` 条，
    * 这里再切掉前 `offset` 条。于是 `total` 在不超过「取数上限」时是准确的条数，超过时是

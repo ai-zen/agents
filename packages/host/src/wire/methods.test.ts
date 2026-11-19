@@ -171,8 +171,8 @@ describe("PRD §4 的落点能力都有方法承接", () => {
   it("能力编号 ↔ 方法名的落点（按 PRD §4 清单逐条）", () => {
     // 落点为 S / S+C 的能力各自有承接方法；这张表是 PM 复核用的对照关系
     const coverage: Record<string, MethodName[]> = {
-      "F-A1": ["host.hello"], // 判定这次调用算不算一段对话
-      "F-A2": ["session.transient"], // 临时对话
+      "F-A1": ["host.hello"], // 判定这次调用算不算一段会话
+      "F-A2": ["session.transient"], // 一次性会话
       "F-A3": ["session.create"], // 开新会话、别续接
       "F-A8": ["config.get", "config.patch"], // 配错要能当场修
       "F-B1": ["agent.setModel", "agent.list"], // 模型唯一真相源
@@ -192,7 +192,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-C7": ["session.create"],
       "F-C8": ["session.revert"],
       "F-C10": ["session.delete"],
-      "F-D1": ["session.state"], // 重连先拉读数（四件事 + 待办）；阈值由客户端按消息上的 usage 算
+      "F-D1": ["session.state"], // 重连先拉读数（四件事 + inbox）；阈值由客户端按消息上的 usage 算
       "F-D2": ["question.list", "question.answer"],
       "F-D3": ["handoff.start"],
       "F-D4": ["handoff.start"],
@@ -222,7 +222,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-H8": ["asset.begin", "asset.end"],
       "F-I2": ["message.list"],
       "F-I3": ["session.state"],
-      "F-I5": ["session.state"], // 用量在每条消息的 `usage` 上，客户端自己合计（子 Agent 的那份也在）
+      "F-I5": ["session.state"], // 用量在每条消息的 `usage` 上，客户端自己合计（subagent 的那份也在）
       "F-I6": ["session.state"],
       "F-I7": ["message.list", "session.state"],
       "F-I8": ["notice.list", "notice.dismiss", "notice.clear"],

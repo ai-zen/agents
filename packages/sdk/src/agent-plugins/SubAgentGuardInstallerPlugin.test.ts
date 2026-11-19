@@ -5,7 +5,7 @@ import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
 import { SubAgentGuardInstallerPlugin } from "./SubAgentGuardInstallerPlugin.js";
 
 const MAX_TOKENS = 100;
-/** 子 Agent 与主 Agent 共用同一个绝对阈值 guardTokens（到线即中断，无倍数） */
+/** subagent 与主 Agent 共用同一个绝对阈值 guardTokens（到线即中断，无倍数） */
 const HARD_LIMIT = MAX_TOKENS;
 
 /** 组装 `onInnerLoopStart` 的 ctx（仅 agent.messages 上的用量参与护栏判定） */
@@ -13,7 +13,7 @@ function createInnerLoopCtx(agent: unknown): InnerLoopContext {
   return { agent, body: { messages: [] } } as unknown as InnerLoopContext;
 }
 
-/** 子 Agent 桩：只观察安装器向它装了什么 */
+/** subagent 桩：只观察安装器向它装了什么 */
 function createSubAgentStub() {
   const use = vi.fn();
   return { subAgent: { use } as unknown as Agent, use };
@@ -33,7 +33,7 @@ function pluginOf<T>(use: ReturnType<typeof vi.fn>, type: new (...args: never[])
   return found as T;
 }
 
-/** 假子 Agent 的 `onInnerLoopStart` ctx：护栏只看 `ctx.agent.messages` 上的用量，其余无关 */
+/** 假 subagent 的 `onInnerLoopStart` ctx：护栏只看 `ctx.agent.messages` 上的用量，其余无关 */
 function overLimitInnerLoopCtx(guardTokens: number): InnerLoopContext {
   const messages = [
     new Message({
@@ -58,7 +58,7 @@ function createRealAgent(): Agent {
 }
 
 /**
- * 设置子 Agent 上一轮的用量：用量只存在消息上（最后一条带 `usage` 的 assistant 消息），
+ * 设置 subagent 上一轮的用量：用量只存在消息上（最后一条带 `usage` 的 assistant 消息），
  * 所以这里造一条带 usage 的 assistant 消息（等价于流式响应写入后的状态）。
  */
 function setUsage(agent: Agent, promptTokens: number): void {
@@ -97,7 +97,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     expect(installedNames(use)).toEqual(["ContextGuardPlugin", "SubAgentGuardInstallerPlugin"]);
   });
 
-  it("安插后对子 Agent 立即生效（无需 init）：用量超硬上限即拒这一圈", async () => {
+  it("安插后对subagent 立即生效（无需 init）：用量超硬上限即拒这一圈", async () => {
     const subAgent = createRealAgent();
     const installer = new SubAgentGuardInstallerPlugin({
       guardTokens: MAX_TOKENS,
@@ -156,7 +156,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     ).resolves.toEqual(expect.any(String));
   });
 
-  it("孙级传染：子 Agent 再委派时，孙 Agent 同样被安插", async () => {
+  it("孙级传染：subagent 再委派时，孙 Agent 同样被安插", async () => {
     const installer = new SubAgentGuardInstallerPlugin({
       guardTokens: MAX_TOKENS,
     });
@@ -170,8 +170,8 @@ describe("SubAgentGuardInstallerPlugin", () => {
     expect(installedNames(use)).toEqual(["ContextGuardPlugin", "SubAgentGuardInstallerPlugin"]);
   });
 
-  it("交接中让行：isSuspended 为 true 时子 Agent 不拦，翻成 false 立刻恢复拦截", async () => {
-    // 交接回合本身就是上下文最满的时刻：主 Agent 让行而子 Agent 照拦，交接中派出去的
+  it("交接中让行：isSuspended 为 true 时subagent 不拦，翻成 false 立刻恢复拦截", async () => {
+    // 交接回合本身就是上下文最满的时刻：主 Agent 让行而 subagent 照拦，交接中派出去的
     // 子任务就会被自己的硬线打断。这里用一个**可变**开关，证明让行判断是每次判定时
     // 现读的（不是装配那一刻的快照）。
     let suspended = true;

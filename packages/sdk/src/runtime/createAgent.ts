@@ -115,14 +115,14 @@ export async function createAgent(
     modelConfig,
     // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用。
     // AgentContext.messages 是 mutable 运行时数组，若直接把 definition.messages
-    // 传入，对话期间 append() 会反向污染 Agent 定义模板——definition.messages
+    // 传入，会话期间 append() 会反向污染 Agent 定义模板——definition.messages
     // 被塞入完整历史后，迁移 prune/omit 失效、/new 继承旧历史。
     // 快照后，运行时改动只作用于会话副本，模板保持纯净。
     messages: [...(definition.messages ?? [])] as AgentNS.Message[],
     tools,
     // 中断相关策略：**显式参数 > `scope.config` > core 默认值**。
     // 中间那一层是「配置即事实」：策略写在 `config.json` 里，各端（CLI / Desktop）
-    // 不必自己读配置再转成参数，子 Agent 创建时也能自然继承同一份策略。
+    // 不必自己读配置再转成参数，subagent 创建时也能自然继承同一份策略。
     abortedToolRoundStrategy:
       options.abortedToolRoundStrategy ?? scope.config?.abortedToolRoundStrategy,
     abortedToolRoundReason: options.abortedToolRoundReason,

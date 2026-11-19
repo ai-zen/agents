@@ -1,7 +1,7 @@
 /**
- * `ScopeRegistry` —— key（workspaceId / 临时对话的目录键）→ `Scope` 的持有者（PLAN §4）。
+ * `ScopeRegistry` —— key（workspaceId / 一次性会话的目录键）→ `Scope` 的持有者（PLAN §4）。
  *
- * 一个 Workspace 一个 Scope（PRD D9）：同一 Workspace 下的多段对话复用同一个 Scope。
+ * 一个 Workspace 一个 Scope（PRD D9）：同一 Workspace 下的多段会话复用同一个 Scope。
  * 这个文件只回答两个问题：**现在有没有**（`create` 幂等 get-or-create）、
  * **什么时候拆**（`dispose` / `disposeAll`）。
  *
@@ -11,7 +11,7 @@
  *
  *   - 建出来之后一直活着，直到有人调 `dispose(workspaceId)`（Workspace 被删）或
  *     `disposeAll()`（进程收尾）。中间不会因为「没人用」而消失 —— 也没有「没人用」这个
- *     可判定的状态：Scope 是能力容器，它不属于某一段对话；
+ *     可判定的状态：Scope 是能力容器，它不属于某一段会话；
  *   - 因此本文件不再记引用计数（那是自动回收的输入），也不再持有计时器
  *     （PLAN §4 曾经唯一的那个空闲计时已撤掉）。
  *
@@ -21,7 +21,7 @@
  * ## 回收自下而上：撞上活着的 agent 就拒绝，不级联
  *
  * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `sessionId` 列表），
- * 而不是顺手把那些对话掐掉：级联会静默掐死正在跑的对话，而显式 API 的价值就是「动作要有意识」。
+ * 而不是顺手把那些会话掐掉：级联会静默掐死正在跑的会话，而显式 API 的价值就是「动作要有意识」。
  * 调用方的顺序是：先让会话停下（`ChatRunner.abort` / `forget`）+ 丢掉 agent
  * （`AgentRegistry.kill` / `killAll`），再回来销毁 Scope。
  *
@@ -94,7 +94,7 @@ export const systemClock: Clock = {
 export type ScopeFactory = (workspaceId: string) => Promise<Scope>;
 
 /**
- * 「这个 Scope 上还活着哪几段对话」—— 由 `AgentRegistry` 提供（结构上它满足）。
+ * 「这个 Scope 上还活着哪几段会话」—— 由 `AgentRegistry` 提供（结构上它满足）。
  *
  * 只有 `dispose` 用它：撞上活的就拒绝。不注入时当作「没有活着的 agent」
  * （单独用本文件的小工具、用例里的假注册表都属于这种情形）。
@@ -108,7 +108,7 @@ export type LiveSessionsQuery = (workspaceId: string) => string[];
  */
 export class ScopeBusyError extends Error {
   readonly workspaceId: string;
-  /** 还活着的对话（`AgentRegistry` 里的那些），按登记顺序 */
+  /** 还活着的会话（`AgentRegistry` 里的那些），按登记顺序 */
   readonly sessionIds: string[];
 
   constructor(workspaceId: string, sessionIds: string[]) {
@@ -125,7 +125,7 @@ export class ScopeBusyError extends Error {
 export interface ScopeRegistryOptions {
   /** 懒创建：只有 `create` 到不存在的 key 时才叫它 */
   createScope: ScopeFactory;
-  /** 查「这个 Scope 上还活着哪几段对话」（`AgentRegistry.sessionIds` 结构上满足） */
+  /** 查「这个 Scope 上还活着哪几段会话」（`AgentRegistry.sessionIds` 结构上满足） */
   liveSessions?: LiveSessionsQuery;
   /** 销毁 / 刷新 Scope 时抛出的错误往哪里报（缺省吞掉：这事失败不该让调用方以为业务失败了） */
   onError?: (error: unknown, workspaceId: string) => void;
@@ -205,7 +205,7 @@ export class ScopeRegistry {
    * 刷的是 `Scope.refresh()`：重读配置 + 各插件重新发现（MCP 连接跟着对账），**实例还是同一个**。
    * 所以正在跑的那一轮不会被抽掉能力，而它读到的配置已经是磁盘上新那一份。
    *
-   * 只对已经存在的条目动手：不存在就什么也不做（不为刷新去创建一个 Scope —— 下一段对话
+   * 只对已经存在的条目动手：不存在就什么也不做（不为刷新去创建一个 Scope —— 下一段会话
    * `create` 时会按新配置建）。正在创建中的条目等它建完再刷。
    *
    * 刷新失败不往外抛：一个项目的 MCP 文件写坏了不该让整次「配置生效」变成失败（走 `onError`）。
@@ -233,7 +233,7 @@ export class ScopeRegistry {
    * 销毁某一个 Scope —— Workspace 被删（或别的「这个能力容器不要了」的显式场合）时用。
    *
    * **撞上还活着的 agent 就拒绝**（{@link ScopeBusyError}，带着 `sessionId` 列表）：
-   * 不级联、不静默掐掉正在跑的对话。调用方要先停会话、丢掉 agent，再回来调它。
+   * 不级联、不静默掐掉正在跑的会话。调用方要先停会话、丢掉 agent，再回来调它。
    *
    * 不存在就什么也不做（幂等）；销毁之后再 `create` 得到新实例。
    */
@@ -297,7 +297,7 @@ export class ScopeRegistry {
  * 按 SDK 口径装配 Scope 的现成工厂。
  *
  * 装配内容：`new Scope({ getConfig, cwd, agentsDir })` + `allInOne(...)`（内置工具、用户工具、
- * Skill、MCP、子 Agent 五类插件），然后 `init()` 做首次能力发现。MCP 插件自带连接管理器，
+ * Skill、MCP、subagent 五类插件），然后 `init()` 做首次能力发现。MCP 插件自带连接管理器，
  * 于是「Scope 建好 = MCP 配置已发现」，`dispose()` 时连接一起断；配置改了则是 `refresh()`
  * （重读配置 + MCP 连接对账），不用重建 Scope。
  *
@@ -317,7 +317,7 @@ export interface WorkspaceScopeFactoryOptions {
   skillsPaths?: AbilityPathOption;
   /** 用户工具目录 */
   toolsPaths?: AbilityPathOption;
-  /** 子 Agent 目录 */
+  /** subagent 目录 */
   subAgentsPaths?: AbilityPathOption;
   /** MCP 配置文件的 5 层链（PRD L9），按 cwd 算好 */
   mcpPaths?: (cwd: string) => string[];
@@ -334,7 +334,7 @@ export interface WorkspaceScopeFactoryOptions {
 /**
  * 一组能力目录：可以是固定的一份，也可以是「按 cwd 算」的函数。
  *
- * Skill / 工具 / 子 Agent 的目录跟项目走（L9：离项目越近越优先），而 Scope 是按 cwd 装配的，
+ * Skill / 工具 / subagent 的目录跟项目走（L9：离项目越近越优先），而 Scope 是按 cwd 装配的，
  * 所以装配处需要把「按 cwd 算」这件事交进来，而不是在构造时先算一份死的。
  */
 export type AbilityPathOption = string[] | ((cwd: string) => string[]);

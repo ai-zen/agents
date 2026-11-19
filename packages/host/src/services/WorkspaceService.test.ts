@@ -22,7 +22,7 @@ import type { SessionPresence } from "../wire/index.js";
 import type { SessionRuntimePort } from "./SessionService.js";
 import { WorkspaceService } from "./WorkspaceService.js";
 
-/** 只记「被通知忘了哪些对话」的假运行时：项目删除要连带通知它 */
+/** 只记「被通知忘了哪些会话」的假运行时：项目删除要连带通知它 */
 class FakeRuntime implements SessionRuntimePort {
   readonly forgotten: string[] = [];
   presence(): SessionPresence {
@@ -144,12 +144,12 @@ describe("WorkspaceService.list", () => {
     expect(onlyPresent.workspaces.map((item) => item.name)).toEqual(["先建的"]);
   });
 
-  it("最近活动时间来自它名下对话的变化时间", async () => {
+  it("最近活动时间来自它名下会话的变化时间", async () => {
     const created = await service.create({ cwd: projectDir });
     await sessions.create({
       id: "c1",
       workspaceId: created.workspace.id,
-      name: "一段对话",
+      name: "一段会话",
       agentId: "a1",
       modelId: "m1",
       createdAt: 5_000,
@@ -239,7 +239,7 @@ describe("WorkspaceService.remove", () => {
     return workspaceId;
   }
 
-  it("dryRun 只算账：对话数、消息数、素材数与受影响的素材 id", async () => {
+  it("dryRun 只算账：会话数、消息数、素材数与受影响的素材 id", async () => {
     const workspaceId = await seed();
     const report = await service.remove({ workspaceId, dryRun: true });
 
@@ -251,7 +251,7 @@ describe("WorkspaceService.remove", () => {
     expect(sweeps).toEqual([]);
   });
 
-  it("真删连带删掉名下对话与消息，目录本身不碰（D11）", async () => {
+  it("真删连带删掉名下会话与消息，目录本身不碰（D11）", async () => {
     const workspaceId = await seed();
     const report = await service.remove({ workspaceId });
 
@@ -260,7 +260,7 @@ describe("WorkspaceService.remove", () => {
     expect(await sessions.get("c2")).toBeUndefined();
     expect(await messages.countBySession("c1")).toBe(0);
     expect(await service.list()).toEqual({ workspaces: [] });
-    // 运行时被通知忘掉这两段对话
+    // 运行时被通知忘掉这两段会话
     expect(runtime.forgotten.sort()).toEqual(["c1", "c2"]);
     // 关系行随外键没了；素材行本身交给素材层判（引用归零才删）
     expect(await assets.countReferences("as1")).toBe(0);

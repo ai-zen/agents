@@ -1,5 +1,5 @@
 /**
- * `session.*` 的验收：投递、素材挂接、按连接语言重渲染、中止、四件事与待办、删除时的现场丢弃。
+ * `session.*` 的验收：投递、素材挂接、按连接语言重渲染、中止、四件事与 inbox、删除时的现场丢弃。
  *
  * 「真正属于 core 的那部分」在用例里照原样跑（`FakeAgent` 走同一个 `applyChunk`），只有
  * 「流从哪来」换成了脚本 —— 所以这里验的是接线，不是模型。
@@ -51,7 +51,7 @@ const CONFIG = JSON.stringify(
         tokenThresholds: { handoff: 1000, guard: 2000 },
         custom: true,
       },
-      // 第二个模型：只是为了验「换模型会重建驱动者、改阈值不会」这条对照
+      // 第二个模型：只是为了验「换模型会重建 agent、改阈值不会」这条对照
       {
         id: "other-model",
         name: "Other Model",
@@ -152,7 +152,7 @@ async function makeHarness(
 }
 
 /**
- * 建一段对话并让它落库（R56：`session.create` 只发 id，首次 `send` 才写 `sessions` 行）。
+ * 建一段会话并让它落库（R56：`session.create` 只发 id，首次 `send` 才写 `sessions` 行）。
  *
  * 这里的用例要看的是别的东西（列表、四件事、删除），所以直接把草稿落成真行。
  */
@@ -166,7 +166,7 @@ async function seedSession(
     agentId: "default",
     modelId,
   });
-  if (!created.session) throw new Error("session.create 没有建出对话");
+  if (!created.session) throw new Error("session.create 没有建出会话");
   await app.sessionService.ensurePersisted(created.session.id);
   return created.session;
 }
@@ -218,7 +218,7 @@ async function uploadAsset(app: HostApp, sessionId: string): Promise<string> {
 }
 
 /**
- * 直接读库里那一行（`message.list` 在对话活着时读的是内存，验「落库」要绕过它）。
+ * 直接读库里那一行（`message.list` 在会话活着时读的是内存，验「落库」要绕过它）。
  *
  * `content` 列存的是 JSON：解回来就是 core 的 `AgentNS.MessageContent`。
  */
@@ -247,7 +247,7 @@ async function waitInboxRows(
   throw new Error(`库里的 inbox 行没到 ${expected} 条`);
 }
 
-/** 库里这段对话的 `messages` 行数（验「杀死不删消息」要绕过内存） */
+/** 库里这段会话的 `messages` 行数（验「杀死不删消息」要绕过内存） */
 async function countMessages(app: HostApp, sessionId: string): Promise<number> {
   const row = await app.db.get<{ n: number }>(
     "SELECT COUNT(*) AS n FROM messages WHERE sessionId = ?",
@@ -256,14 +256,14 @@ async function countMessages(app: HostApp, sessionId: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** 等这段对话真的闲下来（那一格是 idle、队里也空了），且写库推进完 */
+/** 等这段会话真的闲下来（那一格是 idle、队里也空了），且写库推进完 */
 async function idle(app: HostApp, sessionId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const now = app.chatRunner.state(sessionId);
     if (now.status === "idle" && now.inbox.length === 0) return;
     await wait(10);
   }
-  throw new Error("这段对话没有闲下来");
+  throw new Error("这段会话没有闲下来");
 }
 
 afterEach(async () => {
@@ -351,7 +351,7 @@ describe("session.send", () => {
     // 忙不是拒绝的理由：两句都是「收下了」，回执形状一模一样
     expect(second.userMessageId).not.toBe(first.userMessageId);
     expect(Object.keys(second).sort()).toEqual(["attachments", "userMessageId"]);
-    // 第二句此刻压在队里（现读的待办）
+    // 第二句此刻压在队里（现读的 inbox）
     expect(app.chatRunner.state(sessionId).inbox.map((item) => item.messageId)).toEqual([
       second.userMessageId,
     ]);
@@ -368,7 +368,7 @@ describe("session.send", () => {
   it("挡着的问题先答再发：投递不是绕道（D23）", async () => {
     const { app, sessionId } = await makeHarness();
 
-    // 摆一个挡着这段对话的问题（交接确认那一类）
+    // 摆一个挡着这段会话的问题（交接确认那一类）
     await app.questionService.ask({
       sessionId,
       kind: "confirmation",
@@ -553,17 +553,17 @@ describe("session.pause / session.resume（只翻输出闸）", () => {
 });
 
 describe("session.clearInbox", () => {
-  it("清掉这段对话的待办，回清了几条（待办归客户端自己管）", async () => {
+  it("清掉这段会话的 inbox，回清了几条（inbox 归客户端自己管）", async () => {
     const gate: Deferred<void> = deferred();
     const { app, sessionId } = await makeHarness({
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
     });
 
-    // 第一句在跑，后两句排在待办里
+    // 第一句在跑，后两句排在 inbox 里
     await callMethod(app, "session.send", { sessionId, input: { content: "第一句" } });
     await callMethod(app, "session.send", { sessionId, input: { content: "排一句" } });
     await callMethod(app, "session.send", { sessionId, input: { content: "再排一句" } });
-    // 「有几条」客户端本来就能从读数的待办那一格里读到
+    // 「有几条」客户端本来就能从读数的 inbox 那一格里读到
     expect(app.chatRunner.state(sessionId).inbox).toHaveLength(2);
 
     const cleared = await callMethod(app, "session.clearInbox", { sessionId });
@@ -574,7 +574,7 @@ describe("session.clearInbox", () => {
     await idle(app, sessionId);
   });
 
-  it("没有 agent 就没有待办可清：回 0，不是错误", async () => {
+  it("没有 agent 就没有 inbox 可清：回 0，不是错误", async () => {
     const { app, sessionId } = await makeHarness();
     expect(await callMethod(app, "session.clearInbox", { sessionId })).toEqual({
       cleared: 0,
@@ -583,7 +583,7 @@ describe("session.clearInbox", () => {
 });
 
 describe("session.delete", () => {
-  it("删除走服务层，并让运行时丢掉这段对话的现场（R33）", async () => {
+  it("删除走服务层，并让运行时丢掉这段会话的现场（R33）", async () => {
     const { app, sessionId } = await makeHarness();
     const assetId = await uploadAsset(app, sessionId);
     await callMethod(app, "session.send", {
@@ -603,13 +603,13 @@ describe("session.delete", () => {
     expect(removed.removed).toBe(true);
     // 现场没了：这一段现在没有 agent 了
     expect(app.chatRunner.state(sessionId).alive).toBe(false);
-    // 素材行随对话一起没了
+    // 素材行随会话一起没了
     expect(await app.assetService.get(assetId)).toBeUndefined();
   });
 });
 
 describe("session.kill（用户按杀死：这不是删除）", () => {
-  it("杀掉活着的会话：`{ killed: true }`；待办作废（库里那几行也删），消息与会话行一个字节没动", async () => {
+  it("杀掉活着的会话：`{ killed: true }`；inbox 里的条目作废（库里那几行也删），消息与会话行一个字节没动", async () => {
     const gate: Deferred<void> = deferred();
     const { app, sessionId } = await makeHarness({
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]),
@@ -633,7 +633,7 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
     expect(Object.keys(killed)).toEqual(["killed"]);
     expect(killed.killed).toBe(true);
 
-    // 死 = 这一段没有 agent 实例了：`alive: false`、待办空
+    // 死 = 这一段没有 agent 实例了：`alive: false`、inbox 空
     expect(app.chatRunner.state(sessionId)).toMatchObject({ alive: false, inbox: [] });
     // 库里那些没被取走的行也没了（先 `agents.kill` 再拆桥，那条 `inboxCleared` 才有人听）
     await waitInboxRows(app, sessionId, 0);
@@ -658,7 +658,7 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
     });
     expect(Object.keys(killed)).toEqual(["killed"]);
     expect(killed.killed).toBe(false);
-    // 什么也没动：仍然没有 agent、库里一条待办行也没多出来
+    // 什么也没动：仍然没有 agent、库里也没多出一行 inbox
     expect(app.chatRunner.state(sessionId).alive).toBe(false);
     expect(await app.inbox.listBySession(sessionId)).toEqual([]);
   });
@@ -682,8 +682,8 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
   });
 });
 
-describe("session.state：四件事 + 待办 + 名册 + 交接态", () => {
-  it("形状就是那九样：会话 id、四件事各一格、队里压着什么、子 agent 名册、交接态、读数的时刻", async () => {
+describe("session.state：四件事 + inbox + 名册 + 交接态", () => {
+  it("形状就是那九样：会话 id、四件事各一格、队里压着什么、subagent 名册、交接态、读数的时刻", async () => {
     const { app, sessionId } = await makeHarness();
 
     const { state } = await callMethod(app, "session.state", { sessionId });
@@ -706,7 +706,7 @@ describe("session.state：四件事 + 待办 + 名册 + 交接态", () => {
     expect(state.outputPaused).toBe(false);
     expect(state.status).toBe("idle");
     expect(state.inbox).toEqual([]);
-    // 死了就没有名册（子 agent 的话只在它自己那个对象里），也没在交接
+    // 死了就没有名册（subagent 的话只在它自己那个对象里），也没在交接
     expect(state.subAgents).toEqual([]);
     expect(state.handoff).toBeNull();
     expect(Number.isNaN(Date.parse(state.at))).toBe(false);
@@ -769,9 +769,9 @@ describe("session.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默认、
     expect(cleared.session.guardThreshold).toBe(1500);
   });
 
-  it("改阈值不重建驱动者（与 `setModel` 相反：那一条改的是装配事实）", async () => {
+  it("改阈值不重建agent（与 `setModel` 相反：那一条改的是装配事实）", async () => {
     const { app, sessionId } = await makeHarness();
-    // 先让它跑一次：这样才有一个活着的驱动者可比
+    // 先让它跑一次：这样才有一个活着的 agent 可比
     await callMethod(app, "session.send", { sessionId, input: { content: "先说一句" } });
     await idle(app, sessionId);
     const before = app.agentRegistry.get(sessionId);
@@ -787,11 +787,11 @@ describe("session.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默认、
         handoffThreshold: 800,
         guardThreshold: 1200,
       });
-      // 两条阈值不进驱动者的出厂配置：一个生灭决定都没有，手上还是同一个对象
+      // 两条阈值不进 agent 的出厂配置：一个生灭决定都没有，手上还是同一个对象
       expect(decisions).toEqual([]);
       expect(app.agentRegistry.get(sessionId)).toBe(before);
 
-      // 对照：换模型改的是装配事实 —— 空闲时改完那个驱动者当场退役，
+      // 对照：换模型改的是装配事实 —— 空闲时改完那个 agent 当场退役，
       // 下一句话按新事实重新装配（不靠投递时发现手里那个不合用）
       await callMethod(app, "session.setModel", { sessionId, modelId: "other-model" });
       expect(decisions).toEqual(["retired:assembly-facts-changed"]);
@@ -810,7 +810,7 @@ describe("session.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默认、
   });
 });
 
-describe("session.setModel / setThinking：只允许空闲时改（改完当场让驱动者退役）", () => {
+describe("session.setModel / setThinking：只允许空闲时改（改完当场让agent退役）", () => {
   it("忙时一律拒（`busy` + `working`），会话行一个字节都没写", async () => {
     const gate: Deferred<void> = deferred();
     const { app, sessionId } = await makeHarness({
@@ -837,7 +837,7 @@ describe("session.setModel / setThinking：只允许空闲时改（改完当场�
     expect(after?.modelId).toBe(before?.modelId);
     expect(after?.thinkingLevel).toBe(before?.thinkingLevel);
     expect(after?.updatedAt).toBe(before?.updatedAt);
-    // 驱动者也没被动过：它手上那批活还在跑
+    // agent 也没被动过：它手上那批活还在跑
     expect(app.agentRegistry.get(sessionId)).toBe(driver);
 
     gate.resolve();
@@ -860,7 +860,7 @@ describe("session.setModel / setThinking：只允许空闲时改（改完当场�
     });
     expect(changed.session.modelId).toBe("other-model");
     expect((await app.sessions.get(sessionId))?.modelId).toBe("other-model");
-    // 出厂配置变了：那个驱动者当场退役
+    // 出厂配置变了：那个 agent 当场退役
     expect(app.agentRegistry.get(sessionId)).toBeUndefined();
 
     // 没有 agent（死的）也一样能改：档位照样落库
@@ -872,7 +872,7 @@ describe("session.setModel / setThinking：只允许空闲时改（改完当场�
     expect((await app.sessions.get(sessionId))?.thinkingLevel).toBe("low");
   });
 
-  it("从来没有 agent 的对话也能改（没有驱动者就没有手上那批活）", async () => {
+  it("从来没有 agent 的会话也能改（没有agent就没有手上那批活）", async () => {
     const { app, sessionId } = await makeHarness();
     expect(app.chatRunner.state(sessionId).alive).toBe(false);
 

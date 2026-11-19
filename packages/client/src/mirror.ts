@@ -1,6 +1,6 @@
 /**
- * 一段对话的**镜像**：按到达的事件把 `messages` 重建出来，另外记住**四件事**（忙闲 / 输入闸 /
- * 输出闸 / 死活）、子 agent 名册与交接态。
+ * 一段会话的**镜像**：按到达的事件把 `messages` 重建出来，另外记住**四件事**（忙闲 / 输入闸 /
+ * 输出闸 / 死活）、subagent 名册与交接态。
  *
  * ## 为什么要镜像，以及它凭什么与宿主逐字一致
  *
@@ -21,14 +21,14 @@
  *
  * ## 只管这三样东西
  *
- * ① `messages`：主线一栏 + 按 `toolCallId` 归好的子 Agent 各栏；
+ * ① `messages`：主线一栏 + 按 `toolCallId` 归好的 subagent 各栏；
  * ② **四件事各占一格**（`PRD.md` 4.4）：忙闲 `status`（`working` / `idle`）、输入闸 `inputPaused`、
  *    输出闸 `outputPaused`、死活 `alive`。它们各有自己的来路 —— 忙闲来自 `state`，两道闸来自
  *    `output:paused` / `output:resumed` / `input:paused` / `input:resumed`，死活来自
- *    `session.changed` 的 `agent_started` / `agent_gone`；打开对话时由 `session.state`
+ *    `session.changed` 的 `agent_started` / `agent_gone`；打开会话时由 `session.state`
  *    一次补齐。**没读到就是 `null`**（不是「死」，也不是「闲」：那两样都是要报给用户看的事实，
  *    拿它们当「还没读到」的占位就是借词）；
- * ③ `session.state` 的另外两格：子 agent **名册**（只用来铺栏）与**交接态**
+ * ③ `session.state` 的另外两格：subagent **名册**（只用来铺栏）与**交接态**
  *    （非空即「正在交接」）。交接态还有一条在线时的来路：`session.changed` 的
  *    `handoff_started` 把它置起来、`memory_replaced` 把它收掉（见 {@link SessionMirror} 的
  *    `sessionChanged`）—— 不然长时间在线、不重拉读数的窗口永远学不到「交接开始了」。
@@ -36,7 +36,7 @@
  * **四件事不合成一格**：`status` 说「它会不会马上动」，两道闸说「它收不收 / 取不取」，
  * `alive` 说「还有没有那个对象」。按钮只读后三样（活着？闸开着？），与忙闲无关。
  *
- * 子 agent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：子 agent 不入库，
+ * subagent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：subagent 不入库，
  * 也就没有第二个地方可以补 —— 重连之后靠名册把栏铺回来，内容靠之后的事件继续长。
  *
  * 用量**不在这里**：每条消息自带 `usage`，要显示就把消息上的 `usage` 自己加起来（core 不管
@@ -118,17 +118,17 @@ export function toMirrorEvent(event: string, payload: unknown): MirrorEvent | nu
   }
 }
 
-/** 某一栏子 Agent 的消息（`toolCallId` = 那次委派的工具调用 id） */
+/** 某一栏 subagent 的消息（`toolCallId` = 那次委派的工具调用 id） */
 export interface SubAgentColumn {
   toolCallId: string;
   messages: readonly AgentNS.Message[];
 }
 
 /**
- * 名册上的一行：哪一个子 agent、叫什么、跑到哪一格了（`session.state.subAgents` 原样）。
+ * 名册上的一行：哪一个 subagent、叫什么、跑到哪一格了（`session.state.subAgents` 原样）。
  *
  * 它只用来**铺栏**（重连之后一次问清有哪些栏），栏里的消息一律来自事件（`toolCallId`）——
- * 子 agent 的消息不入库，也就没有第二个地方可以补。
+ * subagent 的消息不入库，也就没有第二个地方可以补。
  */
 export interface SubAgentFact {
   toolCallId: string;
@@ -140,8 +140,8 @@ export interface SubAgentFact {
  * 镜像的一份只读样子（给界面与用例看，不是另一份数据）。
  *
  * 四件事各占一格，字段名与宿主 `session.state` 的同名同义。每一格 `null` = **还没读到**：
- * 镜像刚建出来时（打开对话的这一刻）什么都还没读到，所以四件都是 `null` —— 不是「死」（界面会去
- * 提示复活一段其实好端端的对话），也不是「闲」（界面会以为它会理你）。拿到读数（`applyReadout`）
+ * 镜像刚建出来时（打开会话的这一刻）什么都还没读到，所以四件都是 `null` —— 不是「死」（界面会去
+ * 提示复活一段其实好端端的会话），也不是「闲」（界面会以为它会理你）。拿到读数（`applyReadout`）
  * 之后四件一次补齐，之后各自由自己的事件换下去。
  */
 export interface MirrorSnapshot {
@@ -154,9 +154,9 @@ export interface MirrorSnapshot {
   outputPaused: boolean | null;
   /** 死活：这一段此刻有没有 agent 实例，来自 `agent_started` / `agent_gone` */
   alive: boolean | null;
-  /** 主线消息（不属于任何子 Agent 的那些），顺序即对话里的先后 */
+  /** 主线消息（不属于任何 subagent 的那些），顺序即会话里的先后 */
   messages: readonly AgentNS.Message[];
-  /** 按 `toolCallId` 归好的子 Agent 各栏 */
+  /** 按 `toolCallId` 归好的 subagent 各栏 */
   subAgents: SubAgentColumn[];
   /** 名册（现读的那一份；没读过就是空） */
   roster: SubAgentFact[];
@@ -164,7 +164,7 @@ export interface MirrorSnapshot {
   handoff: { since: string } | null;
 }
 
-/** 一段对话的镜像：主线一栏、子 Agent 各一栏、四件事各一格，外加名册与交接态 */
+/** 一段会话的镜像：主线一栏、subagent 各一栏、四件事各一格，外加名册与交接态 */
 export class SessionMirror {
   readonly sessionId: string;
   /** 忙闲；还没读到就是 `null`（见 {@link MirrorSnapshot.status}） */
@@ -180,7 +180,7 @@ export class SessionMirror {
   private rosterValue: SubAgentFact[] = [];
   private handoffValue: { since: string } | null = null;
   /**
-   * 「这一条是从快照里来的」—— 只在打开对话的那一小段时间有意义。
+   * 「这一条是从快照里来的」—— 只在打开会话的那一小段时间有意义。
    *
    * 打开时先订阅、再拉快照，拉取期间到达的事件先攒着，快照落地之后按序补上。补的那一批里，
    * 属于快照已包含的那些消息的增量**不再折一遍**：快照里的内容已经是它的最新样子，再折一次
@@ -189,7 +189,7 @@ export class SessionMirror {
   private fromSnapshot = new Set<string>();
 
   /**
-   * 建出来时**四件都是 `null`（还没读到）**：打开对话的那一刻 `session.state` 还没回来，
+   * 建出来时**四件都是 `null`（还没读到）**：打开会话的那一刻 `session.state` 还没回来，
    * 而这四件都是要报给用户看的事实 —— 拿其中任何一个去占位，读的人就分不出「这段真的没人 /
    * 真的不收话」与「我还没读到」。
    */
@@ -232,7 +232,7 @@ export class SessionMirror {
     return this.main;
   }
 
-  /** 某一栏子 Agent 的消息（没有那一栏就是空数组） */
+  /** 某一栏 subagent 的消息（没有那一栏就是空数组） */
   subAgent(toolCallId: string): readonly AgentNS.Message[] {
     return this.columns.get(toolCallId) ?? [];
   }
@@ -296,7 +296,7 @@ export class SessionMirror {
    * 这也是那四件从 `null`（还没读到）**真正变成事实**的那一刻；之后各自被自己的事件换下去
    * （`applyActivity` / `applyOutputPaused` 这一类 / `applyAlive`）。
    *
-   * 名册只**加栏、不删栏**：它说的是「这一段此刻有哪几个子 agent」，而栏里的消息是事件一条
+   * 名册只**加栏、不删栏**：它说的是「这一段此刻有哪几个 subagent」，而栏里的消息是事件一条
    * 一条攒起来的。名册被清空（下一批开始了）不等于那些话没说过 —— 所以已经攒下的栏原样留着。
    *
    * 交接态非空就是「正在交接」：界面要把它与那四件事分开显示（交接期间输入框拦住、只留中断）。
@@ -323,8 +323,8 @@ export class SessionMirror {
    * 整段替换主线（`message.list` 的全量、重连时本地最后一条 id 已经不在、`memory_replaced`
    * 之后的重拉）。
    *
-   * 子 Agent 那几栏**不动**：`message.list` 不带 `toolCallId` 时只回主线，把它们清掉等于把
-   * 手里已有的那几栏凭空丢掉；而子 agent 的消息不入库，**没有**「再拉一次某一栏」这回事
+   * subagent 那几栏**不动**：`message.list` 不带 `toolCallId` 时只回主线，把它们清掉等于把
+   * 手里已有的那几栏凭空丢掉；而 subagent 的消息不入库，**没有**「再拉一次某一栏」这回事
    * （重连之后靠名册把栏铺回来，内容靠之后的事件继续长）。
    */
   replaceAll(messages: readonly AgentNS.Message[]): void {
@@ -354,7 +354,7 @@ export class SessionMirror {
   /**
    * 折一条事件进来。
    *
-   * `replay: true` 表示这是「打开对话期间攒下、快照落地之后补上」的那一批（见
+   * `replay: true` 表示这是「打开会话期间攒下、快照落地之后补上」的那一批（见
    * {@link SessionMirror.fromSnapshot} 的说明）。
    */
   apply(event: MirrorEvent, options: { replay?: boolean } = {}): void {

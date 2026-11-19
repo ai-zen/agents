@@ -87,7 +87,7 @@ function abortRace<T>(
  * 一次交接的完整上下文 —— 贯穿「交接前 → 写文档 → 交接后」，供钩子与调用方使用。
  */
 export interface HandoffContext {
-  /** 当前对话 Agent（这一趟只在它的会话里再投一条指令，不换会话） */
+  /** 当前会话 Agent（这一趟只在它的会话里再投一条指令，不换会话） */
   agent: SdkAgent;
   /** **实际**使用的执行者（`self` 失败降级后会是 `summary`） */
   mode: HandoffMode;
@@ -203,9 +203,9 @@ export interface MigrateParams extends HandoffParams {
  * 模板的唯一真相源是 `handoff` Skill（`SKILL.md`）；代码只负责
  * 「读正文 → 注入 → 读不到时用兜底模板」，不持有第二份章节清单。
  *
- * ## `handingOff` 只说「这一趟自己在跑」，不是「这段对话在交接」
+ * ## `handingOff` 只说「这一趟自己在跑」，不是「这段会话在交接」
  *
- * 「这段对话正在交接」那份事实由宿主持有（`ChatRunner.beginHandoff` / `endHandoff`：它决定
+ * 「这段会话正在交接」那份事实由宿主持有（`ChatRunner.beginHandoff` / `endHandoff`：它决定
  * 这段的消息落不落库、对外报哪一格），SDK 这一层根本不认识会话，也就不该有自己的那本账。
  * 这里的 `handingOff` 只回答一件事：**本服务这一趟是不是已经在跑**（防重入 + 让护栏插件
  * 让行）。自重入是真会发生的：自交接就是「往同一个 agent 里再投一条指令」（`push`），它跑完
@@ -238,7 +238,7 @@ export class HandoffService {
   /**
    * 这一趟交接是不是本服务自己在跑（防重入 + 插件让行）。
    *
-   * 不是「这段对话在交接」：那份事实由宿主持有（见类注释）。
+   * 不是「这段会话在交接」：那份事实由宿主持有（见类注释）。
    */
   private _handingOff = false;
   /** 交接回合的工具守卫（同一实例复用 + arm/disarm，避免插件数组无限增长） */
@@ -408,7 +408,7 @@ export class HandoffService {
    * `runSelfHandoff` 里判）—— 外部使用者用 SDK 时也是这一份，宿主不另写一遍（`PRD.md` 4.5）。
    *
    * 换完的记忆就是「模板（系统提示）+ 断点消息」这两截：**没有** cwd 消息 —— 目录随时问 `cwd`
-   * 工具就行，不必往新记忆里塞一条（那一条只在创建对话时写一次）。
+   * 工具就行，不必往新记忆里塞一条（那一条只在创建会话时写一次）。
    *
    * 落点在哪儿就看有没有注入 {@link HandoffServiceOptions.commitMemory}：
    *   - **没注入**：SDK 自己把 `agent.messages` **原地**换成新记忆（外部使用者的路）。用 `splice`
@@ -482,7 +482,7 @@ export class HandoffService {
   /**
    * 串行化 + 防重入：本服务同一时刻只跑一趟交接。
    *
-   * 只管「这一趟自己在跑」（不是「这段对话在交接」——那份事实在宿主那里），所以不需要
+   * 只管「这一趟自己在跑」（不是「这段会话在交接」——那份事实在宿主那里），所以不需要
    * 跨实例的锁，也不持有取消句柄：取消只认调用方递进来的 `signal`。
    */
   private async withHandingOff<T>(fn: () => Promise<T>): Promise<T> {
@@ -632,7 +632,7 @@ export class HandoffService {
    * 取消后回到交接前的状态：把交接回合追加的消息全部截掉，并删掉本次新建的文档。
    *
    * 为什么必须截消息：`self` 模式的交接回合是「一条几 KB 的 Skill 指令 user 消息 +
-   * 工具结果 + 回执」，留在 `agent.messages` 里既让用户看到半段无关对话，也让下一次
+   * 工具结果 + 回执」，留在 `agent.messages` 里既让用户看到半段无关会话，也让下一次
    * 请求把它当历史再发一遍（`↑` 翻历史还会把它翻出来）。`agent.messages` 是唯一真相源，
    * 截回原长度之后，转录、历史、用量全都自动复位，不需要第二处补偿。
    */

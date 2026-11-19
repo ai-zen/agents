@@ -41,7 +41,7 @@ function session(id: string, overrides: Partial<Session> = {}): Session {
     guardThreshold: null,
     autoHandoff: false,
     lineage: null,
-    // 待交接：刚建出来 / 没答过交接题，没有待办
+    // 待交接：刚建出来 / 没答过交接题，没有待交接
     pendingHandoff: null,
     nameIsAuto: true,
     createdAt: 1_700_000_000_000,
@@ -78,7 +78,7 @@ function said(role: AgentNS.Role, content: AgentNS.MessageContent): AgentNS.Mess
   return { id: `said-${saidSeq}`, role, content };
 }
 
-/** 子会话的诞生：与 `session.create` 一样把新会话登记进「库里」 */
+/** 平级会话的诞生：与 `session.create` 一样把新会话登记进「库里」 */
 class FakeCreator implements PeerSessionSessionCreator {
   readonly created: SessionCreateParams[] = [];
   readonly persisted: string[] = [];
@@ -88,7 +88,7 @@ class FakeCreator implements PeerSessionSessionCreator {
   private seq = 0;
 
   constructor() {
-    this.rows.set(PARENT_ID, session(PARENT_ID, { name: "父对话" }));
+    this.rows.set(PARENT_ID, session(PARENT_ID, { name: "父会话" }));
   }
 
   async create(params: SessionCreateParams & { lineage: string; autoHandoff: boolean }): Promise<SessionCreateResult> {
@@ -173,7 +173,7 @@ interface Harness {
   service: PeerSessionService;
   creator: FakeCreator;
   runner: FakeRunner;
-  /** 调用方（父对话那段会话里装配出来的 agent） */
+  /** 调用方（父会话那段会话里装配出来的 agent） */
   caller: Agent;
   /** 摆一段会话的「库里那一行」与它的消息 */
   seed(sessionId: string, messages?: StoredMessage[]): void;
@@ -228,7 +228,7 @@ function makeHarness(): Harness {
 // ---------------------------------------------------------------------------
 
 describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻回", () => {
-  it("回执只有 sessionId 与 label，第一句以「父对话」为来源投进去", async () => {
+  it("回执只有 sessionId 与 label，第一句以「父会话」为来源投进去", async () => {
     const harness = makeHarness();
 
     const created = await harness.service.create({ caller: harness.caller, prompt: "查一下登录页" });
@@ -244,14 +244,14 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
         autoHandoff: true,
       },
     ]);
-    // 先落真行再投（消息行要挂在这段对话上）
+    // 先落真行再投（消息行要挂在这段会话上）
     expect(harness.creator.persisted).toEqual(["c-child-1"]);
     const delivery = harness.runner.deliveries[0]!;
     expect(delivery.sessionId).toBe("c-child-1");
     expect(delivery.input).toEqual({
       content: "查一下登录页",
-      source: { kind: "agent", label: "父对话" },
-      // 这里就是创建者：刚建出来的对话由创建者装上驱动者
+      source: { kind: "agent", label: "父会话" },
+      // 这里就是创建者：刚建出来的会话由创建者装上 agent
       mayStart: true,
     });
   });
@@ -272,7 +272,7 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     const harness = makeHarness();
     const child = await harness.service.create({ caller: harness.caller, prompt: "第一层" });
     if (!child.ok) throw new Error("第一层没建成");
-    // 子会话里的 agent 也登记一次：它现在是一个「平级会话」的调用方
+    // 平级会话里的 agent 也登记一次：它现在是一个「平级会话」的调用方
     const nested = new FakeAgent();
     harness.service.bind(nested, child.sessionId);
 
@@ -325,7 +325,7 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     expect(harness.runner.deliveries).toEqual([]);
   });
 
-  it("父对话已经不在了 → 真错误（不是一条拒绝）", async () => {
+  it("父会话已经不在了 → 真错误（不是一条拒绝）", async () => {
     const harness = makeHarness();
     harness.creator.rows.delete(PARENT_ID);
 
@@ -523,7 +523,7 @@ describe("send：直接把这一句交出去，不看关系", () => {
     expect(result).toEqual({ ok: true });
     expect(harness.runner.deliveries[0]).toEqual({
       sessionId: "c-stranger",
-      input: { content: "帮我看看这个", source: { kind: "agent", label: "会话「父对话」" } },
+      input: { content: "帮我看看这个", source: { kind: "agent", label: "会话「父会话」" } },
     });
   });
 
@@ -541,7 +541,7 @@ describe("send：直接把这一句交出去，不看关系", () => {
       content: "说一句",
     });
 
-    // 第 0 条是 `create` 投进去的那第一句（来源「父对话」），这一条是 `send` 投的
+    // 第 0 条是 `create` 投进去的那第一句（来源「父会话」），这一条是 `send` 投的
     expect(harness.runner.deliveries[1]!.input.source).toEqual({
       kind: "agent",
       label: `会话「${child.label}」`,

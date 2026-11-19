@@ -25,7 +25,7 @@ export class SdkError extends Error {
  * `denied`。
  *
  * 触发条件通常是上下文 token 用量超过硬线（如读入超大文件），
- * 继续对话已无意义且会持续放大费用/延迟，故由上层向用户显式报错。
+ * 继续会话已无意义且会持续放大费用/延迟，故由上层向用户显式报错。
  */
 export class ContextOverflowError extends Error {
   /** 触发拦截时的用量（usage.prompt_tokens） */

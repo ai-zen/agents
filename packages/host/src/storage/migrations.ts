@@ -73,10 +73,10 @@ export const MIGRATIONS: Migration[] = [
          ON sessions (workspaceId, pinned DESC, createdAt DESC)`,
 
       // messages：边流边写，同一条消息按 id 反复覆盖（PRD D15）。
-      // parentToolCallId 记录子 Agent 消息挂在哪次工具调用上（R37），顶层消息为空。
+      // parentToolCallId 记录 subagent 消息挂在哪次工具调用上（R37），顶层消息为空。
       `CREATE TABLE IF NOT EXISTS messages (
          id               TEXT PRIMARY KEY,
-         sessionId   TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+         sessionId        TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
          seq              INTEGER NOT NULL,
          role             TEXT NOT NULL,
          status           TEXT NOT NULL,
@@ -89,17 +89,17 @@ export const MIGRATIONS: Migration[] = [
          updatedAt        INTEGER NOT NULL,
          UNIQUE (sessionId, seq)
        )`,
-      // 按对话顺序读取，以及 `after=<消息 id>` 定位
+      // 按会话顺序读取，以及 `after=<消息 id>` 定位
       `CREATE INDEX IF NOT EXISTS idx_messages_session_seq
          ON messages (sessionId, seq)`,
-      // 按父工具调用取子 Agent 的消息（R37 的读取路径）；NULL 行不进索引，顶层消息不受影响
+      // 按父工具调用取 subagent 的消息（R37 的读取路径）；NULL 行不进索引，顶层消息不受影响
       `CREATE INDEX IF NOT EXISTS idx_messages_parent_tool_call
          ON messages (parentToolCallId)`,
 
       // assets：二进制素材的唯一真相（PRD L2 / F-H8）—— 文件在 assets/ 下，这一行记的是引用、
       // 大小、类型、内容摘要与像素尺寸。
       // 去重是**全局**的：sha256 唯一，同一份字节在整台机器上只有一行、一份磁盘。所以这张表
-      // 不再记「属于哪段对话 / 哪条消息」：归属在 session_assets 里，一张图贴到两个项目
+      // 不再记「属于哪段会话 / 哪条消息」：归属在 session_assets 里，一张图贴到两个项目
       // 就是一行素材 + 两行关系。
       // width / height 可空：落定时按文件头解（PNG / JPEG），解不出来就是 NULL。
       `CREATE TABLE IF NOT EXISTS assets (
@@ -116,12 +116,12 @@ export const MIGRATIONS: Migration[] = [
 
       // session_assets：谁引用了哪份素材（消息 × 素材的关系行）。
       // 写入时机是消息落库那一刻（扫 content 里的 `__asset_id`，同一 message+asset 一行）；
-      // 撤回 / 删对话 / 删消息都由外键级联删掉关系行，不需要谁去减计数。
+      // 撤回 / 删会话 / 删消息都由外键级联删掉关系行，不需要谁去减计数。
       // assetId 用 RESTRICT：还有人引用时物理删不掉素材行（护栏），真正的删除条件由
       // 「COUNT(*) = 0」判定（见 AssetRepository.deleteIfUnreferenced）。
       // 「几张会话引用了它」= COUNT(DISTINCT sessionId)，走 idx_session_assets_asset。
       `CREATE TABLE IF NOT EXISTS session_assets (
-         sessionId TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+         sessionId      TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
          messageId      TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
          assetId        TEXT NOT NULL REFERENCES assets (id) ON DELETE RESTRICT,
          createdAt      INTEGER NOT NULL,
@@ -145,15 +145,15 @@ export const MIGRATIONS: Migration[] = [
       // 「这个端点上有没有」与「别的端点上有没有」都走这条（都是 assetId 前缀查询）
 
       // notices：持久化，durationMs 为 null 表示永久（PRD L3）。
-      // sessionId 是「这条通知与哪段对话有关」的真值（可空 = 全局通知）：按对话过滤、
-      // 按对话清都走这一列；对话没了它也就没有意义，所以跟着级联删除。
+      // sessionId 是「这条通知与哪段会话有关」的真值（可空 = 全局通知）：按会话过滤、
+      // 按会话清都走这一列；会话没了它也就没有意义，所以跟着级联删除。
       `CREATE TABLE IF NOT EXISTS notices (
          id             TEXT PRIMARY KEY,
          level          TEXT NOT NULL,
          code           TEXT NOT NULL,
          params         TEXT,
          durationMs     INTEGER,
-         sessionId TEXT REFERENCES sessions (id) ON DELETE CASCADE,
+         sessionId      TEXT REFERENCES sessions (id) ON DELETE CASCADE,
          createdAt      INTEGER NOT NULL
        )`,
       `CREATE INDEX IF NOT EXISTS idx_notices_createdAt ON notices (createdAt)`,
@@ -164,7 +164,7 @@ export const MIGRATIONS: Migration[] = [
       // 往下跑的，v1 建、v5 删，两头都对得上（见本文件开头）。
       `CREATE TABLE IF NOT EXISTS questions (
          id             TEXT PRIMARY KEY,
-         sessionId TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+         sessionId      TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
          kind           TEXT NOT NULL,
          payload        TEXT NOT NULL,
          state          TEXT NOT NULL,
@@ -282,7 +282,7 @@ export const MIGRATIONS: Migration[] = [
     /**
      * v5：题不落库（PRD 4.10 的「只做实时」），会话行上补一格待交接，消息表删掉第二套取法。
      *
-     * 三件事一起做，因为它们说的是同一件事的三面：**题的生命 = 这段对话活着的这段时间**。
+     * 三件事一起做，因为它们说的是同一件事的三面：**题的生命 = 这段会话活着的这段时间**。
      *
      *   1. `DROP TABLE IF EXISTS questions` —— 题改成进程内对象（`services/QuestionService.ts`）：
      *      它没有消费者就没有意义（答完之后该办的事由宿主办掉，`PRD 4.10`），所以库里那一行
@@ -290,10 +290,10 @@ export const MIGRATIONS: Migration[] = [
      *      消失，不必单独 drop。
      *   2. `sessions.pendingHandoff` —— 答完题之后「这段当时不闲、等它闲下来再交接」那一格
      *      （`PLAN §5.2`）。它必须落库：「等下一次变闲」可能跨重启，而 restart 之后题已经没了，
-     *      这是**唯一**能带着走的那份事实。`NULL` = 没有待办。
-     *   3. 删 `messages.parentToolCallId` 列与它的索引 —— 子 Agent 的话从来不入库（`CORE.md` §17），
+     *      这是**唯一**能带着走的那份事实。`NULL` = 没有待交接。
+     *   3. 删 `messages.parentToolCallId` 列与它的索引 —— subagent 的话从来不入库（`CORE.md` §17），
      *      这一列于是永远 NULL，而它带来的 `listByParentToolCallId`／`listBySession` 里那句
-     *      `AND parentToolCallId IS NULL` 是「这段对话有多少条消息」的第二种取法。库里只能有一个
+     *      `AND parentToolCallId IS NULL` 是「这段会话有多少条消息」的第二种取法。库里只能有一个
      *      来源，那条取法与它的读取口一起删。
      *
      * 为什么用 `DROP COLUMN` 而不是「建新表 + 搬数据 + 换名」：本机 `node:sqlite` 的 SQLite 支持
@@ -308,7 +308,7 @@ export const MIGRATIONS: Migration[] = [
     statements: [
       // 题改成进程内对象：那张表与它的索引一起消失（索引随表走）
       `DROP TABLE IF EXISTS questions`,
-      // 答完题留下、等下一次变闲再兑现的那一格：`"self"` / `"summary"`，NULL = 没有待办
+      // 答完题留下、等下一次变闲再兑现的那一格：`"self"` / `"summary"`，NULL = 没有待交接
       `ALTER TABLE sessions ADD COLUMN pendingHandoff TEXT`,
       // 第二种取法先拆索引（列还挂在索引上时 DROP COLUMN 会被拒），再删列
       `DROP INDEX IF EXISTS idx_messages_parent_tool_call`,
@@ -330,8 +330,8 @@ export const MIGRATIONS: Migration[] = [
      *
      * - `messageId`：主键。它同时是恢复时的去重键（「这条已经落地过了就扔掉」），而同一个
      *   id 也不会入队两次 —— 它是客户端乐观回显用的那个 id（PRD D5），投递方定死；
-     * - `sessionId`：这一条排在哪段对话的队列里。删对话 / 删工作区时条目跟着没 ——
-     *   它是那段对话的待办，对话没了它就没有去处（与 `notices` / `messages` 同一个口径）；
+     * - `sessionId`：这一条排在哪段会话的队列里。删会话 / 删工作区时条目跟着没 ——
+     *   它是那段会话 inbox 里的条目，会话没了它就没有去处（与 `notices` / `messages` 同一个口径）；
      * - `source`：core 的 `MessageSource` 判别结构的 **JSON 原文**（不是字符串，见 v3 的口径）；
      * - `content`：正文的 **JSON 原文**，字符串与多模态段数组都原样进去、原样读回来
      *   （落库时清理会让两次请求的前缀对不上，prompt caching 全 miss）；
@@ -339,22 +339,22 @@ export const MIGRATIONS: Migration[] = [
      *   条目上那一格就是 ISO 串，存下来要读回同一个值（「一个字段都不重算」）；
      * - `seq`：入队顺序。**必须要它**：`createdAt` 只到毫秒，同一毫秒进来的两条（一次批量
      *   投递、重启后紧接着投）会撞在一起，光按 `createdAt` 排就还原不回它们本来的先后。
-     *   它在**一段对话内**递增（入队就是队尾，于是「顺序 = 取件顺序」这条在库里也成立）。
+     *   它在**一段会话内**递增（入队就是队尾，于是「顺序 = 取件顺序」这条在库里也成立）。
      *
-     * 索引 `(sessionId, seq)`：装配时按对话一次取干、且按入队顺序 —— 这是唯一的读取路径，
+     * 索引 `(sessionId, seq)`：装配时按会话一次取干、且按入队顺序 —— 这是唯一的读取路径，
      * 两者一个复合索引就够，不再为 `seq` 单建一条。
      */
     version: 6,
     statements: [
       `CREATE TABLE IF NOT EXISTS inbox (
          messageId      TEXT PRIMARY KEY,
-         sessionId TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+         sessionId      TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
          source         TEXT NOT NULL,
          content        TEXT NOT NULL,
          createdAt      TEXT NOT NULL,
          seq            INTEGER NOT NULL
        )`,
-      // 按对话取，且顺序即入队顺序（恢复时要按它原样放回）
+      // 按会话取，且顺序即入队顺序（恢复时要按它原样放回）
       `CREATE INDEX IF NOT EXISTS idx_inbox_session ON inbox (sessionId, seq)`,
     ],
   },

@@ -16,7 +16,7 @@ import {
   type MessageInput,
 } from "./states.js";
 
-describe("对话此刻的四件事（PRD 4.4 / CORE「对外报四件事」）", () => {
+describe("会话此刻的四件事（PRD 4.4 / CORE「对外报四件事」）", () => {
   it("忙闲就是 core 那一格：两个值，名字不改（`busy` 只留作拒绝原因码）", () => {
     const coreStates: AgentNS.AgentState[] = ["working", "idle"];
     const outward: SessionActivity[] = [...coreStates];

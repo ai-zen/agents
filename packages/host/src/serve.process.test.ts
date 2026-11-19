@@ -1,5 +1,5 @@
 /**
- * 真起进程的集成用例：`node dist/cli.js serve` → 真 WebSocket 连上 → 建项目/对话 → 杀进程 →
+ * 真起进程的集成用例：`node dist/cli.js serve` → 真 WebSocket 连上 → 建项目/会话 → 杀进程 →
  * 同一个数据根再起 → 数据还在 → 收尾时发现文件被摘掉。
  *
  * 与 `session.flow.test.ts` 的分工：那条把宿主当库用（同一进程内真监听），这一条走的是**产品真正的
@@ -276,7 +276,7 @@ describe("命令行本身：退出码与让人看得懂的错误", () => {
   }, 60_000);
 });
 
-describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 重启 → 数据还在 → 收尾清场", () => {
+describe("进程冒烟：命令行起服务 → 连接 → 建项目/会话 → 重启 → 数据还在 → 收尾清场", () => {
   it("跑完整条链路", async () => {
     // ---- 1. 起进程，从发现文件读实际端口与凭证 ----
     const first = startProcess();
@@ -316,7 +316,7 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     expect(helloResult.language).toBe("zh");
     expect(helloResult.protocolVersion).toBe("1");
 
-    // ---- 3. 建项目 → 建对话 → 消息还是空的 → 对话列表里有一条 ----
+    // ---- 3. 建项目 → 建会话 → 消息还是空的 → 会话列表里有一条 ----
     const createdWorkspace = await client.call("workspace.create", { cwd: workspaceDir });
     const workspaceId = (createdWorkspace.result as { workspace: { id: string } }).workspace.id;
     expect(workspaceId.length).toBeGreaterThan(0);
@@ -332,7 +332,7 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     const messages = await client.call("message.list", { sessionId });
     expect((messages.result as MessageListResult).messages).toEqual([]);
 
-    // R56 / F-C2：还没发过消息的对话只在内存里（草稿），所以侧栏列表里看不到它
+    // R56 / F-C2：还没发过消息的会话只在内存里（草稿），所以侧栏列表里看不到它
     const beforeSend = await client.call("session.list", {});
     expect((beforeSend.result as SessionListResult).total).toBe(0);
 
@@ -350,7 +350,7 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     expect(code).toBe(0);
     await expect(fs.access(join(dataRoot, "run", "host.json"))).rejects.toBeTruthy();
 
-    // ---- 5. 同一个数据根再起一个：项目和对话都还在（数据在库里） ----
+    // ---- 5. 同一个数据根再起一个：项目和会话都还在（数据在库里） ----
     const second = startProcess();
     const restarted = await waitForHostFile();
     expect(restarted.token).toBe(host.token);

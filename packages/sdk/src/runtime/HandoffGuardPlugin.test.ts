@@ -14,7 +14,7 @@ function toolStart(name: string, args: Record<string, unknown> = {}): any {
 }
 
 describe("HandoffGuardPlugin", () => {
-  it("未 arm 时完全让行（不影响正常对话的写操作）", () => {
+  it("未 arm 时完全让行（不影响正常会话的写操作）", () => {
     const guard = new HandoffGuardPlugin();
     expect(guard.armed).toBe(false);
     expect(guard.onToolStart(toolStart("write", { path: "src/a.ts" }))).toBeUndefined();

@@ -328,8 +328,8 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     expect(sessions).toEqual([]);
   });
 
-  it("按对话列 = 那一段的 + 全局的；按对话清只清那一段的", async () => {
-    // 通知的对话归属是一列真值（外键开着），所以先要有那两个对话
+  it("按会话列 = 那一段的 + 全局的；按会话清只清那一段的", async () => {
+    // 通知的会话归属是一列真值（外键开着），所以先要有那两个会话
     await harness.db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
     for (const id of ["c1", "c2"]) {
       await harness.db.run(
@@ -351,7 +351,7 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
       params: { summary: "另一段" },
       sessionId: "c2",
     });
-    // 全局通知：不属于任何对话
+    // 全局通知：不属于任何会话
     const global = await harness.service.create({
       level: "info",
       code: "notice.settingsApplied",
@@ -365,14 +365,14 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     // 归属在真列上（`NoticeView.sessionId`），渲染参数里只有文案自己的东西
     const ownNotice = scoped.notices.find((notice) => notice.sessionId === "c1");
     expect(ownNotice?.text.params).toEqual({ summary: "一次" });
-    // 另一段对话的界面同样看得到全局的那条（只是看不到 c1 那条）
+    // 另一段会话的界面同样看得到全局的那条（只是看不到 c1 那条）
     const other = await harness.service.list({ sessionId: "c2" });
     expect(other.notices).toHaveLength(2);
     expect(other.notices.some((notice) => notice.id === global.id)).toBe(true);
     expect(other.notices.every((notice) => notice.sessionId !== "c1")).toBe(true);
     expect((await harness.service.list()).notices).toHaveLength(3);
 
-    // 清「一段对话的」只清真挂在那段上的：全局通知不属于它，不跟着没
+    // 清「一段会话的」只清真挂在那段上的：全局通知不属于它，不跟着没
     const cleared = await harness.service.clear({ sessionId: "c1" });
     expect(cleared).toEqual({ cleared: 1 });
     expect((await harness.service.list({ sessionId: "c1" })).notices.map((notice) => notice.id)).toEqual([global.id]);
@@ -384,7 +384,7 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     expect((await harness.service.list()).notices).toEqual([]);
   });
 
-  it("clear 不给对话就清全部", async () => {
+  it("clear 不给会话就清全部", async () => {
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
     await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });

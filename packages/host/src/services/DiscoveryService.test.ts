@@ -2,7 +2,7 @@
  * 能力发现的验收（F-G1 / F-G2 / F-F6 / L9 / R54）。
  *
  * 覆盖：5 层 MCP 链的路径与「只有 2 层可编辑」、合并顺序（近的优先）、`missing` 与 `broken`
- * 分开报、写回时 `oauth` 与未知字段原样保留、Skill 4 层 / 工具与子 Agent 各 2 层、
+ * 分开报、写回时 `oauth` 与未知字段原样保留、Skill 4 层 / 工具与 subagent 各 2 层、
  * 坏条目也要看得见、以及组装层要的那份路径。
  */
 
@@ -128,7 +128,7 @@ describe("DiscoveryService 的层路径", () => {
     ]);
   });
 
-  it("Skill 4 层、工具与子 Agent 各 2 层，近的在前", () => {
+  it("Skill 4 层、工具与subagent 各 2 层，近的在前", () => {
     expect(service.skillLayers(project).map((layer) => layer.path)).toEqual([
       join(project, ".ai-zen", "skills"),
       join(project, ".agents", "skills"),
@@ -685,7 +685,7 @@ describe("DiscoveryService 读目录类能力", () => {
     const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
 
     expect(discovery.skills.map((layer) => layer.depth)).toEqual([0, 1, 2, 3]);
-    // Skill / 工具 / 子 Agent 没有「按作用域写入」这回事（F-G1 只管 MCP）
+    // Skill / 工具 / subagent 没有「按作用域写入」这回事（F-G1 只管 MCP）
     expect(discovery.skills.map((layer) => layer.scope)).toEqual([null, null, null, null]);
     expect(discovery.tools.map((layer) => layer.scope)).toEqual([null, null]);
     expect(discovery.subagents.map((layer) => layer.scope)).toEqual([null, null]);
@@ -721,7 +721,7 @@ describe("DiscoveryService 读目录类能力", () => {
     expect(layerAt(discovery.tools, 1).state).toBe("missing");
   });
 
-  it("子 Agent 2 层：没有 function 的 json 说明它用不了", async () => {
+  it("subagent 2 层：没有 function 的 json 说明它用不了", async () => {
     await writeJson(join(project, ".agents", "sub-agents", "helper.json"), {
       id: "helper",
       name: "Helper",

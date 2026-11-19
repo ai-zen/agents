@@ -135,7 +135,7 @@ export function migrateModelReasoning(model: Model): { model: Model; changed: bo
 }
 
 /**
- * 迁移整个配置。只处理对话模型（`models`）——
+ * 迁移整个配置。只处理会话模型（`models`）——
  * 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
  *
  * 同时做两件字段级收敛：

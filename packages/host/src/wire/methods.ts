@@ -40,7 +40,7 @@ import type {
  *
  * 消息相关的出参用的就是 core 的类型：消息本体 `AgentNS.Message`、内容 `AgentNS.MessageContent` /
  * `AgentNS.MessageContentSection`、增量 `AgentNS.Delta`、用量 `AgentNS.Usage`。这里只包外壳
- * （哪个对话、哪个工作站、受理了什么）。
+ * （哪个会话、哪个工作站、受理了什么）。
  */
 
 // ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ export interface HostSetLanguageResult {
 /**
  * 一个 Workspace（PRD D9 / D12）。
  *
- * `folder.exists` 是「目录还在不在」这个事实；目录没了对话照常能看，是否只读由客户端判断（D12）。
+ * `folder.exists` 是「目录还在不在」这个事实；目录没了会话照常能看，是否只读由客户端判断（D12）。
  */
 export interface WorkspaceView {
   id: string;
@@ -214,7 +214,7 @@ export interface WorkspaceView {
   createdAt: string;
   updatedAt: string;
   sessionCount: number;
-  /** 最近一次有对话活动的时间（没有则为空） */
+  /** 最近一次有会话活动的时间（没有则为空） */
   lastActivityAt: string | null;
 }
 
@@ -232,7 +232,7 @@ export interface WorkspaceListResult {
 /**
  * `workspace.create` 入参（PRD D9 / D10）。
  *
- * `cwd` 可以是未登记的目录 —— 普通对话遇到未登记 cwd 时问一次要不要登记（D10），
+ * `cwd` 可以是未登记的目录 —— 普通会话遇到未登记 cwd 时问一次要不要登记（D10），
  * 用户答「是」就走这个方法；`name` 不传则由目录名起一个可改的名字。
  */
 export interface WorkspaceCreateParams {
@@ -287,13 +287,13 @@ export interface WorkspaceRemoveResult {
 // ---------------------------------------------------------------------------
 
 /**
- * 对话在列表里的样子（PRD F-C5 / D13）。
+ * 会话在列表里的样子（PRD F-C5 / D13）。
  *
  * `pinned` 与 `createdAt` 一起决定侧栏顺序：默认创建时间倒序、置顶优先；活动/打开/改名都不改顺序（D13）。
  *
  * 与 `session.state` 同一个口径，侧栏这一段也带**四件事各一格**（{@link SessionPresence}：
  * `status` / `inputPaused` / `outputPaused` / `alive`）—— 侧栏那个圆点与按钮只读这几格，不必为每段
- * 对话再拉一次读数。四件事都是现读，不落库、不是会话字段。
+ * 会话再拉一次读数。四件事都是现读，不落库、不是会话字段。
  */
 export interface SessionSummary extends SessionPresence {
   id: string;
@@ -303,9 +303,9 @@ export interface SessionSummary extends SessionPresence {
   /** 名字还是「创建时间」这个原名，即用户没改过（PRD D2） */
   nameIsAuto: boolean;
   pinned: boolean;
-  /** 这段对话的助手（创建时定死，PRD L7） */
+  /** 这段会话的助手（创建时定死，PRD L7） */
   agentId: string;
-  /** 这段对话现在用的模型（存会话行上，可改，PRD F-B4） */
+  /** 这段会话现在用的模型（存会话行上，可改，PRD F-B4） */
   modelId: string;
   /**
    * 这段会话自己定的交接阈值（软线）；`null` = 跟模型走。
@@ -317,7 +317,7 @@ export interface SessionSummary extends SessionPresence {
   handoffThreshold: number | null;
   /** 这段会话自己定的防护阈值（硬线）；`null` = 跟模型走。口径同上 */
   guardThreshold: number | null;
-  /** 自动交接开关：`true` = 撞线自己交班、不问（兄弟会话那侧）/ `false` = 装不下时问用户一次 */
+  /** 自动交接开关：`true` = 撞线自己交班、不问（平级会话那侧）/ `false` = 装不下时问用户一次 */
   autoHandoff: boolean;
   /** 血缘：谁开的这段会话（父会话 id）；`null` = 用户建的。只用于展示「由会话 X 创建」 */
   lineage: string | null;
@@ -341,19 +341,19 @@ export interface SessionSummary extends SessionPresence {
 }
 
 /**
- * 一段对话的当前模型事实（PRD F-B4 / F-B8）。
+ * 一段会话的当前模型事实（PRD F-B4 / F-B8）。
  *
  * `source` 说这个模型是谁定的：`agent` = 助手定义上那个（这段会话没换过）；
  * `session` = 这段会话自己定的（创建时点名或 `session.setModel` 改过）。
  */
 export type SessionModelState = ModelState;
 
-/** 一段对话的完整样子 */
+/** 一段会话的完整样子 */
 /**
- * 这段对话的助手事实（PRD F-I6 的助手块要的就是这三格）。
+ * 这段会话的助手事实（PRD F-I6 的助手块要的就是这三格）。
  *
- * `agentId` 是这段对话的身份（创建时定死，L7）；`name` 与 `available` 现读助手定义得出
- * （`AgentService.describe`）。定义已经没了（助手被删，L7 允许对话留着旧 id）或文件读不出来时
+ * `agentId` 是这段会话的身份（创建时定死，L7）；`name` 与 `available` 现读助手定义得出
+ * （`AgentService.describe`）。定义已经没了（助手被删，L7 允许会话留着旧 id）或文件读不出来时
  * 这两项都是 `null` —— 说「不知道」而不是编一个看起来像真的名字。
  */
 export interface SessionAgentState {
@@ -366,7 +366,7 @@ export interface SessionView extends SessionSummary {
   agent: SessionAgentState;
   model: SessionModelState;
   thinking: ThinkingState;
-  /** 对话所属 Workspace 的目录事实（PRD D12） */
+  /** 会话所属 Workspace 的目录事实（PRD D12） */
   folder: FolderFact;
 }
 
@@ -389,10 +389,10 @@ export interface SessionListResult {
  * `session.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / D10 / L7）。
  *
  * 项目与助手在创建时定死（PRD L7）；模型先取助手定义上那个（也可在这里点名），之后归这段会话
- * —— 换它走 `session.setModel`，改「以后的对话」用哪个模型走 `agent.setModel`。
+ * —— 换它走 `session.setModel`，改「以后的会话」用哪个模型走 `agent.setModel`。
  *
  * 定位项目两条路（D10）：`workspaceId` 是「已经登记过的项目」；`cwd` 是从目录出发
- * —— 那个目录还没登记成项目时，宿主不建对话，而是问一次要不要登记（见出参）。
+ * —— 那个目录还没登记成项目时，宿主不建会话，而是问一次要不要登记（见出参）。
  */
 export interface SessionCreateParams {
   /** 已经登记的项目 id */
@@ -426,7 +426,7 @@ export interface SessionStateParams {
   sessionId: string;
 }
 
-/** `session.state` 出参：一段对话此刻的读数（四件事 + 待办 + 名册 + 交接态） */
+/** `session.state` 出参：一段会话此刻的读数（四件事 + inbox + 名册 + 交接态） */
 export interface SessionStateResult {
   state: SessionState;
 }
@@ -479,7 +479,7 @@ export interface SessionDeleteResult {
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
  *
  * 两种拒因，各说一件事：
- *   - 有问题在挡着这段对话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
+ *   - 有问题在挡着这段会话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
  *   - 目标是死的（宿主那边没有 agent 对象）时是 `session_dead`：界面上那个发送按钮先复活
  *     再投，那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）。
  *
@@ -526,7 +526,7 @@ export interface SessionAbortResult {
 }
 
 /**
- * `session.pause` 入参：暂停这段对话 —— **关输出闸**（PRD 4.4）。
+ * `session.pause` 入参：暂停这段会话 —— **关输出闸**（PRD 4.4）。
  *
  * 暂停是**输出闸**：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
  * 它**不掐在途** —— 要立刻停就用中断（`session.abort`：掐在途 + 关输出闸）。
@@ -538,14 +538,14 @@ export interface SessionPauseParams {
 
 /** `session.pause` 出参：打完之后这段是不是暂停着 */
 export interface SessionPauseResult {
-  /** `paused` = 打完之后这段的输出闸是不是关着（死对话没有闸可翻，所以是 `false`） */
+  /** `paused` = 打完之后这段的输出闸是不是关着（死会话没有闸可翻，所以是 `false`） */
   paused: boolean;
 }
 
 /**
  * `session.resume` 入参：继续（PRD 4.4：「继续」按钮）。
  *
- * **只开闸，不投任何东西**：压着的待办按原顺序接着跑。
+ * **只开闸，不投任何东西**：inbox 里压着的条目按原顺序接着跑。
  */
 export interface SessionResumeParams {
   sessionId: string;
@@ -560,7 +560,7 @@ export interface SessionResumeResult {
  * `session.kill` 入参：**用户按杀死**（PRD 4.4 里「会让它死的」三条路之一）。
  *
  * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了。杀死之后：在途
- * 那一批掐断，没被取走的待办作废（库里那些行也一起删），界面上的「发话」还能把驱动者重新叫
+ * 那一批掐断，没被取走的条目作废（库里那些行也一起删），界面上的「发话」还能把 agent 重新叫
  * 起来 —— 别的来源一律报 `session_dead`（不复活，PRD 4.2 / 4.4）。
  *
  * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给
@@ -575,7 +575,7 @@ export interface SessionKillParams {
  *
  * `killed: true` = 这一次真的把 agent 收掉了；`killed: false` = 这一段**本来就是死的**（没有
  * agent），什么都没动，**也不是错误** —— 与 `session.pause` / `session.resume` 对死
- * 对话回 `false` 同一个口径。
+ * 会话回 `false` 同一个口径。
  */
 export interface SessionKillResult {
   killed: boolean;
@@ -584,7 +584,7 @@ export interface SessionKillResult {
 /**
  * `session.clearInbox` 入参。
  *
- * 待办是「已经收下、还没被取走」的那些话。**待办本身属于客户端自己的事**：有没有东西、
+ * inbox 是「已经收下、还没被取走」的那些话。**inbox 本身属于客户端自己的事**：有没有东西、
  * 有几条，它从 `session.state.inbox` 就看得到；要清空就调这个方法，不必自己一条一条
  * 算帐。宿主这一侧只是把它交到 core（`agent.clearInbox()`）。
  */
@@ -667,8 +667,8 @@ export interface SessionSetThinkingResult {
  * 三态是这一条的全部重点：**省略 = 不动**（没提它就是不打算改它）、**显式 `null` = 回到
  * 「跟模型走」**、正整数 = 这一段自己的数字。`null` 与省略是两件事，别把省略读成清空。
  *
- * 它们**不进驱动者的出厂配置**（出厂配置 = 模型 + 它的参数），由宿主现读，所以改完不用
- * 重建驱动者 —— 那是 `setModel` / `setThinking` 才要付的代价。
+ * 它们**不进 agent 的出厂配置**（出厂配置 = 模型 + 它的参数），由宿主现读，所以改完不用
+ * 重建 agent —— 那是 `setModel` / `setThinking` 才要付的代价。
  */
 export interface SessionSetThresholdsParams {
   sessionId: string;
@@ -689,7 +689,7 @@ export interface SessionSetThresholdsResult {
 }
 
 /**
- * `session.transient` 入参（PRD F-A2 / D3 / 4.3：一次性对话）。
+ * `session.transient` 入参（PRD F-A2 / D3 / 4.3：一次性会话）。
  *
  * 跑到头就散：结果回来之后内存清空，无 id、不可 attach、不入库、不进列表；只借 Scope，
  * 与 Workspace 无关，所以这里要显式的 `cwd` 而不是 `workspaceId`。
@@ -708,7 +708,7 @@ export interface SessionTransientParams {
  * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「一共花了多少」，
  * 就把消息上的 `usage` 拿出来自己加（core 不算、不存、不报用量）。
  *
- * 子 Agent 不另给快照：它们说过的话在消息里，真要翻就按那个委派的工具调用 id 取（F-I7）。
+ * subagent 不另给快照：它们说过的话在消息里，真要翻就按那个委派的工具调用 id 取（F-I7）。
  */
 export interface SessionTransientResult {
   /** 那条助手消息，core 原样 */
@@ -723,7 +723,7 @@ export interface SessionTransientResult {
 /**
  * `message.list` 入参（PLAN A12 / PRD L5 / F-I7 / F-C6）。
  *
- * - 不给 `after`、也不给 `around`：返回这段对话的全部消息；
+ * - 不给 `after`、也不给 `around`：返回这段会话的全部消息；
  * - 给了 `after` 且该 id 存在：**从这条开始**（含它本身，内容是**最新**的）+ 其后全部；
  * - 给了 `after` 但该 id 不存在：返回全部。
  *
@@ -732,11 +732,11 @@ export interface SessionTransientResult {
  * 「从这条开始而不是它的下一条」是故意的：重连的客户端上次拿到的最后一条可能正是流式中那条，
  * 它的内容已经变了；从它自己重新拿，就天然是「最新内容 + 之后的」。
  *
- * **读的是它此刻的样子，不是库里的快照**（PLAN §7）：这段对话有驱动者就从它的内存读，没有
+ * **读的是它此刻的样子，不是库里的快照**（PLAN §7）：这段会话有 agent 就从它的内存读，没有
  * 才读库。所以打开、续拉、定位这几种取法都在同一个来源上算 —— `after` / `around` /
  * `includeHidden` 的语义不因为来源不同而变一套。
  *
- * `toolCallId` 用来取某个子 Agent 自己的消息（PRD F-I7：子 Agent 的消息可回看）。
+ * `toolCallId` 用来取某个 subagent 自己的消息（PRD F-I7：subagent 的消息可回看）。
  *
  * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认**不返回**：core 的 `hidden` 就是
  * 「这条不给人看」。要它们就显式要（`includeHidden: true`）。
@@ -749,17 +749,17 @@ export interface MessageListParams {
    * 定位取窗（PRD F-C6）：以这条消息为中心取一窗，供客户端把搜索命中的那条摆到眼前。
    *
    * **消费者是桌面端的搜索命中跳转（PLAN W4）**：`search.messages` 给了一条命中，桌面端拿着它的
-   * `messageId` 调 `message.list({ around })` 就能直接渲染命中那条附近的一段对话。
+   * `messageId` 调 `message.list({ around })` 就能直接渲染命中那条附近的一段会话。
    *
    * 只在一种情形下有一种解释：
-   *   - 命中（这条在这段对话里、且在本次可见集里）：返回以它为中心的一窗（默认 40 条，
+   *   - 命中（这条在这段会话里、且在本次可见集里）：返回以它为中心的一窗（默认 40 条，
    *     见 `MessageService` 的 `AROUND_WINDOW`；前后尽量均分，命中那条一定在里面），
    *     `anchor` 报成它；
    *   - 没命中（已撤回 / 换过库 / 是 `hidden` 而这次没要 `includeHidden`）：**空页**
    *     （`messages: []`、`anchor: null`），**不报错** —— 消息可能刚被撤回，那不是一次失败的请求；
    *   - 与 `after` 同时给：**`around` 优先，`after` 被忽略**。两者是两种取法（一个「从这里往下」、
    *     一个「围绕这里」），混在一起没有唯一答案，所以只认 `around`；
-   *   - 与 `toolCallId` 同时给：`toolCallId` 决定读哪一段消息（子 Agent 自己那一段），`around`
+   *   - 与 `toolCallId` 同时给：`toolCallId` 决定读哪一段消息（subagent 自己那一段），`around`
    *     只在这一段里定位 —— 与 `after` 无关。
    */
   around?: string;
@@ -770,7 +770,7 @@ export interface MessageListParams {
 /**
  * `message.list` 出参：消息本体就是 core 的 `AgentNS.Message`，这里只包一层定位外壳。
  *
- * 顺序即对话里的先后顺序；「这条是否还在上下文里」看消息自己的 `omit`，「这条是不是不给人看」
+ * 顺序即会话里的先后顺序；「这条是否还在上下文里」看消息自己的 `omit`，「这条是不是不给人看」
  * 看 `hidden`（PRD F-D9），内容与工具调用看 `content` / `tool_calls` / `reasoning_content`。
  */
 export interface MessageListResult {
@@ -789,10 +789,10 @@ export interface MessageListResult {
 // ---------------------------------------------------------------------------
 
 /**
- * `question.list` 入参（PRD 4.10：**这段对话现在有没有一道题**）。
+ * `question.list` 入参（PRD 4.10：**这段会话现在有没有一道题**）。
  *
- * `sessionId` 必填：题不落库，它只活在「这一段对话活着」的这段时间里 —— 「全库问题列表」
- * 是持久化时代的形状（要给重启后重开看，才需要一个跨对话的入口），现在没有那个消费者。
+ * `sessionId` 必填：题不落库，它只活在「这一段会话活着」的这段时间里 —— 「全库问题列表」
+ * 是持久化时代的形状（要给重启后重开看，才需要一个跨会话的入口），现在没有那个消费者。
  * 也没有 `state` 过滤：两个状态（`pending` / `answered`）一起给，客户端自己看那一格。
  */
 export interface QuestionListParams {
@@ -807,7 +807,7 @@ export interface QuestionListResult {
 /**
  * `question.answer` 出参里的后续动作（PRD 4.10：先答完，再判能不能立刻交接）。
  *
- * 只回「触发了什么」，**不等那件事做完**：交接要不要另起驱动者、文档写到哪、有没有降级、
+ * 只回「触发了什么」，**不等那件事做完**：交接要不要另起 agent、文档写到哪、有没有降级、
  * 用了几秒 —— 都是「交接自己怎么走的」，它的载体是通知（`notice`）与 `session.changed`
  * 里的 `memory_replaced`，不该憋在这个回执里。
  */
@@ -1148,7 +1148,7 @@ export interface ConfigDeleteEndpointResult {
   references: ReferenceList;
 }
 
-/** 发现的种类（PRD F-G1 / F-G2：MCP 5 层链、Skill 4 层、工具与子 Agent 各 2 层） */
+/** 发现的种类（PRD F-G1 / F-G2：MCP 5 层链、Skill 4 层、工具与 subagent 各 2 层） */
 export type DiscoveryKind = "mcps" | "skills" | "tools" | "subagents";
 
 /**
@@ -1176,7 +1176,7 @@ export type McpOauthView = Omit<NonNullable<McpServerConfig["oauth"]>, "clientSe
  *
  * 只有启用状态留了一个开关：视图给 `enabled`，写入端收 SDK 的 `disabled`，两者互为取反。
  *
- * 非 MCP 的那三类（Skill / 工具 / 子 Agent）没有传输这一层：那几个字段恒为 `null`、`extra` 恒为
+ * 非 MCP 的那三类（Skill / 工具 / subagent）没有传输这一层：那几个字段恒为 `null`、`extra` 恒为
  * `Record` 里的空对象。
  */
 export interface DiscoveryEntryView {
@@ -1254,7 +1254,7 @@ export interface DiscoveryLayerView {
 /**
  * 一份完整的发现视图（PRD F-G2 / F-F6 / F-G1）。
  *
- * 客户端拿它渲染「MCP 屏 / Skill 屏 / 工具屏 / 子 Agent 屏」，也能看见坏掉的配置文件。
+ * 客户端拿它渲染「MCP 屏 / Skill 屏 / 工具屏 / subagent 屏」，也能看见坏掉的配置文件。
  */
 export interface DiscoveryView {
   workspaceId: string | null;
@@ -1344,7 +1344,7 @@ export interface ConfigDeleteMcpResult {
  * 提示词 + 模型 + 权限四维（tools / skills / mcps / subagents）+ 自定义标记，形状沿用 SDK；
  * 不可用的助手也列出来并说明原因（F-B5：「藏起来」会让人以为它没了）。
  *
- * 提示词（`messages`）与子 Agent 定义（`function`）也在视图里：`agent.update` 收得到它们，
+ * 提示词（`messages`）与 subagent 定义（`function`）也在视图里：`agent.update` 收得到它们，
  * 视图就必须读得回来，否则「能写不能读」等于编辑不了助手定义（F-F5）。
  */
 export interface AgentView {
@@ -1357,7 +1357,7 @@ export interface AgentView {
   modelParams: Record<string, unknown>;
   permissions: AgentDefinition["permissions"] | null;
   /**
-   * 提示词（预设对话），形状就是 SDK 的 `AgentDefinition["messages"]`（PRD F-B2 / F-F5）。
+   * 提示词（预设消息），形状就是 SDK 的 `AgentDefinition["messages"]`（PRD F-B2 / F-F5）。
    *
    * 定义是「能写就能读」的：这份原样交给 `agent.update` 的 `messages` 等于没改。
    * 定义文件读不出来时是 `null` —— 那时没有「它的提示词是什么」这个事实可说。
@@ -1366,12 +1366,12 @@ export interface AgentView {
    */
   messages: AgentDefinition["messages"] | null;
   /**
-   * 子 Agent 的函数定义，形状沿用 SDK 的 `AgentDefinition["function"]`（PRD F-B2 / F-F5）。
+   * subagent 的函数定义，形状沿用 SDK 的 `AgentDefinition["function"]`（PRD F-B2 / F-F5）。
    *
-   * 非子 Agent 为 `null`；定义文件读不出来时也是 `null`。
+   * 非 subagent 为 `null`；定义文件读不出来时也是 `null`。
    */
   function: AgentDefinition["function"] | null;
-  /** 有 `function` 字段即子 Agent（PRD F-B2） */
+  /** 有 `function` 字段即 subagent（PRD F-B2） */
   isSubAgent: boolean;
   /** 是不是用户自定义的（PRD F-G3：一实体一文件，可进 git、可手改） */
   custom: boolean;
@@ -1391,12 +1391,12 @@ export interface AgentInput {
   id: string;
   name: string;
   description?: string;
-  /** 预设对话（至少一条 system） */
+  /** 预设消息（至少一条 system） */
   messages: AgentDefinition["messages"];
   modelId?: string;
   modelParams?: Record<string, unknown>;
   permissions?: AgentDefinition["permissions"];
-  /** 有则视为子 Agent */
+  /** 有则视为 subagent */
   function?: AgentDefinition["function"];
 }
 
@@ -1461,7 +1461,7 @@ export interface AgentDeleteResult {
 }
 
 /**
- * `agent.setModel` 入参（PRD F-B4 / F-B1：改助手默认模型，影响以后的对话）。
+ * `agent.setModel` 入参（PRD F-B4 / F-B1：改助手默认模型，影响以后的会话）。
  *
  * 与 `session.setModel`（改这一段会话的模型、存会话行）是两个动作、两个入口。
  */
@@ -1483,7 +1483,7 @@ export interface AgentSetModelResult {
  * （模型的默认参数），`ThinkingState.source` 跟着回落到 `following_default`。
  *
  * 与会话那一侧的 `session.setThinking(null)` 是两件事：那边改的是会话行上的档位名
- * （这段对话回到跟随助手定义），这边改的是**助手的定义文件**（以后的对话都跟着变）。
+ * （这段会话回到跟随助手定义），这边改的是**助手的定义文件**（以后的会话都跟着变）。
  */
 export interface AgentSetThinkingParams {
   agentId: string;
@@ -1667,7 +1667,7 @@ export type AssetPurpose = "message_image";
 /**
  * `asset.begin` 入参（PLAN A11 三段式的第一段 / PRD F-H8）。
  *
- * 声明总长、用途、类型与归属的对话。超限在这里就拒（PRD D5：20MB/张，不接收完再说不行）。
+ * 声明总长、用途、类型与归属的会话。超限在这里就拒（PRD D5：20MB/张，不接收完再说不行）。
  */
 export interface AssetBeginParams {
   purpose: AssetPurpose;
@@ -1680,14 +1680,14 @@ export interface AssetBeginParams {
   /**
    * 内容的 sha256（客户端本来就算过一次，传上来即可）。
    *
-   * 带上它之后，同一段对话里同一张图第二次上传会在 `begin` 就短路（`deduped: true`）：
+   * 带上它之后，同一段会话里同一张图第二次上传会在 `begin` 就短路（`deduped: true`）：
    * 客户端不必再发二进制帧、也不必调 `asset.end`。不带就按一次全新上传处理。
    */
   sha256?: string;
   /**
-   * 这段素材归属哪段对话（必填）。
+   * 这段素材归属哪段会话（必填）。
    *
-   * 素材行在库里按 `sessionId` 挂外键，落定那一刻这段对话必须已经存在；草稿对话
+   * 素材行在库里按 `sessionId` 挂外键，落定那一刻这段会话必须已经存在；草稿会话
    * （`session.create` 之后还没发过消息，R56）在 `asset.begin` 这一步落库，
    * 与「第一次 `session.send`」同义。
    */
@@ -1699,11 +1699,11 @@ export interface AssetBeginParams {
  *
  * 两种形态：
  *   - 新上传：`deduped: false`，`uploadId` 是一个句柄，`asset` 为 `null`；
- *   - 命中「同一段对话里同一个 sha256」：`deduped: true`，`uploadId` 为 `null`，`asset` 是既有
+ *   - 命中「同一段会话里同一个 sha256」：`deduped: true`，`uploadId` 为 `null`，`asset` 是既有
  *     素材的引用（客户端直接拿它放进消息，既不发二进制帧也不调 `asset.end`）。
  */
 export interface AssetBeginResult {
-  /** 是否命中了对话内的去重（命中时客户端跳过 `chunk` 与 `asset.end`） */
+  /** 是否命中了会话内的去重（命中时客户端跳过 `chunk` 与 `asset.end`） */
   deduped: boolean;
   /** 上传句柄；`deduped: true` 时为 `null` */
   uploadId: string | null;
@@ -1815,12 +1815,12 @@ export interface CompletionFilesResult {
 /**
  * 交接执行者（形状沿用 SDK）。
  *
- * - `self` = **自交接**：这一段对话自己的驱动者写（宿主把指令投进它的队列，它取走这一批就开写）；
- * - `summary` = **独立交接**：另起一个一次性驱动者，拿当前记忆的副本去写，跑完即散。
+ * - `self` = **自交接**：这一段会话自己的 agent 写（宿主把指令投进它的队列，它取走这一批就开写）；
+ * - `summary` = **独立交接**：另起一个一次性 agent，拿当前记忆的副本去写，跑完即散。
  */
 export type HandoffMode = "self" | "summary";
 
-/** 交接之后做什么：只产出文档，还是顺带开一段新对话（PRD F-D4 / F-D5 / D18） */
+/** 交接之后做什么：只产出文档，还是顺带开一段新会话（PRD F-D4 / F-D5 / D18） */
 export type HandoffThen = "document_only" | "new_session";
 
 /** 交接文档（PRD F-D6 / D19：写进项目 `<cwd>/.ai-zen/handoffs/`） */
@@ -1896,7 +1896,7 @@ export interface SearchSessionsParams {
   limit?: number;
 }
 
-/** 按名搜到的一段对话 */
+/** 按名搜到的一段会话 */
 export interface SessionHit {
   session: SessionSummary;
   /** 名字里命中的那一段（供高亮） */
@@ -1952,7 +1952,7 @@ export interface SearchMessagesResult {
 export interface MethodMap {
   // ---- host.*：进程、握手、语言、升级、退出 ----
   /**
-   * F-A1：人用与脚本用两条路要分开。宿主判定「这次调用算不算一段对话」，
+   * F-A1：人用与脚本用两条路要分开。宿主判定「这次调用算不算一段会话」，
    * 握手这一帧是这条连接的起点（凭证 + 语言 + 客户端身份）。
    */
   "host.hello": { params: HostHelloParams; result: HostHelloResult };
@@ -1981,17 +1981,17 @@ export interface MethodMap {
   "workspace.get": { params: WorkspaceGetParams; result: WorkspaceGetResult };
   /** D9（§4 未单列）：id 与 cwd 不可变，名字可改。 */
   "workspace.rename": { params: WorkspaceRenameParams; result: WorkspaceRenameResult };
-  /** D11 / F-F9：连带删名下对话，删前给出代价；目录本身宿主不碰。 */
+  /** D11 / F-F9：连带删名下会话，删前给出代价；目录本身宿主不碰。 */
   "workspace.remove": { params: WorkspaceRemoveParams; result: WorkspaceRemoveResult };
 
-  // ---- session.*：一段对话的身份、历史、四件事与待办 ----
+  // ---- session.*：一段会话的身份、历史、四件事与 inbox ----
   /** F-C5 / D13：默认创建时间倒序 + 手动置顶。 */
   "session.list": { params: SessionListParams; result: SessionListResult };
   /** F-A3 / F-C7 / L7：开新会话；项目与助手在创建时定死（模型与档位归会话）。 */
   "session.create": { params: SessionCreateParams; result: SessionCreateResult };
   /** F-A6：按 id 打开（「接着上次聊」的记住工作归客户端）。 */
   "session.get": { params: SessionGetParams; result: SessionGetResult };
-  /** L5 / F-I3：重连拉此刻的读数（四件事 + 待办），可连消息一次拿齐。 */
+  /** L5 / F-I3：重连拉此刻的读数（四件事 + inbox），可连消息一次拿齐。 */
   "session.state": { params: SessionStateParams; result: SessionStateResult };
   /** D1 / F-C3：改名不改身份、不改排序。 */
   "session.rename": { params: SessionRenameParams; result: SessionRenameResult };
@@ -2005,11 +2005,11 @@ export interface MethodMap {
   "session.abort": { params: SessionAbortParams; result: SessionAbortResult };
   /** PRD 4.4：「暂停」只翻输出闸（手上这批跑完、从下一批起不取件），不掐在途。 */
   "session.pause": { params: SessionPauseParams; result: SessionPauseResult };
-  /** PRD 4.4：「继续」只开闸（压着的待办按原顺序接着跑），不投任何东西。 */
+  /** PRD 4.4：「继续」只开闸（inbox 里压着的条目按原顺序接着跑），不投任何东西。 */
   "session.resume": { params: SessionResumeParams; result: SessionResumeResult };
-  /** PRD 4.4「用户按杀死」：收掉 agent（在途掐断、待办作废），会话行与消息一个字不动。 */
+  /** PRD 4.4「用户按杀死」：收掉 agent（在途掐断、inbox 里的条目作废），会话行与消息一个字不动。 */
   "session.kill": { params: SessionKillParams; result: SessionKillResult };
-  /** 清空这段对话的待办（客户端自己决定什么时候清，宿主只回清掉几条）。 */
+  /** 清空这段会话的 inbox（客户端自己决定什么时候清，宿主只回清掉几条）。 */
   "session.clearInbox": {
     params: SessionClearInboxParams;
     result: SessionClearInboxResult;
@@ -2028,7 +2028,7 @@ export interface MethodMap {
     params: SessionSetThresholdsParams;
     result: SessionSetThresholdsResult;
   };
-  /** F-A2 / D3：一次性对话，跑到头就散、零痕迹。 */
+  /** F-A2 / D3：一次性会话，跑到头就散、零痕迹。 */
   "session.transient": {
     params: SessionTransientParams;
     result: SessionTransientResult;
@@ -2036,7 +2036,7 @@ export interface MethodMap {
 
   // ---- message.*：历史 ----
   /**
-   * A12 / L5 / F-I7：按 id 取（含自身最新内容），可指定某个子 Agent 的消息。
+   * A12 / L5 / F-I7：按 id 取（含自身最新内容），可指定某个 subagent 的消息。
    *
    * F-C6 的定位（`around`）在这里：消费者是桌面端的搜索命中跳转（PLAN W4）—— 由
    * `search.messages` 拿到命中后，用它把命中那条摆到眼前。CLI 不消费 `around`。
@@ -2064,7 +2064,7 @@ export interface MethodMap {
   "config.patch": { params: ConfigPatchParams; result: ConfigPatchResult };
   /** F-F7 / D2 / D6：默认项（助手、迁移模型、图片模型、取名模型、自动命名开关）。 */
   "config.setDefaults": { params: ConfigSetDefaultsParams; result: ConfigSetDefaultsResult };
-  /** F-G1 / F-G2 / F-F6：5 层 MCP 链、Skill / 工具 / 子 Agent 的分层与坏文件状态。 */
+  /** F-G1 / F-G2 / F-F6：5 层 MCP 链、Skill / 工具 / subagent 的分层与坏文件状态。 */
   "config.getDiscovery": { params: ConfigGetDiscoveryParams; result: ConfigGetDiscoveryResult };
   /** F-G1 / F-F6：两个可编辑作用域的 MCP 条目写入（有 id 则改、无则建；未知字段与 `oauth` 原样保留）。 */
   "config.saveMcp": { params: ConfigSaveMcpParams; result: ConfigSaveMcpResult };
@@ -2078,7 +2078,7 @@ export interface MethodMap {
     result: ConfigDeleteEndpointResult;
   };
 
-  // ---- agent.*：助手与子 Agent 定义（F-B1…F-B7 / F-F5 / F-G3）----
+  // ---- agent.*：助手与 subagent 定义（F-B1…F-B7 / F-F5 / F-G3）----
   /** F-B2 / F-B3 / F-B5：助手清单，不可用的也列出并说明原因。 */
   "agent.list": { params: AgentListParams; result: AgentListResult };
   /** F-B2：按 id 取一个助手。 */
@@ -2087,7 +2087,7 @@ export interface MethodMap {
   "agent.create": { params: AgentCreateParams; result: AgentCreateResult };
   /** F-B2 / F-G3：编辑助手定义。 */
   "agent.update": { params: AgentUpdateParams; result: AgentUpdateResult };
-  /** F-F5：删除（含子 Agent），删前问「还有谁指它」；删默认助手时连带清默认。 */
+  /** F-F5：删除（含 subagent），删前问「还有谁指它」；删默认助手时连带清默认。 */
   "agent.delete": { params: AgentDeleteParams; result: AgentDeleteResult };
   /** F-B4 / F-B1：改助手默认模型（另一个动作：与改这段会话的模型分开），并清掉旧模型的档位参数。 */
   "agent.setModel": { params: AgentSetModelParams; result: AgentSetModelResult };
@@ -2131,7 +2131,7 @@ export interface MethodMap {
 
   // ---- handoff.*：交接与迁移（F-D3 / F-D4 / F-D5 / F-D6 / F-D7 / D18 / D19）----
   /**
-   * F-D4 / F-D5 / F-D3：写交接文档；可选顺带开新对话，旧对话完整保留。
+   * F-D4 / F-D5 / F-D3：写交接文档；可选顺带开新会话，旧会话完整保留。
    *
    * **只有能立刻接手时才能发起**：判断收在 `ChatRunner.canHandoffNow` 那一处，四个拒因分别是
    * `no_agent` / `working` / `output_paused` / `handoff_in_progress`（一律 `busy`）。调用方等它
@@ -2145,8 +2145,8 @@ export interface MethodMap {
     result: HandoffListDocumentsResult;
   };
 
-  // ---- search.*：找得到旧对话（F-C6 / D16）----
-  /** F-C6 / D16：按名称搜对话，可按项目过滤。 */
+  // ---- search.*：找得到旧会话（F-C6 / D16）----
+  /** F-C6 / D16：按名称搜会话，可按项目过滤。 */
   "search.sessions": {
     params: SearchSessionsParams;
     result: SearchSessionsResult;

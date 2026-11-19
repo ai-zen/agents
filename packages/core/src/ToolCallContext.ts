@@ -20,7 +20,7 @@ import type { Tool } from "./Tool.js";
  * 解析失败时 `parsedArgs` 为 `undefined`、`parseError` 有值。
  */
 export class ToolCallContext {
-  /** 当前 agent（可读权限、上下文、模型等；子 Agent 工具可借此访问父 Agent） */
+  /** 当前 agent（可读权限、上下文、模型等；subagent 工具可借此访问父 Agent） */
   agent: Agent;
 
   /**

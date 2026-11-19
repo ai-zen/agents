@@ -285,7 +285,7 @@ export class HostApp {
    * 模型与思考档位不在这里 —— 它们在会话行上。
    */
   readonly sessionRuntime: SessionRuntimePort;
-  /** 还没发过第一条消息的对话（R56：`create` 只发 id 与身份，首次 `send` 才落库） */
+  /** 还没发过第一条消息的会话（R56：`create` 只发 id 与身份，首次 `send` 才落库） */
   readonly sessionDrafts: SessionDrafts;
   readonly chatRunner: ChatRunner;
   readonly transientRunner: TransientRunner;
@@ -306,7 +306,7 @@ export class HostApp {
   readonly questionService: QuestionService;
   readonly handoffService: HandoffDocumentService;
   /**
-   * 平级会话：模型在一段对话里开另一段对话，之后还能接着跟它说话。
+   * 平级会话：模型在一段会话里开另一段会话，之后还能接着跟它说话。
    *
    * 它自己只在进程内留一个可读名（`label`）：血缘与会话本身都在库里，重启之后照样认得。
    */
@@ -393,7 +393,7 @@ export class HostApp {
     this.inbox = new InboxRepository(db);
     this.credentials = new CredentialRepository(db);
 
-    /** 助手与子 Agent 的定义仓储（配置层与助手/模型/配置三个服务共用同一份目录） */
+    /** 助手与 subagent 的定义仓储（配置层与助手/模型/配置三个服务共用同一份目录） */
     const agentRepository = new AgentRepository(join(configManager.basePath, "agents"));
     const subAgentRepository = new AgentRepository(join(configManager.basePath, "sub-agents"));
     /** 按 workspaceId 取 cwd：发现、补全、配置三个服务都要同一份口径 */
@@ -407,7 +407,7 @@ export class HostApp {
     const injectedScopeFactory = options.createScope;
     this.scopeRegistry = new ScopeRegistry({
       createScope: injectedScopeFactory ?? ((key) => this.defaultScopeFactory()(key)),
-      // 「这个 Scope 上还活着哪几段对话」只有 `AgentRegistry` 知道（它在下面几行才造好）：
+      // 「这个 Scope 上还活着哪几段会话」只有 `AgentRegistry` 知道（它在下面几行才造好）：
       // 这里给一个现读的入口，`dispose` 被叫到时才问
       liveSessions: (workspaceId) => this.agentRegistry.sessionIds(workspaceId),
       onError: (error, workspaceId) => {
@@ -447,7 +447,7 @@ export class HostApp {
       messages: this.messages,
       workspaces: this.workspaces,
       assets: this.assets,
-      // 撤回 / 删对话之后同一件事：引用归零的素材才删字节
+      // 撤回 / 删会话之后同一件事：引用归零的素材才删字节
       sweepAssets: (assetIds) => this.assetService.sweepUnreferenced(assetIds),
       // 侧栏那个「有没有题挂着」的圆点：题在内存里，所以问 `QuestionService`（不查表）。
       // `questionService` 在本节之后才造出来，所以这里闭包一步（调用那一刻才去拿）
@@ -466,7 +466,7 @@ export class HostApp {
     this.messageService = new MessageService({
       sessions: this.sessions,
       messages: this.messages,
-      // 刚建出来、还没发过消息的对话在库里没有行（R56）：读消息/现场时按草稿认它
+      // 刚建出来、还没发过消息的会话在库里没有行（R56）：读消息/现场时按草稿认它
       drafts: this.sessionDrafts,
       // 列表读取只有一个来源：活着读内存，死了读库（PLAN §7）。`chatRunner` 在 §7 才造出来，
       // 所以这里只闭包一步（调用那一刻才去拿）
@@ -519,7 +519,7 @@ export class HostApp {
         messagesOf: (sessionId) => this.chatRunner.messagesOf(sessionId),
       },
     });
-    // agent 工厂只造一次：普通对话与压缩那几条路用它装配（常驻的 agent 装配一次跨多次投递复用，
+    // agent 工厂只造一次：普通会话与压缩那几条路用它装配（常驻的 agent 装配一次跨多次投递复用，
     // 一次性的用完即弃）
     const createAgent = options.createAgent ?? this.defaultAgentFactory();
     // agent 的持有者：「agent 从哪来」唯一的入口。它内部先要 Scope（幂等），
@@ -527,7 +527,7 @@ export class HostApp {
     this.agentRegistry = new AgentRegistry({
       scopes: this.scopeRegistry,
       createAgent,
-      // 每做一次生灭决定就记一笔：「这段对话的 agent 为什么不在」从前没人答得上来，
+      // 每做一次生灭决定就记一笔：「这段会话的 agent 为什么不在」从前没人答得上来，
       // 现在理由就从唯一拥有者所在的那个文件里报出来（`reason` 是闭集，见
       // `AgentLifecycleReason`）。落到文件日志的信息级：是诊断用的流水，不是给用户看的事件。
       onLifecycle: (event) => {
@@ -549,10 +549,10 @@ export class HostApp {
       workspaces: this.workspaces,
       messages: this.messages,
       sessionViews: this.sessionService,
-      // 自交接的驱动者：这一段现在挂着谁（忙 / 闲 / 暂停由它自己报）
+      // 自交接的 agent：这一段现在挂着谁（忙 / 闲 / 暂停由它自己报）
       agents: { get: (sessionId) => this.agentRegistry.get(sessionId) },
       // 判据与交接态：能不能接手（`canHandoffNow`）+ 挂牌 / 摘牌。挂牌期间只跳过写库、事件照推
-      // （写文档那条指令由 SDK 直接投给驱动者）。
+      // （写文档那条指令由 SDK 直接投给 agent）。
       // `chatRunner` 在 §7 才造出来，所以这里闭包住 `this`，调用那一刻才去拿（同一个理由：
       // 平级会话那两个口也是这么接的）
       runner: {
@@ -564,10 +564,10 @@ export class HostApp {
       notices: this.noticeService,
       emit: (name, payload) => this.emitEvent(name, payload),
       // 交接文档的模板来自磁盘上的 `handoff` Skill（F-D6）：与 SDK 插件同一份目录口径 ——
-      // 项目里放一份同名 Skill 就能覆盖全局那份。一个服务服务所有项目的对话，所以给的是
+      // 项目里放一份同名 Skill 就能覆盖全局那份。一个服务服务所有项目的会话，所以给的是
       // 「cwd → 目录清单」；不给的话生产上会一直用 SDK 的内置兜底模板。
       skillDirs: (cwd) => this.discoveryService.scopeAbilityPaths(cwd).skillsPaths,
-      // 后台那一趟里不该打断交接的差错（通知没写进去、提交之后开新对话失败）落日志
+      // 后台那一趟里不该打断交接的差错（通知没写进去、提交之后开新会话失败）落日志
       onError: (error, context) => {
         this.logger.error("交接出错", { context, error: describeError(error) });
       },
@@ -576,7 +576,7 @@ export class HostApp {
     this.questionService = new QuestionService({
       // 会话行：待交接那一格与自动交接开关都写在它上面；题本身不落库（PRD 4.10）
       sessions: this.sessions,
-      // 「能不能立刻交接」只有一处判据（`ChatRunner.canHandoffNow`）：能就当场交接，不能就留待办
+      // 「能不能立刻交接」只有一处判据（`ChatRunner.canHandoffNow`）：能就当场交接，不能就留待交接
       availability: {
         canHandoffNow: (sessionId) => this.chatRunner.canHandoffNow(sessionId),
       },
@@ -609,7 +609,7 @@ export class HostApp {
       now: () => this.clock.now(),
     });
 
-    // ---- 7. 投递的执行者（普通对话与临时对话共用同一份 agent 工厂） ----
+    // ---- 7. 投递的执行者（普通会话与一次性会话共用同一份 agent 工厂） ----
     this.chatRunner = new ChatRunner({
       messages: this.messages,
       sessions: this.sessions,
@@ -631,17 +631,17 @@ export class HostApp {
         void this.handoffOnIdle(sessionId);
         this.autoNameOnIdle(sessionId);
       },
-      // 没有驱动者了那一拍：只有**真的没了**（`terminated`：core 的 `stopped` / `killed`、
-      // 投递撞上已关的门；`forgotten`：对话被删）才让挂在上面的题跟着没（PRD 4.10）。
+      // 没有 agent 了那一拍：只有**真的没了**（`terminated`：core 的 `stopped` / `killed`、
+      // 投递撞上已关的门；`forgotten`：会话被删）才让挂在上面的题跟着没（PRD 4.10）。
       //
-      // `retired` 什么都不做：退役不是「这段没了」，那是换个驱动者接着干（改配置 / 改模型 /
+      // `retired` 什么都不做：退役不是「这段没了」，那是换个 agent 接着干（改配置 / 改模型 /
       // 改思考档 / 装配事实变化），题与待交接必须原样留着 —— 清掉它们等于用户改了个模型就丢了
       // 正在等的那道题。重建由下一次投递自己完成（`AgentRegistry.acquire`）。
       // 不推事件 —— 那件事由 `session.changed` 的 `agent_gone` 说（PRD 4.10）
       onDead: (sessionId, kind) => {
         if (kind === "retired") return;
         void this.questionService.dropSession(sessionId).catch((error: unknown) => {
-          this.logger.warn("清掉死对话上的题失败", {
+          this.logger.warn("清掉死会话上的题失败", {
             sessionId,
             kind,
             error: describeError(error),
@@ -652,7 +652,7 @@ export class HostApp {
         this.logger.error("宿主写库失败", { context, error: describeError(error) });
       },
     });
-    // 临时对话：不落库、不推流式事件，一次返回（D3 / R1 / R49）；Scope 仍按目录去借
+    // 一次性会话：不落库、不推流式事件，一次返回（D3 / R1 / R49）；Scope 仍按目录去借
     this.transientRunner = new TransientRunner({
       scopes: this.scopeRegistry,
       createAgent: transientAgentFactoryFrom(createAgent),
@@ -664,9 +664,9 @@ export class HostApp {
     this.uploads = new UploadReceiver({
       assetsDir: paths.assetsDir,
       finalize: (request) => this.assetService.finalizeUpload(request),
-      // `asset.begin` 带 sha256 时先问一句：同一段对话里同一张图只存一份、只传一次
+      // `asset.begin` 带 sha256 时先问一句：同一段会话里同一张图只存一份、只传一次
       findExisting: (input) => this.assetService.findExistingAsset(input),
-      // 草稿对话（R56）在第一次带图上传时就落库：素材行按 `sessionId` 挂外键，
+      // 草稿会话（R56）在第一次带图上传时就落库：素材行按 `sessionId` 挂外键，
       // 所以落库这一步挪到 `asset.begin`（与「第一次 send」同义，`ensurePersisted` 自己幂等）
       ensureSession: async (sessionId) => {
         await this.sessionService.ensurePersisted(sessionId);
@@ -741,7 +741,7 @@ export class HostApp {
     }
 
     const configManager = new ConfigManager(paths.configFile, recoveries.onRecovered);
-    // SDK 口径的首次初始化：目录 + config.json + 默认助手 + 子 Agent + mcp.json + 出厂 Skill
+    // SDK 口径的首次初始化：目录 + config.json + 默认助手 + subagent + mcp.json + 出厂 Skill
     // + 思考策略表。已有文件不覆盖（用户自定义的助手定义 `custom: true` 原样保留）。
     await configManager.bootstrap();
 
@@ -1019,7 +1019,7 @@ export class HostApp {
       // `session.abort` 的 `reason` 只落日志（core 的 `abort()` 不收原因）
       log: (message, detail) => this.logInfo(message, detail),
       requestStop: () => this.requestStop(),
-      // 多端在线同步（L5 / D22）：删项目带走的那几段对话也要推 `deleted`
+      // 多端在线同步（L5 / D22）：删项目带走的那几段会话也要推 `deleted`
       emit: (name, payload) => this.emitEvent(name, payload),
       // D23：有挡着的问题（交接确认、不可撤销动作确认）就不收这一句
       assertSendable: async (sessionId) => {
@@ -1069,7 +1069,7 @@ export class HostApp {
     // 一次 create 只算一遍路径：四个目录同属「这个 cwd 的能力布局」
     const abilityPaths = (cwd: string) => this.discoveryService.scopeAbilityPaths(cwd);
     return createWorkspaceScopeFactory({
-      // 两个来源：Workspace（按 id 查库）与临时对话（键里带着 cwd，D3「只借 Scope」）
+      // 两个来源：Workspace（按 id 查库）与一次性会话（键里带着 cwd，D3「只借 Scope」）
       resolveWorkspace: async (key) => {
         const transientCwd = cwdOfTransientScopeKey(key);
         if (transientCwd !== null) return { cwd: transientCwd };
@@ -1087,14 +1087,14 @@ export class HostApp {
     });
   }
 
-  /** 缺省的 agent 工厂：SDK 口径装配（硬线、子 Agent 递归、交接线、工具刷新） */
+  /** 缺省的 agent 工厂：SDK 口径装配（硬线、subagent 递归、交接线、工具刷新） */
   private defaultAgentFactory(): AgentFactory {
     const assembled = createSdkAgentFactory({
       handoff: (context) => this.handoffFor(context),
       // 档位名 → 参数补丁要用思考策略表；配置变更后会重读，所以这里给一个现读入口
       thinkingPresets: () => this.presets,
       // 压缩的归一规则按**会话行上的自动交接开关**分（读库，不读进程内记录）：开着的那一段
-      // （兄弟会话）没人盯着它，越线就自己压；关着的那一段（用户建的）把「要不要压」交还给宿主
+      // （平级会话）没人盯着它，越线就自己压；关着的那一段（用户建的）把「要不要压」交还给宿主
       // 的提问路径（{@link askHandoffOnIdle}）。开关是会话行上的列，所以那条判断重启也不变形。
       wantsAutoHandoff: (context) => this.autoHandoffOf(context.sessionId),
       // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffDocumentService` 自己写）
@@ -1102,7 +1102,7 @@ export class HostApp {
         this.sessionService.markCompacted(context.sessionId, mode),
       // 自动交接的收口（成功/失败都到这儿，取消不到）：把闸开回来。
       // 自动那条路没有 `runToEnd` 那样的收尾，而开闸只在宿主交接收口做（PLAN §5.3）
-      // —— 漏了这一格，兄弟会话越一次线就再也不取件。
+      // —— 漏了这一格，平级会话越一次线就再也不取件。
       onHandoffSettled: (context) => {
         this.handoffService.settleAutoHandoff(context.sessionId);
       },
@@ -1145,7 +1145,7 @@ export class HostApp {
         // 模板来自磁盘上的 `handoff` Skill（F-D6）；读不到时 SDK 自己回退到内置模板
         skillDirs: this.discoveryService.scopeAbilityPaths(context.scope.cwd).skillsPaths,
         // **自动交接那条路的落库接缝**：与手动那条（`runToEnd`）注入的是同一份回调。
-        // 有了它，兄弟会话越线自动交班时记忆真的会换（旧记忆成存档会话、原会话换上断点）、
+        // 有了它，平级会话越线自动交班时记忆真的会换（旧记忆成存档会话、原会话换上断点）、
         // 闸也真的会开 —— 记忆长什么样仍是 SDK 那一处算（PRD 4.5）
         commitMemory: this.handoffService.memoryCommitter(context.sessionId),
       });
@@ -1154,7 +1154,7 @@ export class HostApp {
   /**
    * 这一段的自动交接开关（`sessions.autoHandoff` 那一列）：读库，不读进程内记录。
    *
-   * `true` = 开（兄弟会话那一侧：撞线自己交班、不问）；`false` = 关（用户建的那一侧：装不下
+   * `true` = 开（平级会话那一侧：撞线自己交班、不问）；`false` = 关（用户建的那一侧：装不下
    * 时问一次）。关是常态，也是缺省值。会话行没了就当关：没有这一段可问。
    */
   private async autoHandoffOf(sessionId: string): Promise<boolean> {
@@ -1183,10 +1183,10 @@ export class HostApp {
    * 读一次 `canHandoffNow`（全仓唯一一份判据）：
    *   - **能** → `handoff.start`，起来之后再清掉那一格；
    *   - **不能** → 原样留着，下一次变闲再看（这里不报错、不发通知：它不是用户动作，
-   *     只是一段对话自己的进度）。
+   *     只是一段会话自己的进度）。
    *
    * 清在 start **之后**：「能」是现读的，从读到 start 之间那几微秒里它可能又忙起来 ——
-   * 那时 start 会拒（`busy`），待办必须还在，否则用户答的那一下就被悄悄丢了。
+   * 那时 start 会拒（`busy`），待交接那一格必须还在，否则用户答的那一下就被悄悄丢了。
    *
    * @returns 这一拍真的开始了交接
    */
@@ -1216,8 +1216,8 @@ export class HostApp {
    * **全部读当下事实** —— 没有任何「刚刚发生了什么」的东西传进来：这一步不带结果、不带用量、
    * 不带「谁发起的」。四条前提，任缺一条都不问：
    *
-   * 1. 自动交接开关是关的（会话行上那一列）：开着的那一段（兄弟会话）撞线自己交班，不问；
-   * 2. 这段对话现在那个 agent 的历史里，最后一条带用量的助手消息越过交接线了（拿不到就不问：
+   * 1. 自动交接开关是关的（会话行上那一列）：开着的那一段（平级会话）撞线自己交班，不问；
+   * 2. 这段会话现在那个 agent 的历史里，最后一条带用量的助手消息越过交接线了（拿不到就不问：
    *    没有用量就没有“越线”这回事）；
    * 3. 交接线先看会话行上的覆盖值（`handoffThreshold`），没有就看**会话行上的模型**
    *    （`setModel` 之后就是新模型的阈值），`0` 表示这条线关着；
@@ -1265,7 +1265,7 @@ export class HostApp {
   }
 
   /**
-   * 变闲那一拍：给这段对话起一次名字（D2）。
+   * 变闲那一拍：给这段会话起一次名字（D2）。
    *
    * `AutoNaming.nameIfUnnamed` 自己是幂等的（条件不成立就什么都不做，之后它自己会停），
    * 所以这里不必先判什么。起不出名只记日志：名字是锦上添花，不该给用户留一条失败提示。
@@ -1298,7 +1298,7 @@ export class HostApp {
    * 前两件是**现读**（`ChatRunner.state`）：这一段此刻那四件事、队里还压着几条。删掉之后
    * 的现场清理指向 `ChatRunner.forget`（摘桥 + agent 硬着陆）。换模型 / 换思考档位那一手要的
    * 两件也在这一格里：**手上有没有活**（`AgentRegistry.get` 拿到那个 agent，只读 `state`）与
-   * **让这一段空闲的驱动者退役**（`AgentRegistry.invalidateSession`）。
+   * **让这一段空闲的 agent 退役**（`AgentRegistry.invalidateSession`）。
    *
    * 全都只能晚绑定：服务比执行者先造出来，所以这里闭包住 `this`，调用那一刻才去拿它。
    */
@@ -1310,7 +1310,7 @@ export class HostApp {
       forget: (sessionId) => {
         this.chatRunner.forget(sessionId);
       },
-      // 没有 agent（死的）回 `null`：那种对话也能换模型（没有人手上那批活可打岔）
+      // 没有 agent（死的）回 `null`：那种会话也能换模型（没有人手上那批活可打岔）
       agentState: (sessionId) => this.agentRegistry.get(sessionId)?.state ?? null,
       invalidateAgent: (sessionId) => {
         this.agentRegistry.invalidateSession(sessionId);
@@ -1412,7 +1412,7 @@ export class HostApp {
    *
    * 刷哪些按改动范围定：只改了某个项目的 MCP（`workspace` 作用域）→ 只刷那几个项目现有的
    * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 现存的全都刷。
-   * 没有的跳过：不为刷新去创建一个 Scope（下一段对话 `create` 时会按新配置建）。
+   * 没有的跳过：不为刷新去创建一个 Scope（下一段会话 `create` 时会按新配置建）。
    *
    * 为什么刷完还要 `invalidate`：`Scope.refresh()` 刷得动能力（工具、MCP），刷**不**动已经建好的
    * 模型客户端 —— `createModel(scope.config, …)` 是装配那一刻读的。agent 现在又是常驻的（装配
@@ -1538,7 +1538,7 @@ function resolveLogger(
 // ---------------------------------------------------------------------------
 
 /**
- * 这段对话现在那个 agent 身上，最后一条**带用量的助手消息**的 `prompt_tokens`。
+ * 这段会话现在那个 agent 身上，最后一条**带用量的助手消息**的 `prompt_tokens`。
  *
  * 为什么读活的 agent 而不是库：库里的行是它的快照，写盘有节流；「此刻上下文多满」这件事
  * 只有它自己知道。`prompt_tokens` 是最近一次请求发出去的那个数 —— 交接线按它比（PRD D27）。

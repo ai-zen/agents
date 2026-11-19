@@ -1,5 +1,5 @@
 /**
- * 临时对话的验收（D3 / F-A2 / R1 / R49）：一次请求跑一轮、结果一次返回；无 id、不落库、
+ * 一次性会话的验收（D3 / F-A2 / R1 / R49）：一次请求跑一轮、结果一次返回；无 id、不落库、
  * 不进列表、不可 attach、不推流式事件；只借 Scope，与 Workspace 无关。
  *
  * 夹具里一个库都不建：`TransientRunner` 的依赖只有 `scopes` / `createAgent` / `configManager`
@@ -101,7 +101,7 @@ describe("一次请求跑一轮，结果一次返回（D3）", () => {
     expect(result.message.role).toBe(AgentNS.Role.Assistant);
     expect(result.message.content).toBe("一次性回答");
     expect(result.problem).toBeNull();
-    // 没有第二份「拼好的正文」之类的重复字段：结果只有这两样（子 Agent 不另给快照，
+    // 没有第二份「拼好的正文」之类的重复字段：结果只有这两样（subagent 不另给快照，
     // 它们说过的话在那条委派的消息里，要翻就按工具调用 id 取）
     expect(Object.keys(result).sort()).toEqual(["message", "problem"]);
   });
@@ -173,7 +173,7 @@ describe("告诉模型「现在在哪个目录」（F-D9）", () => {
 describe("失败与结局的说明", () => {
   it("请求失败不再是一个异常：core 把它记在那条消息上，结果照样带回来（problem 说明）", async () => {
     // core 重写之后「请求没连上」是**世界里发生的事**，不是调用方的异常（`CORE.md` §7）：
-    // 它落在 `message.status = error` / `message.error` 上，一轮照常收尾。临时对话于是回到
+    // 它落在 `message.status = error` / `message.error` 上，一轮照常收尾。一次性会话于是回到
     // 「结果 + 一句说明」这个形状，而不是把异常甩给调用方。
     harness.behaviour.fail = new Error("端点 500");
     const result = await harness.runner.run({

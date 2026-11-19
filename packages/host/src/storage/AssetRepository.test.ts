@@ -44,7 +44,7 @@ beforeEach(async () => {
   for (const sessionId of ["c1", "c2"]) {
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-       VALUES (?, 'w1', '对话', 0, 'agent-1', 'model-1', 2, 2)`,
+       VALUES (?, 'w1', '会话', 0, 'agent-1', 'model-1', 2, 2)`,
       [sessionId],
     );
   }
@@ -63,7 +63,7 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-/** 一条素材行（素材本身不记对话，归属靠关系行） */
+/** 一条素材行（素材本身不记会话，归属靠关系行） */
 async function seedAsset(id = "a1", digest = "digest-1"): Promise<void> {
   await repo.create({
     id,
@@ -108,7 +108,7 @@ describe("AssetRepository", () => {
     expect(await repo.listAssetIdsBySession("c1")).toEqual(["a1"]);
   });
 
-  it("同一段对话里两条消息引用同一份素材：素材只出现一次", async () => {
+  it("同一段会话里两条消息引用同一份素材：素材只出现一次", async () => {
     await seedAsset();
     await db.run(
       `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
@@ -143,7 +143,7 @@ describe("AssetRepository", () => {
     expect(await repo.countSessions("a1")).toBe(1);
   });
 
-  it("删对话：只带走它自己的关系行", async () => {
+  it("删会话：只带走它自己的关系行", async () => {
     await seedAsset();
     await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
     await repo.linkAsset({ sessionId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
@@ -176,8 +176,8 @@ describe("AssetRepository", () => {
   });
 });
 
-describe("全局去重（按 sha256，不分对话）", () => {
-  it("findByDigest 只按摘要找：换一段对话也命中同一行", async () => {
+describe("全局去重（按 sha256，不分会话）", () => {
+  it("findByDigest 只按摘要找：换一段会话也命中同一行", async () => {
     await seedAsset("a1", "same-digest");
 
     expect((await repo.findByDigest("same-digest"))?.id).toBe("a1");

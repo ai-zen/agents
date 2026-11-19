@@ -158,7 +158,7 @@ export class Client implements ContractCaller {
   private readonly closeHandlers = new Set<(error: ClientError) => void>();
   private readonly syncHandlers = new Set<(outcome: SyncOutcome) => void>();
   /**
-   * 打开着的镜像（`sessionId` → 镜像）。这张表就是「我要跟着哪几段对话」的全部依据：
+   * 打开着的镜像（`sessionId` → 镜像）。这张表就是「我要跟着哪几段会话」的全部依据：
    * 重连之后按它逐段补回。
    */
   private readonly mirrors = new Map<string, SessionMirror>();
@@ -360,7 +360,7 @@ export class Client implements ContractCaller {
   // -------------------------------------------------------------------------
 
   /**
-   * 打开一段对话：**先订阅、再拉全量、把拉取期间到达的事件按序补上**。
+   * 打开一段会话：**先订阅、再拉全量、把拉取期间到达的事件按序补上**。
    *
    * 这四步的先后不能换：
    *   1. **先订阅**：镜像先进 {@link Client.mirrors} 表，并给它开一个缓冲队列。从这一刻起，
@@ -376,7 +376,7 @@ export class Client implements ContractCaller {
    * 这个方法的其余内容只有「建镜像」与「拉不下来就把这半份撤掉」—— 后一件事是首载独有的，
    * 另两处（重连补回、`memory_replaced` 的重拉）都留着手上那一份。
    *
-   * 已经在镜像表里的对话直接回那一个（同一段不并发拉两份快照）。拉取失败时**不留半份镜像**：
+   * 已经在镜像表里的会话直接回那一个（同一段不并发拉两份快照）。拉取失败时**不留半份镜像**：
    * 一个只有事件、没有历史的镜像比没有更糟。
    */
   async open(sessionId: string): Promise<SessionMirror> {
@@ -388,7 +388,7 @@ export class Client implements ContractCaller {
     }
 
     // 四件事先空着（`null` = 还没读到）：既不借「死」占位（那会让界面去提示复活一段好端端的
-    // 对话），也不借「闲」占位（那会让界面以为它会理你）；`applyReadout` 之后四件一次补齐
+    // 会话），也不借「闲」占位（那会让界面以为它会理你）；`applyReadout` 之后四件一次补齐
     const mirror = new SessionMirror({ sessionId });
     this.mirrors.set(sessionId, mirror);
     try {
@@ -402,12 +402,12 @@ export class Client implements ContractCaller {
     return mirror;
   }
 
-  /** 这段对话的镜像（没打开过就是空） */
+  /** 这段会话的镜像（没打开过就是空） */
   mirror(sessionId: string): SessionMirror | undefined {
     return this.mirrors.get(sessionId);
   }
 
-  /** 不再跟着这段对话（关掉它 / 换对话时调） */
+  /** 不再跟着这段会话（关掉它 / 换会话时调） */
   closeMirror(sessionId: string): void {
     this.mirrors.delete(sessionId);
     this.buffers.delete(sessionId);
@@ -424,7 +424,7 @@ export class Client implements ContractCaller {
    * 两者接在哪里只看回执里的 `anchor`（`mirror.mergeFrom` 一处判定）。本地一条都没有时就相当于
    * 一次全量拉取。
    *
-   * 没打开过的对话就是一次 `open`。拉取期间到达的事件同样先攒后补（与 {@link Client.open} 同一条规矩）。
+   * 没打开过的会话就是一次 `open`。拉取期间到达的事件同样先攒后补（与 {@link Client.open} 同一条规矩）。
    */
   async resync(sessionId: string): Promise<SessionMirror> {
     const mirror = this.mirrors.get(sessionId);
@@ -720,7 +720,7 @@ export class Client implements ContractCaller {
   }
 
   /**
-   * 一条事件 → 镜像：那段对话正在拉快照就先进队列，否则当场折进去。
+   * 一条事件 → 镜像：那段会话正在拉快照就先进队列，否则当场折进去。
    *
    * 事件带 `sessionId` 是契约里每一条事件都有的定位信息；没有它的（将来的新事件）这里
    * 就不认领 —— 与镜像无关的事件（`notice` / `question` / `error`）由 `toMirrorEvent` 回空。
@@ -753,7 +753,7 @@ export class Client implements ContractCaller {
   /**
    * `session.changed` 里唯一需要客户端**动一次**的那一格：`memory_replaced`。
    *
-   * 交接期间这段对话写出来的那几条只在内存里、从不落库（宿主那边只跳过写库，事件照推）。所以
+   * 交接期间这段会话写出来的那几条只在内存里、从不落库（宿主那边只跳过写库，事件照推）。所以
    * 提交或回滚之后，客户端手里那几条是**库里根本不存在**的消息 —— 宿主推这一条就是让这里
    * **整段替换**：重拉一次 `session.state` 与 `message.list` 全量。
    *
@@ -764,7 +764,7 @@ export class Client implements ContractCaller {
    * 同这一段正在拉快照时不再并发拉第二份（`snapshotWhileBuffering` 自己会串起来），拉取期间
    * 到达的事件照旧先攒后补。
    *
-   * 没打开过这段对话就什么都不做：下次 `open` 本来就是一次全量。
+   * 没打开过这段会话就什么都不做：下次 `open` 本来就是一次全量。
    */
   private reloadOnMemoryReplaced(method: string, payload: unknown): void {
     if (method !== "session.changed") return;
@@ -782,8 +782,8 @@ export class Client implements ContractCaller {
    * 整段重拉（`memory_replaced` 的唯一出口）。
    *
    * 就是 {@link Client.loadSnapshot} 的 `"replace"`：与首载同一份拉法（不带 `after` 的全量 +
-   * 整段替换），**但不建镜像** —— 手上这一份留着，子 Agent 那几栏也留着（`replaceAll` 只换主线；
-   * 子 agent 的消息不入库，重拉也拉不回来）。
+   * 整段替换），**但不建镜像** —— 手上这一份留着，subagent 那几栏也留着（`replaceAll` 只换主线；
+   * subagent 的消息不入库，重拉也拉不回来）。
    */
   private async reloadMirror(sessionId: string, mirror: SessionMirror): Promise<void> {
     await this.loadSnapshot(sessionId, mirror, "replace");
@@ -799,7 +799,7 @@ export class Client implements ContractCaller {
    *   2. 失败时镜像怎么办 —— 首载把半份镜像整段丢掉（{@link Client.open}），另两处留着上一份。
    *
    * 其余逐字相同，也正是这个方法的内容：先读 `session.state`（四件事 + 名册 + 交接态一起收下，
-   * 名册用来铺子 agent 那几栏），再拉消息，拉取期间到达的事件先攒后补
+   * 名册用来铺 subagent 那几栏），再拉消息，拉取期间到达的事件先攒后补
    * （{@link Client.snapshotWhileBuffering}）。三处各写一遍时，任何一处漏掉「先攒后补」或漏读
    * 一格都没人会发现；收在这里之后，`message.list` 再多一个参数也只改这一行。
    *
@@ -869,7 +869,7 @@ export class Client implements ContractCaller {
   private async resyncAll(): Promise<void> {
     for (const sessionId of [...this.mirrors.keys()]) {
       try {
-        // 一段补不上（对话被删 / 那一刻宿主出错）不该拖住其它段，所以逐段 try：
+        // 一段补不上（会话被删 / 那一刻宿主出错）不该拖住其它段，所以逐段 try：
         // 失败的这一段照旧留在表里，下次重连或调用方手动 `resync` 时再试
         const mirror = await this.resync(sessionId);
         this.notifySync({ ok: true, sessionId, mirror });

@@ -118,7 +118,7 @@ async function callMethod<M extends MethodName>(
   return await handler({ method, params, connection: CONNECTION });
 }
 
-/** 建一个项目 + 一段（已落库的）对话 */
+/** 建一个项目 + 一段（已落库的）会话 */
 async function seedSession(
   app: HostApp,
   workspaceId: string,
@@ -128,7 +128,7 @@ async function seedSession(
     agentId: "default",
   });
   const session = created.session as SessionCreateResult["session"];
-  if (!session) throw new Error("session.create 没有建出对话");
+  if (!session) throw new Error("session.create 没有建出会话");
   await app.sessionService.ensurePersisted(session.id);
   return session;
 }

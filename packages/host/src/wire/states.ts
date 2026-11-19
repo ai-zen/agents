@@ -17,7 +17,7 @@ import type { MessageKey } from "../i18n/index.js";
  *   - 流式增量 = `AgentNS.Delta`；用量 = `AgentNS.Usage`（就在每条消息的 `usage` 上，要合计就
  *     自己把消息上的 `usage` 加起来 —— core 不算、不存、不报，也没有求和函数）。
  *
- * 本文件只装 core 没有的**产品事实**：对话此刻那四件事、待办的一行、思考档位、模型块、
+ * 本文件只装 core 没有的**产品事实**：会话此刻那四件事、inbox 的一行、思考档位、模型块、
  * 通知分档、问题对象、素材引用。外壳里的消息、内容、工具调用、用量字段装的就是 core 的
  * 那几个类型，没有第二份定义。
  *
@@ -65,7 +65,7 @@ export interface ProblemFact extends LocalizedText {
 }
 
 // ---------------------------------------------------------------------------
-// 对话此刻的四件事（PRD 4.4 / CORE「对外报四件事」/ PLAN §5.4）
+// 会话此刻的四件事（PRD 4.4 / CORE「对外报四件事」/ PLAN §5.4）
 // ---------------------------------------------------------------------------
 
 /**
@@ -83,7 +83,7 @@ export type SessionActivity = "working" | "idle";
 export const SESSION_ACTIVITIES: readonly SessionActivity[] = ["working", "idle"];
 
 /**
- * 一段对话此刻的**四件事**，各占一格（PRD 4.4）：
+ * 一段会话此刻的**四件事**，各占一格（PRD 4.4）：
  *
  * | 格 | 是什么 | 取值 |
  * |---|---|---|
@@ -132,12 +132,12 @@ export interface InboxItem {
 }
 
 /**
- * 子 agent 名册的一行（{@link SessionState.subAgents}）。
+ * subagent 名册的一行（{@link SessionState.subAgents}）。
  *
- * 子 agent 不是一段会话、不入库（`CORE.md` §17）：它的话只在它自己那个对象里，名册在父
+ * subagent 不是一段会话、不入库（`CORE.md` §17）：它的话只在它自己那个对象里，名册在父
  * 身上。所以这一栏只能是**现读**，没有第二个来源可读。
  *
- * `state` 两格之外多一个 `ended`：一次性子 agent 跑完之后它自己那一格会停在 `idle`，把
+ * `state` 两格之外多一个 `ended`：一次性 subagent 跑完之后它自己那一格会停在 `idle`，把
  * 已经散场的东西报成「闲」等于告诉界面它还在 —— 名册上有了结束时刻就是 `ended`。
  */
 export interface SubAgentFact {
@@ -145,21 +145,21 @@ export interface SubAgentFact {
   toolCallId: string;
   /** 这次委派用的工具名 */
   name: string;
-  /** 子 agent 自己的两格（`working` / `idle`），或者「已经散场」 */
+  /** subagent 自己的两格（`working` / `idle`），或者「已经散场」 */
   state: AgentNS.AgentState | "ended";
 }
 
 /**
- * 一段对话此刻的读数：四件事（忙闲 / 输入闸 / 输出闸 / 死活）+ 队里还压着什么 + 名册上有哪些
- * 子 agent + 是不是正在交接。
+ * 一段会话此刻的读数：四件事（忙闲 / 输入闸 / 输出闸 / 死活）+ 队里还压着什么 + 名册上有哪些
+ * subagent + 是不是正在交接。
  *
- * 重连的客户端拿这一份把界面的那四行与待办一次摆回原样，再按 `message.list`（带 `after`）补齐消息。
+ * 重连的客户端拿这一份把界面的那四行与 inbox 一次摆回原样，再按 `message.list`（带 `after`）补齐消息。
  * 更细的阶段（请求中 / 思考中 / 输出中）与用量**不在这里**：客户端按到达的事件自己推、
  * 按消息上的 `usage` 自己合计。
  *
  * `subAgents` / `handoff` 两格与前面那几格同一个口径：**现读**，不落库、不是会话字段、不推算。
- * 它们只在这一个方法上出现 —— `session.list`（侧栏）不带，因为侧栏不需要为每段对话
- * 去问一次它的驱动者。
+ * 它们只在这一个方法上出现 —— `session.list`（侧栏）不带，因为侧栏不需要为每段会话
+ * 去问一次它的 agent。
  */
 export interface SessionState extends SessionPresence {
   sessionId: string;
@@ -172,11 +172,11 @@ export interface SessionState extends SessionPresence {
    */
   inbox: InboxItem[];
   /**
-   * 这段对话此刻派出去的子 agent（现读父的名册）。
+   * 这段会话此刻派出去的 subagent（现读父的名册）。
    *
-   * 死了就是空数组：名册跟着驱动者走，它没了，那些话也一起没了。客户端拿它铺子 agent 那一栏，
+   * 死了就是空数组：名册跟着 agent 走，它没了，那些话也一起没了。客户端拿它铺 subagent 那一栏，
    * 之后按事件（`toolCallId`）增量重建每一栏 —— 那一栏的消息**不从 `message.list` 补**
-   * （子 agent 不入库，重连之后也只有这一份名册）。
+   * （subagent 不入库，重连之后也只有这一份名册）。
    */
   subAgents: SubAgentFact[];
   /**
@@ -251,7 +251,7 @@ export interface ModelState {
  *
  * 语气决定界面怎么摆（颜色、要不要打断），内容才是 `NoticeView.text`。四档各管什么：
  *
- * - `info`：说一声就好 —— 配置已生效、这段对话自动起了个名字这类；
+ * - `info`：说一声就好 —— 配置已生效、这段会话自动起了个名字这类；
  * - `success`：「已保存」这种一秒提示，配一个很短的 `duration`，自己消失；
  * - `warning`：快出问题了 —— 附件没发出去、MCP 连不上了，但还没坏；
  * - `error`：已经出错了 —— 写库失败、请求挂了。
@@ -275,7 +275,7 @@ export interface NoticeView {
   /** 秒；`null` 表示永久，直到被手动清掉 */
   duration: number | null;
   text: LocalizedText;
-  /** 与哪段对话有关；`null` 表示全局通知 */
+  /** 与哪段会话有关；`null` 表示全局通知 */
   sessionId: string | null;
   createdAt: string;
 }
@@ -312,10 +312,10 @@ export const QUESTION_KINDS: readonly QuestionKind[] = ["handoff", "confirmation
 /**
  * 问题的生命周期状态：挂着等人答 / 已经答了。**只有两格**。
  *
- * 题的去处只有两个：**被答了**、**这段对话没了（含意外死）**（PRD 4.10）。所以没有「过期」、
+ * 题的去处只有两个：**被答了**、**这段会话没了（含意外死）**（PRD 4.10）。所以没有「过期」、
  * 没有「被取消」，也没有「关掉」这个动作 —— 那三种都是持久化时代的格子（题存得久，就需要
- * 一套清理语义），而题的命只有这一段对话活着的时间。第二个去处不发「题没了」这个事件：
- * 那段对话的事由 `session.changed`（`agent_gone`）说。
+ * 一套清理语义），而题的命只有这一段会话活着的时间。第二个去处不发「题没了」这个事件：
+ * 那段会话的事由 `session.changed`（`agent_gone`）说。
  *
  * 状态是宿主的事：题在内存里就一个对象，多端看到的是同一份（PRD 4.10）。
  */
@@ -342,19 +342,19 @@ export interface QuestionAnswer {
 /**
  * 问题对象：有 id、类型、候选、状态、答案（PRD D22）。
  *
- * `blocking` 表示这道题正挡着对话：在它被回答之前，发消息会被拒（PRD D23 / F-D10），
+ * `blocking` 表示这道题正挡着会话：在它被回答之前，发消息会被拒（PRD D23 / F-D10），
  * 拒绝时用的业务码是 `question_pending`。
  */
 export interface QuestionView {
   id: string;
-  /** 与哪段对话有关：问题总是为某一段对话停下来问的 */
+  /** 与哪段会话有关：问题总是为某一段会话停下来问的 */
   sessionId: string;
   kind: QuestionKind;
   state: QuestionState;
   prompt: LocalizedText;
   options: QuestionOption[];
   answer: QuestionAnswer | null;
-  /** 是否在挡着对话 */
+  /** 是否在挡着会话 */
   blocking: boolean;
   createdAt: string;
   updatedAt: string;
@@ -367,7 +367,7 @@ export interface QuestionView {
 /**
  * 目录的事实：路径 + 还在不在。
  *
- * 目录不存在时对话与历史照常可用，只是不能读文件；「那就只读吧」这个判断归客户端（PRD D12），
+ * 目录不存在时会话与历史照常可用，只是不能读文件；「那就只读吧」这个判断归客户端（PRD D12），
  * 宿主只给这两个字段。
  */
 export interface FolderFact {

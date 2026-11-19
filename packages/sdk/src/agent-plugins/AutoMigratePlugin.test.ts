@@ -13,7 +13,7 @@ const MAX_HANDOFF_TOKENS = 50_000;
  *
  * 自动交接走的是 `migrate()`（写文档 + 换记忆：记忆长什么样只有 SDK 那一处算，落在哪儿看有
  * 没有注入落库接缝）。`handoff` 一并挂上 spy 但插件不该碰它 —— 那一路只产文档、不换记忆，
- * 自动交接要是走它，兄弟会话越线之后记忆根本不会换。用例靠「`handoff` 一次都没被调用」钉住。
+ * 自动交接要是走它，平级会话越线之后记忆根本不会换。用例靠「`handoff` 一次都没被调用」钉住。
  */
 function stubService(options: { handingOff?: boolean } = {}) {
   const handoff = vi.fn(async () => ({}) as any);

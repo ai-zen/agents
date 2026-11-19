@@ -285,18 +285,18 @@ export interface FakeRound {
   /** 工具真正「跑」之前等这个（用例在「等工具」处插中止） */
   toolGate?: Promise<void>;
   /**
-   * 这一轮的那个工具是一次**真委派**：core 的 `AgentToolLazy` 会造一个一次性子 agent、
-   * 转发它的事件、把它的用量钉在工具消息上 —— 这里只给出那个子 agent 的脚本。
+   * 这一轮的那个工具是一次**真委派**：core 的 `AgentToolLazy` 会造一个一次性 subagent、
+   * 转发它的事件、把它的用量钉在工具消息上 —— 这里只给出那个 subagent 的脚本。
    */
   subAgent?: {
     name: string;
-    /** 子 agent 开局手里就有的消息（末尾那条 user 就是这一趟要回答的问题） */
+    /** subagent 开局手里就有的消息（末尾那条 user 就是这一趟要回答的问题） */
     messages: AgentNS.Message[];
-    /** 子 agent 吐的正文片（每片一次 `delta`，由 core 转发到父身上） */
+    /** subagent 吐的正文片（每片一次 `delta`，由 core 转发到父身上） */
     stream?: string[];
-    /** 子 agent 这一轮的请求直接失败（core 收成 `failed`，那条助手消息落成 `error`） */
+    /** subagent 这一轮的请求直接失败（core 收成 `failed`，那条助手消息落成 `error`） */
     fail?: Error;
-    /** 子 agent 这一轮的用量 */
+    /** subagent 这一轮的用量 */
     usage?: AgentNS.Usage;
   };
 }
@@ -347,7 +347,7 @@ async function* streamOf(
   yield finishChunk(calls.length > 0 ? "tool_calls" : "stop");
 }
 
-/** 一个一次性子 agent（带 `definition.name`，宿主的快照要读它） */
+/** 一个一次性 subagent（带 `definition.name`，宿主的快照要读它） */
 class FakeSubAgent extends Agent {
   readonly definition: { name: string };
 
@@ -460,7 +460,7 @@ export class FakeAgent extends Agent {
  * 脚本里出现过的工具 → 真的工具实现。
  *
  * - 某一轮带了 `subAgent` 时，那一轮的**第一个**工具是委派：走 core 的 `AgentToolLazy`
- *   （血缘、事件转发、用量汇总都在 core 里发生，这里只给子 agent 的脚本）；
+ *   （血缘、事件转发、用量汇总都在 core 里发生，这里只给 subagent 的脚本）；
  * - `write` 是**真的写盘**（参数里给 `path` 与 `content`）：交接那条路要的事实就是「盘上有
  *   没有这份文档」，回声工具演不出来；
  * - 其余工具是回声（`ok:<名字>`），`toolGate` 时把它按在「跑着」那一刻。
@@ -479,7 +479,7 @@ function toolsOf(rounds: FakeRound[]): Tool[] {
           new AgentToolLazy({
             function: {
               name: call.name,
-              description: "委派给一个子 agent（用例脚本）",
+              description: "委派给一个subagent（用例脚本）",
               parameters: { type: "object", properties: {} },
             },
             buildAgent: () =>
@@ -534,5 +534,5 @@ function toolsOf(rounds: FakeRound[]): Tool[] {
   return tools;
 }
 
-/** 子 agent 的名字：宿主的 `subAgentName` 读的就是它（真 core 的 `Agent` 上没有这一格） */
+/** subagent 的名字：宿主的 `subAgentName` 读的就是它（真 core 的 `Agent` 上没有这一格） */
 export type { FakeSubAgent };

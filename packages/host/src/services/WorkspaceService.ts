@@ -1,8 +1,8 @@
 /**
  * Workspace 服务：项目（一个工作目录）的登记、查看、改名、删除。
  *
- * 对应能力编号：F-C1 的前置（项目中承载对话）、D9 / D10 / D12（一等公民、cwd 不可变、
- * 目录不存在照常可看）、D11（删项目连带删名下对话，目录本身不碰）、D17（删除前给代价）、
+ * 对应能力编号：F-C1 的前置（项目中承载会话）、D9 / D10 / D12（一等公民、cwd 不可变、
+ * 目录不存在照常可看）、D11（删项目连带删名下会话，目录本身不碰）、D17（删除前给代价）、
  * F-F9（不可撤销动作由客户端二次确认，宿主负责算账）、R14（cwd 唯一）、R20（列表顺序）。
  *
  * 这个服务只做「一条项目记录怎么变」与「代价是多少」；文件系统方面只回答一件事 ——
@@ -40,11 +40,11 @@ import type { SessionRuntimePort, AssetSweeper } from "./SessionService.js";
  * `workspace.remove` 的结果。
  *
  * wire 的 `WorkspaceRemoveResult` 只有「删了没 + 代价」；真正把 `assets/` 下的文件
- * 清掉是 asset 那一层的事（PRD D17「图片按引用清理」），所以这里多带一份这些对话引用过的
+ * 清掉是 asset 那一层的事（PRD D17「图片按引用清理」），所以这里多带一份这些会话引用过的
  * 素材 id（删完之后由 asset 层问「还剩几张引用」，归零才删）。
  */
 export interface WorkspaceRemovalReport extends WorkspaceRemoveResult {
-  /** 这些对话引用过的素材 id（可能还有别的对话在用） */
+  /** 这些会话引用过的素材 id（可能还有别的会话在用） */
   assetIds: string[];
 }
 
@@ -57,7 +57,7 @@ export interface WorkspaceServiceDeps {
   /** 引用归零的素材交给它删行删文件；不注入时字节会留在盘上（引用行已经没了） */
   sweepAssets?: AssetSweeper;
   /**
-   * 运行时钩子：删项目会连带删掉它名下的对话，这些对话在运行时里可能还留着现场
+   * 运行时钩子：删项目会连带删掉它名下的会话，这些会话在运行时里可能还留着现场
    * （`ChatRunner` 手上那条桥、`AgentRegistry` 里那个 agent），删之前一并请它扔掉。
    */
   runtime: SessionRuntimePort;
@@ -83,7 +83,7 @@ export async function pathExists(path: string): Promise<boolean> {
 /**
  * 目录事实：路径 + 还在不在（PRD D12）。
  *
- * 只给事实，不给结论 —— 目录没了对话照样能看，是否禁掉发送由客户端判断。
+ * 只给事实，不给结论 —— 目录没了会话照样能看，是否禁掉发送由客户端判断。
  */
 export async function toFolderFact(cwd: string): Promise<FolderFact> {
   return { cwd, exists: cwd.length > 0 && (await pathExists(cwd)) };
@@ -146,7 +146,7 @@ export class WorkspaceService {
   /**
    * 列出项目（PRD D9 / D12 / R20）。
    *
-   * 顺序按创建时间倒序（仓储里定死）。目录已不存在的项目默认也列出来 —— 它名下的对话
+   * 顺序按创建时间倒序（仓储里定死）。目录已不存在的项目默认也列出来 —— 它名下的会话
    * 与历史仍然可用（D12），藏起来只会让人以为数据丢了；显式传 `includeMissingFolders: false`
    * 时才过滤掉。
    */
@@ -205,10 +205,10 @@ export class WorkspaceService {
   /**
    * 删项目（PRD D11 / D17 / F-F9 / R7）。
    *
-   * `dryRun` 只算账：名下对话数、消息数、素材数，客户端拿去向用户说明代价。真删时按外键
-   * 级联把对话、消息、问题行、素材的引用关系一起删掉；`assets/` 下的文件不在服务的删除范围里
-   * （D11：目录本身宿主不碰），但素材的字节要按引用清 —— 那张图可能还有别的项目的对话在用，
-   * 所以只把「这些对话引用过哪几份素材」交给 asset 层，删完之后由它问「还剩几张引用」。
+   * `dryRun` 只算账：名下会话数、消息数、素材数，客户端拿去向用户说明代价。真删时按外键
+   * 级联把会话、消息、问题行、素材的引用关系一起删掉；`assets/` 下的文件不在服务的删除范围里
+   * （D11：目录本身宿主不碰），但素材的字节要按引用清 —— 那张图可能还有别的项目的会话在用，
+   * 所以只把「这些会话引用过哪几份素材」交给 asset 层，删完之后由它问「还剩几张引用」。
    */
   async remove(params: WorkspaceRemoveParams): Promise<WorkspaceRemovalReport> {
     const row = await this.requireRow(params.workspaceId);
@@ -221,7 +221,7 @@ export class WorkspaceService {
     };
     const assetIds = new Set<string>();
     for (const session of sessions) {
-      // 这个数来自 `countBySession`：每段对话在 `messages` 表里的全部行（子 Agent 的话
+      // 这个数来自 `countBySession`：每段会话在 `messages` 表里的全部行（subagent 的话
       // 从来不入库，`CORE.md` §17）。侧栏摘要的 `messageCount` 走 `listBySession`，两者
       // 数的是同一批行、口径永远相等 —— 一个只取数、一个取行，没有第二套算法。
       consequences.messages += await this.messages.countBySession(session.id);
@@ -234,7 +234,7 @@ export class WorkspaceService {
       return { removed: false, consequences, assetIds: [...assetIds] };
     }
 
-    // 先请运行时忘掉这些对话，再删行：反过来会在运行时里留下指向已删记录的覆盖项
+    // 先请运行时忘掉这些会话，再删行：反过来会在运行时里留下指向已删记录的覆盖项
     for (const session of sessions) {
       await this.runtime.forget(session.id);
     }
@@ -260,8 +260,8 @@ export class WorkspaceService {
   /**
    * 组装一个项目的对外形状。
    *
-   * `updatedAt` 在 `workspaces` 表里没有对应列，这里取「最近一次对话活动」当它；一条对话
-   * 都没有时就是创建时间。`lastActivityAt` 同理来自对话的 `updatedAt`（新增消息会推进它）。
+   * `updatedAt` 在 `workspaces` 表里没有对应列，这里取「最近一次会话活动」当它；一条会话
+   * 都没有时就是创建时间。`lastActivityAt` 同理来自会话的 `updatedAt`（新增消息会推进它）。
    */
   private async toView(row: WorkspaceRow): Promise<WorkspaceView> {
     const sessions = await this.sessions.listByWorkspace(row.id);

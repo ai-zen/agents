@@ -83,7 +83,7 @@ async function startApp(): Promise<{ app: HostApp; workspaceDir: TempDir }> {
 }
 
 /**
- * 建一段对话并让它落库（R56：`session.create` 只发 id，首次 `send` 才写 `sessions` 行）。
+ * 建一段会话并让它落库（R56：`session.create` 只发 id，首次 `send` 才写 `sessions` 行）。
  *
  * 这里的用例要看的是别的东西（列表、搜索结果、项目删除），所以直接把草稿落成真行。
  */
@@ -93,7 +93,7 @@ async function seedSession(app: HostApp, workspaceId: string): Promise<SessionVi
     agentId: "default",
     modelId: "test-model",
   });
-  if (!created.session) throw new Error("session.create 没有建出对话");
+  if (!created.session) throw new Error("session.create 没有建出会话");
   await app.sessionService.ensurePersisted(created.session.id);
   return created.session;
 }

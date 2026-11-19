@@ -160,7 +160,7 @@ describe("createAgent", () => {
     const templateBefore = agent.definition.messages!.map((m) => ({ ...m }));
     const templateCount = templateBefore.length;
 
-    // 对话过程中 append 新消息（模拟 send 行为）
+    // 会话过程中 append 新消息（模拟 send 行为）
     agent.append(Message.User("你好"));
     agent.append(Message.Assistant("你好！"));
 

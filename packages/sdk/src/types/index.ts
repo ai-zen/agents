@@ -153,7 +153,7 @@ export interface AgentDefinition {
   id: string;
   name: string;
   description?: string;
-  /** 预设对话（至少一条 system） */
+  /** 预设消息（至少一条 system） */
   messages: AgentNS.Message[];
   /**
    * 绑定模型 id —— 三级解析的**第二级**（`createAgent` 里唯一一处实现）：
@@ -238,7 +238,7 @@ export interface AppConfig {
   /** 默认迁移模型 ID */
   defaultMigrationModel?: string;
   /**
-   * 给新对话自动取名的模型 ID（缺省回落到 `defaultModel`）。
+   * 给新会话自动取名的模型 ID（缺省回落到 `defaultModel`）。
    *
    * 起名是一次性、不流式、不带工具的调用，用小模型就够；与「迁移模型」
    * 分开是因为两者要求不同：迁移要能处理长上下文，起名只要几十个 token。

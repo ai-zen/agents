@@ -81,9 +81,9 @@ async function startApp(): Promise<HostApp> {
 }
 
 /**
- * 建一段对话并让它落库（R56：`create` 只发 id，首次 `send` 才写 `sessions` 行）。
+ * 建一段会话并让它落库（R56：`create` 只发 id，首次 `send` 才写 `sessions` 行）。
  *
- * 这些用例要看的是「项目被删时名下对话怎么处理」，所以直接把草稿落成真行，不跑一轮。
+ * 这些用例要看的是「项目被删时名下会话怎么处理」，所以直接把草稿落成真行，不跑一轮。
  */
 async function seedSession(app: HostApp, workspaceId: string): Promise<SessionView> {
   const created = await callMethod(app, "session.create", {
@@ -91,7 +91,7 @@ async function seedSession(app: HostApp, workspaceId: string): Promise<SessionVi
     agentId: "default",
     modelId: "test-model",
   });
-  if (!created.session) throw new Error("session.create 没有建出对话");
+  if (!created.session) throw new Error("session.create 没有建出会话");
   await app.sessionService.ensurePersisted(created.session.id);
   return created.session;
 }
@@ -156,7 +156,7 @@ describe("workspace.* 的基本转发", () => {
 });
 
 describe("workspace.remove 的跨层补齐", () => {
-  it("dryRun 只算代价：Scope 不回收、素材文件不动、对话还在", async () => {
+  it("dryRun 只算代价：Scope 不回收、素材文件不动、会话还在", async () => {
     const app = await startApp();
     const cwd = await makeTemp("ai-zen-ws-handlers-cwd-");
     const { workspace } = await callMethod(app, "workspace.create", { cwd: cwd.path });
@@ -182,7 +182,7 @@ describe("workspace.remove 的跨层补齐", () => {
     expect(still.total).toBe(1);
   });
 
-  it("真删：Scope 被主动回收（R43）、对话一起没、素材文件按引用清（R33）", async () => {
+  it("真删：Scope 被主动回收（R43）、会话一起没、素材文件按引用清（R33）", async () => {
     const app = await startApp();
     const cwd = await makeTemp("ai-zen-ws-handlers-cwd-");
     const { workspace } = await callMethod(app, "workspace.create", { cwd: cwd.path });

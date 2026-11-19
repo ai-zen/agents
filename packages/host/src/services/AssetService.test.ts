@@ -97,7 +97,7 @@ beforeEach(async () => {
   await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/w1', 1)");
   await db.run(
     `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-     VALUES ('c1', 'w1', '对话', 0, 'agent-1', 'm-1', 2, 2)`,
+     VALUES ('c1', 'w1', '会话', 0, 'agent-1', 'm-1', 2, 2)`,
   );
   await db.run(
     `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
@@ -483,7 +483,7 @@ describe("按引用清理", () => {
     expect(await fs.readdir(assetsDir)).toEqual([]);
   });
 
-  it("还有别的对话在引用：行与文件都留下", async () => {
+  it("还有别的会话在引用：行与文件都留下", async () => {
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
@@ -495,7 +495,7 @@ describe("按引用清理", () => {
     const ref = await uploadAsset(imageBytes(8));
     await linkToMessage(ref.assetId, { messageId: "msg-1" });
     await linkToMessage(ref.assetId, { messageId: "msg-2", sessionId: "c2" });
-    // 删掉第一个对话：它那一行关系跟着走，第二个对话那一行还在
+    // 删掉第一个会话：它那一行关系跟着走，第二个会话那一行还在
     await db.run("DELETE FROM sessions WHERE id = ?", ["c1"]);
 
     expect(await service.sweepUnreferenced([ref.assetId])).toEqual([]);
@@ -538,7 +538,7 @@ describe("按引用清理", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 全局去重（同一张图只占一份磁盘，可以跨对话）
+// 全局去重（同一张图只占一份磁盘，可以跨会话）
 // ---------------------------------------------------------------------------
 
 describe("全局去重", () => {
@@ -554,7 +554,7 @@ describe("全局去重", () => {
     expect((await repo.get(first.assetId))?.name).toBe("photo.png");
   });
 
-  it("两个不同对话上传同一张图：素材一行、磁盘一份、关系两行", async () => {
+  it("两个不同会话上传同一张图：素材一行、磁盘一份、关系两行", async () => {
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
@@ -571,7 +571,7 @@ describe("全局去重", () => {
     expect(second.assetId).toBe(first.assetId);
     expect(await fs.readdir(assetsDir)).toEqual([`${first.assetId}.png`]);
 
-    // 归属靠关系行：每个对话各一行
+    // 归属靠关系行：每个会话各一行
     await linkToMessage(first.assetId, { messageId: "msg-1" });
     await linkToMessage(second.assetId, { messageId: "msg-2", sessionId: "c2" });
     expect(await repo.listSessionIds(first.assetId)).toEqual(["c1", "c2"]);

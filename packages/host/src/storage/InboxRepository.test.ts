@@ -1,8 +1,8 @@
 /**
  * `InboxRepository` 的验收：条目**按原样**进去、按原样出来，顺序靠 `seq`（`createdAt` 会撞），
- * 以及「对话 / 工作区被删之后不留孤儿行」（外键级联）。
+ * 以及「会话 / 工作区被删之后不留孤儿行」（外键级联）。
  *
- * 库与迁移整个文件只建一次（临时目录里，结束后删掉），每个用例只清表并铺一段对话 —
+ * 库与迁移整个文件只建一次（临时目录里，结束后删掉），每个用例只清表并铺一段会话 —
  * 与 `AssetRepository.test.ts` 同一套做法。
  */
 
@@ -27,7 +27,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  // 删 workspaces 就够了（对话 → inbox 行随外键级联一起没）；再顺手清一遍这张表不花什么
+  // 删 workspaces 就够了（会话 → inbox 行随外键级联一起没）；再顺手清一遍这张表不花什么
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
     tx.run("DELETE FROM workspaces"),
@@ -43,7 +43,7 @@ beforeEach(async () => {
   for (const sessionId of ["c1", "c2"]) {
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-       VALUES (?, 'w1', '对话', 0, 'agent-1', 'model-1', 2, 2)`,
+       VALUES (?, 'w1', '会话', 0, 'agent-1', 'model-1', 2, 2)`,
       [sessionId],
     );
   }
@@ -54,7 +54,7 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-/** 一条待办的入参（每格都能改，好让用例只改它关心的那一格） */
+/** 一个条目的入参（每格都能改，好让用例只改它关心的那一格） */
 function entryOf(
   messageId: string,
   extra: Partial<{ sessionId: string; createdAt: string }> = {},
@@ -69,7 +69,7 @@ function entryOf(
 }
 
 describe("InboxRepository", () => {
-  it("落一行再按对话读回来：四个字段原样，顺序即入队顺序", async () => {
+  it("落一行再按会话读回来：四个字段原样，顺序即入队顺序", async () => {
     await repo.insert(entryOf("m1", { createdAt: "2026-01-02T03:04:05.000Z" }));
     await repo.insert({
       ...entryOf("m2", { createdAt: "2026-01-02T03:04:05.000Z" }),
@@ -93,7 +93,7 @@ describe("InboxRepository", () => {
         content: "把测试补上",
       },
     ]);
-    // 只看这一段对话的：别的对话的行不混进来
+    // 只看这一段会话的：别的会话的行不混进来
     expect(await repo.listBySession("c2")).toEqual([]);
   });
 
@@ -123,7 +123,7 @@ describe("InboxRepository", () => {
     expect(JSON.stringify(entry?.content)).toBe(JSON.stringify(content));
   });
 
-  it("删除：按 id 删（被取走的那几条）与按对话清（`/clear`）", async () => {
+  it("删除：按 id 删（被取走的那几条）与按会话清（`/clear`）", async () => {
     await repo.insert(entryOf("m1"));
     await repo.insert(entryOf("m2"));
     await repo.insert(entryOf("m3"));
@@ -149,7 +149,7 @@ describe("InboxRepository", () => {
     await expect(repo.insert(entryOf("m1"))).rejects.toThrow(/UNIQUE|PRIMARY KEY/i);
   });
 
-  it("删对话 / 删工作区之后没有孤儿行（外键级联）", async () => {
+  it("删会话 / 删工作区之后没有孤儿行（外键级联）", async () => {
     await repo.insert(entryOf("m1"));
     await repo.insert(entryOf("m2", { sessionId: "c2" }));
 
@@ -163,8 +163,8 @@ describe("InboxRepository", () => {
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
   });
 
-  it("指向不存在对话的条目插不进去（外键真的在拦）", async () => {
-    await expect(repo.insert(entryOf("m1", { sessionId: "没有这段对话" }))).rejects.toThrow(
+  it("指向不存在会话的条目插不进去（外键真的在拦）", async () => {
+    await expect(repo.insert(entryOf("m1", { sessionId: "没有这段会话" }))).rejects.toThrow(
       /FOREIGN KEY/i,
     );
   });

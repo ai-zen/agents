@@ -114,7 +114,7 @@ describe("createCallSkillSubAgentTool", () => {
     skillInfo("docker", { description: "Docker 容器管理", subAgent: true }),
   ];
 
-  /** mock 流式客户端：子 Agent run 时返回固定文本 */
+  /** mock 流式客户端：subagent run 时返回固定文本 */
   function createMockClient(responseText = "sub-agent result") {
     const stream = {
       async *[Symbol.asyncIterator]() {
@@ -186,7 +186,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("not found");
   });
 
-  it("被权限过滤掉的 Skill 不能被点名启动子 Agent", async () => {
+  it("被权限过滤掉的 Skill 不能被点名启动subagent", async () => {
     writeSkill("secret", "# 机密技能", { subAgent: true });
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills); // 不含 secret
     const host = buildHost(tool);
@@ -195,7 +195,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("not available");
   });
 
-  it("Skill 不支持子 Agent 模式时抛出错误", async () => {
+  it("Skill 不支持subagent 模式时抛出错误", async () => {
     // 磁盘上的 frontmatter 没有 sub-agent: true，而发现结果声称支持（后改的 frontmatter）：
     // 以磁盘为准，明确告知模型改用 load_skill 自己处理
     writeSkill("plain", "# 普通 Skill");
@@ -209,7 +209,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("does not support SubAgent mode");
   });
 
-  it("委派边界：分发 onSubAgentStart 与 subAgentStarted，子 Agent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
+  it("委派边界：分发 onSubAgentStart 与 subAgentStarted，subagent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
     writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit", {
       subAgent: true,
     });

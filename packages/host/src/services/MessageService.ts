@@ -1,25 +1,25 @@
 /**
- * 消息服务：按对话读消息，以及把库里的一行还原成 core 的消息对象。
+ * 消息服务：按会话读消息，以及把库里的一行还原成 core 的消息对象。
  *
  * 对应能力编号：A12 / L5（按消息 id 续拉：命中则从它开始且含它自身的最新内容，不命中返回全部）、
  * F-C6（`around` 定位取窗，供客户端把搜索命中的那条摆到眼前）、
- * F-I7（`toolCallId` 取子 Agent 自己的消息 —— 子 Agent 说过的话就在消息里，按委派工具调用的
+ * F-I7（`toolCallId` 取 subagent 自己的消息 —— subagent 说过的话就在消息里，按委派工具调用的
  * id 取，不另拼一份快照）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
  * R21 / R22（消息原样用 core 的 `AgentNS.Message`，不额外挂时间戳这类外壳字段）。
  *
  * ## 列表读取只有一个来源：活着读内存，死了读库（PLAN §7）
  *
- * 有驱动者就从它的 `messages` 现读（那才是真身，库里那份可能滞后几百毫秒、也可能压根没有 ——
- * 比如交接正在写的那几条），没有驱动者才读数据库（那时库就是它的全部）。**没有「正在交接
+ * 有 agent 就从它的 `messages` 现读（那才是真身，库里那份可能滞后几百毫秒、也可能压根没有 ——
+ * 比如交接正在写的那几条），没有 agent 才读数据库（那时库就是它的全部）。**没有「正在交接
  * 所以改读库」这种例外**：交接期间的草稿照样看得见，那正是「在做什么要正常回显」。
  *
  * `after` / `around` / `includeHidden` 这三种取法因此要在**两个来源上算同一套语义**：
  * 主线的取法在 `StoredMessage[]` 与 `AgentNS.Message[]` 上各算一次（`windowAround` 与
- * {@link MemoryView}），子 Agent 那一栏同理 —— 但它的内存来源是「父的名册 → 那个子 agent」。
+ * {@link MemoryView}），subagent 那一栏同理 —— 但它的内存来源是「父的名册 → 那个 subagent」。
  *
  * **读路径上什么都不写**：不补、不删、不修 —— 修复只在装配那一刻（`ChatRunner.reconcile`）做。
  *
- * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：对话服务算用量、判断
+ * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：会话服务算用量、判断
  * 历史里有没有图也要走它，免得同一行在两处被读出两个样子。
  *
  * 正文不做转换（R30）：仓储反序列化出来的就是 core 的 `AgentNS.MessageContent`，这里原样
@@ -36,10 +36,10 @@ import { HostError } from "../wire/errors.js";
 import type { MessageListParams, MessageListResult } from "../wire/index.js";
 
 /**
- * 草稿（R56）：刚建出来、还没发过消息的对话在库里没有行。
+ * 草稿（R56）：刚建出来、还没发过消息的会话在库里没有行。
  *
  * 只暴露「按 id 取」，取到的就是存储层的行形状 —— 它没有消息可读，但存在本身足以让
- * 读取路径不把一段刚建好的对话当成「不存在」。
+ * 读取路径不把一段刚建好的会话当成「不存在」。
  */
 export interface MessageDraftLookup {
   get(sessionId: string): Session | undefined;
@@ -52,9 +52,9 @@ export interface MessageServiceDeps {
   /** 草稿注册表（R56）；不注入时只认库里已有的行 */
   drafts?: MessageDraftLookup;
   /**
-   * 「这段对话此刻在内存里长什么样」的口（`ChatRunner.messagesOf`，结构上满足）。
+   * 「这段会话此刻在内存里长什么样」的口（`ChatRunner.messagesOf`，结构上满足）。
    *
-   * 不注入 = 一律读库（用例里的窄替身）。生产一定注入：一段对话活着的时候，库里的那份是
+   * 不注入 = 一律读库（用例里的窄替身）。生产一定注入：一段会话活着的时候，库里的那份是
    * 滞后的一份，内存里那份才是真身。
    */
   live?: LiveMessageLookup;
@@ -64,7 +64,7 @@ export interface MessageServiceDeps {
  * 读内存的那一个口（{@link MessageServiceDeps.live}）。
  *
  * 返回值是**数组本身**（`agent.messages`），不是拷贝；`null` 表示「我这边没有」——
- * 没有驱动者，或者名册上没有这个子 agent —— 调用方据此回落到库里。
+ * 没有 agent，或者名册上没有这个 subagent —— 调用方据此回落到库里。
  */
 export interface LiveMessageLookup {
   messagesOf(
@@ -227,7 +227,7 @@ export function readUsage(data: Record<string, unknown> | null | undefined): Age
 /**
  * `around` 取的窗口条数（PRD F-C6 的定位）。
  *
- * `message.list` 没有 `limit`：它一直是「一段对话全给」，`around` 只是把这一段收成一窗，
+ * `message.list` 没有 `limit`：它一直是「一段会话全给」，`around` 只是把这一段收成一窗，
  * 40 条足够看够上下文而不会把屏刷满。消费者是桌面端的搜索命中跳转（PLAN W4）。
  */
 const AROUND_WINDOW = 40;
@@ -235,7 +235,7 @@ const AROUND_WINDOW = 40;
 /**
  * 以某条消息为中心取一窗（PRD F-C6 的定位）。
  *
- * `rows` 是这段对话（或这个子 Agent）的全部消息、已按先后排序。命中那条一定在窗口里：
+ * `rows` 是这段会话（或这个 subagent）的全部消息、已按先后排序。命中那条一定在窗口里：
  * 前面先给一半（`floor((size-1)/2)` 条），剩下的额度全给后面；命中靠近两端时窗口自然短一些。
  * 命中不在 `rows` 里时回 `null` —— 调用方给空页（这条可能刚被撤回/换过库）。
  */
@@ -258,9 +258,9 @@ interface MemoryView {
   after: string | undefined;
   around: string | undefined;
   /**
-   * 这一份是不是某个子 Agent 的全部消息。
+   * 这一份是不是某个 subagent 的全部消息。
    *
-   * 是的话 `after` 只用来定 `anchor`：子 Agent 那一栏的取法一直是「那个子 agent 的全部消息」，
+   * 是的话 `after` 只用来定 `anchor`：subagent 那一栏的取法一直是「那个 subagent 的全部消息」，
    * `after` 不切它。
    */
   column: boolean;
@@ -280,22 +280,22 @@ export class MessageService {
   }
 
   /**
-   * 读一段对话的消息（PLAN A12 / PRD F-C6）。
+   * 读一段会话的消息（PLAN A12 / PRD F-C6）。
    *
    * 取法只有一套，**两个来源各算一次**（活着读内存、死了读库），语义逐条相同：
    *
    * - 不给 `after`、也不给 `around`：整段历史；
-   * - 给了 `after` 且该 id 就在这段对话里：**从这条开始**（含它，内容是最新的，可能是流式中那条的
+   * - 给了 `after` 且该 id 就在这段会话里：**从这条开始**（含它，内容是最新的，可能是流式中那条的
    *   部分内容）+ 其后全部，并把 `anchor` 报成它；
-   * - 给了 `after` 但这段对话里没有这个 id（已删、或换过库）：退回整段历史，`anchor` 为空 ——
+   * - 给了 `after` 但这段会话里没有这个 id（已删、或换过库）：退回整段历史，`anchor` 为空 ——
    *   客户端据此知道这是一次全量；
    * - 给了 `around`：以这条为中心取 {@link AROUND_WINDOW} 条（命中那条一定在里面），
    *   `anchor` 报成它；命中不在可见集里时给空页 + 空 `anchor`，**不报错**（消息可能刚被撤回）。
    *   `around` 与 `after` 同时给时**只认 `around`**：两者是两种取法（一个「从这里往下」、一个
    *   「围绕这里」），混在一起没有唯一答案。
    *
-   * `toolCallId` 取某个子 Agent 自己的消息（PRD F-I7）：子 Agent 的消息不在主线历史里，所以
-   * 两个参数同时给时 `after` 只用来定 `anchor`，结果集仍是那个子 Agent 的全部消息。`around`
+   * `toolCallId` 取某个 subagent 自己的消息（PRD F-I7）：subagent 的消息不在主线历史里，所以
+   * 两个参数同时给时 `after` 只用来定 `anchor`，结果集仍是那个 subagent 的全部消息。`around`
    * 同此：`toolCallId` 决定读哪一段，`around` 只在那一段里定位。
    *
    * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认不回：core 的这个字段就是
@@ -308,8 +308,8 @@ export class MessageService {
     const after = idParam(params.after);
     const toolCallId = idParam(params.toolCallId);
 
-    // 内存优先（PLAN §7）：活着读内存，死了读库。`null` = 我这边没有 —— 没有驱动者，
-    // 或者名册上已经没有这个子 agent（那一批翻过去了 / 进程重启过）
+    // 内存优先（PLAN §7）：活着读内存，死了读库。`null` = 我这边没有 —— 没有 agent，
+    // 或者名册上已经没有这个 subagent（那一批翻过去了 / 进程重启过）
     const live =
       this.live?.messagesOf(
         session.id,
@@ -334,7 +334,7 @@ export class MessageService {
     }
 
     if (toolCallId !== undefined) {
-      // 子 Agent 的话**不入库**（`CORE.md` §17）：这一段没有驱动者（或者名册上已经没有那个子
+      // subagent 的话**不入库**（`CORE.md` §17）：这一段没有 agent（或者名册上已经没有那个子
       // agent）时，那一栏就是空的。库里没有第二份可读（`parentToolCallId` 随 v5 删了）。
       return this.respond(session.id, [], anchor, around);
     }
@@ -400,9 +400,9 @@ export class MessageService {
   }
 
   /**
-   * 这段对话存不存在：库里那一行，或者一份还没落库的草稿（R56）。
+   * 这段会话存不存在：库里那一行，或者一份还没落库的草稿（R56）。
    *
-   * 草稿还没有任何消息，所以读它总是得到空集 —— 但它不该被读成「找不到这段对话」：
+   * 草稿还没有任何消息，所以读它总是得到空集 —— 但它不该被读成「找不到这段会话」：
    * 客户端刚 `create` 完就会拉一次消息与现场。
    */
   private async requireSession(sessionId: string) {

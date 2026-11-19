@@ -69,7 +69,7 @@ export type PeerSessionRejectReason = "depth_exceeded" | "model_unresolved" | "t
 /**
  * `create_session` 的答案。
  *
- * 成功只给两个字段：`sessionId`（子会话的 sessionId）与可读的 `label`。**没有结果** ——
+ * 成功只给两个字段：`sessionId`（新开那段会话的 id）与可读的 `label`。**没有结果** ——
  * 建完即回：这里从来不等那边答完，也不会有任何东西被推回给发起者。
  */
 export type PeerSessionCreated =
@@ -179,7 +179,7 @@ export interface PeerSessionPort {
 const NO_POLL_HINT =
   "Do not poll it: when that session has something for me it calls postMessage on me itself.";
 
-/** 「靠 label 认会话」那半句：`sessionId` 是 UUID，长对话里记不住 */
+/** 「靠 label 认会话」那半句：`sessionId` 是 UUID，长会话里记不住 */
 const LABEL_HINT =
   "Keep `label` next to `sessionId`: if I forget the id later, `label` is how I name this session.";
 
@@ -219,7 +219,7 @@ const SEND_REJECT_HINTS: Record<PeerSessionSendRejectReason, string> = {
  * 「摘要那一格」那半句：答案里另给一格**最近一句**的摘要 —— 不是全量、不是历史。
  *
  * 写它的理由与 {@link NO_POLL_HINT} 一样：模型会照着自己拿到的那段话理解能力边界，不说清
- * 「这只是摘要」，它下一句就会以为自己在读对方的对话。
+ * 「这只是摘要」，它下一句就会以为自己在读对方的会话。
  */
 const EXCERPT_HINT =
   "`lastMessage` in this answer is only the beginning of the last thing it said (cut at 300 " +
@@ -227,7 +227,7 @@ const EXCERPT_HINT =
   "count — do not use this answer to fetch context.";
 
 /**
- * 「收下了」那半句：只说两件当场能定下的事 —— ① 已进那边的待办；② 别轮询。
+ * 「收下了」那半句：只说两件当场能定下的事 —— ① 已进那边的 inbox；② 别轮询。
  *
  * **不写**「它现在在忙 / 会把它叫起来」，也不写「不会自动推给我」：后者与「她说完会自己
  * postMessage 回来」相互打脸，而且两者都是对未来的断言。真正能说的只有

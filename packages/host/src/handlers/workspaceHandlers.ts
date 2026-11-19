@@ -2,7 +2,7 @@
  * `workspace.*`：项目（PRD D9 / D10 / D11 / D12）。
  *
  * 薄到只有一层：参数交给 `WorkspaceService`，结果原样回去。唯一在接线层补的是删项目之后的
- * 两件事（回收它的 Scope、逐段对话推 `deleted`）—— 那两样分别属于运行时与接线层，服务层只负责
+ * 两件事（回收它的 Scope、逐段会话推 `deleted`）—— 那两样分别属于运行时与接线层，服务层只负责
  * 删行并算出代价（裁定 R43 / R33）。素材字节的清理不在这里：挂引用归零之后由素材层删。
  */
 
@@ -18,14 +18,14 @@ import type {
 /** `workspace.*` 的实现要的持有者 */
 export interface WorkspaceHandlerDeps {
   workspaces: WorkspaceService;
-  /** 删项目要连带它的对话一起清（PRD D11）：删之前先记下名下有哪几段 */
+  /** 删项目要连带它的会话一起清（PRD D11）：删之前先记下名下有哪几段 */
   sessions: SessionService;
-  /** 名下的对话在运行时里可能还留着现场，删之前一并丢掉 */
+  /** 名下的会话在运行时里可能还留着现场，删之前一并丢掉 */
   runner: ChatRunner;
   /** 删项目要把它的 Scope 一起销毁（MCP 连接在这里断开） */
   scopes: ScopeRegistry;
   /**
-   * 推 `session.changed`（L5 / D22：删项目带走的那几段对话也要让别的窗口知道）。
+   * 推 `session.changed`（L5 / D22：删项目带走的那几段会话也要让别的窗口知道）。
    * 不注入时不推。
    */
   emit?: ChatEventEmitter;
@@ -47,9 +47,9 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps): HandlerTabl
  * 删项目（PRD D11 / D17 / F-F9 / R43）。
  *
  * 顺序是有意的：
- *   1. 先记下名下的对话（删完就问不出来了，而运行时里它们的现场要一起丢）；
- *   2. 服务层删行（它顺带让运行时忘掉那几段对话的临时覆盖，以及删完之后清归零的素材字节）；
- *   3. 逐段对话丢掉现场（`forget` 顺带把那个 agent 硬着陆：对话被删了，它不该再烧
+ *   1. 先记下名下的会话（删完就问不出来了，而运行时里它们的现场要一起丢）；
+ *   2. 服务层删行（它顺带让运行时忘掉那几段会话的临时覆盖，以及删完之后清归零的素材字节）；
+ *   3. 逐段会话丢掉现场（`forget` 顺带把那个 agent 硬着陆：会话被删了，它不该再烧
  *      token、再往库里写），并推一条 `deleted`（多端在线时对方界面靠它去拉）；
  *   4. 把这个 Workspace 下**还剩的** agent 全部杀干净（`killScope`），再销毁它的 Scope ——
  *      MCP 连接在销毁那一刻断开（PLAN §4 销毁缘由之一）。

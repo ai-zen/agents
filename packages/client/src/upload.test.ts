@@ -177,7 +177,7 @@ describe("分帧", () => {
       mime: "image/png",
       bytes: 1000,
       name: "shot.png",
-      // 摘要在 `begin` 就交上去：宿主据此判断「这段对话里是不是已经有这份字节」
+      // 摘要在 `begin` 就交上去：宿主据此判断「这段会话里是不是已经有这份字节」
       sha256: sha256(payload),
       sessionId: SESSION_ID,
     });

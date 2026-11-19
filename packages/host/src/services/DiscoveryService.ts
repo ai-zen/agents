@@ -1,7 +1,7 @@
 /**
- * 能力发现服务：把「这个项目现在能用哪些 MCP / Skill / 工具 / 子 Agent」摊成分层清单。
+ * 能力发现服务：把「这个项目现在能用哪些 MCP / Skill / 工具 / subagent」摊成分层清单。
  *
- * 对应能力编号：F-G1（MCP 5 层链，可编辑的只有 2 个作用域）、F-G2（Skill 4 层、工具与子 Agent
+ * 对应能力编号：F-G1（MCP 5 层链，可编辑的只有 2 个作用域）、F-G2（Skill 4 层、工具与 subagent
  * 各 2 层，只发现真实存在的目录，离项目越近越优先）、F-F6（坏文件按层分两种处置，见下）、
  * L9（MCP 的 5 层链）、R54（5 层链与各能力目录由本服务算好交给 ScopeRegistry）。
  *
@@ -65,7 +65,7 @@ import { isSecretMask, maskSecret } from "./secretMask.js";
 
 /** 数据根下的助手定义目录 */
 const DIR_AGENTS = "agents";
-/** 数据根下的子 Agent 定义目录 */
+/** 数据根下的 subagent 定义目录 */
 const DIR_SUB_AGENTS = "sub-agents";
 /** 数据根下的 Skill 目录 */
 const DIR_SKILLS = "skills";
@@ -115,7 +115,7 @@ export interface ScopeAbilityPaths {
   skillsPaths: string[];
   /** 用户工具目录，近的在前 */
   toolsPaths: string[];
-  /** 子 Agent 目录，近的在前 */
+  /** subagent 目录，近的在前 */
   subAgentsPaths: string[];
   /** MCP 配置文件的 5 层链，近的在前（SDK 的 `discoverMcpServers` 按这个顺序先到先得） */
   mcpPaths: string[];
@@ -298,7 +298,7 @@ export class DiscoveryService {
     ]);
   }
 
-  /** 子 Agent 的 2 层目录：`<ws>/.agents/sub-agents` → `<aiZenDir>/sub-agents` */
+  /** subagent 的 2 层目录：`<ws>/.agents/sub-agents` → `<aiZenDir>/sub-agents` */
   subAgentLayers(cwd: string | null): DiscoveryLayerPath[] {
     return withoutNulls([
       projectLayer(cwd, 0, join(PROJECT_AGENTS_DIR, DIR_SUB_AGENTS), "other"),
@@ -623,7 +623,7 @@ export class DiscoveryService {
         depth: layer.depth,
         path: layer.path,
         editable: layer.editable,
-        // 目录类能力（Skill / 工具 / 子 Agent）没有「按作用域写入」这回事（F-G2）
+        // 目录类能力（Skill / 工具 / subagent）没有「按作用域写入」这回事（F-G2）
         scope: layer.scope,
         state: reading.state,
         problem: reading.problem,
@@ -777,9 +777,9 @@ export class DiscoveryService {
   }
 
   /**
-   * 一层的子 Agent。
+   * 一层的 subagent。
    *
-   * 「什么算子 Agent」由 SDK 的 `discoverSubAgents` 说了算（有 `function` 定义的那些）；
+   * 「什么算 subagent」由 SDK 的 `discoverSubAgents` 说了算（有 `function` 定义的那些）；
    * 这里自己再读一遍文件，是为了拿到每个定义来自哪个文件（`source`）以及读不出来的那几个。
    */
   private async readSubAgentLayer(dir: string): Promise<LayerReading> {
@@ -815,7 +815,7 @@ export class DiscoveryService {
     for (const file of await listFiles(dir)) {
       if (!file.endsWith(".json")) continue;
       const id = file.slice(0, -".json".length);
-      // 已经被认成子 Agent 的那些跳过；其余文件要么读不出来，要么不是子 Agent 定义
+      // 已经被认成 subagent 的那些跳过；其余文件要么读不出来，要么不是 subagent 定义
       if (known.has(id)) continue;
       const path = join(dir, file);
       const parsed = await readJsonOrNull(path);
@@ -887,7 +887,7 @@ function withoutNulls(layers: (DiscoveryLayerPath | null)[]): DiscoveryLayerPath
 }
 
 /**
- * 目录类条目（Skill / 工具 / 子 Agent）。
+ * 目录类条目（Skill / 工具 / subagent）。
  *
  * 它们的传输、命令、地址这些字段不存在（F-G2 那几类不靠传输启动），`extra` 也没有写回的路。
  * 空值在这里一次填好，免得每个构造点各写一遍。

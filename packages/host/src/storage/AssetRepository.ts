@@ -6,9 +6,9 @@
  *
  *   - `assets` 一行 = 数据根下一份文件 + 它的类型、大小、摘要、像素尺寸。`sha256` 全库唯一：
  *     同一份字节在整台机器上只有一行、一份磁盘，所以这一行是「这张图是什么」的唯一答案。
- *     它不记「属于哪段对话」——一张图可以同时被好几段对话引用。
+ *     它不记「属于哪段会话」——一张图可以同时被好几段会话引用。
  *   - `session_assets` 一行 = 「某条消息引用了某份素材」。归属与「几张会话引用了它」都从
- *     这张表算；消息被删（撤回 / 删对话）时关系行跟着级联消失，不需要谁去减计数。
+ *     这张表算；消息被删（撤回 / 删会话）时关系行跟着级联消失，不需要谁去减计数。
  *     `assetId` 用 `ON DELETE RESTRICT`：还有引用时素材行在库里删不掉（护栏）。
  *   - `asset_vendor_files` 一行 = 「这个素材在这个端点上对应厂商的哪个 file_id」。厂商的
  *     `file_id` 是端点维度资源，所以它只当缓存：删光也能从 `assets` 重建（下次发送时
@@ -111,7 +111,7 @@ export class AssetRepository {
     return this.db.get<AssetRow>(`SELECT ${COLUMNS} FROM assets WHERE sha256 = ?`, [sha256]);
   }
 
-  /** 一段对话引用的全部素材（同一份素材被这段对话里两条消息引用时只出现一次） */
+  /** 一段会话引用的全部素材（同一份素材被这段会话里两条消息引用时只出现一次） */
   async listBySession(sessionId: string): Promise<AssetRow[]> {
     return this.db.all<AssetRow>(
       `SELECT DISTINCT ${columnList("a")}
@@ -149,7 +149,7 @@ export class AssetRepository {
     return result.changes;
   }
 
-  /** 这份素材被几行引用（含同一段对话里的多条消息） */
+  /** 这份素材被几行引用（含同一段会话里的多条消息） */
   async countReferences(assetId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM session_assets WHERE assetId = ?",
@@ -167,7 +167,7 @@ export class AssetRepository {
     return row?.n ?? 0;
   }
 
-  /** 一份素材被哪些对话引用（「贴到过哪几个项目」） */
+  /** 一份素材被哪些会话引用（「贴到过哪几个项目」） */
   async listSessionIds(assetId: string): Promise<string[]> {
     const rows = await this.db.all<{ sessionId: string }>(
       `SELECT DISTINCT sessionId FROM session_assets
@@ -189,7 +189,7 @@ export class AssetRepository {
     return rows.map((row) => row.assetId);
   }
 
-  /** 一段对话引用过哪些素材 id（删对话前先读一次：删完之后关系行就没了） */
+  /** 一段会话引用过哪些素材 id（删会话前先读一次：删完之后关系行就没了） */
   async listAssetIdsBySession(sessionId: string): Promise<string[]> {
     const rows = await this.db.all<{ assetId: string }>(
       `SELECT DISTINCT assetId FROM session_assets

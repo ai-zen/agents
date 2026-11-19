@@ -29,7 +29,7 @@ export class WorkspaceRepository {
     return this.db.get<WorkspaceRow>(`SELECT ${COLUMNS} FROM workspaces WHERE id = ?`, [id]);
   }
 
-  /** 按 cwd 找登记过的 Workspace（PRD D10：普通对话遇到未登记的 cwd 时问一次） */
+  /** 按 cwd 找登记过的 Workspace（PRD D10：普通会话遇到未登记的 cwd 时问一次） */
   async getByCwd(cwd: string): Promise<WorkspaceRow | undefined> {
     return this.db.get<WorkspaceRow>(`SELECT ${COLUMNS} FROM workspaces WHERE cwd = ?`, [cwd]);
   }
@@ -48,7 +48,7 @@ export class WorkspaceRepository {
 
   /**
    * 删 Workspace：它名下的 sessions / messages / assets / questions 靠外键级联清掉
-   * （PRD D11：删项目连带删它名下的对话）。目录本身不在存储层职能范围内。
+   * （PRD D11：删项目连带删它名下的会话）。目录本身不在存储层职能范围内。
    */
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM workspaces WHERE id = ?", [id]);

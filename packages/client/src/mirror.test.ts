@@ -2,7 +2,7 @@
  * 镜像的验收：四条规矩各钉一遍。
  *
  *   1. `message.added` 插入、`message.delta` 用 core 的 `applyChunk` 增量、`message.changed`
- *      整条替换、`message.removed` 删除；子 Agent 的消息按 `toolCallId` 归栏。
+ *      整条替换、`message.removed` 删除；subagent 的消息按 `toolCallId` 归栏。
  *   2. 重连补回来的那一份：锚点还在 → 替换 + 追加；锚点不在 → 整段替换。
  *   3. 打开期间攒下的那一批（`replay: true`）：属于快照已包含那些消息的增量不再折一遍。
  *   4. 与镜像无关的事件（`notice` / `question` / `error`）不认领；`session.changed` 认领，
@@ -117,7 +117,7 @@ describe("四条到达事件", () => {
     expect(mirror.messages).toEqual([]);
   });
 
-  it("子 Agent 的消息按 toolCallId 归栏，不进主线", () => {
+  it("subagent 的消息按 toolCallId 归栏，不进主线", () => {
     const mirror = mirrorOf();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
     mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
@@ -131,7 +131,7 @@ describe("四条到达事件", () => {
 
   it("还没读到四件事时每一格都是 null（既不借「死」也不借「闲」占位）", () => {
     const mirror = mirrorOf();
-    // 打开对话的那一刻：事件还没到、`session.state` 也还没读
+    // 打开会话的那一刻：事件还没到、`session.state` 也还没读
     expect(mirror.snapshot()).toMatchObject({
       status: null,
       inputPaused: null,
@@ -204,7 +204,7 @@ describe("四条到达事件", () => {
     expect(mirror.status).not.toBe(undefined);
   });
 
-  it("lastMessageId 是主线最后一条（子 Agent 那几栏不参与）", () => {
+  it("lastMessageId 是主线最后一条（subagent 那几栏不参与）", () => {
     const mirror = mirrorOf();
     expect(mirror.lastMessageId()).toBeUndefined();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
@@ -321,7 +321,7 @@ describe("交接态：`session.changed` 那一格", () => {
 });
 
 describe("快照的两种接法", () => {
-  it("replaceAll：整段替换主线，子 Agent 那几栏留着", () => {
+  it("replaceAll：整段替换主线，subagent 那几栏留着", () => {
     const mirror = mirrorOf();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("old", "旧的")) });
     mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });

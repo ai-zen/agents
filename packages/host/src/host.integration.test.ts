@@ -4,7 +4,7 @@
  * 与其它两条的分工：
  *   - `session.flow.test.ts` 把宿主当库用（同进程内真监听），验的是「零件接起来能跑一轮」；
  *   - `serve.process.test.ts` 验的是命令行与进程生命周期；
- *   - 这一条验的是**交付清单上的每一项在真进程里都接上了**：握手与语言、项目 / 对话、
+ *   - 这一条验的是**交付清单上的每一项在真进程里都接上了**：握手与语言、项目 / 会话、
  *     配置（密钥掩码）/ 模型 / 助手、通知（列出 + 清掉）、问题（多端同一份 + 答完推进状态）、
  *     `@` 补全、以及重启之后数据还在。
  *
@@ -237,7 +237,7 @@ async function stop(running: RunningHost): Promise<number | null> {
 }
 
 describe("端到端集成：真进程 + 真连接", () => {
-  it("握手 → 项目/对话 → 配置/模型/助手 → 通知 → 问题 → 补全 → 重启后仍在", async () => {
+  it("握手 → 项目/会话 → 配置/模型/助手 → 通知 → 问题 → 补全 → 重启后仍在", async () => {
     // =====================================================================
     // 1. 无凭证被拒 / 有凭证握手成功（含语言）
     // =====================================================================
@@ -294,7 +294,7 @@ describe("端到端集成：真进程 + 真连接", () => {
       agentId: "default",
       modelId: "test-model",
     })) as SessionCreateResult;
-    if (!createdSession.session) throw new Error("session.create 没有建出对话");
+    if (!createdSession.session) throw new Error("session.create 没有建出会话");
     const sessionId = createdSession.session.id;
     expect(sessionId.length).toBeGreaterThan(0);
 
@@ -367,7 +367,7 @@ describe("端到端集成：真进程 + 真连接", () => {
     const patched = (await callThrough(client, "config.patch", {
       patch: { limits: { maxToolOutput: 4096 } },
     })) as ConfigPatchResult;
-    // 上面那一轮 send 借过这个项目的 Scope（发过消息的对话按项目装配能力），
+    // 上面那一轮 send 借过这个项目的 Scope（发过消息的会话按项目装配能力），
     // 于是「改配置回收受影响 Scope」这一跳回报的就是它
     expect(patched.applied.refreshedWorkspaceIds).toEqual([workspace.id]);
     expect(patched.applied.noticeId).not.toBeNull();
@@ -423,7 +423,7 @@ describe("端到端集成：真进程 + 真连接", () => {
       .join(",")} prefix(src/)=${narrowed.entries.map((entry) => entry.path).join(",")}`);
 
     // =====================================================================
-    // 5a. 问题：题只在进程里活着（PRD 4.10）—— 这段对话上没有题，拉两次都是空的
+    // 5a. 问题：题只在进程里活着（PRD 4.10）—— 这段会话上没有题，拉两次都是空的
     // =====================================================================
     await client.close();
     expect(await stop(first)).toBe(0);
@@ -463,7 +463,7 @@ describe("端到端集成：真进程 + 真连接", () => {
     log("question", `重启之后这一段上挂着 ${listA.questions.length} 道题（题只在进程里）`);
 
     // =====================================================================
-    // 7. 重启之后：项目 / 对话 / 通知都在（数据在库里，端口换了不丢）；题不在（它不落库）
+    // 7. 重启之后：项目 / 会话 / 通知都在（数据在库里，端口换了不丢）；题不在（它不落库）
     // =====================================================================
     // 再触发一条通知，让它跨重启留着（永久通知只能手动清，L3）
     await callThrough(windowA, "config.patch", {
@@ -488,10 +488,10 @@ describe("端到端集成：真进程 + 真连接", () => {
 
     const sessionsAfter = (await callThrough(back, "session.list", { workspaceId: workspace.id })) as SessionListResult;
     expect(sessionsAfter.sessions.map((item) => item.id)).toEqual([sessionId]);
-    // F-I3 的那两格：刚重启的宿主上这段对话没有 agent、队里也空着（现读的结果，不是落库的字段）
+    // F-I3 的那两格：刚重启的宿主上这段会话没有 agent、队里也空着（现读的结果，不是落库的字段）
     expect(sessionsAfter.sessions[0]).toMatchObject({ alive: false, inboxPending: 0 });
 
-    // 题不落库：重启之后这一段上依然一道题都没有（PRD 4.10 的「题的生命只有这一段对话活着的时间」）
+    // 题不落库：重启之后这一段上依然一道题都没有（PRD 4.10 的「题的生命只有这一段会话活着的时间」）
     const questionsAfter = (await callThrough(back, "question.list", { sessionId })) as QuestionListResult;
     expect(questionsAfter.questions).toEqual([]);
 

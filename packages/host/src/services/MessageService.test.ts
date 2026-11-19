@@ -147,7 +147,7 @@ describe("MessageService.list 的取法（A12）", () => {
     expect(result.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
   });
 
-  it("after 属于别的对话时也按「没命中」处理", async () => {
+  it("after 属于别的会话时也按「没命中」处理", async () => {
     await messages.upsert({
       id: "other",
       sessionId: "c2",
@@ -162,23 +162,23 @@ describe("MessageService.list 的取法（A12）", () => {
     expect(result.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
   });
 
-  it("对话不存在时报 not_found", async () => {
-    await expect(service.list({ sessionId: "没有这段对话" })).rejects.toBeInstanceOf(HostError);
+  it("会话不存在时报 not_found", async () => {
+    await expect(service.list({ sessionId: "没有这段会话" })).rejects.toBeInstanceOf(HostError);
   });
 
-  it("toolCallId 要子 Agent 那一栏：库里没有第二份可读，于是给空页（F-I7 / CORE §17）", async () => {
+  it("toolCallId 要subagent 那一栏：库里没有第二份可读，于是给空页（F-I7 / CORE §17）", async () => {
     // 那次委派本身：assistant 发出工具调用，工具结果也挂着同一个工具调用 id
     await messages.upsert({
       id: "tool-1",
       sessionId: "c1",
       role: "tool",
       status: "completed",
-      content: "子 Agent 的结果",
+      content: "subagent 的结果",
       data: { tool_call_id: "call-1" },
       createdAt: 500,
     });
 
-    // 子 Agent 的话不入库（`CORE.md` §17）：这段没有驱动者时，那一栏就是空的 ——
+    // subagent 的话不入库（`CORE.md` §17）：这段没有 agent 时，那一栏就是空的 ——
     // 库里没有第二份（`parentToolCallId` 那一列已随 v5 删掉）
     const result = await service.list({ sessionId: "c1", toolCallId: "call-1" });
     expect(result.messages).toEqual([]);
@@ -226,7 +226,7 @@ describe("MessageService.list 的取法（A12）", () => {
           guardThreshold: null,
           autoHandoff: false,
           lineage: null,
-          // 刚建出来 / 没答过交接题：没有待办
+          // 刚建出来 / 没答过交接题：没有待交接
           pendingHandoff: null,
           createdAt: 1,
           updatedAt: 1,
@@ -241,7 +241,7 @@ describe("MessageService.list 的取法（A12）", () => {
 
     const page = await withDrafts.list({ sessionId: "draft-1" });
     expect(page.messages).toEqual([]);
-    await expect(withDrafts.list({ sessionId: "没有这段对话" })).rejects.toBeInstanceOf(
+    await expect(withDrafts.list({ sessionId: "没有这段会话" })).rejects.toBeInstanceOf(
       HostError,
     );
   });
@@ -307,7 +307,7 @@ describe("活着读内存，死了读库（PLAN §7）", () => {
     ]);
   });
 
-  it("子 agent 那一栏：名册上有就取它自己的消息，没有才回落到库", async () => {
+  it("subagent 那一栏：名册上有就取它自己的消息，没有才回落到库", async () => {
     const sub: AgentNS.Message[] = [
       { id: "sub-1", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "派活" },
       { id: "sub-2", role: AgentNS.Role.Assistant, status: AgentNS.MessageStatus.Completed, content: "做完了" },
@@ -324,12 +324,12 @@ describe("活着读内存，死了读库（PLAN §7）", () => {
 });
 
 describe("MessageService.list 的 around（F-C6 的定位）", () => {
-  /** 往一段新对话里灌 n 条按顺序的消息；`around` 要足够的条数才看得出「窗口」 */
+  /** 往一段新会话里灌 n 条按顺序的消息；`around` 要足够的条数才看得出「窗口」 */
   async function seedLong(count: number): Promise<void> {
     await sessions.create({
       id: "c-long",
       workspaceId: "w1",
-      name: "很长的对话",
+      name: "很长的会话",
       agentId: "a1",
       modelId: "m1",
       createdAt: 30,
@@ -382,7 +382,7 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
     expect(gone.anchor).toBeNull();
     expect(gone.messages).toEqual([]);
 
-    // 属于别的对话的 id 同样是「没命中」
+    // 属于别的会话的 id 同样是「没命中」
     const other = await service.list({ sessionId: "c-long", around: "u1" });
     expect(other.anchor).toBeNull();
     expect(other.messages).toEqual([]);
@@ -431,7 +431,7 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
       toolCallId: "call-1",
       around: "u1",
     });
-    // 子 Agent 的话不入库（`CORE.md` §17）：没有驱动者时那一栏就是空的
+    // subagent 的话不入库（`CORE.md` §17）：没有 agent 时那一栏就是空的
     expect(delegated.messages).toEqual([]);
   });
 

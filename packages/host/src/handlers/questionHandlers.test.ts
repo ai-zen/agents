@@ -114,7 +114,7 @@ describe("question.* 接线", () => {
       call("question.answer", { questionId: asked.id, value: "decline" }, "en", "conn-42"),
     );
     expect(answered?.question.answer).toMatchObject({ value: "decline", answeredBy: "conn-42" });
-    // 不交接：没有后续动作，也没留下待办
+    // 不交接：没有后续动作，也没留下待交接
     expect(answered?.effects).toEqual({ handoffStarted: false, handoffDeferredReason: null });
     expect(await harness.questions.readPendingHandoff("c1")).toBeNull();
 

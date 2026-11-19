@@ -11,7 +11,7 @@
  * ## 接线层不替它做任何编排
  *
  * 从前这里是「先 `abort()` 掐掉在途，再开始」—— 那条中断语义已经作废（用户判词：非空闲时
- * 不让跑就行了）。现在只有一条判据，而且它在 `ChatRunner.canHandoffNow` 那一处：**这段对话能不能
+ * 不让跑就行了）。现在只有一条判据，而且它在 `ChatRunner.canHandoffNow` 那一处：**这段会话能不能
  * 立刻接手一批**（`no_agent` / `working` / `output_paused` / `handoff_in_progress`），拒的时候
  * 回 `busy`，`detail.reason` 就是那一个词，调用方自己等它行了再来。
  * 于是这里不必碰中断口，本域也就不再向接线层要 `runner`。

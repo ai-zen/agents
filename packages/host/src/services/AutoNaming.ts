@@ -153,7 +153,7 @@ export class AutoNaming {
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<void> {
     const session = await this.sessions.get(sessionId);
-    // 对话不在（刚被删）：后台钩子不该抛错
+    // 会话不在（刚被删）：后台钩子不该抛错
     if (!session) return;
 
     let config: AppConfig;

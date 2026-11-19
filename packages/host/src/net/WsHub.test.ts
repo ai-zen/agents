@@ -6,7 +6,7 @@
  *   - 分发走注入的 handler 表，没注册的方法回 `unsupported`；
  *   - 错误出网是「业务码 + 按这条连接语言渲染的句子 + detail」，非业务错误只说 internal；
  *   - 推送是通知帧（无 id），不重放；
- *   - `session.send` 这类方法的推送排在回包之后（R47），且按对话分别缓冲；
+ *   - `session.send` 这类方法的推送排在回包之后（R47），且按会话分别缓冲；
  *   - 二进制帧四段上传，超限在 `begin` 就拒，断线清掉临时文件。
  */
 
@@ -98,7 +98,7 @@ function handlers(): HandlerTable {
         delta: { content: "hi" },
         at: NOW,
       });
-      // 另一段对话的推送不该跟着被拦住
+      // 另一段会话的推送不该跟着被拦住
       pushFromHandler("message.delta", {
         sessionId: "another-session",
         messageId: "m-2",
@@ -494,13 +494,13 @@ describe("推送（PRD L5 / R47）", () => {
     expect(client.queue.size()).toBe(0);
   });
 
-  it("session.send 的推送排在回包之后，另一段对话的推送不受影响", async () => {
+  it("session.send 的推送排在回包之后，另一段会话的推送不受影响", async () => {
     await startHub();
     const client = await connectAuthorized();
 
     client.request("session.send", { sessionId: "c-1", input: { content: "hi" } });
 
-    // 1) 另一段对话的增量先到（它没被缓冲）
+    // 1) 另一段会话的增量先到（它没被缓冲）
     const other = await client.queue.next();
     expect(isNotification(other) && other.method).toBe("message.delta");
     expect(isNotification(other) && (other.params as { sessionId: string }).sessionId).toBe(
@@ -515,7 +515,7 @@ describe("推送（PRD L5 / R47）", () => {
       attachments: [],
     });
 
-    // 3) 最后才是这段对话被缓冲的增量
+    // 3) 最后才是这段会话被缓冲的增量
     const buffered = await client.queue.next();
     expect(isNotification(buffered) && buffered.method).toBe("message.delta");
     expect((buffered as { params: { sessionId: string } }).params.sessionId).toBe("c-1");
@@ -714,7 +714,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
     expect(ensured).toEqual([["draft-1", "zh"]]);
   });
 
-  it("对话不存在的错误是业务码，不是 internal", async () => {
+  it("会话不存在的错误是业务码，不是 internal", async () => {
     const uploads = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,

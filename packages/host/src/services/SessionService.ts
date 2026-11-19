@@ -1,5 +1,5 @@
 /**
- * 对话服务：一段对话的诞生、改名、置顶、删除、撤回，以及三个「会话级调整」（换模型、换思考
+ * 会话服务：一段会话的诞生、改名、置顶、删除、撤回，以及三个「会话级调整」（换模型、换思考
  * 档位、两条阈值）。
  *
  * 对应能力编号：F-C1（稳定 id）、F-C3（可改名字）、F-C5（置顶 + 创建时间倒序）、
@@ -11,9 +11,9 @@
  * 两条贯穿这个文件的边界：
  *   1. **项目与助手创建即定死**：`workspaceId` / `agentId` 由 `create` 解析后落库，此后没有
  *      任何方法改它们。模型、思考档位与两条阈值不在这条线上：它们是这段会话自己的，存在会话
- *      行上、可以改 —— 前两个进驱动者的出厂配置（改了要重建，而且**只允许空闲时改**），两条
+ *      行上、可以改 —— 前两个进 agent 的出厂配置（改了要重建，而且**只允许空闲时改**），两条
  *      阈值不进（改了不重建）。
- *   2. **服务层不缓存 agent、不驻留对话状态**：这段对话此刻落在哪一格、队里压着几条，都从注入的
+ *   2. **服务层不缓存 agent、不驻留会话状态**：这段会话此刻落在哪一格、队里压着几条，都从注入的
  *      {@link SessionRuntimePort} 现取；模型与档位在库里，不在内存里存第二份。
  */
 
@@ -81,7 +81,7 @@ import { toFolderFact } from "./WorkspaceService.js";
  * 「谁开的这段会话」—— 宿主内部的那一份入参，**不进 wire**。
  *
  * 血缘与自动交接开关在 `session.create` 这条路上都是「用户建的」：用户建的会话血缘为 NULL、
- * 开关关（装不下时问一次）。只有平级会话开出来的子会话才带这两项（父会话 id + 开关开），而
+ * 开关关（装不下时问一次）。只有 agent 开出来的平级会话才带这两项（父会话 id + 开关开），而
  * 那条路走的是宿主内部的 `PeerSessionService`，不经过客户端。
  *
  * 所以这两项不是契约面的一部分：谁也不能从外面把一段会话认成「不是我建的」。
@@ -94,39 +94,39 @@ export interface SessionOriginInput {
 }
 
 /**
- * 运行时注入给对话服务的窄接口。
+ * 运行时注入给会话服务的窄接口。
  *
  * 只有运行时才知道的几件事：
- *   - 这段对话此刻那四件事（现读，PRD 4.4：忙闲 / 输入闸 / 输出闸 / 死活）；
+ *   - 这段会话此刻那四件事（现读，PRD 4.4：忙闲 / 输入闸 / 输出闸 / 死活）；
  *   - 队里还压着几条（侧栏那一格现读的 `inboxPending`）；
- *   - 对话（或它的项目）被删掉之后，把这段对话的现场丢掉（`ChatRunner.forget`）；
+ *   - 会话（或它的项目）被删掉之后，把这段会话的现场丢掉（`ChatRunner.forget`）；
  *   - 换模型 / 换思考档位这两手的两件事：它**手上有没有活**（`agentState`），以及改完之后让那个
- *     驱动者退役（`invalidateAgent` —— 出厂配置变了，它不能留着）。
+ *     agent 退役（`invalidateAgent` —— 出厂配置变了，它不能留着）。
  *
  * 模型与思考档位本身不在这里：它们存在会话行上（`modelId` / `thinkingLevel`），服务层自己读写库。
  *
  * 服务层只按它读，不 import `runtime/` 里的任何实现、也不自己存一份 —— 两份状态迟早
- * 有一份先漂（D28：agent 用完即弃、对话不驻留）。
+ * 有一份先漂（D28：agent 用完即弃、会话不驻留）。
  */
 export interface SessionRuntimePort {
   /**
-   * 这段对话此刻的**四件事**（`ChatRunner.state` 现读，不落库、不推算）：忙闲 / 输入闸 / 输出闸 /
+   * 这段会话此刻的**四件事**（`ChatRunner.state` 现读，不落库、不推算）：忙闲 / 输入闸 / 输出闸 /
    * 死活。侧栏那一段与 `session.state` 读的是同一份事实，所以这里给的就是那四件事。
    */
   presence(sessionId: string): SessionPresence;
   /** 队里还压着几条没落成消息的条目（侧栏摘要的那一格） */
   inboxPending(sessionId: string): number;
-  /** 对话（或它的项目）被删掉之后，丢掉这段对话的现场（摘桥 + agent 硬着陆） */
+  /** 会话（或它的项目）被删掉之后，丢掉这段会话的现场（摘桥 + agent 硬着陆） */
   forget(sessionId: string): void | Promise<void>;
   /**
-   * 这段对话**手上有没有活**（core 的那一格 `agent.state` 原样给出）：没有 agent（死的）回 `null`。
+   * 这段会话**手上有没有活**（core 的那一格 `agent.state` 原样给出）：没有 agent（死的）回 `null`。
    *
    * 只读 `state`，不看 `isOutputPaused` —— 那是另一处状态（从下一批起还收不收件），不收件
    * 挡着也算手上没活。换模型 / 换思考档位的判据就是这一格（`assertNoWorkInHand`）。
    */
   agentState(sessionId: string): AgentNS.AgentState | null;
   /**
-   * 这一段对话的出厂配置变了（模型 / 思考档位换过）：手里那个驱动者不能留着，让注册表处置它
+   * 这一段会话的出厂配置变了（模型 / 思考档位换过）：手里那个 agent 不能留着，让注册表处置它
    * （`AgentRegistry.invalidateSession`：空闲的当场退役，在跑的只打标记）。
    */
   invalidateAgent(sessionId: string): void;
@@ -135,7 +135,7 @@ export interface SessionRuntimePort {
 /** `session.delete` 的结果：wire 字段 + 交给 asset 层按引用清的文件清单 */
 export interface SessionRemovalReport extends SessionDeleteResult {
   /**
-   * 这段对话引用过的素材 id。
+   * 这段会话引用过的素材 id。
    *
    * 行删了（关系行随外键级联消失）之后要交给素材层再问一次「还剩几张引用」：有人还在用就留着
    * 字节，归零才删。这里只交 id，不交路径 —— 还在用的那份不该被当成可删的。
@@ -150,9 +150,9 @@ export interface SessionRemovalReport extends SessionDeleteResult {
  */
 export type AssetSweeper = (assetIds: string[]) => Promise<string[]>;
 
-/** 对话服务的依赖；由单根组装后注入 */
+/** 会话服务的依赖；由单根组装后注入 */
 /**
- * 「这段对话现在挂着几道题」的口（`QuestionService.countPending` 结构上满足）。
+ * 「这段会话现在挂着几道题」的口（`QuestionService.countPending` 结构上满足）。
  *
  * 题不落库（PRD 4.10）：它是进程内对象，所以这个数只能问它。不注入时算 0（= 没有题）。
  */
@@ -206,7 +206,7 @@ function iso(ms: number): string {
 }
 
 /**
- * 对话的原名：创建时间（PRD D2「原名＝创建时间」，起不出名就保持它）。
+ * 会话的原名：创建时间（PRD D2「原名＝创建时间」，起不出名就保持它）。
  *
  * 用本地时区的 `YYYY-MM-DD HH:mm`：这是摆在侧栏里给人看的一句话，不是可排序的机器时间
  * （排序只按 `pinned` + `createdAt`，D13）。
@@ -358,8 +358,8 @@ export class SessionService {
    * 顺序由仓储定死：`pinned DESC, createdAt DESC` —— 活动、打开、改名都不影响它，所以这里
    * 除了按 Workspace / 置顶筛、按 `limit` / `offset` 切页之外，不再重排。
    *
-   * 列表只给已经落库的对话：草稿（还没发过消息，R56）不在侧栏里出现 —— 建了不发就断线
-   * 的那段对话应该像没建过一样。
+   * 列表只给已经落库的会话：草稿（还没发过消息，R56）不在侧栏里出现 —— 建了不发就断线
+   * 的那段会话应该像没建过一样。
    */
   async list(params: SessionListParams = {}): Promise<SessionListResult> {
     const rows = params.workspaceId === undefined
@@ -378,12 +378,12 @@ export class SessionService {
   }
 
   /**
-   * 开一段新对话（PRD F-C7 / L7 / R18 / R56）。
+   * 开一段新会话（PRD F-C7 / L7 / R18 / R56）。
    *
    * 项目与助手在这里定死：项目就是入参的那个已登记项目（项目只走显式添加，PRD D10），助手从
    * 磁盘上的定义文件解析。模型的值也在这里算出来（SDK 的三级解析 `会话级 > 助手定义 > 配置里的
    * 兜底`，唯一实现在 `resolveModel`），但它落的是**会话行**：之后可以由 `setModel` 改。解析不
-   * 出来就报错，不写半成品行 —— 一条没有助手或没有模型的对话没有可用的身份。
+   * 出来就报错，不写半成品行 —— 一条没有助手或没有模型的会话没有可用的身份。
    *
    * **这一行现在不写库**：只把 id 与身份留在草稿里（R56 / F-C2「没有用户消息就不写」）。
    * 首次 `session.send` 时由 {@link ensurePersisted} 用同一个 id 落库。
@@ -440,10 +440,10 @@ export class SessionService {
       // 两条阈值不在这里定：NULL = 跟模型走，要给这一段单独调就写这两列
       handoffThreshold: null,
       guardThreshold: null,
-      // 谁开的这段会话、自动交接开不开：**创建那一刻写死**（用户建 0 / 兄弟会话 1）
+      // 谁开的这段会话、自动交接开不开：**创建那一刻写死**（用户建 0 / 平级会话 1）
       autoHandoff: params.autoHandoff === true,
       lineage: params.lineage ?? null,
-      // 待交接只由「答完交接题、当时不闲」这一条路写；刚建出来的会话没有待办
+      // 待交接只由「答完交接题、当时不闲」这一条路写；刚建出来的会话没有待交接
       pendingHandoff: null,
       createdAt,
       updatedAt: createdAt,
@@ -466,13 +466,13 @@ export class SessionService {
    * `not_found`。先把草稿摘掉再写库：两次并发的调用里后到的那一次就抢不到同一份草稿，
    * 不会两次插同一行；写失败时把草稿放回去，下一次还能再试。
    *
-   * 但「抢不到草稿」不等于「这段对话不存在」：同一个 id 的并发调用（例如一次拖进四张图，
+   * 但「抢不到草稿」不等于「这段会话不存在」：同一个 id 的并发调用（例如一次拖进四张图，
    * 每个上传都在 `asset.begin` 里调一次）在这里排队共用同一次写入，免得后到的那次误报
    * `not_found`、也免得那条隐藏的 cwd 消息被写两遍。
    *
-   * 落行那一刻同时写上这段对话的第一条消息：一条 `role: user`、`hidden`、`source` 为
-   * `{ kind: "system", label: "cwd" }` 的 cwd 消息，告诉模型这段对话对应的 cwd（PRD F-D9）。
-   * 它最先写，所以 `seq` 在真实用户消息之前；之后永不重写。cwd 从这段对话的 Workspace 取
+   * 落行那一刻同时写上这段会话的第一条消息：一条 `role: user`、`hidden`、`source` 为
+   * `{ kind: "system", label: "cwd" }` 的 cwd 消息，告诉模型这段会话对应的 cwd（PRD F-D9）。
+   * 它最先写，所以 `seq` 在真实用户消息之前；之后永不重写。cwd 从这段会话的 Workspace 取
    * （不是进程工作目录）；`workspaceId` 建会话时就定死了，这里只读不改。
    *
    * **正文就是那个路径**，不按连接语言渲染（D8 不适用）：这条消息是隐藏的、用户看不见，
@@ -557,7 +557,7 @@ export class SessionService {
    *
    * 只写在**创建那一刻**：交接换完之后的记忆里没有这条（目录随时问 `cwd` 工具）。
    *
-   * cwd 来自这段对话所属的 Workspace（PRD D9：一段对话绑一个项目，cwd 创建即定死），
+   * cwd 来自这段会话所属的 Workspace（PRD D9：一段会话绑一个项目，cwd 创建即定死），
    * 不读进程工作目录。
    */
   private async writeCwdMessage(draft: Session): Promise<void> {
@@ -583,7 +583,7 @@ export class SessionService {
     });
   }
 
-  /** 按 id 打开一段对话（PRD F-A6：宿主只提供「按 id 打开」） */
+  /** 按 id 打开一段会话（PRD F-A6：宿主只提供「按 id 打开」） */
   async get(params: SessionGetParams): Promise<SessionGetResult> {
     const session = await this.requireSession(params.sessionId);
     const view = await this.composeView(
@@ -635,11 +635,11 @@ export class SessionService {
   }
 
   /**
-   * 硬删一段对话（PRD F-C10 / D17 / F-F9 / R7）。
+   * 硬删一段会话（PRD F-C10 / D17 / F-F9 / R7）。
    *
    * `dryRun` 先算账（消息数、素材数），客户端据此警告用户。真删是 delete 语句 + 外键级联：
-   * 消息行、问题行、素材的引用关系（`session_assets`）随对话一起消失。素材行与 `assets/`
-   * 下的文件不一定：那张图可能还有别的对话在用，所以把「这段对话引用过哪几份素材」交给
+   * 消息行、问题行、素材的引用关系（`session_assets`）随会话一起消失。素材行与 `assets/`
+   * 下的文件不一定：那张图可能还有别的会话在用，所以把「这段会话引用过哪几份素材」交给
    * asset 层在删完之后再问一次「还剩几张引用」，归零才删（PRD D17「图片按引用清理」）。
    *
    * 还没落库的草稿也能删：没有行、没有消息、没有素材，代价是零。
@@ -662,9 +662,9 @@ export class SessionService {
     const assetRows = await this.assets.listBySession(session.id);
     const consequences = {
       sessions: 1,
-      // 这个数来自 `countBySession`：库里这段对话的消息行，**不含 `hidden` 的**（会话创建时
+      // 这个数来自 `countBySession`：库里这段会话的消息行，**不含 `hidden` 的**（会话创建时
       // 那条 cwd 消息、交接摘要）。它与侧栏摘要里的 `messageCount` 数的是同一批行（那边来自
-      // `listBySession`），两边口径一致：子 Agent 的话不入库（`CORE.md` §17），所以没有
+      // `listBySession`），两边口径一致：subagent 的话不入库（`CORE.md` §17），所以没有
       // 第二种取法可对。
       messages: await this.messages.countBySession(session.id),
       assets: assetRows.length,
@@ -722,7 +722,7 @@ export class SessionService {
      * 回填输入框要挂的素材（R62：只给纯文本 + assetIds，图靠 id 复原）。
      *
      * 两个来源合并：
-     *   - `session_assets`：消息落库时记下的关系行（这段对话引用过的素材都在里面）；
+     *   - `session_assets`：消息落库时记下的关系行（这段会话引用过的素材都在里面）；
      *   - 消息内容里的 `__asset_id`：同一张图可以被好几条消息引用，而关系行是按消息记的 ——
      *     这条消息自己挂了哪几张，content 永远是那个事实。
      */
@@ -749,14 +749,14 @@ export class SessionService {
   /**
    * 换这段会话的模型（PRD F-B4 / F-B8 / D20）。
    *
-   * 写的是**会话行**上的 `modelId`：这一段对话以后都用新模型，重开、重启都还是它。换模型
+   * 写的是**会话行**上的 `modelId`：这一段会话以后都用新模型，重开、重启都还是它。换模型
    * 同时把这段会话的思考档位清成「跟随助手定义」—— 档位是模型的档位，同一个名字在不同
    * 模型上对应不同参数，留着就变成把旧模型的参数发给新模型。
    *
-   * **只允许空闲时换**（用户判词）：这段对话手上还有活时一律拒（`busy` +
-   * `reason: "working"`），一个字节都不写库。理由：模型与思考参数是驱动者**装配那一刻**读的，
-   * 忙的时候改它，手里那批还会按旧事实跑完、下一批按新事实跑 —— 同一段对话里两批用了两个模型。
-   * 空闲时改完则**当场让那个驱动者退役**（`runtime.invalidateAgent`）—— 出厂配置变了，它不能
+   * **只允许空闲时换**（用户判词）：这段会话手上还有活时一律拒（`busy` +
+   * `reason: "working"`），一个字节都不写库。理由：模型与思考参数是 agent**装配那一刻**读的，
+   * 忙的时候改它，手里那批还会按旧事实跑完、下一批按新事实跑 —— 同一段会话里两批用了两个模型。
+   * 空闲时改完则**当场让那个 agent 退役**（`runtime.invalidateAgent`）—— 出厂配置变了，它不能
    * 留着；下一句话按新事实重新装配。
    *
    * `modelId: null` 表示回到助手定义上那个模型（它也没绑时用配置里的兜底）。
@@ -786,7 +786,7 @@ export class SessionService {
     }
 
     const updated = model.id === row.modelId ? row : await this.writeModel(row, model.id);
-    // 出厂配置变了（模型进了驱动者的装配事实），所以那个驱动者不能留着：空闲的那一支当场退役，
+    // 出厂配置变了（模型进了 agent 的装配事实），所以那个 agent 不能留着：空闲的那一支当场退役，
     // 下一句话按新事实重新装配
     if (updated.modelId !== row.modelId) this.runtime.invalidateAgent(row.id);
     const view = await this.composeView(updated, await this.viewContext(config));
@@ -805,7 +805,7 @@ export class SessionService {
    * （`agent.setThinking`）。
    *
    * **只允许空闲时改**（与 `setModel` 同一条判词、同一个判据 `assertNoWorkInHand`）：忙时一律拒，一个
-   * 字节都不写库；空闲时改完同样当场让那个驱动者退役 —— 档位展开出来的参数也进驱动者的出厂
+   * 字节都不写库；空闲时改完同样当场让那个 agent 退役 —— 档位展开出来的参数也进 agent 的出厂
    * 配置。
    *
    * 档位名必须在该模型引用的策略表里 —— 表里没有的档发出去只会换来一句 400；模型没有
@@ -839,7 +839,7 @@ export class SessionService {
     }
 
     const updated = await this.writeThinkingLevel(row, level);
-    // 出厂配置变了（档位展开的参数进了驱动者的装配事实）：空闲的那个当场退役，下一句按新事实装
+    // 出厂配置变了（档位展开的参数进了 agent 的装配事实）：空闲的那个当场退役，下一句按新事实装
     if (updated.thinkingLevel !== row.thinkingLevel) this.runtime.invalidateAgent(row.id);
     const agent = await this.loadAgent(row.agentId, context);
     this.emitChanged(row.id, row.workspaceId, "settings_changed");
@@ -853,10 +853,10 @@ export class SessionService {
    * 一个字节都不动，显式 `null` 才是「回到跟模型走」—— 模型上那份 `tokenThresholds` 是上游
    * 的默认数字。
    *
-   * **这是宿主现读的配置，不是驱动者的出厂配置。** 出厂配置 = 模型 + 它的参数（模型与思考
+   * **这是宿主现读的配置，不是 agent 的出厂配置。** 出厂配置 = 模型 + 它的参数（模型与思考
    * 档位），两条阈值压根不在里面：读它们的那条线由宿主按会话行现读。所以这个方法**不碰 agent、
    * 不碰 Scope、不重建任何东西** —— 与 `setModel` / `setThinking` 正好相反，那两个改的是装配
-   * 事实，改完下一次装配要照新事实重造驱动者。
+   * 事实，改完下一次装配要照新事实重造 agent。
    *
    * 校验与建模型那一条同口径：给了就必须是正整数（`0` / 负数 / 小数都不收），两个都给且都不是
    * `null` 时要满足 `handoff < guard`（硬线得给软线留出余量）。
@@ -909,7 +909,7 @@ export class SessionService {
   }
 
   /**
-   * 把一批对话行拼成侧栏用的摘要（列表与搜索共用同一份口径）。
+   * 把一批会话行拼成侧栏用的摘要（列表与搜索共用同一份口径）。
    *
    * `nameIsAuto` 直接读库里的那一列（R35）：它是「这个名字是不是自动起的」的唯一真值，
    * 不由名字内容反推。
@@ -923,12 +923,12 @@ export class SessionService {
     return summaries;
   }
 
-  /** 这段对话上挂着几道题：题在内存里，所以问 `QuestionService`，不查表（查也查不到） */
+  /** 这段会话上挂着几道题：题在内存里，所以问 `QuestionService`，不查表（查也查不到） */
   private pendingQuestions(sessionId: string): number {
     return this.questions?.countPending(sessionId) ?? 0;
   }
 
-  /** 一行对话 → 侧栏摘要；`pendingCount` 是挂在这段对话上还没答的问题数 */
+  /** 一行会话 → 侧栏摘要；`pendingCount` 是挂在这段会话上还没答的问题数 */
   private toSummary(
     row: Session,
     stored: StoredMessage[],
@@ -952,7 +952,7 @@ export class SessionService {
       updatedAt: iso(row.updatedAt),
       // 这个数来自 `listBySession` 的长度：**不含 `hidden` 的**（会话创建时那条 cwd 消息、
       // 交接摘要）。删除代价（`consequences.messages`）用的是另一条读数 `countBySession`，
-      // 数的是同一批行（两边都不筛别的）—— 同一段对话不该有两个数。
+      // 数的是同一批行（两边都不筛别的）—— 同一段会话不该有两个数。
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
       // 四件事与「压着几条」都是**现读**：这几格不在库里，不是会话字段
@@ -973,7 +973,7 @@ export class SessionService {
    * 记一次压缩（会话行上的 `compactedAt` / `compactionMode`）。
    *
    * 两条压缩路径共用这一处：派生会话被 `AutoMigratePlugin` 自动压 → `auto`；用户答完交接问题、
-   * 宿主开新对话 → `manual`（那一条在 `HandoffDocumentService` 里写，落的是同样两列）。
+   * 宿主开新会话 → `manual`（那一条在 `HandoffDocumentService` 里写，落的是同样两列）。
    *
    * 写库失败照抛：调用方（插件的迁移后回声）会把「标不出来」记成一条日志，而那一段上下文
    * 已经压过了 —— 标记是观测事实，不是状态机的输入。
@@ -985,7 +985,7 @@ export class SessionService {
     this.emitChanged(row.id, row.workspaceId, "settings_changed");
   }
 
-  /** 拼一段对话的完整形状（身份 / 模型 / 思考档 / 目录） */
+  /** 拼一段会话的完整形状（身份 / 模型 / 思考档 / 目录） */
   private async composeView(
     row: Session,
     context: ViewContext,
@@ -1013,7 +1013,7 @@ export class SessionService {
   }
 
   /**
-   * 这段对话的助手事实（名字 / 能不能跑）：向 `AgentService` 要结论，自己不下判断。
+   * 这段会话的助手事实（名字 / 能不能跑）：向 `AgentService` 要结论，自己不下判断。
    *
    * 两格都可以是 `null` —— 没注入读数、或助手定义已经没了（被删 / 读不出来）。
    * 界面拿 `null` 就知道「不知道」，不会把 id 当名字、也不会把「不可用」当成「可用」。
@@ -1076,7 +1076,7 @@ export class SessionService {
   }
 
   /**
-   * 按 id 取一段对话：先看库里那一行，再看草稿（R56）。两者用同一份行形状，
+   * 按 id 取一段会话：先看库里那一行，再看草稿（R56）。两者用同一份行形状，
    * 于是视图拼装、换模型、写档位这些路径对草稿一字不改。
    */
   private async requireSession(sessionId: string): Promise<Session> {
@@ -1092,17 +1092,17 @@ export class SessionService {
   }
 
   /**
-   * 换模型 / 换思考档位之前那一条判据：**这段对话手上没活**。
+   * 换模型 / 换思考档位之前那一条判据：**这段会话手上没活**。
    *
    * 它**不是交接准入** —— 交接那一条是「能不能立刻接手一批」的四条判据（`ChatRunner.canHandoffNow`，
    * 含输出闸与交接态）。这一手只问一件事：「手上那批活」在不在。所以：
    *   - `isOutputPaused` 挡着（输出闸关着）也放行 —— 闸管的是「从下一批起还取不取」，不是「手上有没有活」；
-   *   - 没有 agent（死的）也放行 —— 没有驱动者，就没有「手上那一批活」可打岔；
+   *   - 没有 agent（死的）也放行 —— 没有 agent，就没有「手上那一批活」可打岔；
    *   - 交接态也不在这里判：那时没有一个「手上那批活」要等，而谁能不能动这一段由交接自己那一处说了算。
    *
-   * 拒的时候一个字节都不写库（拒因就是那套四个词里的 `working`）：这两手改的是驱动者的出厂
+   * 拒的时候一个字节都不写库（拒因就是那套四个词里的 `working`）：这两手改的是 agent 的出厂
    * 配置（模型客户端 / 思考参数），忙的时候改它，手里那批还会按旧事实跑完、下一批按新事实跑 ——
-   * 同一段对话里两批用了两个模型。
+   * 同一段会话里两批用了两个模型。
    */
   private assertNoWorkInHand(sessionId: string): void {
     const state = this.runtime.agentState(sessionId);
@@ -1173,7 +1173,7 @@ export class SessionService {
   }
 
   /**
-   * 这段对话**现在**用哪个模型：就是会话行上那个 `modelId`。
+   * 这段会话**现在**用哪个模型：就是会话行上那个 `modelId`。
    *
    * 它可能已经从配置里删掉了 —— 那时 `model` 为空，调用方按 ID 显示。
    */
@@ -1324,7 +1324,7 @@ export class SessionService {
     };
   }
 
-  /** 历史里有没有图（D20 的依据：消息内容里的图片段，或这段对话名下带图的素材） */
+  /** 历史里有没有图（D20 的依据：消息内容里的图片段，或这段会话名下带图的素材） */
   private async hasImages(sessionId: string): Promise<boolean> {
     const assets = await this.assets.listBySession(sessionId);
     if (assets.some((asset) => asset.mime.startsWith("image/"))) return true;

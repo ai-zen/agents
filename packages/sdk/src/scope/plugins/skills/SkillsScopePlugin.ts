@@ -49,7 +49,7 @@ export class SkillsScopePlugin implements ScopePlugin {
     if (allow.has("load_skill") && filteredSkills.length > 0) {
       result.push(createLoadSkillTool(this.dirs, filteredSkills));
     }
-    // call_skill_sub_agent：只要有支持子 Agent 的 skill 就注册
+    // call_skill_sub_agent：只要有支持 subagent 的 skill 就注册
     if (allow.has("call_skill_sub_agent") && filteredSkills.some((s) => s.subAgent)) {
       result.push(createCallSkillSubAgentTool(this.dirs, filteredSkills));
     }

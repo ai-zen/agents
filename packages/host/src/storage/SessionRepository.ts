@@ -24,7 +24,7 @@ const COLUMNS =
   "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, handoffThreshold, guardThreshold, pendingHandoff, autoHandoff, lineage, createdAt, updatedAt";
 
 /**
- * 新建对话时显式写的那几列。
+ * 新建会话时显式写的那几列。
  *
  * 不复用 `COLUMNS`：压缩那两列（v2 加的）在新建时一定是 NULL（新会话没压过），把 NULL 写进
  * 列清单只会让占位符与入参两处各自多两项、还得对着数。让它们走表的缺省值更省事，也更准。
@@ -39,9 +39,9 @@ const INSERT_COLUMNS =
 const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
 
 /**
- * 登记一条「新建对话」语句：`nameIsAuto` 落 1（名字是创建时起的原名）、`pinned` 落 0。
+ * 登记一条「新建会话」语句：`nameIsAuto` 落 1（名字是创建时起的原名）、`pinned` 落 0。
  *
- * 自动交接开关与血缘由入参定（**创建那一刻写死**）：用户建 = 0 + NULL 血缘，兄弟会话 = 1 +
+ * 自动交接开关与血缘由入参定（**创建那一刻写死**）：用户建 = 0 + NULL 血缘，平级会话 = 1 +
  * 父会话 id。两条阈值落 `null`（跟模型走），要单独调这一段就走会话行上的列。
  *
  * 导出的理由与 `registerMessageUpsert` 同一个：交接换记忆那一批要把这条与消息的两条塞进同一个事务。
@@ -77,13 +77,13 @@ function toSession(row: SessionRow): Session {
     pinned: row.pinned !== 0,
     nameIsAuto: row.nameIsAuto !== 0,
     autoHandoff: row.autoHandoff !== 0,
-    // 列上是自由字符串（库里没有枚举类型），认不出来的值按「没有待办」算：它是宿主自己写的
-    // 一格，读到一个说不清的值只可能意味着有人手改过库，那种行不该让整段对话读不出来
+    // 列上是自由字符串（库里没有枚举类型），认不出来的值按「没有待交接」算：它是宿主自己写的
+    // 一格，读到一个说不清的值只可能意味着有人手改过库，那种行不该让整段会话读不出来
     pendingHandoff: toHandoffMode(row.pendingHandoff),
   };
 }
 
-/** 列上的待交接 mode；只认那两个值，其余（NULL / 认不出来）都是「没有待办」 */
+/** 列上的待交接 mode；只认那两个值，其余（NULL / 认不出来）都是「没有待交接」 */
 function toHandoffMode(value: string | null): HandoffMode | null {
   if (value === "self" || value === "summary") return value;
   return null;
@@ -102,7 +102,7 @@ export class SessionRepository {
   }
 
   /**
-   * 新建对话：名字是创建时按时间起的原名，所以 `nameIsAuto` 落 1（R35）。
+   * 新建会话：名字是创建时按时间起的原名，所以 `nameIsAuto` 落 1（R35）。
    * 用户改名与自动命名各有自己的方法，不从这条路径走。
    */
   async create(input: SessionCreateInput): Promise<void> {
@@ -157,10 +157,10 @@ export class SessionRepository {
   }
 
   /**
-   * 谁由这段会话开的（血缘列反查）：兄弟会话的并发限额要数「我手头有几个还忙着」。
+   * 谁由这段会话开的（血缘列反查）：平级会话的并发限额要数「我手头有几个还忙着」。
    *
    * 从前这件事走 `PeerSessionService` 的进程内记录，重启即失；血缘落库之后它是库里的事实 ——
-   * 重启前后数出来的是同一批。血缘列没有索引：这张表小，而这条查询只在开兄弟会话那一刻走一次。
+   * 重启前后数出来的是同一批。血缘列没有索引：这张表小，而这条查询只在开平级会话那一刻走一次。
    */
   async listByLineage(lineage: string): Promise<Session[]> {
     const rows = await this.db.all<SessionRow>(
@@ -170,7 +170,7 @@ export class SessionRepository {
     return rows.map(toSession);
   }
 
-  /** 全部对话（跨 Workspace），排序口径同上 */
+  /** 全部会话（跨 Workspace），排序口径同上 */
   async list(): Promise<Session[]> {
     const rows = await this.db.all<SessionRow>(`SELECT ${COLUMNS} FROM sessions ${ORDER_BY}`);
     return rows.map(toSession);
@@ -243,10 +243,10 @@ export class SessionRepository {
    * **只写入参里真的给了的那几格**：省略的那一列一个字节都不动 —— 「不给」与「显式给 `null`」
    * 是两件事，前者是「别碰它」，后者是「回到跟模型走」。
    *
-   * 那两列不进驱动者的出厂配置（出厂配置 = 模型 + 它的参数），由宿主现读，所以写它们不牵动
+   * 那两列不进 agent 的出厂配置（出厂配置 = 模型 + 它的参数），由宿主现读，所以写它们不牵动
    * 任何别的东西：不改 `modelId`、不清 `thinkingLevel`、不碰消息。
    *
-   * @returns 改动的行数（对话已经不存在时是 0，不是错）
+   * @returns 改动的行数（会话已经不存在时是 0，不是错）
    */
   async setThresholds(
     id: string,
@@ -279,7 +279,7 @@ export class SessionRepository {
    * 压缩是上下文层的事，而且它总是紧跟着一轮跑完发生 —— 写进去只会让「最后修改」变成
    * 「最后一次说话」，那不是这一列的意思。
    *
-   * @returns 改动的行数（对话已经不存在时是 0，不是错）
+   * @returns 改动的行数（会话已经不存在时是 0，不是错）
    */
   async markCompacted(
     id: string,
@@ -297,9 +297,9 @@ export class SessionRepository {
    * 写会话行上的待交接标记（PLAN §5.2 的 `pendingHandoff`）：`"self"` / `"summary"` / `null`。
    *
    * 不动 `updatedAt`：那一列是「最后一次结构性变化」（改名 / 换模型 / 改档位），待交接是一段
-   * 对话自己的进度，不是它的身份变了。也不是会话上的「设置」—— 客户端不该因为它变而重排。
+   * 会话自己的进度，不是它的身份变了。也不是会话上的「设置」—— 客户端不该因为它变而重排。
    *
-   * @returns 改动的行数（对话已经不在了就是 0，不是错：待交接随对话一起没，没什么好写的）
+   * @returns 改动的行数（会话已经不在了就是 0，不是错：待交接随会话一起没，没什么好写的）
    */
   async setPendingHandoff(id: string, mode: HandoffMode | null): Promise<number> {
     const result = await this.db.run("UPDATE sessions SET pendingHandoff = ? WHERE id = ?", [
@@ -314,11 +314,11 @@ export class SessionRepository {
    *
    * 只有一条路会写它：用户答完交接题选了「不交接」（PRD 4.10 的「答案的后果要落」）——
    * 关掉之后下一次撞线不再问，否则等于没记住。创建那一刻的初值不走这里（见
-   * `registerSessionInsert`：用户建 0 / 兄弟会话 1）。
+   * `registerSessionInsert`：用户建 0 / 平级会话 1）。
    *
    * 它是一格会话设置，所以照别处的口径记一次修改时间（同 `setPinned` / `setThresholds`）。
    *
-   * @returns 改动的行数（对话已经不存在时是 0，不是错）
+   * @returns 改动的行数（会话已经不存在时是 0，不是错）
    */
   async setAutoHandoff(id: string, autoHandoff: boolean, updatedAt: number): Promise<number> {
     const result = await this.db.run(
@@ -328,7 +328,7 @@ export class SessionRepository {
     return result.changes;
   }
 
-  /** 硬删对话（PRD D17），消息与素材行随之级联删除 */
+  /** 硬删会话（PRD D17），消息与素材行随之级联删除 */
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
     return result.changes;

@@ -119,8 +119,8 @@ describe("render", () => {
 
   it("替换 {name} 形式的占位符", () => {
     expect(render("en", "error.notFound", { entity: "session" })).toContain("session");
-    expect(render("zh", "error.notFound", { entity: "对话" })).toContain("对话");
-    expect(render("zh", "error.notFound", { entity: "对话" })).not.toContain("{entity}");
+    expect(render("zh", "error.notFound", { entity: "会话" })).toContain("会话");
+    expect(render("zh", "error.notFound", { entity: "会话" })).not.toContain("{entity}");
   });
 
   it("多个占位符各自替换", () => {

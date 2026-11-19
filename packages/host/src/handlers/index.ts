@@ -106,7 +106,7 @@ export interface HandlerDeps {
   // ---- 运行时 ----
   runner: ChatRunner;
   scopes: ScopeRegistry;
-  /** 临时对话的执行者（D3 / R49：不落库、不推流式事件） */
+  /** 一次性会话的执行者（D3 / R49：不落库、不推流式事件） */
   transient: TransientRunner;
 
   // ---- 配置与时钟 ----
@@ -119,7 +119,7 @@ export interface HandlerDeps {
   /** 推事件（`session.changed` 这类多端同步信号）；不注入时不推 */
   emit?: <E extends EventName>(name: E, payload: EventMap[E]) => void;
 
-  // ---- 跨服务的对话钩子 ----
+  // ---- 跨服务的会话钩子 ----
   /** 有挡着的问题就拒发（D23）；发之前问一句 */
   assertSendable: (sessionId: string) => Promise<void>;
 
@@ -163,7 +163,7 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
       refreshThinkingPresets: deps.refreshThinkingPresets,
       log: deps.log,
       assertSendable: deps.assertSendable,
-      // 临时对话：一次调用给一条结果、不落库、不推流式事件（R1 / R49）
+      // 一次性会话：一次调用给一条结果、不落库、不推流式事件（R1 / R49）
       runTransient: async (params, language) => await deps.transient.run(params, language),
     }),
     ...createMessageHandlers(deps),

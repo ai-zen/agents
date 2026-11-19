@@ -27,7 +27,7 @@ export interface ContextGuardOptions {
  * 就**拒绝这一圈**，交由上层向用户报错。
  *
  * 与自动交接插件职责分离：
- * - `ContextGuardPlugin`：硬线，只做「严重超限即中断」的安全兜底，绝不继续对话/交接；
+ * - `ContextGuardPlugin`：硬线，只做「严重超限即中断」的安全兜底，绝不继续会话/交接；
  * - `AutoMigratePlugin`：软线（`tokenThresholds.handoff`），在正常范围内做自动交接。
  *   两条线都是绝对值，`guard` 应当明显大于 `handoff`，交接回合的额外请求才有余量。
  *

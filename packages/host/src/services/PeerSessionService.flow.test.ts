@@ -1,5 +1,5 @@
 /**
- * 平级会话与**真执行者**拼起来的验收：投一句真的进那一段、真的落库，而**父对话一个字都
+ * 平级会话与**真执行者**拼起来的验收：投一句真的进那一段、真的落库，而**父会话一个字都
  * 收不到**（没有「答完把结果投回去」这回事）；问状态读的是那一段此刻的那一格。
  *
  * 为什么单独一个文件：投递落地、来源注释、四件事这些事只有「真 `ChatRunner` + 真 agent +
@@ -46,7 +46,7 @@ function session(id: string, overrides: Partial<Session> = {}): Session {
     guardThreshold: null,
     autoHandoff: false,
     lineage: null,
-    // 待交接：刚建出来 / 没答过交接题，没有待办
+    // 待交接：刚建出来 / 没答过交接题，没有待交接
     pendingHandoff: null,
     nameIsAuto: true,
     createdAt: 0,
@@ -61,7 +61,7 @@ function childrenOf(rows: Map<string, Session>, lineage: string): { id: string }
 }
 
 /**
- * 子会话的诞生：与 `session.create` 一样把新会话登记进「库里」（执行者只认那一行）。
+ * 平级会话的诞生：与 `session.create` 一样把新会话登记进「库里」（执行者只认那一行）。
  *
  * id 从 `c-child-1` 开始按序给：用例要靠它提前把那一段叫起来（见 {@link Harness.warmUp}）。
  */
@@ -113,7 +113,7 @@ interface Harness {
   /** 把一段会话从「库里」删掉（用户删了它：会话行不再在了） */
   drop(sessionId: string): void;
   waitFor(check: () => boolean): Promise<void>;
-  /** 某段对话主线的行 */
+  /** 某段会话主线的行 */
   rows(sessionId: string): Promise<Array<{ role: string; content: unknown }>>;
 }
 
@@ -121,7 +121,7 @@ function makeHarness(rounds: FakeRound[]): Harness {
   const clock = new ManualClock();
   const store = new RecordingMessageStore();
   const rows = new Map<string, Session>();
-  rows.set(PARENT_ID, session(PARENT_ID, { name: "父对话" }));
+  rows.set(PARENT_ID, session(PARENT_ID, { name: "父会话" }));
   const { scope } = createFakeScope("/tmp/ai-zen-peers");
   const scopes = new ScopeRegistry({ createScope: async () => scope });
   const agents = new Map<string, FakeAgent>();
@@ -197,8 +197,8 @@ function makeHarness(rounds: FakeRound[]): Harness {
   return harness;
 }
 
-describe("建完之后第一句真的进那一段；父对话一个字都收不到", () => {
-  it("子会话落了「来自 父对话」的一句与它自己的回答；父对话没有新消息", async () => {
+describe("建完之后第一句真的进那一段；父会话一个字都收不到", () => {
+  it("平级会话落了「来自 父会话」的一句与它自己的回答；父会话没有新消息", async () => {
     const harness = makeHarness([{ deltas: [{ content: "登录页查过了" }] }]);
     await harness.warmUp();
 
@@ -221,13 +221,13 @@ describe("建完之后第一句真的进那一段；父对话一个字都收不�
       AgentNS.Role.User,
       AgentNS.Role.Assistant,
     ]);
-    // 正文最前面那行来源注释由 core 拼（来源是「父对话」）
+    // 正文最前面那行来源注释由 core 拼（来源是「父会话」）
     const prompt = String(childRows[2]!.content);
-    expect(prompt.split("\n\n")[0]).toMatch(/^\/\/ 这条消息来自 父对话 自动推送（.+）$/);
+    expect(prompt.split("\n\n")[0]).toMatch(/^\/\/ 这条消息来自 父会话 自动推送（.+）$/);
     expect(prompt.split("\n\n")[1]).toBe("查一下登录页");
     expect(childRows[3]!.content).toBe("登录页查过了");
 
-    // 没有「答完把结果投回去」这回事：父对话的库里什么也没有
+    // 没有「答完把结果投回去」这回事：父会话的库里什么也没有
     expect(await harness.rows(PARENT_ID)).toEqual([]);
   });
 });
@@ -296,7 +296,7 @@ describe("问状态：忙不忙与死活都是现读", () => {
 });
 
 describe("接着说话：一句投进去就回，不等它答", () => {
-  it("投给闲着的子会话 → 回「收下了」，这句以调用者的名字为来源落地", async () => {
+  it("投给闲着的平级会话 → 回「收下了」，这句以调用者的名字为来源落地", async () => {
     const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
     await harness.warmUp();
     const created = await harness.service.create({ caller: harness.caller, prompt: "开头" });
@@ -316,9 +316,9 @@ describe("接着说话：一句投进去就回，不等它答", () => {
     await harness.flush();
     const rows = await harness.rows(created.sessionId);
     const last = String(rows[rows.length - 2]!.content);
-    expect(last.split("\n\n")[0]).toMatch(/^\/\/ 这条消息来自 会话「父对话」 自动推送（.+）$/);
+    expect(last.split("\n\n")[0]).toMatch(/^\/\/ 这条消息来自 会话「父会话」 自动推送（.+）$/);
     expect(last.split("\n\n")[1]).toBe("再说一句");
-    // 这里仍然没有任何「把结果推回父对话」的痕迹
+    // 这里仍然没有任何「把结果推回父会话」的痕迹
     expect(await harness.rows(PARENT_ID)).toEqual([]);
   });
 });

@@ -141,7 +141,7 @@ describe("migrate", () => {
     expect(sessionColumns.find((column) => column.name === "thinkingLevel")?.notnull).toBe(0);
   });
 
-  it("表结构钉住两列真值：名字是否自动起（R35）与子 Agent 的父工具调用（R37）", async () => {
+  it("表结构钉住两列真值：名字是否自动起（R35）与subagent 的父工具调用（R37）", async () => {
     await migrate(db);
     void LATEST_VERSION;
 
@@ -187,7 +187,7 @@ describe("migrate", () => {
     );
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧对话', 0, 'a1', 'm1', 2, 2)`,
+       VALUES ('c1', 'w1', '旧会话', 0, 'a1', 'm1', 2, 2)`,
     );
 
     await migrate(db);
@@ -211,7 +211,7 @@ describe("migrate", () => {
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v2', 1)");
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
+       VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
     );
     await db.run(
       `INSERT INTO messages (id, sessionId, seq, role, status, content, createdAt, updatedAt)
@@ -243,7 +243,7 @@ describe("migrate", () => {
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v3', 1)");
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
+       VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
     );
 
     await migrate(db);
@@ -260,7 +260,7 @@ describe("migrate", () => {
       });
     }
     // 自动交接开关非空、缺省 **0**：`ADD COLUMN ... NOT NULL` 在 SQLite 里必须给缺省值，
-    // 而 0 就是常态那一侧 —— 撞线停下来问一句（PRD 4.10）。「不问」是例外（兄弟会话，
+    // 而 0 就是常态那一侧 —— 撞线停下来问一句（PRD 4.10）。「不问」是例外（平级会话，
     // 创建那一刻显式写 1）。
     expect(columns.find((column) => column.name === "autoHandoff")).toMatchObject({
       notnull: 1,
@@ -297,7 +297,7 @@ describe("migrate", () => {
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v4', 1)");
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
+       VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
     );
     await db.run(
       `INSERT INTO messages (id, sessionId, seq, role, status, content, searchText, createdAt, updatedAt)
@@ -319,7 +319,7 @@ describe("migrate", () => {
       await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_questions_session'"),
     ).toEqual([]);
 
-    // 2. 会话行多一格待交接：可空，NULL = 没有待办
+    // 2. 会话行多一格待交接：可空，NULL = 没有待交接
     const sessionColumns = await db.all<{
       name: string;
       notnull: number;
@@ -344,7 +344,7 @@ describe("migrate", () => {
     expect(await db.all("SELECT id FROM messages")).toEqual([{ id: "m1" }]);
   });
 
-  it("v6：inbox 表按「条目上有什么就存什么」建起来，顺序列与按对话取的索引都在", async () => {
+  it("v6：inbox 表按「条目上有什么就存什么」建起来，顺序列与按会话取的索引都在", async () => {
     await migrate(db);
 
     const columns = await db.all<{ name: string; type: string; notnull: number; pk: number }>(
@@ -369,7 +369,7 @@ describe("migrate", () => {
     expect(columns.find((column) => column.name === "seq")?.type).toBe("INTEGER");
 
     const indexColumns = await db.all<{ name: string }>("PRAGMA index_info('idx_inbox_session')");
-    // 按对话取、且顺序即入队顺序（唯一的读取路径，一条复合索引就够）
+    // 按会话取、且顺序即入队顺序（唯一的读取路径，一条复合索引就够）
     expect(indexColumns.map((column) => column.name)).toEqual(["sessionId", "seq"]);
   });
 
@@ -403,7 +403,7 @@ describe("外键与级联", () => {
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
-      ["c1", "w1", "对话一", "a1", "m1", 2, 2],
+      ["c1", "w1", "会话一", "a1", "m1", 2, 2],
     );
     await db.run(
       `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
@@ -420,12 +420,12 @@ describe("外键与级联", () => {
        VALUES (?, ?, ?, ?)`,
       ["c1", "msg1", "as1", 5],
     );
-    // 挂在对话上的通知：级联的另一半（这张表的 CASCADE 只在这里钉）
+    // 挂在会话上的通知：级联的另一半（这张表的 CASCADE 只在这里钉）
     await db.run(
       `INSERT INTO notices (id, level, code, params, durationMs, sessionId, createdAt)
        VALUES ('n1', 'info', 'notice.settingsSaved', NULL, NULL, 'c1', 6)`,
     );
-    // 排在队列里还没被取走的一条待办：对话/工作区没了它也就没有去处（v6 的级联）
+    // 排在队列里还没被取走的一条条目：会话/工作区没了它也就没有去处（v6 的级联）
     await db.run(
       `INSERT INTO inbox (messageId, sessionId, source, content, createdAt, seq)
        VALUES ('msg2', 'c1', '{"kind":"user"}', '"还没被处理的一句"', '2026-01-02T03:04:05.000Z', 1)`,
@@ -439,9 +439,9 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT id FROM sessions")).toEqual([]);
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
     expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
-    // 待办行跟着对话/项目一起没：不留孤儿（v6 的级联）
+    // inbox 行跟着会话/项目一起没：不留孤儿（v6 的级联）
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
-    // 素材行不跟着对话走：字节是全局的，删不删由「还几张引用」决定
+    // 素材行不跟着会话走：字节是全局的，删不删由「还几张引用」决定
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 
@@ -451,9 +451,9 @@ describe("外键与级联", () => {
 
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
     expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
-    // 通知是挂在对话上的：对话没了它也没有落脚的语义（题已经不落库了，没有这一层）
+    // 通知是挂在会话上的：会话没了它也没有落脚的语义（题已经不落库了，没有这一层）
     expect(await db.all("SELECT id FROM notices")).toEqual([]);
-    // 待办也是：它是那段对话的待办，对话没了它也就没有去处（v6 的级联）
+    // 条目也是：它排在那个会话的 inbox 里，会话没了它也就没有去处（v6 的级联）
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
@@ -484,7 +484,7 @@ describe("外键与级联", () => {
     ).rejects.toThrow(/UNIQUE/i);
   });
 
-  it("外键真的在拦：插一条指向不存在对话的消息会失败", async () => {
+  it("外键真的在拦：插一条指向不存在会话的消息会失败", async () => {
     await migrate(db);
     await expect(
       db.run(

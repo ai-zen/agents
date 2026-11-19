@@ -21,7 +21,7 @@ import { Message, generateMessageId } from "./Message.js";
  * 模型看到的就是「一条只有注释的消息」。所以数组走「在最前面插一段 text 注释」：
  * 段序保持不变，往后排队的内容原封不动地留在后面。
  *
- * @returns 字符串内容返回 `注释\n\n正文`；数组内容返回「注释段 + 原有各段」
+ * @returns 字符串内容返回 `注释\n\n 正文`；数组内容返回「注释段 + 原有各段」
  */
 export function inboxEntryContent(
   entry: AgentNS.InboxEntryWithContent,

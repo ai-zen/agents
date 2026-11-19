@@ -1,11 +1,11 @@
 /**
- * `ChatRunner` 的用例：**一段对话一条常驻桥**（PLAN §5）。
+ * `ChatRunner` 的用例：**一段会话一条常驻桥**（PLAN §5）。
  *
  * 断言的东西全是那三个口能说清的事实：
  *
- * - **投递**（`deliver`）：判两件事（对话在不在、agent 活不活）→ 入队；回执只有消息 id；
+ * - **投递**（`deliver`）：判两件事（会话在不在、agent 活不活）→ 入队；回执只有消息 id；
  * - **中断**（`abort`）：打到活着的 agent 上，关掉输出闸，不是杀死；
- * - **现读**（`state`）：忙闲 + 两道闸 + 死活 + 待办，不落库、不推算。
+ * - **现读**（`state`）：忙闲 + 两道闸 + 死活 + inbox，不落库、不推算。
  *
  * 加两条结构性的：桥的生灭（agent 退役 / 被删 → 桥灭）与「变闲那一刻」（`onIdle`）。
  *
@@ -62,7 +62,7 @@ function makeSession(): Session {
   return {
     id: SESSION_ID,
     workspaceId: WORKSPACE_ID,
-    name: "对话",
+    name: "会话",
     agentId: "default",
     modelId: "model-1",
     thinkingLevel: null,
@@ -73,7 +73,7 @@ function makeSession(): Session {
     guardThreshold: null,
     autoHandoff: false,
     lineage: null,
-    // 刚建出来 / 还没答过交接题：没有待办
+    // 刚建出来 / 还没答过交接题：没有待交接
     pendingHandoff: null,
     pinned: false,
     nameIsAuto: true,
@@ -161,9 +161,9 @@ interface Harness {
   clock: ManualClock;
   /** 每一次推出去的事件（按发生顺序） */
   pushed: Array<{ name: EventName; payload: unknown }>;
-  /** 变闲那一刻被叫到的那几段对话 */
+  /** 变闲那一刻被叫到的那几段会话 */
   idle: string[];
-  /** 报「死」那一拍的记录（对话 id + **为什么**：真死 / 退役重建 / 对话被删） */
+  /** 报「死」那一拍的记录（会话 id + **为什么**：真死 / 退役重建 / 会话被删） */
   dead: Array<{ sessionId: string; kind: SessionDeathKind }>;
   /** 装配过几次（每装配一次 agent 记一笔：复活那条用例要看它） */
   builds: string[];
@@ -172,11 +172,11 @@ interface Harness {
   /** 把后台的投递 / 写库推进到「没有立即的后续」为止 */
   settle(): Promise<void>;
   waitFor(check: () => boolean): Promise<void>;
-  /** 等到这段对话真的闲下来（已经起来了、且那一格是 idle） */
+  /** 等到这段会话真的闲下来（已经起来了、且那一格是 idle） */
   waitIdle(): Promise<void>;
   /** 推出去的那些事件里指定名字的载荷 */
   eventsOf<E extends EventName>(name: E): Array<unknown>;
-  /** 库里这段对话的行（按写入顺序） */
+  /** 库里这段会话的行（按写入顺序） */
   rows(): Promise<Array<{ id: string; role: string; content: unknown; status: string }>>;
 }
 
@@ -303,7 +303,7 @@ function lastChange(harness: Harness, name: EventName): SessionChangeKind | unde
 /**
  * 造一条用户投递（最常走的那条路）。
  *
- * 这一段的第一句都从界面投进来（这个用例集模拟的就是「用户发消息」那一条路）：对话还没有驱动者时
+ * 这一段的第一句都从界面投进来（这个用例集模拟的就是「用户发消息」那一条路）：会话还没有 agent 时
  * 只有创建者能把它叫起来，所以第一句带 `mayStart`。后面几句加不加都一样（已经活着就不看这一格）。
  */
 function userSays(content: string, extra: Partial<DeliveryInput> = {}): DeliveryInput {
@@ -353,7 +353,7 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
     await harness.deliver({
       content: "登录页的测试补齐了",
       source: { kind: "agent", label: "补测试" },
-      // 这一段还没有驱动者，第一条由创建者叫起来（来源是谁与能不能起来是两回事）
+      // 这一段还没有 agent，第一条由创建者叫起来（来源是谁与能不能起来是两回事）
       mayStart: true,
     });
     await harness.waitIdle();
@@ -364,7 +364,7 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
     expect(content.split("\n\n")[1]).toBe("登录页的测试补齐了");
   });
 
-  it("对话不存在 → `not_found`（且不留下任何东西）", async () => {
+  it("会话不存在 → `not_found`（且不留下任何东西）", async () => {
     const harness = createHarness();
     await expect(
       harness.runner.deliver("c-missing", userSays("没有人收了")),
@@ -375,11 +375,11 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 生死：死对话投不进去，只有创建者能把它叫起来
+// 生死：死会话投不进去，只有创建者能把它叫起来
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来（`mayStart`）", () => {
-  it("外部来源投到死对话 → `session_dead`；`mayStart` 才装配起来接着跑", async () => {
+describe("ChatRunner.deliver：死会话一律拒，只有创建者能叫起来（`mayStart`）", () => {
+  it("外部来源投到死会话 → `session_dead`；`mayStart` 才装配起来接着跑", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "接着来。" }] }] });
 
     // 先把这一段跑起来，让它有历史（第一句 + 它的回答）
@@ -400,7 +400,7 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
       inputPaused: false,
       outputPaused: false,
       inbox: [],
-      // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
+      // 死了就没有名册、也不在交接态：subagent 的话只在它自己那个对象里，agent 没了就一起没了
       subAgents: [],
       handoff: null,
       at: new Date(harness.clock.now()).toISOString(),
@@ -480,7 +480,7 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
       true,
     );
 
-    // 死对话：没有可掐的东西
+    // 死会话：没有可掐的东西
     harness.runner.forget(SESSION_ID);
     await harness.settle();
     expect(harness.runner.abort(SESSION_ID)).toBe(false);
@@ -531,7 +531,7 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
     expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
 
     expect(harness.runner.resume(SESSION_ID)).toBe(true);
-    // 继续只开闸，不投任何东西：待办仍是空的
+    // 继续只开闸，不投任何东西：inbox 仍是空的
     expect(harness.runner.state(SESSION_ID)).toMatchObject({
       status: "idle",
       outputPaused: false,
@@ -589,7 +589,7 @@ describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活
 
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
-    // 装配出驱动者那一拍：这一段有了 agent
+    // 装配出 agent 那一拍：这一段有了 agent
     expect(harness.eventsOf("session.changed")).toContainEqual(
       expect.objectContaining({ sessionId: SESSION_ID, change: "agent_started" }),
     );
@@ -633,7 +633,7 @@ describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活
 // ---------------------------------------------------------------------------
 
 describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
-  it("没有驱动者 → `no_agent`", () => {
+  it("没有agent → `no_agent`", () => {
     const harness = createHarness();
     expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({
       ok: false,
@@ -755,10 +755,10 @@ describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推
 });
 
 // ---------------------------------------------------------------------------
-// 现读：四件事 + 待办
+// 现读：四件事 + inbox
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner.state：现读四件事与待办", () => {
+describe("ChatRunner.state：现读四件事与 inbox", () => {
   it("忙时压着的那一条看得见（顺序即取件顺序），取走之后就不在了", async () => {
     const toolGate = deferred<void>();
     const harness = createHarness({
@@ -800,7 +800,7 @@ describe("ChatRunner.state：现读四件事与待办", () => {
       inputPaused: false,
       outputPaused: false,
       inbox: [],
-      // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
+      // 死了就没有名册、也不在交接态：subagent 的话只在它自己那个对象里，agent 没了就一起没了
       subAgents: [],
       handoff: null,
       at: new Date(harness.clock.now()).toISOString(),
@@ -838,8 +838,8 @@ describe("ChatRunner：变闲那一刻", () => {
 // 桥的生灭
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner：一段对话一条桥", () => {
-  it("同一段对话再跑一次还是同一个 agent（常驻），且落库接着往下写", async () => {
+describe("ChatRunner：一段会话一条桥", () => {
+  it("同一段会话再跑一次还是同一个 agent（常驻），且落库接着往下写", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
 
     await harness.deliver(userSays("第一句"));
@@ -850,7 +850,7 @@ describe("ChatRunner：一段对话一条桥", () => {
     await harness.waitFor(() => harness.idle.length === 2);
     await harness.settle();
 
-    // 桥是常驻的：同一个 agent（一段对话一个），历史在它内存里接着长
+    // 桥是常驻的：同一个 agent（一段会话一个），历史在它内存里接着长
     expect(harness.registry.get(SESSION_ID)).toBe(first);
     expect(first!.messages.map((message) => message.content)).toEqual([
       "第一句",
@@ -913,11 +913,11 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
     await harness.settle();
 
     expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "retired" }]);
-    // 「没有 agent 了」照报（那一瞬确实没有驱动者），但**为什么**是退役，下游据此把题留着
+    // 「没有 agent 了」照报（那一瞬确实没有 agent），但**为什么**是退役，下游据此把题留着
     expect(lastChange(harness, "session.changed")).toBe("agent_gone");
   });
 
-  it("forget：`forgotten`（对话被删，不是意外死）", async () => {
+  it("forget：`forgotten`（会话被删，不是意外死）", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
@@ -925,7 +925,7 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
     harness.runner.forget(SESSION_ID);
     await harness.settle();
 
-    // 先报「对话被删」再硬着陆：`kill` 同步广播的 `killed`（terminated）不会抢在前面
+    // 先报「会话被删」再硬着陆：`kill` 同步广播的 `killed`（terminated）不会抢在前面
     expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "forgotten" }]);
   });
 });
@@ -935,7 +935,7 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
 // ---------------------------------------------------------------------------
 
 describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）", () => {
-  it("杀掉活着的会话：alive 为 false、待办空、库里的 inbox 行一条不剩，而消息一条不少", async () => {
+  it("杀掉活着的会话：alive 为 false、inbox 空、库里那几行一条不剩，而消息一条不少", async () => {
     const toolGate = deferred<void>();
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
@@ -950,13 +950,13 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     expect(harness.runner.kill(SESSION_ID)).toBe(true);
     await harness.settle();
 
-    // 库里的待办行跟着没了。这一条**只有**在「先 agents.kill、再拆桥」时才成立：
+    // 库里的 inbox 行跟着没了。这一条**只有**在「先 agents.kill、再拆桥」时才成立：
     // `agent.kill()` 同步广播的 `inboxCleared` 得有人听（桥先拆掉，那些行就留成孤行，
     // 下一次装配又被放回队列）
     await harness.waitFor(() => harness.inbox.rows.length === 0);
     expect(harness.inbox.writes.at(-1)).toBe(`clear:${SESSION_ID}`);
 
-    // 死 = 这一段没有 agent 实例了，待办也空了
+    // 死 = 这一段没有 agent 实例了，inbox 也空了
     expect(harness.registry.get(SESSION_ID)).toBeUndefined();
     expect(harness.runner.state(SESSION_ID)).toMatchObject({ alive: false, inbox: [] });
 
@@ -969,7 +969,7 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
 
   it("作废的那几条不会被下一次装配放回队列（杀了不会复活）", async () => {
     const toolGate = deferred<void>();
-    // 上一任与这一任共用同一份库（进程没了 / 重开段对话，库还在）
+    // 上一任与这一任共用同一份库（进程没了 / 重开段会话，库还在）
     const store = new RecordingMessageStore();
     const inbox = new RecordingInboxStore();
 
@@ -1069,17 +1069,17 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     expect(gone).toEqual([
       expect.objectContaining({ sessionId: SESSION_ID, change: "agent_gone" }),
     ]);
-    // 真死（`terminated`），不是「换一个驱动者接着干」的退役
+    // 真死（`terminated`），不是「换一个 agent 接着干」的退役
     expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "terminated" }]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 子 Agent
+// subagent
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner：子 Agent 的消息不落库，只推事件", () => {
-  it("子 agent 说的话一行也不写库，事件照推（带那次委派的 toolCallId）", async () => {
+describe("ChatRunner：subagent 的消息不落库，只推事件", () => {
+  it("subagent 说的话一行也不写库，事件照推（带那次委派的 toolCallId）", async () => {
     const harness = createHarness({
       rounds: [
         {
@@ -1103,9 +1103,9 @@ describe("ChatRunner：子 Agent 的消息不落库，只推事件", () => {
     await harness.deliver(userSays("交给助手"));
     await harness.waitIdle();
 
-    // 子 agent 的话**不入库**（`CORE.md` §17）：它是临时工，不是一段会话。库是这条对话的转录，
+    // subagent 的话**不入库**（`CORE.md` §17）：它是临时工，不是一段会话。库是这条会话的转录，
     // 而它的话只在它自己那个对象里（要查就走 `messagesOf` 的名册那条路）。于是落库那份里只有
-    // 主线的消息：子 agent 开局那条（`sub-u`）与它后面写出来的那句都不在里面
+    // 主线的消息：subagent 开局那条（`sub-u`）与它后面写出来的那句都不在里面
     const mainline = new Set(
       (harness.runner.messagesOf(SESSION_ID) ?? []).map((message) => message.id),
     );
@@ -1122,7 +1122,7 @@ describe("ChatRunner：子 Agent 的消息不落库，只推事件", () => {
     const readout = harness.runner.state(SESSION_ID);
     expect(readout.subAgents).toEqual([{ toolCallId: "t1", name: "delegate", state: "ended" }]);
 
-    // 它说过的话顺「父的名册 → 那个子 agent → 它的 `messages`」取：开局的任务 + 它的回答
+    // 它说过的话顺「父的名册 → 那个 subagent → 它的 `messages`」取：开局的任务 + 它的回答
     const subMessages = harness.runner.messagesOf(SESSION_ID, { toolCallId: "t1" });
     expect(subMessages?.map((message) => message.content)).toEqual(["办一下", "办好了"]);
   });
@@ -1246,7 +1246,7 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     await harness.waitIdle();
     expect(harness.inbox.rows).toEqual([]);
   });
-  it("进程收尾（把 agent 全 kill 掉）不作废库里那些待办：下次打开它们还在等", async () => {
+  it("进程收尾（把 agent 全 kill 掉）不作废库里那些条目：下次打开它们还在等", async () => {
     const toolGate = deferred<void>();
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 

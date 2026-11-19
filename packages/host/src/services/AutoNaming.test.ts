@@ -26,7 +26,7 @@ import type { TitleCompleter } from "./AutoNaming.js";
 import { defaultSessionName } from "./SessionService.js";
 import { NoticeService } from "./NoticeService.js";
 
-/** 夹具里那段对话的原名：创建时间默认值（起名的判据就是「名字还是不是它」） */
+/** 夹具里那段会话的原名：创建时间默认值（起名的判据就是「名字还是不是它」） */
 const DEFAULT_NAME = defaultSessionName(1);
 
 interface CompletionCall {
@@ -152,7 +152,7 @@ type AutoNameSkip =
 
 /** 八格里每一格对应哪一条用例（漏一格写在 `Record` 里就编译不过） */
 const COVERED: Record<AutoNameSkip, string> = {
-  session_missing: "对话不存在时不抛错、不发请求",
+  session_missing: "会话不存在时不抛错、不发请求",
   config_unreadable: "配置读不出来：保持原名、不发请求",
   disabled: "开关关着就一次请求都不发",
   renamed_by_user: "用户改过名字就不动它",
@@ -405,7 +405,7 @@ describe("起不出名就保持原名（D2）", () => {
     expect((await harness.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
-  it("对话不存在时不抛错（这是后台钩子）", async () => {
+  it("会话不存在时不抛错（这是后台钩子）", async () => {
     await expect(harness.service.nameIfUnnamed("没有这段")).resolves.toBeUndefined();
     expect(harness.calls).toHaveLength(0);
   });

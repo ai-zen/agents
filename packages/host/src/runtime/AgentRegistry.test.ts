@@ -2,10 +2,10 @@
  * `AgentRegistry` 的用例：agent 存活管理的唯一拥有者。
  *
  * 五条判据各有一组（`acquire` 的复用/重建、`complete` 的陈旧兑现、`invalidate` 的两种结局、
- * `discard` 只丢引用、`disposeAll` 收尾），外加**生命周期事件**那一组 —— 它是「这段对话为什么
+ * `discard` 只丢引用、`disposeAll` 收尾），外加**生命周期事件**那一组 —— 它是「这段会话为什么
  * 没有 agent」的唯一答案，所以每条路径报出的 `action` + `reason` 都钉住。换模型 / 换思考档位
  * 那一手（`invalidateSession`）单独一组：它同样是一对分支（空闲当场退役 / 在跑只打标记），
- * 只是范围到一段对话。
+ * 只是范围到一段会话。
  *
  * 还有两条结构性的事：agent 替调用方把 Scope 先要出来（创建自上而下），以及 agent 活着就拆不了
  * Scope（回收自下而上）。这里用真的 `ScopeRegistry`（假工厂造真 Scope），于是那两条顺序是整条
@@ -39,7 +39,7 @@ interface Harness {
   /** 每次造出来的假 agent */
   created: FakeAgent[];
   createdScopes: string[];
-  /** 「正在跑」的那几段对话：判据就是 agent 身上那一格（`state === "working"`） */
+  /** 「正在跑」的那几段会话：判据就是 agent 身上那一格（`state === "working"`） */
   running: Set<string>;
   /** 每次生灭决定的记录（`onLifecycle` 收到的原样） */
   lifecycle: AgentLifecycleEvent[];
@@ -52,7 +52,7 @@ interface Harness {
   markRunning(sessionId: string): Promise<void>;
   /** 把那块 `gate` 放掉，等它自己跑完这一批、自己报 `state:idle` */
   markIdle(sessionId: string): Promise<void>;
-  /** 这段对话报过的 `action:reason`（顺序即发生顺序） */
+  /** 这段会话报过的 `action:reason`（顺序即发生顺序） */
   trace(sessionId?: string): string[];
 }
 
@@ -142,7 +142,7 @@ function createHarness(
   };
 }
 
-/** 一段对话要办的事（装配入参） */
+/** 一段会话要办的事（装配入参） */
 function input(overrides: Partial<AgentCreateInput> = {}): AgentCreateInput {
   return {
     sessionId: SESSION_ID,
@@ -207,7 +207,7 @@ describe("AgentRegistry：agent 唯一的来源（先把 Scope 要出来）", ()
     expect(harness.plugin.disposeCalls).toBe(0);
   });
 
-  it("两段对话各是一个：键是 sessionId", async () => {
+  it("两段会话各是一个：键是 sessionId", async () => {
     const harness = createHarness();
 
     const one = await harness.agents.acquire(input({ sessionId: "c-1" }), facts());
@@ -302,7 +302,7 @@ describe("AgentRegistry：acquire 把「在就复用 / 不合用就重建」合�
   });
 });
 
-describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那条路）", () => {
+describe("AgentRegistry：kill 硬着陆 + 丢引用（会话 / 项目被删那条路）", () => {
   it("kill 之后 get 为 undefined，agent 真的死了（再 push 抛 closed），登记也没了", async () => {
     const harness = createHarness();
     const agent = (await harness.agents.acquire(input(), facts())) as FakeAgent;
@@ -314,7 +314,7 @@ describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那�
     // 「硬着陆」就是这条的全部内容：agent 死了而不是被摘掉就完了 —— 再往里推就抛 closed
     // （于是不会有一个“没人认领的活 agent”在后台接着烧 token）
     expect(() =>
-      agent.push({ content: "对话已经删了", priority: "high", source: { kind: "user" } }),
+      agent.push({ content: "会话已经删了", priority: "high", source: { kind: "user" } }),
     ).toThrow();
     // 幂等：没登记就什么也不做，也不再多报一条
     harness.agents.kill(SESSION_ID);
@@ -322,7 +322,7 @@ describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那�
     expect(harness.trace()).toEqual(["built:never-built", "retired:session-deleted"]);
   });
 
-  it("sessionIds 报出这个 Workspace 下活着的对话（别的项目不算）", async () => {
+  it("sessionIds 报出这个 Workspace 下活着的会话（别的项目不算）", async () => {
     const harness = createHarness();
     await harness.agents.acquire(input({ sessionId: "c-1" }), facts());
     await harness.agents.acquire(input({ sessionId: "c-2" }), facts());
@@ -548,7 +548,7 @@ describe("AgentRegistry：complete 兑现陈旧标记", () => {
     expect(harness.trace()).toEqual(["built:never-built"]);
   });
 
-  it("没有登记时什么也不做（对话已经没了 / 从没装配过）", async () => {
+  it("没有登记时什么也不做（会话已经没了 / 从没装配过）", async () => {
     const harness = createHarness();
 
     harness.agents.complete("c-none");
@@ -582,8 +582,8 @@ describe("AgentRegistry：disposeAll（收尾）", () => {
   });
 });
 
-describe("AgentRegistry：onLifecycle 是「为什么这段对话没有 agent」的唯一答案", () => {
-  it("一条完整的一生：装配 → 复用 → 事实变了重建 → 配置换掉 → 复活 → 对话被删", async () => {
+describe("AgentRegistry：onLifecycle 是「为什么这段会话没有 agent」的唯一答案", () => {
+  it("一条完整的一生：装配 → 复用 → 事实变了重建 → 配置换掉 → 复活 → 会话被删", async () => {
     const harness = createHarness();
     await harness.agents.acquire(input(), facts());
     await harness.agents.acquire(input(), facts());
@@ -601,7 +601,7 @@ describe("AgentRegistry：onLifecycle 是「为什么这段对话没有 agent」
       "rebuilt:config-changed",
       "retired:session-deleted",
     ]);
-    // 每条都带得回是哪段对话
+    // 每条都带得回是哪段会话
     expect(harness.lifecycle.every((event) => event.sessionId === SESSION_ID)).toBe(true);
   });
 

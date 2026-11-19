@@ -246,7 +246,7 @@ describe("postMessage：只回「收下了」", () => {
     expect(typeof result.hint).toBe("string");
     expect(result.hint).toContain("does not come back");
     // 不写「不会自动推给我」那种对未来的断言（它与「她会自己 postMessage 回来」打脸）：
-    // 收下之后能说的只有「进了那边的待办」＋「别轮询」
+    // 收下之后能说的只有「进了那边的 inbox」＋「别轮询」
     const hint = String(result.hint).toLowerCase();
     expect(hint).not.toContain("nothing is pushed");
     expect(hint).not.toContain("automatically");

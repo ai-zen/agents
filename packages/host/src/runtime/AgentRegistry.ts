@@ -10,17 +10,17 @@
  * |---|---|---|
  * | `acquire` | 有人要说话（投递进来，发现其实不在） | 在且合用 → 复用同一个实例；不在 → 装配；在但装配事实变了 → 丢掉重建 |
  * | `complete` | 变闲那一刻（core 的 `state:idle`） | 陈旧（配置换过）就退役，否则留着（常驻） |
- * | `kill` | 对话 / 项目被删 | **`agent.kill()`（立刻死，存量作废）** + 丢引用 |
+ * | `kill` | 会话 / 项目被删 | **`agent.kill()`（立刻死，存量作废）** + 丢引用 |
  * | `killAll` | 项目/Scope 被显式处置 | 同一个 Workspace 下的 agent 全部 `kill()` + 丢引用 |
  * | `invalidate` | 全局配置生效（整个 Workspace） | 空闲的当场退役（不计入返回）；正在跑的只打标记（计入返回），等它 `complete` |
- * | `invalidateSession` | 这一段对话的出厂配置变了（换模型 / 换思考档位） | 与 `invalidate` 同一对分支：空闲的当场退役；在跑的只打标记 |
+ * | `invalidateSession` | 这一段会话的出厂配置变了（换模型 / 换思考档位） | 与 `invalidate` 同一对分支：空闲的当场退役；在跑的只打标记 |
  * | `disposeAll` | 进程收尾 | 全部 `kill()` 后丢引用 |
- * | `get` | 观测 | 这段对话现在挂着谁（只读） |
+ * | `get` | 观测 | 这段会话现在挂着谁（只读） |
  * | `sessionIds` | 观测 | 还活着哪几段（按 Workspace，只读） |
  *
- * 每一步都报一条 {@link AgentLifecycleEvent}（`onLifecycle`）—— 「这段对话为什么没有 agent」
+ * 每一步都报一条 {@link AgentLifecycleEvent}（`onLifecycle`）—— 「这段会话为什么没有 agent」
  * 的唯一答案就在那条流里（`reason` 说人话）。它只是观察：不注入就不报，报错也不影响判据；
- * `ChatRunner` 从同一个口订一路自己的（`observeLifecycle`，靠它拆掉那段对话的常驻桥）。
+ * `ChatRunner` 从同一个口订一路自己的（`observeLifecycle`，靠它拆掉那段会话的常驻桥）。
  *
  * ## 三个实例的依赖关系（写在这里，而不是靠约定）
  *
@@ -33,15 +33,15 @@
  * 「agent 一定挂在一个活着的 Scope 上」是结构性的）；回收自下而上（`ScopeRegistry.dispose`
  * 撞上本文件里还活着的 agent 就拒绝，见 `ScopeBusyError`）。
  *
- * ## agent 是常驻的：一段对话一个，跨投递复用
+ * ## agent 是常驻的：一段会话一个，跨投递复用
  *
- * 装配一次，之后每一次 `acquire` 都交还同一个实例：它的 `messages` 因此是这段对话的
+ * 装配一次，之后每一次 `acquire` 都交还同一个实例：它的 `messages` 因此是这段会话的
  * **内存真相** —— 再投一条时不必回库里读一遍历史，也不该再往它里面 push 一遍（否则同一个
  * 历史会有两份）。库里的行是它的快照，不是它的来源。
  *
  * ## 两种「不再登记」的形状（别把它们混成一种）
  *
- *   - `kill` / `killAll` / `disposeAll`：**硬着陆**。那几段对话（或那个项目）已经不要了，
+ *   - `kill` / `killAll` / `disposeAll`：**硬着陆**。那几段会话（或那个项目）已经不要了，
  *     所以 agent 要真的死（`kill()`：掐在途、存量作废），而不是只从账上消失。只丢引用会留下
  *     一个还捧着队列与在途请求的活 agent —— 它会接着烧 token、接着往库里写。语义顺序：
  *     `ChatRunner.forget`（先丢掉那条桥，再 `kill`）→ `scopes.dispose`。
@@ -98,17 +98,17 @@ export interface ScopeProvider {
 export type AgentLifecycleAction = "built" | "reused" | "rebuilt" | "retired";
 
 /**
- * 为什么这么做 —— 人话，值为**闭集**（`grep` 得到的取值表就是「为什么这段对话没有 agent」
+ * 为什么这么做 —— 人话，值为**闭集**（`grep` 得到的取值表就是「为什么这段会话没有 agent」
  * 的全部答案）：
  *
  * | 取值 | 出现在 | 意思 |
  * |---|---|---|
- * | `never-built` | `built` | 这段对话从来没有过 agent |
+ * | `never-built` | `built` | 这段会话从来没有过 agent |
  * | `assembly-facts-unchanged` | `reused` | 手里那个还是照现在的事实造的 |
  * | `assembly-facts-changed` | `retired`（`invalidateSession` / `acquire`）+ `rebuilt`（`acquire`） | 模型 / 思考档位 / 助手换了，旧的按旧事实造的 |
  * | `config-changed` | `retired` | 配置生效，`invalidate` 撞上**空闲**的那个 |
  * | `stale-on-idle` | `retired` | 配置生效时它正干着活（只打了标记），变闲那一刻才兑现 |
- * | `session-deleted` | `retired` | `kill` / `killAll`：对话或项目被删 |
+ * | `session-deleted` | `retired` | `kill` / `killAll`：会话或项目被删 |
  * | `shutdown` | `retired` | `disposeAll`：进程收尾 |
  */
 export type AgentLifecycleReason =
@@ -139,7 +139,7 @@ export interface AgentRegistryOptions {
    * 内部还有一路用 {@link AgentRegistry.observeLifecycle} 注册的观察者（`ChatRunner` 靠它把
    * 常驻桥拆掉）：两路内容完全一样，只是一个由构造参数给、一个由持有者自己订。
    *
-   * 存在的理由：从前「这段对话的 agent 为什么不在」没人答得上来（没建过 / 不合用 / 配置换掉 /
+   * 存在的理由：从前「这段会话的 agent 为什么不在」没人答得上来（没建过 / 不合用 / 配置换掉 /
    * 被删 / 重启各在别处发生）。现在五条判据都收在本文件里，理由就顺手从同一个地方报出去。
    *
    * 只是观察：不注入 = 不报；消费方出错不影响判据。
@@ -154,7 +154,7 @@ interface AgentEntry {
   /**
    * 装配它时读到的那几项事实（助手 / 模型 / 思考档位）。
    *
-   * 存下来只为一件事：`acquire` 要能说出「手里这个还是不是照这段对话现在的事实造的」——
+   * 存下来只为一件事：`acquire` 要能说出「手里这个还是不是照这段会话现在的事实造的」——
    * 会话行上的模型 / 档位是会变的，而模型客户端是装配那一刻定的。
    */
   built: AgentAssemblyFacts;
@@ -187,7 +187,7 @@ export class AgentRegistry {
    * 那一格的观察者（`ChatRunner` 在构造时把自己注册进来）。
    *
    * 为什么订阅在这里、而不在消费方：宿主手上的每个 agent 都是本文件发出去的（装配那一刻
-   * 才知道「它是哪段对话的」）。订阅安在装配处，「一段跑完了」这件事就不靠谁记得接线 ——
+   * 才知道「它是哪段会话的」）。订阅安在装配处，「一段跑完了」这件事就不靠谁记得接线 ——
    * 忘一个接线点就没人接那一跳，而那是一种**静默**的坏法。
    *
    * 从前这里还有一路「inbox 多了一条」的观察者（供 `ChatRunner` 记排队区镜像）：那个镜像已经
@@ -198,15 +198,15 @@ export class AgentRegistry {
    * 生灭决定的观察者（与那一格那一路同一个形状，见 {@link observeLifecycle}）。
    *
    * 它与构造参数 `onLifecycle` 的区别只在**谁订**：那一个是接线层的日志口，这一个给
-   * `ChatRunner` —— 它要凭 `action: "retired"` 把那段对话的常驻桥拆掉（bridge 的生灭只能
+   * `ChatRunner` —— 它要凭 `action: "retired"` 把那段会话的常驻桥拆掉（bridge 的生灭只能
    * 跟着 agent 的生灭走，别处再记一份「桥在不在」就是第二份事实）。
    */
   private readonly lifecycleObservers = new Set<(event: AgentLifecycleEvent) => void>();
   /**
-   * 「这段对话上一次是因为什么没有 agent 的」——只记**还会回来**的那几种理由
-   * （对话删了 / 进程收尾之后没人再问）。
+   * 「这段会话上一次是因为什么没有 agent 的」——只记**还会回来**的那几种理由
+   * （会话删了 / 进程收尾之后没人再问）。
    *
-   * 它的唯一用处：这段对话不在登记里时，`acquire` 才能分清这一次是 `built`（从来没有过）
+   * 它的唯一用处：这段会话不在登记里时，`acquire` 才能分清这一次是 `built`（从来没有过）
    * 还是 `rebuilt`（有过，上一个被前面某个判据退役了），并把那个理由说出来。
    */
   private readonly retired = new Map<string, AgentLifecycleReason>();
@@ -245,7 +245,7 @@ export class AgentRegistry {
       this.retire(input.sessionId, "assembly-facts-changed");
       return await this.assemble(input, "rebuilt", "assembly-facts-changed");
     }
-    // 不在：这段对话以前有过 agent 吗？有过 → 它是被前面某个判据退役的，理由记在 `retired` 里
+    // 不在：这段会话以前有过 agent 吗？有过 → 它是被前面某个判据退役的，理由记在 `retired` 里
     const why = this.retired.get(input.sessionId);
     return await this.assemble(
       input,
@@ -271,13 +271,13 @@ export class AgentRegistry {
   }
 
   /**
-   * 对话（或它所在的项目）没了：**`kill()` 然后丢引用**。
+   * 会话（或它所在的项目）没了：**`kill()` 然后丢引用**。
    *
-   * 为何是 `kill` 而不是 `stop`：`stop` 是「关门，存量走完」—— 而用户删了这段对话，队列里那
+   * 为何是 `kill` 而不是 `stop`：`stop` 是「关门，存量走完」—— 而用户删了这段会话，队列里那
    * 几句与在途的那一批就没有去处了，把它们跑完等于对着一片空地烧 token、往库里写一行没人会
    * 读的消息。`kill` 硬着陆（存量作废、在途中断）才是「删了」的意思。
    *
-   * 幂等：没登记就什么也不做（对话可能已被删两次，或者从未装配过）。
+   * 幂等：没登记就什么也不做（会话可能已被删两次，或者从未装配过）。
    *
    * 前提：kill 之后这个实例**不可复活**（`push` 抛 `AgentError("closed")`）。调用方（`ChatRunner.forget`）
    * 已经把通往它的每一条路先断掉（常驻桥、装配窗口里的缓冲、会话行）；真要撞上已关门的
@@ -343,16 +343,16 @@ export class AgentRegistry {
   }
 
   /**
-   * **这一段对话**的出厂配置变了（换模型 / 换思考档位改的就是它）：手里那个驱动者不能留着。
+   * **这一段会话**的出厂配置变了（换模型 / 换思考档位改的就是它）：手里那个 agent 不能留着。
    *
    * 为什么不能留：模型客户端与思考参数都是装配那一刻读的（`createModel(scope.config, …)` +
    * `sessionModelParams`），会话行改了也不会跟着变 —— 留着它就等于「换了模型还在用旧的
    * 客户端」。所以改完会话行当场退役：下一句话按新事实重新装配，中间不留一个「半新半旧」的
-   * 驱动者（不搞「先打标记、变闲再兑现」那一套）。
+   * agent（不搞「先打标记、变闲再兑现」那一套）。
    *
    * 与 {@link invalidate} 是同一对分支、同一个实现（判据都只有 `agent.state`，见
    * {@link markStaleIfWorking}），区别只在**范围**：那一个按 Workspace 刷（全局配置生效，
-   * PRD 4.11 / D34），这一个只动一段对话（用户改了这一段以后用什么）。
+   * PRD 4.11 / D34），这一个只动一段会话（用户改了这一段以后用什么）。
    *
    * 「在跑」那一支在这里基本撞不到：调用方（`SessionService.setModel` / `setThinking`）
    * 已经先按「`agent.state === "idle"` 才允许改」拒过一遍。留着它不是重复判断，而是兜住两次
@@ -383,7 +383,7 @@ export class AgentRegistry {
    * 注册一个「生灭决定」的观察者，返回注销函数。
    *
    * 与构造参数 `onLifecycle` 报的是同一批事件；分成两个口是因为**两个消费者要的东西不一样**：
-   * 接线层只是记日志（进程级一个），`ChatRunner` 要凭 `retired` 把那段对话的常驻桥拆掉
+   * 接线层只是记日志（进程级一个），`ChatRunner` 要凭 `retired` 把那段会话的常驻桥拆掉
    * （一段一个，跟着 agent 走）。让 `ChatRunner` 去改接线层的那个回调，等于把两个消费者的
    * 生命周期绑在一起。
    */
@@ -392,13 +392,13 @@ export class AgentRegistry {
     return () => this.lifecycleObservers.delete(observer);
   }
 
-  /** 这段对话现在挂着的 agent（没有就 `undefined`）：观察与「谁还活着」用 */
+  /** 这段会话现在挂着的 agent（没有就 `undefined`）：观察与「谁还活着」用 */
   get(sessionId: string): ChatAgent | undefined {
     return this.entries.get(sessionId)?.agent;
   }
 
   /**
-   * 这个 Workspace 下还活着哪几段对话。
+   * 这个 Workspace 下还活着哪几段会话。
    *
    * 用处有两个：`ScopeRegistry.dispose` 被挡下来时的拒绝理由
    * （`ScopeBusyError.sessionIds`）—— 「这个能力容器上还挂着谁」；以及只读的观测（用例/日志
@@ -429,7 +429,7 @@ export class AgentRegistry {
   }
 
   /**
-   * 手里那个 agent 是不是还按**这段对话现在的事实**造出来的 —— `acquire` 的唯一判据。
+   * 手里那个 agent 是不是还按**这段会话现在的事实**造出来的 —— `acquire` 的唯一判据。
    *
    * 私有：调用方不该「复用前问一句」（那是它反问自己的实现细节），只该说「我要一段有事要办」。
    */
@@ -455,8 +455,8 @@ export class AgentRegistry {
   ): Promise<ChatAgent> {
     const scope = await this.scopes.create(input.workspaceId);
     const agent = await this.createAgent({ ...input, scope });
-    // 一段对话同时只有一个 agent：新造的这个顶掉旧的登记（丢掉只是引用，不停旧的 —— 停是
-    // 会话级动作）。走到这里时旧的那个要么已经退役（不合用那条路），要么是同一段对话的并发
+    // 一段会话同时只有一个 agent：新造的这个顶掉旧的登记（丢掉只是引用，不停旧的 —— 停是
+    // 会话级动作）。走到这里时旧的那个要么已经退役（不合用那条路），要么是同一段会话的并发
     // 装配 —— 后者不该被报成一次「退役」，所以这里只摘订阅、不报事件。
     this.drop(input.sessionId);
     this.entries.set(input.sessionId, {
@@ -476,12 +476,12 @@ export class AgentRegistry {
    *
    * 只丢引用：不 abort、不 kill、不落库、不推事件 —— 「换一个新的」那几条路（`complete` 兑现
    * 陈旧标记、`invalidate` / `invalidateSession` 撞上空闲的、装配事实变了重建）用这一条，
-   * 因为它们手上那一批可能还要把话说完。真正要它死的三条路（对话被删 / 项目被删 / 进程收尾）
+   * 因为它们手上那一批可能还要把话说完。真正要它死的三条路（会话被删 / 项目被删 / 进程收尾）
    * 走 {@link killEntry}。
    */
   private retire(sessionId: string, reason: AgentLifecycleReason): void {
     if (!this.drop(sessionId)) return;
-    // 记下「为什么它不在了」：只有还会回来的那几种值得记（对话删了 / 进程收尾之后没人再问）
+    // 记下「为什么它不在了」：只有还会回来的那几种值得记（会话删了 / 进程收尾之后没人再问）
     if (reason !== "session-deleted" && reason !== "shutdown") {
       this.retired.set(sessionId, reason);
     }
@@ -495,14 +495,14 @@ export class AgentRegistry {
    * 这个实例已经不该再被当成「活着的」了 —— 下一次 `complete` 不该再摸到它。
    *
    * 报的还是同一个 `retired` 事件、同一套理由：对观察者而言，「被 kill 了」与「被退役了」
-   * 是同一件事（这段对话现在没有 agent），而理由（`session-deleted` / `shutdown`）
+   * 是同一件事（这段会话现在没有 agent），而理由（`session-deleted` / `shutdown`）
    * 会告诉它这是哪一种。
    */
   private killEntry(sessionId: string, reason: AgentLifecycleReason): void {
     const entry = this.drop(sessionId);
     if (!entry) return;
     // kill 之后这个实例**不可复活**（`push` 抛 `AgentError("closed")`），所以它不能再回到
-    // `entries` 里；真要再用这段对话，下一段 `acquire` 会装配一个新的。
+    // `entries` 里；真要再用这段会话，下一段 `acquire` 会装配一个新的。
     entry.agent.kill();
     if (reason !== "session-deleted" && reason !== "shutdown") {
       this.retired.set(sessionId, reason);

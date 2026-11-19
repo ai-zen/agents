@@ -6,8 +6,8 @@
  *
  * `durationMs` 为 null 表示永久存在；有值时到点消失，靠 `deleteExpired` 清掉。
  *
- * `sessionId` 是「这条通知与哪段对话有关」的真值列（可空 = 全域通知），
- * 按对话过滤与按对话清除都走它。
+ * `sessionId` 是「这条通知与哪段会话有关」的真值列（可空 = 全域通知），
+ * 按会话过滤与按会话清除都走它。
  */
 
 import type { Database } from "./Database.js";
@@ -92,7 +92,7 @@ export class NoticeRepository {
     return result.changes;
   }
 
-  /** 清掉挂在一段对话上的通知（`notice.clear({ sessionId })` 的读写路径） */
+  /** 清掉挂在一段会话上的通知（`notice.clear({ sessionId })` 的读写路径） */
   async clearBySession(sessionId: string): Promise<number> {
     const result = await this.db.run("DELETE FROM notices WHERE sessionId = ?", [
       sessionId,

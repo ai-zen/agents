@@ -8,7 +8,7 @@
  *   1. 本地凭证从 `<数据根>/run/token` 拿到 → `hello` 成功；不带凭证 / 凭证不对被拒；
  *   2. `workspace.create` → `session.create`；
  *   3. `session.send` 一句：收 `message.delta` 与忙闲（忙 → 闲）；
- *   4. `message.list` 拉回这段对话的消息（用户 + 助手 + 工具结果）；
+ *   4. `message.list` 拉回这段会话的消息（用户 + 助手 + 工具结果）；
  *   5. `session.state` 返回读数（闲着、队里空着）；
  *   6. 客户端断开 → 宿主**不**收尾（关宿主是显式动作，PRD 4.12）；再连回来消息还在；
  *   7. `host.shutdown` → 进程收尾一次（`ExitFacts` 里 `scopes: 1`：收尾那一刻还持有 Scope，
@@ -105,7 +105,7 @@ const ROUND_ONE_DELTAS: AgentNS.Delta[] = [
   },
 ];
 
-/** 假 agent 工厂：每次装配都给一个新的 `FakeAgent`（agent 常驻：一段对话只装配一次，跨轮复用） */
+/** 假 agent 工厂：每次装配都给一个新的 `FakeAgent`（agent 常驻：一段会话只装配一次，跨轮复用） */
 const createAgent: AgentFactory = async () =>
   new FakeAgent([
     {
@@ -185,7 +185,7 @@ async function waitFor(condition: () => boolean, timeoutMs = 4000): Promise<void
 }
 
 /**
- * 读到这段对话重新闲下来为止，顺手把增量与忙闲收集起来。
+ * 读到这段会话重新闲下来为止，顺手把增量与忙闲收集起来。
  *
  * 投递之后只剩「消息自己的事件」（`message.added` / `message.delta` / `message.changed`）与
  * 「忙闲」（`state`）两类推送：前者是过程，后者说明它是不是还在干。读到 `status: idle`
@@ -214,14 +214,14 @@ async function collectRun(timeoutMs = 5000): Promise<{
       if (payload.status === "idle") return { deltas, statuses };
     }
   }
-  throw new Error("没等到这段对话闲下来");
+  throw new Error("没等到这段会话闲下来");
 }
 
 // ---------------------------------------------------------------------------
 // 七步
 // ---------------------------------------------------------------------------
 
-describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → 消息 → 现场 → 重启 → 退出", () => {
+describe("端到端冒烟：本地凭证 → 项目 → 会话 → 一轮 → 消息 → 现场 → 重启 → 退出", () => {
   it("跑完整条链路", async () => {
     // ---- 步骤 1：本地凭证与握手 ----
     app = await startHost();
@@ -256,7 +256,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(helloResult.language).toBe("zh");
     expect(typeof helloResult.protocolVersion).toBe("string");
 
-    // ---- 步骤 2：项目与对话 ----
+    // ---- 步骤 2：项目与会话 ----
     const created = await client.call("workspace.create", {
       cwd: workspaceDir.path,
       name: "冒烟项目",
@@ -270,7 +270,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       modelId: "test-model",
     });
     const createdSession = (sessionCreated.result as SessionCreateResult).session;
-    if (!createdSession) throw new Error("session.create 没有建出对话");
+    if (!createdSession) throw new Error("session.create 没有建出会话");
     const sessionId = createdSession.id;
     expect(sessionId.length).toBeGreaterThan(0);
 
@@ -329,7 +329,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       expect(message.status).toBe(AgentNSValue.MessageStatus.Completed);
     }
 
-    // ---- 步骤 5：读数（四件事 + 待办 + 子 agent 名册 + 交接态 + 时刻，没有用量也没有阶段） ----
+    // ---- 步骤 5：读数（四件事 + inbox + subagent 名册 + 交接态 + 时刻，没有用量也没有阶段） ----
     client.request("session.state", { sessionId });
     const stateFrame = await nextResponse();
     if (!isSuccess(stateFrame)) throw new Error(`读数没拿到：${JSON.stringify(stateFrame)}`);
@@ -351,7 +351,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(snapshot.inputPaused).toBe(false);
     expect(snapshot.outputPaused).toBe(false);
     expect(snapshot.inbox).toEqual([]);
-    // 这一段没派过子 agent、也不在交接态：两格都是现读，没有就是空的
+    // 这一段没派过 subagent、也不在交接态：两格都是现读，没有就是空的
     expect(snapshot.subAgents).toEqual([]);
     expect(snapshot.handoff).toBeNull();
     expect(snapshot.sessionId).toBe(sessionId);
@@ -373,7 +373,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     );
 
     // ---- 步骤 7：显式关宿主 → 收尾一次（Scope 与 MCP 连接一起拆）→ 同一个数据根再起一个 ----
-    // 先让这个进程手里真的有一个 Scope：跑过一段对话之后它就拿着（它不会自己消失）
+    // 先让这个进程手里真的有一个 Scope：跑过一段会话之后它就拿着（它不会自己消失）
     client.request("session.send", { sessionId, input: { content: "第二句" } });
     const secondAccepted = await nextResponse();
     expect(isSuccess(secondAccepted)).toBe(true);

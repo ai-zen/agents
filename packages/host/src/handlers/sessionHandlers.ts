@@ -1,5 +1,5 @@
 /**
- * `session.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 暂停 / 继续 / 杀死 / 清空待办 /
+ * `session.*`：一段会话的身份、历史，以及「投递一句 / 中断 / 暂停 / 继续 / 杀死 / 清空 inbox /
  * 现读」这几个动作。
  *
  * 这里只做「参数 → 交给服务或运行时 → 把结果翻译成契约形状」。业务判断不在这里：
@@ -8,9 +8,9 @@
  * 那是「这一次发送」的事，只有接线层同时看得见素材服务、会话行（要助手与模型）与执行者。
  *
  * 三件以前挂在这里、现在没有的事：
- *   - **没有运行状态那本账**：`session.state` 给的是四件事 + 待办（`ChatRunner.state`
+ *   - **没有运行状态那本账**：`session.state` 给的是四件事 + inbox（`ChatRunner.state`
  *     现读），用量与更细的阶段由客户端按到达的事件自己算（PRD 硬规矩 7）；
- *   - **没有排队分支**：投递只有一条路（`ChatRunner.deliver`），它自己判「对话在不在、agent
+ *   - **没有排队分支**：投递只有一条路（`ChatRunner.deliver`），它自己判「会话在不在、agent
  *     活不活」，忙不忙不是拒绝的理由；
  *   - **没有「做完之后」的收尾链**：自动命名与交接线提问都挂在「变闲那一拍」（`app.ts` 的
  *     `onIdle`），这里不再接 `turn.done`。
@@ -58,7 +58,7 @@ export interface SessionHandlerDeps {
   log: (message: string, detail?: unknown) => void;
   /** 有挡着的问题就拒绝（`QuestionService.assertSendable`，D23）；不注入时不检查 */
   assertSendable?: (sessionId: string) => Promise<void>;
-  /** 临时对话的执行者（`TransientRunner`，D3 / R49）；不注入时这个方法回 `unsupported` */
+  /** 一次性会话的执行者（`TransientRunner`，D3 / R49）；不注入时这个方法回 `unsupported` */
   runTransient?: (
     params: SessionTransientParams,
     language: Language,
@@ -68,7 +68,7 @@ export interface SessionHandlerDeps {
 /**
  * 注册 `session.*`。
  *
- * `session.transient`（临时对话，PRD D3）注册的前提是注入了 `runTransient`：
+ * `session.transient`（一次性会话，PRD D3）注册的前提是注入了 `runTransient`：
  * 不注入时这个方法仍然落到接线层的 `unsupported`（裁定 R11）。
  */
 export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
@@ -108,7 +108,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
     "session.kill": async (context) =>
       await kill(deps, context.params.sessionId),
 
-    // 清空待办：直接转 core（`agent.clearInbox()`），本层不加任何判断
+    // 清空 inbox：直接转 core（`agent.clearInbox()`），本层不加任何判断
     "session.clearInbox": async (context) => ({
       cleared: deps.runner.clearInbox(context.params.sessionId),
     }),
@@ -122,7 +122,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
 
   const runTransient = deps.runTransient;
   if (runTransient) {
-    // 临时对话没有 id、不落库、不推流式事件：一次调用同步返回那条助手消息（R1 / R49）
+    // 一次性会话没有 id、不落库、不推流式事件：一次调用同步返回那条助手消息（R1 / R49）
     handlers["session.transient"] = async (context) =>
       await runTransient(context.params, context.connection.language);
   }
@@ -146,7 +146,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
  *      `__asset_id`，这一份也就是原样落库的那一份）。走文件引用、内联还是降级成文字，
  *      取决于这段会话现在的模型与端点 —— 那是 `AssetService` 的事，本层只把它要的三样事实
  *      （会话、助手、模型）递过去。
- *   4. 投递：`ChatRunner.deliver`。它只判两件事 —— 对话在不在、agent 活不活；死的那一格
+ *   4. 投递：`ChatRunner.deliver`。它只判两件事 —— 会话在不在、agent 活不活；死的那一格
  *      只有创建者能把它叫起来（`mayStart`），界面上的发送按钮就是创建者之一，所以这里给 `true`。
  *   5. 回执：`userMessageId`（投递那一刻就定死，客户端按它画乐观回显）+ 每个附件的结局。
  *
@@ -186,9 +186,9 @@ async function sendTurn(
 }
 
 /**
- * `session.delete`：删掉这段对话，再补齐一件只有接线层知道的事（R33）。
+ * `session.delete`：删掉这段会话，再补齐一件只有接线层知道的事（R33）。
  *
- * 运行时里那段对话的现场要丢掉（`ChatRunner.forget`：先摘桥再让 agent 硬着陆）；素材字节的
+ * 运行时里那段会话的现场要丢掉（`ChatRunner.forget`：先摘桥再让 agent 硬着陆）；素材字节的
  * 清理不在这里 —— 服务层删完之后已经由素材层问过「还剩几张引用」，归零的那几份才删（见
  * `SessionService.delete` 的 `sweepAssets`）。
  */
@@ -211,7 +211,7 @@ async function removeSession(
  * `session.abort`：掐掉活着的 agent 手上那一批。
  *
  * `signalled: false` 表示那个 agent 本来就不在（死格），不是错误。中断不是杀死：core 的
- * `abort()` 掐掉在途请求与工具并顺带挂上暂停，待办一条不丢（PRD 4.4）。
+ * `abort()` 掐掉在途请求与工具并顺带挂上暂停，inbox 里一条不丢（PRD 4.4）。
  *
  * `reason` 没有去处（core 的 `abort()` 不收原因，契约里也没有「中止记录」这个东西）：
  * 写一条日志，别把用户按下中断的理由直接从世界上抹掉。
@@ -230,7 +230,7 @@ async function abort(
 }
 
 /**
- * `session.pause`：暂停这段对话 —— **只翻输出闸，不接在途**（PRD 4.4）。
+ * `session.pause`：暂停这段会话 —— **只翻输出闸，不接在途**（PRD 4.4）。
  *
  * 手上那批算已经开始，让它跑完；从下一批起不再取。要立刻停就用 `session.abort`。
  * 回的是**打完之后这道输出闸是不是关着**（现读，不是每次变量）：没有 agent（死的）回 `false`
@@ -248,7 +248,7 @@ async function pause(
 /**
  * `session.resume`：继续 —— **只开闸，不投任何东西**（PRD 4.4）。
  *
- * 压着的待办按原顺序接着跑。回的那一格与 {@link pause} 同一口径（打完之后这道输出闸是不是关着）。
+ * inbox 里压着的条目按原顺序接着跑。回的那一格与 {@link pause} 同一口径（打完之后这道输出闸是不是关着）。
  */
 async function resume(
   deps: SessionHandlerDeps,
@@ -262,11 +262,11 @@ async function resume(
  * `session.kill`：杀死 —— **用户按的那一手**（PRD 4.4 里三条死路之一）。
  *
  * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了（在途那一批
- * 掐断、没被取走的待办作废，库里那几行也一起删）。杀死之后再投递报 `session_dead`
+ * 掐断、没被取走的条目作废，库里那几行也一起删）。杀死之后再投递报 `session_dead`
  * （不复活）；只有「人点发送」才按库里的事实重新装配起来（PRD 4.2 / 4.4）。
  *
  * 回的是**这一次真的把 agent 收掉了没有**：`false` = 这一段本来就是死的（没有 agent）、
- * 什么都没动，也**不是错误** —— 与 {@link pause} / {@link resume} 对死对话回 `false` 同一口径。
+ * 什么都没动，也**不是错误** —— 与 {@link pause} / {@link resume} 对死会话回 `false` 同一口径。
  * 交接期间直接拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给（PRD 4.5）。
  */
 async function kill(
@@ -277,17 +277,17 @@ async function kill(
 }
 
 /**
- * `session.state`：一段对话此刻的读数（PRD L5：重连先拉读数）。
+ * `session.state`：一段会话此刻的读数（PRD L5：重连先拉读数）。
  *
  * 形状就是契约里的 `SessionState`，而 `ChatRunner.state` 返的**就是那一份**（同一个形状
- * 只在一处定义）—— 所以这里不再手工摆一遍字段，只在读之前先问一次服务层，让「这段对话没了」
- * 与「这段对话闲着」是两种答复。
+ * 只在一处定义）—— 所以这里不再手工摆一遍字段，只在读之前先问一次服务层，让「这段会话没了」
+ * 与「这段会话闲着」是两种答复。
  *
- * 四件事 / 待办 / 子 agent 名册 / 交接态都是现读，不落库、不是会话字段（口径见
- * `SessionState` 自己的注释）。`session.list` 不带它们：侧栏不需要为每段对话去问
- * 一次驱动者。
+ * 四件事 / inbox / subagent 名册 / 交接态都是现读，不落库、不是会话字段（口径见
+ * `SessionState` 自己的注释）。`session.list` 不带它们：侧栏不需要为每段会话去问
+ * 一次 agent。
  *
- * 消息本体不在这里给：客户端打开一段对话走的是「先订阅，再 `message.list` 拉全量」。
+ * 消息本体不在这里给：客户端打开一段会话走的是「先订阅，再 `message.list` 拉全量」。
  */
 async function readState(
   deps: SessionHandlerDeps,

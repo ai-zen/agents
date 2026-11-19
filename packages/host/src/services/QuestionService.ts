@@ -1,9 +1,9 @@
 /**
  * 问题服务：把「要不要交接 / 确认一下」变成**进程内对象**（PRD 4.10 / D22 / F-I9）。
  *
- * **题不落库。** 题的生命 = 这一段对话活着的这段时间，它的去处只有两个：**被答了**、
- * **这段对话没了（含意外死）**。没有「关掉」这个动作，没有「过期 / 被取消」两格 —— 所以这里
- * 没有存储层、没有状态机式的隐式转移，只有一张内存表（按 id 存题，按对话取的时候在它上面筛）。
+ * **题不落库。** 题的生命 = 这一段会话活着的这段时间，它的去处只有两个：**被答了**、
+ * **这段会话没了（含意外死）**。没有「关掉」这个动作，没有「过期 / 被取消」两格 —— 所以这里
+ * 没有存储层、没有状态机式的隐式转移，只有一张内存表（按 id 存题，按会话取的时候在它上面筛）。
  * 多端看到的是**同一个对象**（同一个进程里的同一个引用），所以「另一个窗口已经答过了」不需要
  * 任何同步通道；丢了的那一份只有跨重启。
  *
@@ -16,8 +16,8 @@
  *    {@link QuestionService.answer}：**先答完，再判能不能立刻交接**。
  * 3. **答题不被「忙」拦住**（PRD 4.10）：忙不是答题的拒因 —— 那段正忙着就把「待交接」写在会话行
  *    上（`pendingHandoff`），等它闲下来再做。所以这里没有「非 idle 就 busy」那道前置检查。
- * 4. **死的那一刻跟着没**（`dropSession`）：对话没了（被删、被硬着陆、agent 自己停了），
- *    挂在上面的题一起清掉 —— 不存在「死对话上挂着的题」。退役不算没（那是换个驱动者接着干）。
+ * 4. **死的那一刻跟着没**（`dropSession`）：会话没了（被删、被硬着陆、agent 自己停了），
+ *    挂在上面的题一起清掉 —— 不存在「死会话上挂着的题」。退役不算没（那是换个 agent 接着干）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -64,13 +64,13 @@ export interface QuestionOptionInput {
 
 /** 内部「问一个问题」的入口（交接线那一条） */
 export interface AskQuestionInput {
-  /** 挂在哪段对话上（问题总是为某一段对话停下来问的） */
+  /** 挂在哪段会话上（问题总是为某一段会话停下来问的） */
   sessionId: string;
   kind: QuestionKind;
   prompt: LocalizedSource;
   options: QuestionOptionInput[];
   /**
-   * 是否挡着这段对话（挡着时 `session.send` 会被拒，业务码 `question_pending`）。
+   * 是否挡着这段会话（挡着时 `session.send` 会被拒，业务码 `question_pending`）。
    *
    * 缺省挡着：问题就是为「停下来问」而造的。
    */
@@ -78,7 +78,7 @@ export interface AskQuestionInput {
   /** 出网的稳定码；缺省用 `prompt.messageKey` */
   code?: string;
   /**
-   * 与界面无关、但答完之后用得到的事实（例如「要接着建哪段对话」）。
+   * 与界面无关、但答完之后用得到的事实（例如「要接着建哪段会话」）。
    *
    * 它不是文案，不跟着语言变；也不是契约上的东西（客户端只看得到渲染好的句子与候选项），
    * 宿主答完后自己取用。
@@ -108,14 +108,14 @@ export interface QuestionHandoffPort {
 /**
  * 「这段现在能不能立刻交接」的口（`ChatRunner.canHandoffNow`，全仓唯一一份判据）。
  *
- * 答完之后是**能就当场交接、不能就留待办**：四个拒因原样进回执，客户端不必自己猜为什么
+ * 答完之后是**能就当场交接、不能就留待交接**：四个拒因原样进回执，客户端不必自己猜为什么
  * 没开始（`PLAN §5.2` / §5.3）。
  */
 export interface QuestionHandoffAvailabilityPort {
   canHandoffNow(sessionId: string): { ok: true } | { ok: false; reason: HandoffRefusalReason };
 }
 
-/** 硬线判定口：这段对话现在是不是已经过了硬线（PRD F-D1 / D23） */
+/** 硬线判定口：这段会话现在是不是已经过了硬线（PRD F-D1 / D23） */
 export interface QuestionGuardProbe {
   overGuard(sessionId: string): Promise<boolean>;
 }
@@ -228,8 +228,8 @@ export class QuestionService {
   /**
    * 挂着的那些题（按 id 索引，插入顺序即创建顺序）。
    *
-   * 一张表就够：按对话取的时候在它上面筛（一段对话上同时挂着的题不会多）。不去维护第二张
-   * 「对话 → 题」的索引 —— 两张表就有「哪一张才是真的」这个第二份事实。
+   * 一张表就够：按会话取的时候在它上面筛（一段会话上同时挂着的题不会多）。不去维护第二张
+   * 「会话 → 题」的索引 —— 两张表就有「哪一张才是真的」这个第二份事实。
    */
   private readonly questions = new Map<string, QuestionRecord>();
 
@@ -247,7 +247,7 @@ export class QuestionService {
    * 问一个问题（内部入口）。
    *
    * 直接造对象 + 推 `question` 事件：没有「先落库再读回来」那一趟，所以也不会有
-   * 「刚插进去就不见了」这种中间态。题挂着期间它挡着这段对话（`blocking`），
+   * 「刚插进去就不见了」这种中间态。题挂着期间它挡着这段会话（`blocking`），
    * `session.send` 由 {@link assertSendable} 拒。
    *
    * 入参不做形状校验：`kind` 与 `messageKey` 的类型本身就是闭集（`QuestionKind` /
@@ -287,7 +287,7 @@ export class QuestionService {
   /**
    * 到交接线时问「自交接 / 独立摘要 / 不交接」（PRD F-D2 / D22）。
    *
-   * 触发点在**对话停下之后**：这里只负责把问题摆出来，不参与任何流式过程。
+   * 触发点在**会话停下之后**：这里只负责把问题摆出来，不参与任何流式过程。
    * `percent` 是给人看的那个数（用量 / 交接线）。
    */
   async askHandoff(
@@ -329,10 +329,10 @@ export class QuestionService {
   }
 
   /**
-   * 这段对话上的题（按创建顺序）。
+   * 这段会话上的题（按创建顺序）。
    *
    * `sessionId` **必填**：没有「全库问题列表」这种读法（PRD 4.10 的「明确不做」）——
-   * 题只属于某一段对话，问「全库有什么题」是为了持久化才存在的形状。也没有 `state` 过滤：
+   * 题只属于某一段会话，问「全库有什么题」是为了持久化才存在的形状。也没有 `state` 过滤：
    * 客户端要的那句话就是「这段现在有没有一道题」。
    */
   async list(
@@ -346,7 +346,7 @@ export class QuestionService {
   }
 
   /**
-   * 这段对话上还挂着的题有几道（侧栏摘要的 `hasPendingQuestion`）。
+   * 这段会话上还挂着的题有几道（侧栏摘要的 `hasPendingQuestion`）。
    *
    * 现读内存：题不落库，所以**不能**问库（问了永远得 0）。
    */
@@ -355,7 +355,7 @@ export class QuestionService {
       .length;
   }
 
-  /** 这段对话上还挂着、且正在挡着它的那些题（`session.send` 的前置检查用它） */
+  /** 这段会话上还挂着、且正在挡着它的那些题（`session.send` 的前置检查用它） */
   async blockingQuestions(sessionId: string): Promise<QuestionView[]> {
     return this.questionsOf(sessionId)
       .filter((question) => question.state === "pending" && question.blocking)
@@ -473,7 +473,7 @@ export class QuestionService {
    *   `session.changed(settings_changed)`：别的窗口的状态栏得跟着变。
    * - 别的种类（`confirmation`）：没有后续动作。
    *
-   * 不等交接跑完：回执只有「开始了 / 留了待办」，文档写到哪走通知（PRD 4.9）。
+   * 不等交接跑完：回执只有「开始了 / 留了待交接」，文档写到哪走通知（PRD 4.9）。
    */
   private async applyEffects(
     input: {
@@ -508,7 +508,7 @@ export class QuestionService {
 
     const availability = this.availability?.canHandoffNow(input.sessionId) ?? { ok: true };
     if (!availability.ok) {
-      // 这段不闲（或没有驱动者 / 闸关着 / 已在交接）：留一条待办，等下一次变闲再做
+      // 这段不闲（或没有 agent / 闸关着 / 已在交接）：留一条待交接，等下一次变闲再做
       await this.writePendingHandoff(input.sessionId, input.handoffMode);
       return { handoffStarted: false, handoffDeferredReason: availability.reason };
     }
@@ -525,19 +525,19 @@ export class QuestionService {
   }
 
   /**
-   * 这段对话**没了**：挂在上面的题一起清掉，会话行上的待交接也一并清。
+   * 这段会话**没了**：挂在上面的题一起清掉，会话行上的待交接也一并清。
    *
    * 三条路共用这一个入口：真死（core 的 `stopped` / `killed`、投递撞上一个已经关门的 agent）
-   * 与对话被删 —— 那三条都在 `ChatRunner` 报「死」那一拍，由接线层按 `kind` 分过来。所以这里
-   * 是「题的生命 = 这段对话活着的这段时间」的落点：不存在「死对话上挂着的题」，也不必为它复活谁。
+   * 与会话被删 —— 那三条都在 `ChatRunner` 报「死」那一拍，由接线层按 `kind` 分过来。所以这里
+   * 是「题的生命 = 这段会话活着的这段时间」的落点：不存在「死会话上挂着的题」，也不必为它复活谁。
    *
-   * **退役不走这里**：改配置 / 改模型 / 改思考档 / 装配事实变化之后旧驱动者退役、新驱动者重建，
-   * 对话接着往下走 —— 题与待交接原样留着（清掉它们等于用户改了个模型就丢了正在等的那道题）。
+   * **退役不走这里**：改配置 / 改模型 / 改思考档 / 装配事实变化之后旧 agent 退役、新 agent 重建，
+   * 会话接着往下走 —— 题与待交接原样留着（清掉它们等于用户改了个模型就丢了正在等的那道题）。
    *
    * **不推事件**：「题没了」这件事由 `session.changed`（`agent_gone` / `deleted`）说，
    * 多推一条只会让客户端去处理一个它没有槽位的东西。
    *
-   * 清会话行那一步对「对话已被删」是空操作（行本来就不在了），不需要分支。
+   * 清会话行那一步对「会话已被删」是空操作（行本来就不在了），不需要分支。
    */
   async dropSession(sessionId: string): Promise<void> {
     for (const [id, question] of this.questions) {
@@ -547,7 +547,7 @@ export class QuestionService {
   }
 
   /**
-   * 会话行上的待交接 mode（`null` = 没有待办）。
+   * 会话行上的待交接 mode（`null` = 没有待交接）。
    *
    * 它是「答完之后这段不闲」留下的那一笔：读它的是变闲那一拍（`app.ts` 的 `onIdle`），
    * 兑现或判不能兑现之后由它清掉。
@@ -557,12 +557,12 @@ export class QuestionService {
     return session?.pendingHandoff ?? null;
   }
 
-  /** 写下待交接（`null` = 清掉）。对话已经不在了就是空操作（`setPendingHandoff` 回 0） */
+  /** 写下待交接（`null` = 清掉）。会话已经不在了就是空操作（`setPendingHandoff` 回 0） */
   async writePendingHandoff(sessionId: string, mode: HandoffMode | null): Promise<void> {
     await this.sessions.setPendingHandoff(sessionId, mode);
   }
 
-  /** 这段对话上的题（创建顺序） */
+  /** 这段会话上的题（创建顺序） */
   private questionsOf(sessionId: string): QuestionRecord[] {
     const found: QuestionRecord[] = [];
     for (const question of this.questions.values()) {
@@ -604,11 +604,11 @@ function handoffModeOf(kind: QuestionKind, value: string): HandoffMode | null {
 }
 
 /**
- * 按配置与历史算「这段对话是不是已经过了硬线」。
+ * 按配置与历史算「这段会话是不是已经过了硬线」。
  *
  * 硬线先看**会话行上的覆盖值**（`guardThreshold`），没有就看模型（`tokenThresholds.guard`，D27）；
  * 口径与 `app.ts` 那条变闲时的判断一致：都看最近一条带用量的消息的 `usage.prompt_tokens`。
- * 两处都是现读会话行：那一列改了不必重建驱动者（PRD 1.4）。
+ * 两处都是现读会话行：那一列改了不必重建 agent（PRD 1.4）。
  */
 export function createSessionGuardProbe(deps: {
   sessions: SessionRepository;

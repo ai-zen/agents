@@ -28,7 +28,7 @@ function createMockClient(responseText = "mock回复") {
   return { chat: { completions: { create } } } as any;
 }
 
-describe("AgentToolLazy 子 Agent 委派边界", () => {
+describe("AgentToolLazy subagent 委派边界", () => {
   function buildTool(child: Agent) {
     return new AgentToolLazy({
       function: {
@@ -51,8 +51,8 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     });
   }
 
-  it("onSubAgentStart 载荷区分主/子 Agent，放行后返回子 Agent 结果", async () => {
-    const childClient = createMockClient("子Agent结果");
+  it("onSubAgentStart 载荷区分主 agent / subagent，放行后返回 subagent 结果", async () => {
+    const childClient = createMockClient("subagent结果");
     const child = new Agent({ client: childClient, model: "gpt-4", lifetime: "one-shot" });
     const tool = buildTool(child);
     const host = new Agent({
@@ -76,11 +76,11 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     expect(seen[0].agent).toBe(host); // 主（宿主）
     expect(seen[0].subAgent).toBe(child); // 子
     expect(seen[0].toolCallContext).toBe(ctx);
-    expect(result).toBe("子Agent结果");
+    expect(result).toBe("subagent结果");
   });
 
-  it("onSubAgentStart 返回字符串时拒绝委派：子 Agent 不 run、原因作为工具结果", async () => {
-    const childClient = createMockClient("子Agent结果");
+  it("onSubAgentStart 返回字符串时拒绝委派：subagent 不 run、原因作为工具结果", async () => {
+    const childClient = createMockClient("subagent结果");
     const child = new Agent({ client: childClient, model: "gpt-4", lifetime: "one-shot" });
     const tool = buildTool(child);
     const host = new Agent({
@@ -114,9 +114,9 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     expect(deniedEvents[0].reason).toBe("任务上下文不完整");
   });
 
-  it("onSubAgentEnd 在子 Agent 完成后触发，且不影响工具结果", async () => {
+  it("onSubAgentEnd 在subagent 完成后触发，且不影响工具结果", async () => {
     const child = new Agent({
-      client: createMockClient("子Agent结果"),
+      client: createMockClient("subagent结果"),
       model: "gpt-4",
       lifetime: "one-shot",
     });
@@ -137,12 +137,12 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
 
     expect(endHook).toHaveBeenCalledTimes(1);
     expect(endEvent).toHaveBeenCalledTimes(1);
-    expect(result).toBe("子Agent结果");
+    expect(result).toBe("subagent结果");
   });
 
   it("省略 messages 时保留 buildAgent 决定的初始消息，不被模板覆盖", async () => {
     const child = new Agent({
-      client: createMockClient("子Agent结果"),
+      client: createMockClient("subagent结果"),
       model: "gpt-4",
       lifetime: "one-shot",
       messages: [Message.System("动态提示"), Message.User("动态任务")],
@@ -164,7 +164,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
 
     const result = await tool.exec(buildCtx(host));
 
-    expect(result).toBe("子Agent结果");
+    expect(result).toBe("subagent结果");
     // 初始消息保持 buildAgent 的决定（其后仅由 run 追加 Assistant 接收者）
     expect(child.messages.slice(0, 2).map((m) => m.content)).toEqual(["动态提示", "动态任务"]);
   });
@@ -219,7 +219,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     expect(host.subAgents[0]!.endedAt).not.toBeNull();
   });
 
-  it("子 agent 的事件按同一套名字转发到父，带 subAgent 与 via", async () => {
+  it("subagent 的事件按同一套名字转发到父，带 subAgent 与 via", async () => {
     const child = new Agent({
       client: createMockClient("结果"),
       model: "gpt-4",
@@ -239,23 +239,23 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
 
     await buildTool(child).exec(buildCtx(host));
 
-    // 子 agent 的原始片转上来了，来源说清楚是谁、哪次委派引起的
+    // subagent 的原始片转上来了，来源说清楚是谁、哪次委派引起的
     expect(deltas.length).toBeGreaterThan(0);
     expect(deltas[0].subAgent).toBeUndefined();
     expect(deltas[0].source.subAgent).toBe(child);
     expect(deltas[0].source.toolCall.function.name).toBe("lazyFn");
-    // 子 agent 的消息也转上来了，带上两格标记
+    // subagent 的消息也转上来了，带上两格标记
     expect(added.some((p) => p.subAgent === child)).toBe(true);
     expect(added.find((p) => p.subAgent === child).via.function.name).toBe("lazyFn");
   });
 
-  it("子 agent 那一圈被拒时不复读父的问题，而是说「没产出」", async () => {
+  it("subagent 那一圈被拒时不复读父的问题，而是说「没产出」", async () => {
     const child = new Agent({
       client: createMockClient("不该被调用"),
       model: "gpt-4",
       lifetime: "one-shot",
     });
-    // 子 agent 自己的内循环被拒 → 一个字都不产出
+    // subagent 自己的内循环被拒 → 一个字都不产出
     child.use({ onInnerLoopStart: () => "上下文超了" });
 
     const host = new Agent({

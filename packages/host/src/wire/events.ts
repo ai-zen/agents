@@ -49,7 +49,7 @@ export interface MessageAddedPayload {
   sessionId: string;
   /** 新出现的那条消息，core 原样 */
   message: AgentNS.Message;
-  /** 这条消息属于哪个子 Agent（见 {@link MessageDeltaPayload.toolCallId}）；不给就是主线 */
+  /** 这条消息属于哪个 subagent（见 {@link MessageDeltaPayload.toolCallId}）；不给就是主线 */
   toolCallId?: string;
   /** 这条推送的时刻 */
   at: string;
@@ -60,9 +60,9 @@ export interface MessageAddedPayload {
  *
  * 增量本体是 core 的 `AgentNS.Delta`，这一片属于哪一段由它自己带的字段说明：`content` 是
  * 正文、`reasoning_content` 是思考、`tool_calls` 是工具调用（PRD F-I2 的那三段）。
- * 外壳只带定位信息：哪个对话、哪条消息。
+ * 外壳只带定位信息：哪个会话、哪条消息。
  *
- * **这里没有「这一片是第几片」**：这条连接是有序 WS，同一段对话的增量按发出顺序一条条到达，
+ * **这里没有「这一片是第几片」**：这条连接是有序 WS，同一段会话的增量按发出顺序一条条到达，
  * 「乱序」与「中间那一小片丢了」这两种处境都不存在 —— 漏片只可能来自断线，而断线即作废
  * （见文件开头：不重放、不 ack），客户端靠 `resync`（`message.list` 全量，或带本地最后一条 id
  * 起的增量）把整段重新对齐。于是序号既没有判断依据、也没有可做的事：它只会让「客户端自己发现
@@ -76,9 +76,9 @@ export interface MessageDeltaPayload {
   /** 这次推送的时刻 */
   at: string;
   /**
-   * 这条消息属于哪个子 Agent（挂在那次委派的工具调用 id 上，PRD F-I7）。
+   * 这条消息属于哪个 subagent（挂在那次委派的工具调用 id 上，PRD F-I7）。
    *
-   * **不给就是主线**：主线消息的增量一直是主线。子 Agent 的话不并进主转录，
+   * **不给就是主线**：主线消息的增量一直是主线。subagent 的话不并进主转录，
    * 客户端按这个键把它归到自己那一栏去（`message.list { toolCallId }` 能取回同一批）。
    */
   toolCallId?: string;
@@ -96,7 +96,7 @@ export interface MessageChangedPayload {
   sessionId: string;
   /** 变化之后的那条消息，core 原样 */
   message: AgentNS.Message;
-  /** 这条消息属于哪个子 Agent（见 {@link MessageDeltaPayload.toolCallId}）；不给就是主线 */
+  /** 这条消息属于哪个 subagent（见 {@link MessageDeltaPayload.toolCallId}）；不给就是主线 */
   toolCallId?: string;
   /** 这条推送的时刻 */
   at: string;
@@ -106,14 +106,14 @@ export interface MessageChangedPayload {
 export interface MessageRemovedPayload {
   sessionId: string;
   messageId: string;
-  /** 这条消息属于哪个子 Agent（见 {@link MessageDeltaPayload.toolCallId}）；不给就是主线 */
+  /** 这条消息属于哪个 subagent（见 {@link MessageDeltaPayload.toolCallId}）；不给就是主线 */
   toolCallId?: string;
   /** 这条推送的时刻 */
   at: string;
 }
 
 /**
- * `state`：这一段对话的**忙闲**变了（`working` / `idle`）。
+ * `state`：这一段会话的**忙闲**变了（`working` / `idle`）。
  *
  * **只报一件事实：手上有没有活。** 两道闸各有自己的事件（{@link PauseChangeEventName}），死活走
  * `session.changed` —— 四件事不压成一格。
@@ -185,13 +185,13 @@ export interface ErrorPayload {
  *
  * - `created` / `renamed` / `pinned` / `settings_changed` / `deleted`：会话**行**上的事；
  * - `agent_started` / `agent_gone`：**死活**这一件事（这一段此刻有没有 agent 实例）。前者 =
- *   一个驱动者刚装好、后面有人取件了；后者 = 桥灭了（`stopped` / `killed` / 退役换人 /
- *   对话被删 / 进程收尾）。两者都不带原因：原因在那条 `onDead` 流里（对客户端只需知道「有/没有」）。
+ *   一个 agent 刚装好、后面有人取件了；后者 = 桥灭了（`stopped` / `killed` / 退役换人 /
+ *   会话被删 / 进程收尾）。两者都不带原因：原因在那条 `onDead` 流里（对客户端只需知道「有/没有」）。
  *   *它们不叫 `state` 的那种值*：死活不是「手上没活」，两者必须分得开（PRD 4.4）。
  * - `handoff_started`：交接**开始**这一拍。界面上要直说「正在交接」（输入框不给发、只留
  *   中断），而那条 `memory_replaced` 是**收口**才有的 —— 所以开始这一拍必须自己说一声，
  *   否则客户端在交接期间一直以为这段还是普通的一段。
- * - `memory_replaced`：这段对话的**记忆**被换过 —— 交接提交（记忆已经换掉）与交接回滚
+ * - `memory_replaced`：这段会话的**记忆**被换过 —— 交接提交（记忆已经换掉）与交接回滚
  *   （记忆回到交接前）两处都推它。交接期间产生的那批消息只在内存里、从不落库（PLAN §5.3），
  *   所以客户端收到它就去 `message.list` 全量整段替换镜像，把那些痕迹清掉。
  *   它**不是** `settings_changed`：那个说的是会话这一行变了，与记忆无关。
@@ -210,7 +210,7 @@ export type SessionChangeKind =
 /** `session.changed`：改名、置顶、改设置、agent 起来/没了、交接开始、换过记忆、删除这类会话上的结构变化 */
 export interface SessionChangedPayload {
   sessionId: string;
-  /** 所属 Workspace；对话被删后仍带上，便于客户端把它从对应列表里摘掉 */
+  /** 所属 Workspace；会话被删后仍带上，便于客户端把它从对应列表里摘掉 */
   workspaceId: string | null;
   change: SessionChangeKind;
   at: string;

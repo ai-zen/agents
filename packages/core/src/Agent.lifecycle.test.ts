@@ -790,7 +790,7 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
     await expect(agent.send()).rejects.toThrow(/messages 是空的/);
   });
 
-  it("常驻 agent 不许 send：常驻对话没有「等到跑完」这回事", async () => {
+  it("常驻 agent 不许 send：常驻会话没有「等到跑完」这回事", async () => {
     const { client } = createMockClient([]);
     const agent = new Agent({
       client,
@@ -799,7 +799,7 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
       messages: [Message.User("x", { kind: "user" })],
     });
 
-    await expect(agent.send()).rejects.toThrow(/常驻对话没有/);
+    await expect(agent.send()).rejects.toThrow(/常驻会话没有/);
   });
 });
 

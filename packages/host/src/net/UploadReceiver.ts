@@ -4,7 +4,7 @@
  * 三段式的分工：
  *   1. `asset.begin`（JSON-RPC 请求）：声明用途、类型、总字节数。**超限在这里就拒**（PRD D5：
  *      20MB/张），不接收完再说不行 —— 那既浪费带宽，也让客户端在上传中途白等一下。
- *      素材行要按对话挂外键，所以开临时文件之前先让归属的对话落库（草稿对话在库里还没有行，
+ *      素材行要按会话挂外键，所以开临时文件之前先让归属的会话落库（草稿会话在库里还没有行，
  *      R56：落库发生在「第一次真正用到它」的那一刻，带图的第一条消息就属于这种）。
  *   2. 任意多个二进制帧：每一帧带上「这是哪个上传」的头，字节直接追加进临时文件，不在内存里攒。
  *   3. `asset.end`（JSON-RPC 请求）：校验总长度与客户端给的 `sha256`，通过后交给落定回调，
@@ -72,7 +72,7 @@ export type UploadFinalizer = (request: UploadFinalizeRequest) => Promise<AssetR
  *
  * 命中时 `asset.begin` 直接回既有引用（`deduped: true`）：不建临时文件、不分配 `uploadId`。
  * 宿主自己算 `sha256` 也行，但它得先把 20MB 收完 —— 客户端本来就算过，问一句就够了。
- * 去重是全局的（按内容摘要），所以这里不问「哪段对话」。
+ * 去重是全局的（按内容摘要），所以这里不问「哪段会话」。
  */
 export type ExistingAssetLookup = (input: {
   sha256: string;
@@ -80,9 +80,9 @@ export type ExistingAssetLookup = (input: {
 }) => Promise<AssetRef | null>;
 
 /**
- * 上传前让「这段对话」成为库里的行。
+ * 上传前让「这段会话」成为库里的行。
  *
- * `language` 是那条「这段对话在哪个目录」的隐藏消息的渲染语言（D8）：上传是连接上的动作，
+ * `language` 是那条「这段会话在哪个目录」的隐藏消息的渲染语言（D8）：上传是连接上的动作，
  * 只有接线层知道收件人说的是哪种语言，所以逐次传进来而不是在构造时定死。
  */
 export type SessionPersister = (
@@ -96,11 +96,11 @@ export interface UploadReceiverOptions {
   /** 收完之后做什么（缺省实现见 `AssetService.finalizeUpload`） */
   finalize: UploadFinalizer;
   /**
-   * 上传前把这段对话落成库里的行（R56：`session.create` 只发 id 与身份）。
+   * 上传前把这段会话落成库里的行（R56：`session.create` 只发 id 与身份）。
    *
-   * 素材行按 `sessionId` 挂外键，所以「新对话第一条消息就带图」这条路上，对话的落库发生在
-   * `asset.begin`（与「第一次 `send`」同义）。实现方要自己幂等（同一段对话反复调只落一行）；
-   * 不注入时上传不碰对话表。
+   * 素材行按 `sessionId` 挂外键，所以「新会话第一条消息就带图」这条路上，会话的落库发生在
+   * `asset.begin`（与「第一次 `send`」同义）。实现方要自己幂等（同一段会话反复调只落一行）；
+   * 不注入时上传不碰会话表。
    */
   ensureSession?: SessionPersister;
   /**
@@ -171,16 +171,16 @@ export class UploadReceiver {
   }
 
   /**
-   * `asset.begin`：校验声明、让归属的对话落库、问去重、开临时文件、发一个上传句柄。
+   * `asset.begin`：校验声明、让归属的会话落库、问去重、开临时文件、发一个上传句柄。
    *
    * 声明里只有「总长」能验，字节本身还没到；所以这里的拒绝都是**声明层面**的
-   * （超限、类型不合法、缺对话归属、对话不存在）。
+   * （超限、类型不合法、缺会话归属、会话不存在）。
    *
    * 去重命中时这条路就到此为止：不建临时文件、不分配 `uploadId`。去重按内容摘要做，不区分
-   * 对话，所以命中并不证明这段对话存在 —— 「让对话落库」排在问去重之前，不存在的对话这一趟
+   * 会话，所以命中并不证明这段会话存在 —— 「让会话落库」排在问去重之前，不存在的会话这一趟
    * 一个字节也不会收。
    *
-   * 「让对话落库」排在建临时文件之前：对话不存在时这一趟上传一个字节都不该落盘，
+   * 「让会话落库」排在建临时文件之前：会话不存在时这一趟上传一个字节都不该落盘，
    * 也不该占住一个 `uploadId`。`language` 是这条连接的语言，用来渲染那条隐藏的 cwd 消息。
    */
   async begin(
@@ -195,10 +195,10 @@ export class UploadReceiver {
     const name = normalizeName(params.name);
     const sha256 = params.sha256 === undefined ? null : normalizeDigest(params.sha256);
 
-    // 草稿对话在库里还没有行（R56），而「这段对话存在」是上传的前提：先落库再收字节
+    // 草稿会话在库里还没有行（R56），而「这段会话存在」是上传的前提：先落库再收字节
     await this.persistSession(sessionId, language);
 
-    // 库里已有同一份字节时只回引用：磁盘上只有一份，两段对话各自在关系表里留一行
+    // 库里已有同一份字节时只回引用：磁盘上只有一份，两段会话各自在关系表里留一行
     const existing = sha256 === null ? null : await this.lookupExisting({ sha256, bytes: declaredBytes });
     if (existing !== null) {
       return {
@@ -358,9 +358,9 @@ export class UploadReceiver {
   // -------------------------------------------------------------------------
 
   /**
-   * 让这段对话先成为库里的行（幂等由注入方保证）。
+   * 让这段会话先成为库里的行（幂等由注入方保证）。
    *
-   * 业务错误（`not_found` 之类）原样上抛：客户端要按码说人话，不能让「对话不存在」在出网时
+   * 业务错误（`not_found` 之类）原样上抛：客户端要按码说人话，不能让「会话不存在」在出网时
    * 变成一句 internal。其余异常（写库失败这类）收敛成 `internal` 并留一个原因，原始错误同时
    * 交给 `onError` 进日志。
    */
@@ -371,7 +371,7 @@ export class UploadReceiver {
       await ensure(sessionId, language);
     } catch (error) {
       if (HostError.is(error)) throw error;
-      this.onError?.(error, "让对话落库失败");
+      this.onError?.(error, "让会话落库失败");
       throw new HostError("internal", {
         detail: { reason: "session_persist_failed", sessionId },
         cause: error,
@@ -578,10 +578,10 @@ function requireDeclaredBytes(value: unknown, limit: number): number {
 }
 
 /**
- * 上传必须归属一段对话。
+ * 上传必须归属一段会话。
  *
- * `asset.begin` 要这段对话在库里存在（草稿先落库），因为素材的引用关系（`session_assets`）
- * 与「图片按引用清理」都按对话走；没有归属的上传只能留下一个没人认领的文件。所以这里直接拒
+ * `asset.begin` 要这段会话在库里存在（草稿先落库），因为素材的引用关系（`session_assets`）
+ * 与「图片按引用清理」都按会话走；没有归属的上传只能留下一个没人认领的文件。所以这里直接拒
  * （而不是先收完再失败）。
  */
 function requireSessionId(value: unknown): string {
