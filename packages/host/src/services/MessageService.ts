@@ -213,6 +213,8 @@ export function toAgentMessage(row: StoredMessage): AgentNS.Message {
   if (finishReason !== undefined) message.finish_reason = toFinishReason(finishReason);
   const usage = asUsage(data.usage);
   if (usage !== undefined) message.usage = usage;
+  const subAgentUsage = asUsage(data.subAgentUsage);
+  if (subAgentUsage !== undefined) message.subAgentUsage = subAgentUsage;
   const hidden = asBoolean(data.hidden);
   if (hidden !== undefined) message.hidden = hidden;
 

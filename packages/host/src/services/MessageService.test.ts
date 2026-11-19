@@ -7,7 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, sumUsage } from "@ai-zen/agents-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { Database } from "../storage/Database.js";
@@ -485,6 +485,48 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
       hidden: true,
     });
     expect(Object.keys(message ?? {})).not.toContain("createdAt");
+  });
+
+  it("委派用量跟 `usage` 走同一条 `data` 通道：落库读回之后还在，求和算得出整棵树的累计", async () => {
+    await messages.upsert({
+      id: "a-usage",
+      sessionId: "c1",
+      role: "assistant",
+      status: "completed",
+      content: "我派个人去查",
+      data: { usage: { prompt_tokens: 800, completion_tokens: 200, total_tokens: 1000 } },
+      createdAt: 650,
+    });
+    // 一行 tool 消息：它自身没有 `usage`，带的是「这次委派花了多少」
+    await messages.upsert({
+      id: "tool-1",
+      sessionId: "c1",
+      role: "tool",
+      status: "completed",
+      content: "查完了",
+      data: {
+        tool_call_id: "call-1",
+        // subagent 自己那条 tool 消息上的孙级委派已经含在这里面（嵌套天然成立）
+        subAgentUsage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
+      },
+      createdAt: 700,
+    });
+
+    const page = await service.list({ sessionId: "c1" });
+    const message = page.messages.find((candidate) => candidate.id === "tool-1");
+    expect(message?.subAgentUsage).toEqual({
+      prompt_tokens: 200,
+      completion_tokens: 30,
+      total_tokens: 230,
+    });
+    // 互斥：tool 消息上没有它自己那次响应的 `usage`
+    expect(message?.usage).toBeUndefined();
+    // 整段一次求和 = 整棵树（助手自己的响应 + 这次委派），孙级没有被算两遍
+    expect(sumUsage(page.messages)).toEqual({
+      prompt_tokens: 1000,
+      completion_tokens: 230,
+      total_tokens: 1230,
+    });
   });
 
   it("正文原样透传：内容段不逐段重建（R30）", async () => {

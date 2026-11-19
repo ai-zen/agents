@@ -23,7 +23,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { AgentNS } from "@ai-zen/agents-core";
-import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
+import { AgentNS as AgentNSValue, sumUsage } from "@ai-zen/agents-core";
 
 import type { Session } from "../storage/types.js";
 import type { InboxInsertInput, StoredInboxEntry } from "../storage/InboxRepository.js";
@@ -1125,6 +1125,87 @@ describe("ChatRunner：subagent 的消息不落库，只推事件", () => {
     // 它说过的话顺「父的名册 → 那个 subagent → 它的 `messages`」取：开局的任务 + 它的回答
     const subMessages = harness.runner.messagesOf(SESSION_ID, { toolCallId: "t1" });
     expect(subMessages?.map((message) => message.content)).toEqual(["办一下", "办好了"]);
+  });
+
+  /**
+   * 委派花了多少是**消息身上的事实**，所以它跟 `usage` 走同一条 `data` 通道落库：
+   * 不另开列、不靠宿主算，重开之后照样读得回来（PRD 3.9：累计必须含所有层级的 subagent）。
+   */
+  it("委派那一拍之后，落库的那条 tool 消息带着这次委派的用量", async () => {
+    const harness = createHarness({
+      rounds: [
+        {
+          toolCalls: [{ id: "t1", name: "delegate" }],
+          subAgent: {
+            name: "helper",
+            messages: [
+              {
+                id: "sub-u",
+                role: AgentNSValue.Role.User,
+                status: AgentNSValue.MessageStatus.Completed,
+                content: "办一下",
+              } as AgentNS.Message,
+            ],
+            stream: ["办好了"],
+            usage: { prompt_tokens: 700, completion_tokens: 70, total_tokens: 770 },
+          },
+        },
+      ],
+    });
+
+    await harness.deliver(userSays("交给助手"));
+    await harness.waitIdle();
+    await harness.settle();
+
+    const toolRow = harness.store.writes.filter((row) => row.role === "tool").at(-1);
+    expect(toolRow?.data?.subAgentUsage).toEqual({
+      prompt_tokens: 700,
+      completion_tokens: 70,
+      total_tokens: 770,
+    });
+    // 与它自身那次响应的 `usage` 互斥：这条 tool 消息没有 `usage`
+    expect(toolRow?.data?.usage).toBeUndefined();
+  });
+
+  it("重开之后这个字段还在：从行里还原出来的消息带着它，一处求和即整棵树", async () => {
+    const harness = createHarness();
+    harness.store.seed({
+      id: "a-row",
+      sessionId: SESSION_ID,
+      role: AgentNSValue.Role.Assistant as string,
+      status: AgentNSValue.MessageStatus.Completed as string,
+      content: "我派个人去查",
+      data: { usage: { prompt_tokens: 800, completion_tokens: 200, total_tokens: 1000 } },
+      createdAt: 1,
+    });
+    harness.store.seed({
+      id: "t-row",
+      sessionId: SESSION_ID,
+      role: AgentNSValue.Role.Tool as string,
+      status: AgentNSValue.MessageStatus.Completed as string,
+      content: "查完了",
+      data: {
+        tool_call_id: "t1",
+        // subagent 自己那条 tool 消息上的孙级已经含在里面了
+        subAgentUsage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
+      },
+      createdAt: 2,
+    });
+
+    const messages = await harness.runner.reconcile(SESSION_ID);
+
+    expect(messages.map((message) => message.id)).toEqual(["a-row", "t-row"]);
+    expect(messages[1]?.subAgentUsage).toEqual({
+      prompt_tokens: 200,
+      completion_tokens: 30,
+      total_tokens: 230,
+    });
+    // 这次委派那部分没有被写成第二份：整棵树一份求和
+    expect(sumUsage(messages)).toEqual({
+      prompt_tokens: 1000,
+      completion_tokens: 230,
+      total_tokens: 1230,
+    });
   });
 });
 

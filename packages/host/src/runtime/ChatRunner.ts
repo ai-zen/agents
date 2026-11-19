@@ -550,7 +550,10 @@ export function toRow(
   if (message.tool_call_id !== undefined) data.tool_call_id = message.tool_call_id;
   if (message.name !== undefined) data.name = message.name;
   if (message.reasoning_content !== undefined) data.reasoning_content = message.reasoning_content;
+  // 用量两格走同一条 `data` 通道：`usage` 是这条消息自己那次响应，`subAgentUsage` 是这次委派
+  // 花了多少。两者都是消息身上的事实，不另开列
   if (message.usage) data.usage = message.usage;
+  if (message.subAgentUsage) data.subAgentUsage = message.subAgentUsage;
   if (message.finish_reason !== undefined) data.finish_reason = message.finish_reason;
   if (message.hidden !== undefined) data.hidden = message.hidden;
   if (extra.problem !== undefined) data.error = extra.problem;
@@ -593,6 +596,8 @@ function fromRow(row: StoredMessage): AgentNS.Message {
   }
   const usage = toUsage(data.usage);
   if (usage) message.usage = usage;
+  const subAgentUsage = toUsage(data.subAgentUsage);
+  if (subAgentUsage) message.subAgentUsage = subAgentUsage;
   if (typeof data.finish_reason === "string") {
     message.finish_reason = data.finish_reason as AgentNS.FinishReason;
   }
