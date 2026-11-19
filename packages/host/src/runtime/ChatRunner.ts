@@ -1037,13 +1037,8 @@ class SessionBridge {
 
   /** 摘掉全部监听（桥灭的最后一步） */
   private detachListeners(): void {
-    for (const off of this.listeners.splice(0)) {
-      try {
-        off();
-      } catch (error) {
-        this.options.onError?.(error, "detach-listeners");
-      }
-    }
+    // `off()` 最终只是 `EventBus.off()` 的一次 `Map.delete`，没有可抛的东西
+    for (const off of this.listeners.splice(0)) off();
   }
 
   // -------------------------------------------------------------------------
@@ -2509,15 +2504,14 @@ function thinkingPatchOf(
  * 读一次助手定义（只为拿它绑定哪个模型、带哪些参数）。
  *
  * SDK 的 `createAgent` 自己也会读一次定义；这里多这一遍是因为会话档位展开的参数要叠在
- * 定义那份参数上，而只有定义在手才知道该叠什么。读不出来就当作没有（真正的报错由
- * `createAgent` 那句给出）。
+ * 定义那份参数上，而只有定义在手才知道该叠什么。文件不在 / 读坏了 `read()` 自己回 `null`
+ * （真正的报错由 `createAgent` 那句给出）。
+ *
+ * 这里的 `read()` 不包 try：它唯一的抛出点是 id 逃出目录的检查，而 `context.agentId` 来自会话行，
+ * 那个值在 `SessionService.create` 已被同一处检查挡过一次。
  */
 async function readAgentDefinition(context: AgentBuildContext): Promise<AgentDefinition | null> {
-  try {
-    return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
-  } catch {
-    return null;
-  }
+  return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
 }
 
 /**

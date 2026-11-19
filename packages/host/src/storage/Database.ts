@@ -211,14 +211,7 @@ export class Database {
         clearTimeout(timer);
         resolve();
       });
-      try {
-        worker.postMessage({ id: this.nextId++, kind: "close" });
-      } catch {
-        void worker.terminate().then(
-          () => resolve(),
-          () => resolve(),
-        );
-      }
+      worker.postMessage({ id: this.nextId++, kind: "close" });
     });
   }
 
@@ -232,13 +225,7 @@ export class Database {
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      try {
-        this.workerHandle().postMessage({ ...payload, id });
-      } catch (error) {
-        // 消息本身没发出去（worker 已终止等），立刻失败，不留悬挂项
-        this.pending.delete(id);
-        reject(toError(error));
-      }
+      this.workerHandle().postMessage({ ...payload, id });
     });
   }
 

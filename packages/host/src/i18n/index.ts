@@ -81,12 +81,8 @@ export function render(
     if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
       return String(value);
     }
-    try {
-      return JSON.stringify(value);
-    } catch {
-      // 循环引用之类无法序列化的值：不吞掉句子，退回占位符
-      return whole;
-    }
+    // `bigint` 已在上一行被 `String()` 接走；剩下的对象都由调用方就地造出来，没有环
+    return JSON.stringify(value);
   });
 }
 

@@ -274,11 +274,8 @@ export class WsHub {
 
     const states = [...this.connections.values()];
     for (const state of states) {
-      try {
-        state.socket.close(1001, "host shutting down");
-      } catch {
-        // 已经断了：下面统一按「连接没了」处理
-      }
+      // `close(code, data)` 只在 code 非法时抛；1001 是合法码，已断/正断的 socket 直接返回
+      state.socket.close(1001, "host shutting down");
       await this.options.uploads?.abortConnection(state.id).catch((error: unknown) => {
         this.logger.warn("清理上传失败", { error });
       });
@@ -709,12 +706,10 @@ export class WsHub {
     state: ConnectionState,
     frame: JsonRpcResponseFrame | JsonRpcNotificationFrame,
   ): void {
+    // 守卫与 send 之间没有 await：单线程下状态不会在中间变，OPEN 之后 send 不抛。
+    // 真出 socket 级错误时 `ws` 走 `'error'` 事件（`accept()` 里已接）。
     if (state.socket.readyState !== WebSocket.OPEN) return;
-    try {
-      state.socket.send(JSON.stringify(frame));
-    } catch (error) {
-      this.logger.warn("发送帧失败", { connectionId: state.id, error });
-    }
+    state.socket.send(JSON.stringify(frame));
   }
 
   /**
