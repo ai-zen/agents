@@ -1089,6 +1089,103 @@ describe("Agent runOnce", () => {
     await agent.start();
   });
 
+  it("未知工具 + 参数也写坏了：回给模型的是「未知工具」，**不是**「参数解析错误」", async () => {
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "nope", args: "{这不是 JSON" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await settled(agent);
+
+    const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+    // 工具**不存在优先**：让它去修参数格式 = 让它修一个根本不存在的工具的参数，永远修不好
+    expect(toolMsg.content).toBe("未知工具: nope，没有找到对应的工具实现。");
+    expect(toolMsg.content).not.toContain("参数解析错误");
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("onToolEnd 只对**存在的**工具发：未知工具不发（成对的钩子要成对）", async () => {
+    class Echo extends Tool {
+      function = { name: "echo", description: "e", parameters: {} } as any;
+      async exec() {
+        return "echo 的结果";
+      }
+    }
+    // 两轮：先调一个不存在的工具，再调一个存在的 —— 同一条路上两边的表现都钉住
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "nope" }]),
+      toolCallStream([{ id: "c2", name: "echo" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Echo()],
+    });
+
+    const starts: string[] = [];
+    const ends: string[] = [];
+    agent.use({
+      onToolStart: ({ toolCall }) => {
+        starts.push(toolCall.tool_call.function?.name ?? "?");
+      },
+      onToolEnd: ({ toolCall }) => {
+        ends.push(toolCall.tool_call.function?.name ?? "?");
+      },
+    });
+
+    void agent.start();
+    agent.push(user("跑两下"));
+    await settled(agent);
+
+    // 未知工具那一次：只有 onToolStart 的对应位置空着，onToolEnd 也不许来（没有 start 的 end
+    // 会让计时 / 配对计数 / 工具卡片这类插件收尾一件没开始的事，而且 `ctx.tool` 还是 undefined）
+    expect(starts).toEqual(["echo"]);
+    expect(ends).toEqual(["echo"]);
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("toolStarted 只对**存在的**工具发：未知工具不发（与 onToolStart 同一道门）", async () => {
+    class Echo extends Tool {
+      function = { name: "echo", description: "e", parameters: {} } as any;
+      async exec() {
+        return "echo 的结果";
+      }
+    }
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "nope" }]),
+      toolCallStream([{ id: "c2", name: "echo" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Echo()],
+    });
+
+    const started: string[] = [];
+    agent.on("toolStarted", (payload) => started.push(payload.toolCall.function?.name ?? "?"));
+
+    void agent.start();
+    agent.push(user("跑两下"));
+    await settled(agent);
+
+    // 未知工具从来没跑过：发一条 start 只会让拿它建「工具调用卡片」的订阅方凭空多一张
+    expect(started).toEqual(["echo"]);
+
+    agent.stop();
+    await agent.start();
+  });
+
   it("门钩子抛错按「拒」处理（fail-closed），并把错报成 failed", async () => {
     class Echo extends Tool {
       function = { name: "echo", description: "e", parameters: {} } as any;

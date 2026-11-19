@@ -104,7 +104,7 @@ export interface SubAgentEntry {
  * | `onInnerLoopEnd` | 不能 | 这一次请求结束 |
  * | `onToolStart` | **能拒** | 工具**存在**，问「要不要开始跑」。拒了就是「这个工具没给出有效结果」，原因作为 tool 消息回给模型 |
  * | `onUnknownTool` | **能拒** | 工具**不存在**，问「怎么回应模型」。拒（返回 string）= 那条 tool 消息的正文；不管（`undefined`）= 走默认的「未知工具: X」 |
- * | `onToolEnd` | 不能 | 工具跑完了 |
+ * | `onToolEnd` | 不能 | 工具跑完了（**只对存在的工具**：未知工具没跑过，不发这一下） |
  * | `onSubAgentStart` | **能拒** | 拒了这次委派不跑 |
  * | `onSubAgentEnd` | 不能 | 委派结束（subagent 已经跑完，撤不回来了） |
  *
@@ -135,6 +135,7 @@ export interface AgentPlugin {
   onToolStart?(ctx: ToolHookContext): HookResult;
   /** 模型调了个**不存在**的工具（此时不派发 `onToolStart`）：返回 string 就是那条 tool 消息的正文 */
   onUnknownTool?(ctx: UnknownToolContext): HookResult;
+  /** 工具跑完了 —— **只对存在的工具**发（与 `onToolStart` 成对；未知工具没跑过，不发） */
   onToolEnd?(ctx: ToolHookContext): HookResult;
   onSubAgentStart?(ctx: SubAgentHookContext): HookResult;
   onSubAgentEnd?(ctx: SubAgentHookContext): HookResult;
@@ -1332,11 +1333,14 @@ export class Agent extends AgentContext {
     result: Message,
     inflight: Inflight,
   ): Promise<void> {
-    this.emit("toolStarted", { agent: this, toolCall: call });
-
     const matched = this.tools.find(
       (tool) => tool.function.name === call.function?.name && tool.type === "function",
     );
+
+    // 事件侧与 `onToolStart` 同一道门：**只有存在的工具才有「开跑」可言**。
+    // 未知工具从来没跑过（它连实现都没有），发给它等于让订阅方凭空多一张「工具调用卡片」
+    // ——而且那张卡片永远等不到自己那一下。
+    if (matched) this.emit("toolStarted", { agent: this, toolCall: call });
 
     const ctx = new ToolCallContext({
       agent: this,
@@ -1379,13 +1383,15 @@ export class Agent extends AgentContext {
           reason: denied,
           detail: { toolCall: call },
         });
-      } else if (ctx.parseError) {
-        // ② 参数烂 = 没给出有效结果
-        result.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
-        finalize(AgentNS.MessageStatus.Completed);
       } else if (!matched) {
-        // ③ 工具不存在 = 同一件事。`onUnknownTool` 若没接管（返回 undefined），走这条默认文案
+        // ② 工具不存在 = 没给出有效结果。`onUnknownTool` 若没接管（返回 undefined），走这条默认文案。
+        //    **判在参数之前**：参数解析只对存在的工具有意义 —— 未知工具连实现都没有，
+        //    告诉模型「参数格式不对，改改」它会去修一个根本不存在的工具的参数，永远修不好。
         result.content = `未知工具: ${call.function?.name}，没有找到对应的工具实现。`;
+        finalize(AgentNS.MessageStatus.Completed);
+      } else if (ctx.parseError) {
+        // ③ 参数烂 = 同一件事（只对**存在**的工具才有这一说）
+        result.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
         finalize(AgentNS.MessageStatus.Completed);
       } else {
         // ④ 真跑：与 `abortRx` 赛跑 —— 不管工具听不听话，`await` 立刻能返回
@@ -1401,8 +1407,11 @@ export class Agent extends AgentContext {
       finalize(AgentNS.MessageStatus.Completed);
     }
 
-    // 同位置：钩子在前（还能看一眼结果），事件在后（已经定了）
-    await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
+    // 同位置：钩子在前（还能看一眼结果），事件在后（已经定了）。
+    // **`onToolEnd` 只对存在的工具发** —— 它的语义是「工具跑完了」，未知工具没跑过（连实现
+    // 都没有），给成对注册 `onToolStart` / `onToolEnd` 的插件（计时、配对计数、工具卡片）
+    // 发一个「没有 start 的 end」，等于让它拿 `ctx.tool === undefined` 去收尾一件没开始的事。
+    if (matched) await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
     this.emit("toolFinished", { agent: this, toolCall: call, result });
   }
 
