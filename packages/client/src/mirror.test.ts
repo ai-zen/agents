@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionChangeKind, EventPayload } from "@ai-zen/agents-host";
+import { AgentNS } from "@ai-zen/agents-core";
 
 import { SessionMirror, toMirrorEvent } from "./mirror.js";
 import { assistantMessage, userMessage } from "./testSupport/fakeHost.js";
@@ -109,6 +110,35 @@ describe("四条到达事件", () => {
 
     mirror.apply({ kind: "message.removed", payload: removedEvent("m1") });
     expect(mirror.messages.map((message) => message.id)).toEqual(["m2"]);
+  });
+
+  /**
+   * 消息原样进镜像：委派用量（`subAgentUsage`）是 `Message` 身上的一格，
+   * 镜像不重建字段、也就不该把它丢掉 —— 客户端要它来算「累计含所有层级的 subagent」。
+   */
+  it("消息原样带：那条 tool 消息上的 `subAgentUsage` 一格不丢", () => {
+    const mirror = mirrorOf();
+    const delegated = {
+      ...userMessage("t1", "查完了"),
+      role: AgentNS.Role.Tool,
+      tool_call_id: "call-1",
+      subAgentUsage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
+    } as AgentNS.Message;
+
+    mirror.apply({ kind: "message.added", payload: addedEvent(delegated) });
+    expect(mirror.messages[0]?.subAgentUsage).toEqual({
+      prompt_tokens: 200,
+      completion_tokens: 30,
+      total_tokens: 230,
+    });
+
+    // 整条替换（定型那一条）同样原样搬
+    mirror.apply({ kind: "message.changed", payload: changedEvent(delegated) });
+    expect(mirror.messages[0]?.subAgentUsage?.total_tokens).toBe(230);
+
+    // 重连整段替换（`message.list` 那一份）也一样
+    mirror.replaceAll([delegated]);
+    expect(mirror.messages[0]?.subAgentUsage?.total_tokens).toBe(230);
   });
 
   it("认不出那条消息的增量直接丢掉（它属于镜像之前的那一段）", () => {
