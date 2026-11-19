@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { WriteTool } from "./WriteTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 
 function tmpDir(): string {
   return join(tmpdir(), randomBytes(8).toString("hex"));

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { dirname } from "node:path";
 import { GenerateImageTool } from "./GenerateImageTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { AppConfig, GenerateImageFn } from "../../../types/index.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";

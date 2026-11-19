@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SleepTool } from "./SleepTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 function makeCtxWithSignal(): { ctx: ToolCallContext; abort: () => void } {

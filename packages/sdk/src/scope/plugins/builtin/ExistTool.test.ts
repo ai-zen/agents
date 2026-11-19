@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { ExistTool } from "./ExistTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 
 describe("ExistTool", () => {
   it("工具名称和描述正确", () => {

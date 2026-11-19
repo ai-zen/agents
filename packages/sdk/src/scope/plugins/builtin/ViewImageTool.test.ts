@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { ViewImageTool } from "./ViewImageTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { AppConfig, UploadFn } from "../../../types/index.js";
 
 /** 上传走依赖注入（ToolEnv.deps.upload），不 mock "openai" 模块 */

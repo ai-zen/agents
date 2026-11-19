@@ -4,7 +4,7 @@ import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { GlobTool } from "./GlobTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 import type { AppConfig } from "../../../types/index.js";

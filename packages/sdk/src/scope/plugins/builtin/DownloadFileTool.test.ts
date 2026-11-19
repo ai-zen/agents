@@ -5,7 +5,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { DownloadFileTool } from "./DownloadFileTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 const mockFetch = vi.fn();

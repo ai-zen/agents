@@ -1,4 +1,4 @@
-import type { AppConfig, ToolEnv, ToolEnvDeps } from "../../../types/index.js";
+import type { AppConfig, ToolEnv, ToolEnvDeps } from "../types/index.js";
 
 /** 构造测试用 ToolEnv（deps 用于注入出网依赖，避免 mock openai 模块） */
 export function makeEnv(

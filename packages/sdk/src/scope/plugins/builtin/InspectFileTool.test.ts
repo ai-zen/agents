@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { InspectFileTool } from "./InspectFileTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { AppConfig } from "../../../types/index.js";
 
 function tmpFile(content: string): string {

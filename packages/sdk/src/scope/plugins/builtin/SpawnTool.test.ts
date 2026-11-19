@@ -3,7 +3,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SpawnTool } from "./SpawnTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 
 describe("SpawnTool", () => {
   it("工具名称和描述正确", () => {

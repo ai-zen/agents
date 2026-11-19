@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { CwdTool } from "./CwdTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 
 describe("CwdTool", () => {
   it("工具名称和描述正确", () => {

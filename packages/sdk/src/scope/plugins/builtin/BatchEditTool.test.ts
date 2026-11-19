@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { BatchEditTool } from "./BatchEditTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 
 function tmpFile(content: string): string {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
