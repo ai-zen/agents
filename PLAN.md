@@ -197,8 +197,8 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 ## 6. 契约面
 
 - **方法**：`<域>.<动作>`，共 **67** 条、13 个域（`src/wire/methods.ts` 的 `METHOD_NAMES`）。分域点数：`host` 6、`workspace` 5、`session` 18、`message` 1、`question` 2、`notice` 3、`config` 8、`agent` 8、`model` 8、`asset` 3、`completion` 1、`handoff` 2、`search` 2。
-- **暂停与继续**：`session.pause` / `session.resume`，入参 `{ sessionId }`、出参 `{ paused: boolean }`。暂停**只翻输出闸、不掐在途**（手上这批跑完、从下一批起不取）；继续**只开闸、不投任何东西**（压着的inbox按原顺序接着跑）。没有 agent 时回 `{ paused: false }`（不是错误）；**交接期间两者都拒**（`busy` / `handoff_in_progress`）。`[用户]`
-- **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`session.clearInbox`，清空inbox归客户端）→ 64（W11：+`session.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`session.pause` / `session.resume`，暂停与继续各有自己的按钮）→ **67**（+`session.kill`，用户按杀死有了入口）。
+- **暂停与继续**：`session.pause` / `session.resume`，入参 `{ sessionId }`、出参 `{ paused: boolean }`。暂停**只翻输出闸、不掐在途**（手上这批跑完、从下一批起不取）；继续**只开闸、不投任何东西**（压着的 inbox 按原顺序接着跑）。没有 agent 时回 `{ paused: false }`（不是错误）；**交接期间两者都拒**（`busy` / `handoff_in_progress`）。`[用户]`
+- **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`session.clearInbox`，清空 inbox 归客户端）→ 64（W11：+`session.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`session.pause` / `session.resume`，暂停与继续各有自己的按钮）→ **67**（+`session.kill`，用户按杀死有了入口）。
 - **`credential.*` 删的是契约面、不是能力**：`CredentialService`、`CredentialRepository`、`<数据根>/run/token`、`agents-host token create|list|revoke` 一字未动，`Credential*` 形状只留给那三个子命令。别因为 `grep credential.* wire/methods.ts` 找不到方法名就以为能力没了（PRD L13）。
 - **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **63** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
 - **事件** 13 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `output:paused` / `output:resumed` / `input:paused` / `input:resumed` / `error` / `session.changed` / `notice` / `question`。前四条拼出 `messages`，`state` 只说忙闲，四条闸事件各说一道闸（与 core 同名），死活走 `session.changed` 的 `agent_started` / `agent_gone`（见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
@@ -247,7 +247,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert，所以 `status` / `omit` 必须落盘。**崩溃恢复不归宿主**：装载时它只负责把库里的行读出来交给 agent，修不修、怎么修由 core 在进圈开头自己收拾（见 `CORE.md` §6）。**排队落地的用户消息是唯一例外**：落地那一刻就写第一笔（§5.4）。
 
-**迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑；不识别任何旧数据（PRD L1）。R14 / R18 这类结构裁定直接落在 v1 建表语句里（这套表结构还没随版本发出去）。**v2 是第一条真正的追补条目**：只用 `ALTER TABLE sessions ADD COLUMN` 加两列，v1 建表语句一个字不改 —— 已升过 v1 的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。往后同一种写法：**v3** 加 `messages.source`（JSON，NULL = 不知道），**v4** 加会话行上那四列（两条阈值 / 自动交接开关 / 血缘）—— 全是 `ADD COLUMN`，不改旧条目。
+**迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑；不识别任何旧数据（PRD L1）。R14 / R18 这类结构裁定直接落在 v1 建表语句里（这套表结构还没随版本发出去）。**v2 是第一条真正的追补条目**：只用 `ALTER TABLE sessions ADD COLUMN` 加两列。**改名那一轮是唯一的例外**：库里没有旧版本，所以表名 / 列名 / 索引名直接改在 v1–v6 的语句上，不新增条目、也不做兼容迁移；此外的每一版都只许新增条目。往后同一种写法：**v3** 加 `messages.source`（JSON，NULL = 不知道），**v4** 加会话行上那四列（两条阈值 / 自动交接开关 / 血缘）—— 全是 `ADD COLUMN`，不改旧条目。
 
 ---
 
@@ -327,7 +327,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 取件点 | `packages/core/src/Agent.ts`（`runLoops()` 内循环末）+ `Inbox.ts` | `high` 先取、`!needContinue` 才问 `low`；落地成 `Message.User` 并加来源注释 |
 | 落地即写库 | `ChatRunner.ts:1804-1821` | `persistLandedQueued`：先写行再 `linkQueuedAssets`，`createdAt` 取落地时刻 |
 | 来源注释 | core 的 `inboxEntryContent` | 落地那一刻统一生成；宿主没有第二个拼装点（也没有第二份内容） |
-| inbox回显 | `agent.inboxPending` → `wire/states.ts` 的 `InboxItem` | 现读，不存镜像；条数取证 |
+| inbox 回显 | `agent.inboxPending` → `wire/states.ts` 的 `InboxItem` | 现读，不存镜像；条数取证 |
 | 四件事 | `AgentRegistry.get(id)?.state` + 两道闸 + 有没有那个对象 | 忙闲读 `state`、两个闸各现读一个开关、死活看对象在不在。不落库、不是字段、不推算 |
 | 变闲那一刻 | `ChatRunner` 的 `onIdle`（订的是 core 的 `state:idle`）→ `app` 的那一个判断 | 全宿主唯一一处：先看会话行上有没有待交接，再看要不要问交接线、要不要起名字 |
 | 历史只有一份 | `ChatRunner.run()` 的二分 + `attach` | 有 agent 就从它内存里取，首次装配才读库 |
@@ -367,7 +367,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 |---|---|---|
 | 会话草稿落库 | `packages/host/src/services/SessionService.ts:409-430` | `ensurePersisted`：写行 + 那条 hidden 的 cwd 消息，并发去重 |
 | 运行时端口 | `SessionService.ts`（`SessionRuntimePort`）、`app.ts`（`createSessionRuntime`） | 四件事 + 队里几条（`presence()` 现读）、`forget`、`agentState`、`invalidateAgent` |
-| 侧栏摘要 | `SessionService.ts:766`（`toSummary`） | 主线条数 + 四件事 + inbox条数 + 助手可用性 |
+| 侧栏摘要 | `SessionService.ts:766`（`toSummary`） | 主线条数 + 四件事 + inbox 条数 + 助手可用性 |
 | `message.list` 的 `around` | `packages/host/src/services/MessageService.ts:337`（`AROUND_WINDOW = 40`）、`:388`（`list`） | 命中不在可见集就回空页 + `anchor: null`，不报错 |
 | 两个条数口径 | `MessageRepository.countBySession` / `listBySession` | 只取数 / 取行，两处必须永远相等 |
 | 搜索下界 | `MessageRepository.ts:318` | `< 3 字符`退化 `LIKE`；`total` 是下界 |
@@ -396,7 +396,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | **W3 归档与文档** | `cli-old` 降级为只读归档、旧包名清干净、文档跟上新契约 | ✅ 完成 |
 | **W4 桌面端完整问答视图** | 问答面板 → 完整视图 → 22 项零入口 → 体验欠账；真 GUI 竖切六步（连上 / 流式 / 作答交接问题 / 撤回 / 搜索命中并定位 / 置顶） | ⬜ 未开始（优先级最低） |
 | **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清；判据是**必要性**（不是「能删就删」）：不可能发生的条件删掉、真实会发生的坏输入与外部失败留着并写清「谁会走到」 | 第一遍完成；第二遍只在有新证据时做 |
-| **W6 运行期可输入与重开回看** | 跑中发送进 inbox、投递回执、inbox条数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧运行中输入与 `/sessions` | ✅ 完成 |
+| **W6 运行期可输入与重开回看** | 跑中发送进 inbox、投递回执、inbox 条数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧运行中输入与 `/sessions` | ✅ 完成 |
 | **W7 平级会话阶段 1** | `create_session` / `read_session_status`、建完即回（其中「结果投回并唤醒发起者」已被 PRD 4.6 判死，见 §14） | ✅ 完成（回投那半已废） |
 | **W8 agent 常驻与投递收口** | agent 常驻跨轮复用、Scope 去空闲回收、配置改成就地刷新、投递收敛成一个入口、平级会话进阶段 2 | ✅ 完成 |
 | **W9 文档收敛** | 四份 docs + SDK 设计文档 + 四份计划草稿收敛成仓根 `PRD.md` + `PLAN.md`；`R1–R79` 补回 PRD；7 处代码注释与 8 处链接改指新文档 | ✅ 完成（本轮） |

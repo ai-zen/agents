@@ -25,7 +25,7 @@
 
 ### 1.2 inbox 未消费部分的持久化与恢复（✅ 已做：`9982b92` / `ff4f3ac` / `16a3a8d` / `6b7e194`）
 
-现状：库里有 9 张表，**没有 `inbox`**；core 的 `inboxAdded` / `inboxTaken` / `inboxCleared` 三事件已就绪但没人接；重启 = inbox全丢。而 PRD 1.2 写着「inbox 要持久化」、4.12 写着「没被处理的那几句话还在等」。
+现状：库里有 9 张表，**没有 `inbox`**；core 的 `inboxAdded` / `inboxTaken` / `inboxCleared` 三事件已就绪但没人接；重启 = inbox 全丢。而 PRD 1.2 写着「inbox 要持久化」、4.12 写着「没被处理的那几句话还在等」。
 
 - [x] **迁移 v6**：`inbox` 表（`messageId` / `sessionId` / `source` / `content` / `createdAt` / `seq`），外键级联。
 - [x] **宿主写的那半**：三事件逐条落库，写串成一条链（否则「删」可能比「插」先落地）。
