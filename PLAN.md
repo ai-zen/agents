@@ -206,7 +206,13 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **预填消息同样走 `message.added`**：core 每一圈开头追加的那条 `status: pending` 的 assistant 消息、工具结果、落地的用户消息、注入的 cwd / 交接摘要，都从 `append()` 那一个口广播。客户端先有槽，delta 才挂得上。
 
-**宿主不做的事**（写在这里是为了不再长回来）：不算用量（每条消息自带 `usage`，客户端自己合计）、不算速率、不维护「请求中 / 思考中 / 输出中」这类阶段（客户端按事件到达自己推）、不报「这一段用了多少」（「这一段」不可定义）。
+**宿主不做的事**（写在这里是为了不再长回来）：不算速率、不维护「请求中 / 思考中 / 输出中」这类阶段（客户端按事件到达自己推）、不报「这一段用了多少」（「这一段」不可定义）。
+
+**用量那一条改过了（2026-11-19，PRD 4.14 未定）**：不能再说「不算用量、客户端自己合计」——
+单条 `usage` / `subAgentUsage` 宿主是**存**的（跟消息走 `data` 通道，`toRow` / `fromRow`），
+而「客户端自己合计」只在它见过的那部分消息上成立：断线重连、按 `after` 增量拉取之后它手上不全，
+也不知道历史上每条消息用的是哪个模型（模型可以换）。所以**累计与花销归谁算待拍**。
+宿主现在不推任何「用量快照」或聚合事件 —— 这一条仍然成立，与「谁算合计」是两件事。
 
 **落库 = 同一个镜子的另一份**：`message.added` / `message.changed` 到了就写那一行（边流边写只是节流，不是「提前写」），`message.removed` 到了就删。**没有「最后统一写一遍」**：那等于假设有一个终局。
 
@@ -226,7 +232,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 - **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`session.clearInbox`，清空 inbox 归客户端）→ 64（W11：+`session.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`session.pause` / `session.resume`，暂停与继续各有自己的按钮）→ **67**（+`session.kill`，用户按杀死有了入口）→ **68**（P0：+`session.start` —— 复活从 `session.send` 的 `mayStart` 里析出来，见 §5.1）。
 - **`credential.*` 删的是契约面、不是能力**：`CredentialService`、`CredentialRepository`、`<数据根>/run/token`、`agents-host token create|list|revoke` 一字未动，`Credential*` 形状只留给那三个子命令。别因为 `grep credential.* wire/methods.ts` 找不到方法名就以为能力没了（PRD L13）。
 - **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **63** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
-- **事件** 13 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `output:paused` / `output:resumed` / `input:paused` / `input:resumed` / `error` / `session.changed` / `notice` / `question`。前四条拼出 `messages`，`state` 只说忙闲，四条闸事件各说一道闸（与 core 同名），死活走 `session.changed` 的 `agent_started` / `agent_gone`（见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
+- **事件** 13 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `output:paused` / `output:resumed` / `input:paused` / `input:resumed` / `error` / `session.changed` / `notice` / `question`。前四条拼出 `messages`，`state` 只说忙闲，四条闸事件各说一道闸（与 core 同名），死活走 `session.changed` 的 `agent_started` / `agent_gone`（见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage` 快照／聚合事件（单条消息上的 `usage` 是另一回事，见 §5.4 那段）。
 - **业务码** 13 个（`src/wire/errors.ts` 的 `BizCode`），数字码只做粗分类。
 - **`message.list` 的取法**见 A12；`around` 的消费者只有桌面端（搜索命中定位），CLI 一阶段不消费。
 - **`hello`**：`{ token, language?, clientInfo }`。凭证不放 URL 查询串（会进日志与进程表）；未握手的连接只放行 `hello`。成功时回协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、附件上限 `limits`（能力清单已删，不再回）。
