@@ -494,7 +494,7 @@ subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 
 - 模板注入（`messages` + `injectArgs` 深拷贝后替 `agent.messages`）—— 构造期换引用，§12 明确合法；
 - `onSubAgentStart` 可拒、`onSubAgentEnd` 收尾；
-- 用量不由 core 聚合：没有 `sumUsage`、没有 `Message.subAgentUsage`、没有 `lastUsage` —— 客户端从 `delta` 与消息上的 `usage` 自己推（公理 4：core 不算、不存、不报）。
+- 用量只有两处**消息身上的事实**，加一个纯函数：助手消息的 `usage`（它自己那次响应）、tool 消息的 `Message.subAgentUsage`（这次委派花了多少，在 `onSubAgentEnd` 那一拍写入 `ctx.resultMessage.subAgentUsage = sumUsage(subAgent.messages)`，随消息持久化；嵌套天然成立 —— subagent 自己的 tool 消息也带它）；求和用 `sumUsage()`（两者一起加）。没有 `lastUsage` —— 客户端自己取最后一条带 `usage` 的 assistant 消息（公理 4：core 不算、不存、不报）。
 
 中断不再需要 `signal.addEventListener("abort", () => agent.abort())` 那段手工联动 —— 信号直接交给 `runOnce`。
 
