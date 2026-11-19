@@ -1,17 +1,19 @@
 /**
- * `session.*`：一段会话的身份、历史，以及「投递一句 / 中断 / 暂停 / 继续 / 杀死 / 清空 inbox /
+ * `session.*`：一段会话的身份、历史，以及「复活 / 投递 / 中断 / 暂停 / 继续 / 杀死 / 清空 inbox /
  * 现读」这几个动作。
  *
  * 这里只做「参数 → 交给服务或运行时 → 把结果翻译成契约形状」。业务判断不在这里：
- * 会话行归 `SessionService`，投递 / 中断 / 四件事归 `ChatRunner`，素材选路归
+ * 会话行归 `SessionService`，复活 / 投递 / 中断 / 四件事归 `ChatRunner`，素材选路归
  * `AssetService`。本文件唯一多做的一步是**把素材准备摆在投递之前**（见 {@link sendTurn}）：
  * 那是「这一次发送」的事，只有接线层同时看得见素材服务、会话行（要助手与模型）与执行者。
  *
- * 三件以前挂在这里、现在没有的事：
+ * 四件以前挂在这里、现在没有的事：
  *   - **没有运行状态那本账**：`session.state` 给的是四件事 + inbox（`ChatRunner.state`
  *     现读），用量与更细的阶段由客户端按到达的事件自己算（PRD 硬规矩 7）；
  *   - **没有排队分支**：投递只有一条路（`ChatRunner.deliver`），它自己判「会话在不在、agent
  *     活不活」，忙不忙不是拒绝的理由；
+ *   - **没有复合动作**：复活（`session.start`）与投递（`session.send`）是两个方法、各做一件事，
+ *     「点发送」到底做哪几步由客户端按当时的处境编排（PLAN §5.1）；
  *   - **没有「做完之后」的收尾链**：自动命名与交接线提问都挂在「变闲那一拍」（`app.ts` 的
  *     `onIdle`），这里不再接 `turn.done`。
  */
@@ -32,6 +34,7 @@ import type {
   SessionResumeResult,
   SessionSendParams,
   SessionSendResult,
+  SessionStartResult,
   SessionState,
   SessionTransientParams,
   SessionTransientResult,
@@ -90,6 +93,12 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
     "session.send": async (context) =>
       await sendTurn(deps, context.params, context.connection.language),
 
+    // 复活：确保这段有 agent（活的幂等 no-op、草稿先落库、死了就装配）。只做这一件事 ——
+    // 不投递、不动闸；复合动作（复活 → 开闸 → 投递）由客户端编排（PLAN §5.1）
+    "session.start": async (context): Promise<SessionStartResult> => ({
+      started: await deps.runner.start(context.params.sessionId),
+    }),
+
     "session.state": async (context) =>
       await readState(deps, context.params.sessionId),
 
@@ -134,20 +143,21 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
 // ---------------------------------------------------------------------------
 
 /**
- * `session.send`：把一句用户输入投进去。
+ * `session.send`：把一句用户输入投进去 —— **只是投**。
  *
  * 五步，顺序都是有理由的：
  *
  *   1. `assertSendable`（D23）：有挡着的问题（交接确认、不可撤销动作的确认）就先答它再发。
  *      排队不是绕过闸门的通道，所以这一步在投递之前。
  *   2. `ensurePersisted`（R56）：草稿在第一条用户消息之前不落库，这里把它写成真行（同 id）——
- *      消息行、素材关系行都按 `sessionId` 挂外键。
+ *      消息行、素材关系行都按 `sessionId` 挂外键。（`session.start` 也调它：两处都幂等，谁先到\n *      谁写 —— PLAN §4「一段会话的诞生」。）
  *   3. **素材准备**（F-H7）：`assetIds` → 真正发出去的内容段（段上带着厂商产物与本地标记
  *      `__asset_id`，这一份也就是原样落库的那一份）。走文件引用、内联还是降级成文字，
  *      取决于这段会话现在的模型与端点 —— 那是 `AssetService` 的事，本层只把它要的三样事实
  *      （会话、助手、模型）递过去。
- *   4. 投递：`ChatRunner.deliver`。它只判两件事 —— 会话在不在、agent 活不活；死的那一格
- *      只有创建者能把它叫起来（`mayStart`），界面上的发送按钮就是创建者之一，所以这里给 `true`。
+ *   4. 投递：`ChatRunner.deliver`。它只判两件事 —— 会话在不在、agent 活不活；**死的报
+ *      `session_dead`，不管来源是谁**（包括界面上的发送按钮）。复活与开闸不是这一步的事：
+ *      客户端按发送时先 `session.start`、闸关着再 `session.resume`，然后才投（PLAN §5.1）。
  *   5. 回执：`userMessageId`（投递那一刻就定死，客户端按它画乐观回显）+ 每个附件的结局。
  *
  * 附件结局里的句子是素材层按默认语言渲染的（那一层不知道收件人是谁），这里按**这条连接**的
@@ -176,7 +186,6 @@ async function sendTurn(
     // 发出去的那一份就是落库的那一份：段上带着厂商产物（`file_id` / base64）与 `__asset_id`
     content: prepared.content,
     source: { kind: "user" },
-    mayStart: true,
   });
 
   return {
@@ -262,8 +271,8 @@ async function resume(
  * `session.kill`：杀死 —— **用户按的那一手**（PRD 4.4 里三条死路之一）。
  *
  * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了（在途那一批
- * 掐断、没被取走的条目作废，库里那几行也一起删）。杀死之后再投递报 `session_dead`
- * （不复活）；只有「人点发送」才按库里的事实重新装配起来（PRD 4.2 / 4.4）。
+ * 掐断、没被取走的条目作废，库里那几行也一起删）。杀死之后再投递报 `session_dead`（不复活）；
+ * 要接着说话就调一手 `session.start`（PRD 4.2 / 4.4，PLAN §5.1）。
  *
  * 回的是**这一次真的把 agent 收掉了没有**：`false` = 这一段本来就是死的（没有 agent）、
  * 什么都没动，也**不是错误** —— 与 {@link pause} / {@link resume} 对死会话回 `false` 同一口径。

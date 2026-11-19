@@ -511,6 +511,8 @@ export class HostApp {
       sessionCreator: this.sessionService,
       messages: this.messages,
       chatRunner: {
+        // 复活：创建者显式叫醒它（`create` 里那一句），与投递正交
+        start: (sessionId) => this.chatRunner.start(sessionId),
         deliver: (sessionId, input) => this.chatRunner.deliver(sessionId, input),
         // 四件事现读：平级会话那边只留可读名（什么都不存，存了就要有人同步两份）
         state: (sessionId) => this.chatRunner.state(sessionId),
@@ -612,7 +614,12 @@ export class HostApp {
     // ---- 7. 投递的执行者（普通会话与一次性会话共用同一份 agent 工厂） ----
     this.chatRunner = new ChatRunner({
       messages: this.messages,
-      sessions: this.sessions,
+      sessions: {
+        // 读那一行（身份 / 项目 / 模型与档位）：投递判「会话在不在」、装配读事实
+        get: (id) => this.sessions.get(id),
+        // 草稿 → 真行：只有 `start` 会走到（`session.send` 自己那一句在 handler 里）
+        ensurePersisted: (id) => this.sessionService.ensurePersisted(id),
+      },
       scopes: this.scopeRegistry,
       agents: this.agentRegistry,
       emit: (name, payload) => this.emitEvent(name, payload),

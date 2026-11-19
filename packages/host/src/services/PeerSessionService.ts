@@ -160,13 +160,21 @@ export interface PeerSessionSessionCreator {
   ensurePersisted(sessionId: string): Promise<unknown>;
 }
 
-/** 执行者（`ChatRunner` 结构上满足）：本文件只用它的两个口 —— 投一句、现读一格 */
+/** 执行者（`ChatRunner` 结构上满足）：本文件只用它的三个口 —— 复活、投一句、现读一格 */
 export interface PeerSessionRunner {
+  /**
+   * 确保这段会话有 agent（`ChatRunner.start`，PLAN §5.1 / §10.1 的「复活入口」）。
+   *
+   * 活着的就是幂等 no-op（复用，不重建）；草稿会话先落库再装配；装配失败把错往上抛。
+   * 它**不投任何东西、不动闸**：投递是下面那一个口的事。
+   */
+  start(sessionId: string): Promise<boolean>;
   /**
    * 把一条内容投给某段会话（**唯一**的投递入口）。
    *
    * 它自己判「会话在不在、agent 活不活」；`await` 的边界就是「已入队」，回执只有消息 id。
-   * 目标不存在时按 `HostError` 抛（`not_found` / `session_dead`）。
+   * 目标不存在时按 `HostError` 抛（`not_found` / `session_dead`）—— **死会话不会因为投递而
+   * 复活**，所以创建者得先调 {@link start}（见下方 `create`）。
    */
   deliver(
     sessionId: string,
@@ -367,15 +375,17 @@ export class PeerSessionService implements PeerSessionPort {
     const label = input.label ?? this.nextLabel();
     this.labels.set(sessionId, label);
 
-    // 6. 把第一句交出去（受理即回）：来源写「父会话」，正文最前面那行注释由 core 加。
+    // 6. 先把 agent 装起来，再把第一句交出去（受理即回）：来源写「父会话」，正文最前面那行注释由
+    //    core 加。
     //
-    //    `mayStart: true` 是因为这里就是创建者：**刚建出来的会话由创建者装上 agent**。
-    //    执行者的判据一个字不改 —— 「投给已存在但没有 agent 的会话」仍然是 `session_dead`，
-    //    那条判据是这套模型的一部分。
+    //    **这里就是创建者，所以它有权先把 agent 装起来**（刚建出来的会话还没人叫醒过）。而这份
+    //    权力**不靠参数**：它就靠这两句的先后 —— `start` 是复活那个正交动作，`deliver` 只管投。
+    //    从前用 `mayStart: true` 把它压进投递，于是「谁肯传这个值」变成了「谁能复活」；正交之后
+    //    投递对死会话一律报 `session_dead`，而这一条路显式调了 `start`，所以它不撞那道门。
+    await this.deps.chatRunner.start(sessionId);
     await this.deps.chatRunner.deliver(sessionId, {
       content: input.prompt,
       source: SOURCE_FROM_PARENT,
-      mayStart: true,
     });
 
     // 7. 就这么回，不等它答完
@@ -424,6 +434,10 @@ export class PeerSessionService implements PeerSessionPort {
    * 只有一件事要做：`deliver`。**不看关系** —— 谁都能给谁说话（投递不看关系是整套模型的
    * 一条硬规矩）；「目标不在」是唯一会失败的情形，而那是 `HostError`（`not_found` /
    * `session_dead`），不是一条「拒绝」返回值。
+   *
+   * **不复活**（不叫 `start`）：agent 手上没有复活别人的权力（PRD 1.2 / 4.6「agent 不能复活
+   * 会话」）—— 那件事只在客户端的「发送」与这里上面那条创建路径上。正交之后这个工具的行为
+   * 反而更直接：死会话就是 `session_dead`，没有「传了个参数就顺手叫醒」那条暗路。
    *
    * 回执只有「收下了」（`{ ok: true }`）：它忙不忙、什么时候取件、取走之后做什么，都不是
    * 投递这一刻能定下的事实 —— 本工具从不等结果，也不回状态。

@@ -24,6 +24,11 @@ import type { AgentFactory } from "../runtime/index.js";
 import { deferred, FakeAgent, type Deferred } from "../runtime/TestSupport.js";
 import { HostError, localAssetIdOf } from "../wire/index.js";
 import type {
+  LocalMessageContentSection,
+  MessageInput,
+  MethodName,
+  MethodParams,
+  MethodResult,
   SessionAbortResult,
   SessionDeleteResult,
   SessionKillResult,
@@ -31,10 +36,6 @@ import type {
   SessionResumeResult,
   SessionSendResult,
   SessionView,
-  LocalMessageContentSection,
-  MethodName,
-  MethodParams,
-  MethodResult,
 } from "../wire/index.js";
 
 /** 模型故意不带 `vision`：图片会退化成文字，于是「按连接语言重渲染」才有东西可验 */
@@ -266,6 +267,25 @@ async function idle(app: HostApp, sessionId: string): Promise<void> {
   throw new Error("这段会话没有闲下来");
 }
 
+/**
+ * 用户按一次发送 —— **先复活、再投递**（PLAN §5.1：复合动作归客户端编排）。
+ *
+ * 宿主这两个动作是正交的（`session.start` 只管装 agent、`session.send` 只管入队），所以
+ * 用例也得自己编排：这样下面那几条 `session.send` 的用例才各自只验「投递」这一件事。
+ * `start` 对活着的会话是幂等 no-op，所以每次都先叫一下不吃亏。
+ */
+async function pressSend(
+  app: HostApp,
+  sessionId: string,
+  input: MessageInput,
+  language?: ConnectionInfo["language"],
+): Promise<SessionSendResult> {
+  await callMethod(app, "session.start", { sessionId });
+  return language === undefined
+    ? await callMethod(app, "session.send", { sessionId, input })
+    : await callInLanguage(app, "session.send", { sessionId, input }, language);
+}
+
 afterEach(async () => {
   for (const app of apps.splice(0)) await app.stop("requested").catch(() => undefined);
   for (const temp of temps.splice(0)) await temp.remove();
@@ -276,10 +296,7 @@ describe("session.send", () => {
     const { app, sessionId } = await makeHarness();
     const assetId = await uploadAsset(app, sessionId);
 
-    const sent = await callMethod(app, "session.send", {
-      sessionId,
-      input: { content: "看图", assetIds: [assetId] },
-    });
+    const sent = await pressSend(app, sessionId, { content: "看图", assetIds: [assetId] });
 
     // 回执里没有状态、没有「叫醒了没有」、没有结果
     expect(Object.keys(sent).sort()).toEqual(["attachments", "userMessageId"]);
@@ -300,10 +317,10 @@ describe("session.send", () => {
     const { app, sessionId } = await makeHarness();
     const assetId = await uploadAsset(app, sessionId);
 
-    const english = await callInLanguage(
+    const english = await pressSend(
       app,
-      "session.send",
-      { sessionId, input: { content: "看图", assetIds: [assetId] } },
+      sessionId,
+      { content: "看图", assetIds: [assetId] },
       "en",
     );
     await idle(app, sessionId);
@@ -316,10 +333,10 @@ describe("session.send", () => {
       render("en", "message.imageAsText", outcome?.problem?.params ?? {}),
     );
 
-    const chinese = await callInLanguage(
+    const chinese = await pressSend(
       app,
-      "session.send",
-      { sessionId, input: { content: "再看", assetIds: [assetId] } },
+      sessionId,
+      { content: "再看", assetIds: [assetId] },
       "zh",
     );
     await idle(app, sessionId);
@@ -339,14 +356,8 @@ describe("session.send", () => {
     ]);
     const { app, sessionId } = await makeHarness({ createAgent: async () => agent });
 
-    const first: SessionSendResult = await callMethod(app, "session.send", {
-      sessionId,
-      input: { content: "第一句" },
-    });
-    const second: SessionSendResult = await callMethod(app, "session.send", {
-      sessionId,
-      input: { content: "第二句" },
-    });
+    const first: SessionSendResult = await pressSend(app, sessionId, { content: "第一句" });
+    const second: SessionSendResult = await pressSend(app, sessionId, { content: "第二句" });
 
     // 忙不是拒绝的理由：两句都是「收下了」，回执形状一模一样
     expect(second.userMessageId).not.toBe(first.userMessageId);
@@ -387,6 +398,57 @@ describe("session.send", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 复活：`session.start`（与投递正交，PLAN §5.1）
+// ---------------------------------------------------------------------------
+
+describe("session.start（复活：只管「确保这段有 agent」）", () => {
+  it("草稿会话：先落库再装配（`started: true`）；再调一次是幂等 no-op（`false`）", async () => {
+    const { app, workspaceId } = await makeHarness();
+
+    // 草稿（`session.create` 只发 id，还没写库）：投递连目标都找不到 —— 复活才知道怎么办
+    const created = await callMethod(app, "session.create", {
+      workspaceId,
+      agentId: "default",
+    });
+    const draftId = created.session.id;
+    expect(app.chatRunner.state(draftId).alive).toBe(false);
+
+    const started = await callMethod(app, "session.start", { sessionId: draftId });
+    expect(started).toEqual({ started: true });
+    // 先落库（同一个 id），再装配：两件事都成了才有 agent
+    expect(await app.sessions.get(draftId)).toBeDefined();
+    expect(app.chatRunner.state(draftId).alive).toBe(true);
+
+    // 活着就是幂等 no-op：复用，不重建
+    expect(await callMethod(app, "session.start", { sessionId: draftId })).toEqual({
+      started: false,
+    });
+
+    // 不是草稿、库里也没有 → `not_found`
+    await expect(
+      callMethod(app, "session.start", { sessionId: "没有这段" }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("死会话投递一律 `session_dead`：界面的发送按钮也一样（叫醒它是 `start` 的事）", async () => {
+    const { app, sessionId } = await makeHarness();
+
+    await expect(
+      callMethod(app, "session.send", { sessionId, input: { content: "直接投" } }),
+    ).rejects.toMatchObject({ code: "session_dead" });
+    // 一个 agent 都没装起来
+    expect(app.chatRunner.state(sessionId).alive).toBe(false);
+
+    // 客户端按发送编排的那两步（PLAN §5.1）：先复活，再投
+    await callMethod(app, "session.start", { sessionId });
+    const sent = await pressSend(app, sessionId, { content: "先复活再投" });
+    await idle(app, sessionId);
+    const page = await callMethod(app, "message.list", { sessionId });
+    expect(page.messages.map((message) => message.id)).toContain(sent.userMessageId);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 附件：一条消息只有一份内容（落库照抄发出去的那一份）
 // ---------------------------------------------------------------------------
 
@@ -395,10 +457,7 @@ describe("附件的落库形态：按原样持久化（prompt caching 要的是�
     const { app, sessionId } = await makeHarness({ modelId: "vision-model" });
     const assetId = await uploadAsset(app, sessionId);
 
-    const sent = await callMethod(app, "session.send", {
-      sessionId,
-      input: { content: "看图", assetIds: [assetId] },
-    });
+    const sent = await pressSend(app, sessionId, { content: "看图", assetIds: [assetId] });
     // 端点没有 Files API、模型能看图 → 内联成 data URL（厂商产物就是那串 base64）
     expect(sent.attachments[0]?.deliveredAs).toBe("inline");
     await idle(app, sessionId);
@@ -426,9 +485,9 @@ describe("附件的落库形态：按原样持久化（prompt caching 要的是�
     const harness = await makeHarness({ modelId: "vision-model" });
     const assetId = await uploadAsset(harness.app, harness.sessionId);
 
-    const sent = await callMethod(harness.app, "session.send", {
-      sessionId: harness.sessionId,
-      input: { content: "看图", assetIds: [assetId] },
+    const sent = await pressSend(harness.app, harness.sessionId, {
+      content: "看图",
+      assetIds: [assetId],
     });
     await idle(harness.app, harness.sessionId);
     const delivered = JSON.stringify(
@@ -448,10 +507,7 @@ describe("附件的落库形态：按原样持久化（prompt caching 要的是�
     expect(JSON.stringify(readBack)).toBe(delivered);
 
     // 再装配一次（发一句就会把历史装进去）：库里那一行不被改写，前缀不变
-    await callMethod(restarted, "session.send", {
-      sessionId: harness.sessionId,
-      input: { content: "再说一句" },
-    });
+    await pressSend(restarted, harness.sessionId, { content: "再说一句" });
     await idle(restarted, harness.sessionId);
     expect(JSON.stringify(await persistedContentOf(restarted, sent.userMessageId))).toBe(delivered);
 
@@ -481,7 +537,7 @@ describe("session.abort", () => {
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const { app, sessionId } = await makeHarness({ createAgent: async () => agent });
 
-    await callMethod(app, "session.send", { sessionId, input: { content: "第一句" } });
+    await pressSend(app, sessionId, { content: "第一句" });
     const aborted: SessionAbortResult = await callMethod(app, "session.abort", {
       sessionId,
       reason: "用户按了中断",
@@ -501,7 +557,7 @@ describe("session.abort", () => {
 describe("session.pause / session.resume（只翻输出闸）", () => {
   it("暂停之后输出闸关着、继续之后开着；两份回执都是「打完之后还暂停着吗」", async () => {
     const { app, sessionId } = await makeHarness();
-    await callMethod(app, "session.send", { sessionId, input: { content: "说一句" } });
+    await pressSend(app, sessionId, { content: "说一句" });
     await idle(app, sessionId);
 
     const paused: SessionPauseResult = await callMethod(app, "session.pause", {
@@ -560,9 +616,9 @@ describe("session.clearInbox", () => {
     });
 
     // 第一句在跑，后两句排在 inbox 里
-    await callMethod(app, "session.send", { sessionId, input: { content: "第一句" } });
-    await callMethod(app, "session.send", { sessionId, input: { content: "排一句" } });
-    await callMethod(app, "session.send", { sessionId, input: { content: "再排一句" } });
+    await pressSend(app, sessionId, { content: "第一句" });
+    await pressSend(app, sessionId, { content: "排一句" });
+    await pressSend(app, sessionId, { content: "再排一句" });
     // 「有几条」客户端本来就能从读数的 inbox 那一格里读到
     expect(app.chatRunner.state(sessionId).inbox).toHaveLength(2);
 
@@ -586,10 +642,7 @@ describe("session.delete", () => {
   it("删除走服务层，并让运行时丢掉这段会话的现场（R33）", async () => {
     const { app, sessionId } = await makeHarness();
     const assetId = await uploadAsset(app, sessionId);
-    await callMethod(app, "session.send", {
-      sessionId,
-      input: { content: "说点话", assetIds: [assetId] },
-    });
+    await pressSend(app, sessionId, { content: "说点话", assetIds: [assetId] });
     await idle(app, sessionId);
 
     const dryRun: SessionDeleteResult = await callMethod(app, "session.delete", {
@@ -616,9 +669,9 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
     });
 
     // 第一句被取走、卡在流里，后两句只能排着（各自落一行）
-    await callMethod(app, "session.send", { sessionId, input: { content: "第一句" } });
-    await callMethod(app, "session.send", { sessionId, input: { content: "排一句" } });
-    await callMethod(app, "session.send", { sessionId, input: { content: "再排一句" } });
+    await pressSend(app, sessionId, { content: "第一句" });
+    await pressSend(app, sessionId, { content: "排一句" });
+    await pressSend(app, sessionId, { content: "再排一句" });
     await waitInboxRows(app, sessionId, 2);
     const messagesBefore = await countMessages(app, sessionId);
     expect(messagesBefore).toBeGreaterThan(0);
@@ -665,7 +718,7 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
 
   it("交接期间拒（`busy` / `handoff_in_progress`）：agent 没被杀掉", async () => {
     const { app, sessionId } = await makeHarness();
-    await callMethod(app, "session.send", { sessionId, input: { content: "说一句" } });
+    await pressSend(app, sessionId, { content: "说一句" });
     await idle(app, sessionId);
     app.chatRunner.beginHandoff(sessionId);
 
@@ -718,7 +771,7 @@ describe("session.state：四件事 + inbox + 名册 + 交接态", () => {
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
     });
 
-    await callMethod(app, "session.send", { sessionId, input: { content: "慢慢说" } });
+    await pressSend(app, sessionId, { content: "慢慢说" });
     const during = await callMethod(app, "session.state", { sessionId });
     expect(during.state.status).toBe("working");
     expect(during.state.alive).toBe(true);
@@ -772,7 +825,7 @@ describe("session.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默认、
   it("改阈值不重建agent（与 `setModel` 相反：那一条改的是装配事实）", async () => {
     const { app, sessionId } = await makeHarness();
     // 先让它跑一次：这样才有一个活着的 agent 可比
-    await callMethod(app, "session.send", { sessionId, input: { content: "先说一句" } });
+    await pressSend(app, sessionId, { content: "先说一句" });
     await idle(app, sessionId);
     const before = app.agentRegistry.get(sessionId);
     expect(before).toBeDefined();
@@ -797,7 +850,7 @@ describe("session.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默认、
       expect(decisions).toEqual(["retired:assembly-facts-changed"]);
       expect(app.agentRegistry.get(sessionId)).toBeUndefined();
 
-      await callMethod(app, "session.send", { sessionId, input: { content: "换完再说一句" } });
+      await pressSend(app, sessionId, { content: "换完再说一句" });
       await idle(app, sessionId);
       expect(decisions).toEqual([
         "retired:assembly-facts-changed",
@@ -817,7 +870,7 @@ describe("session.setModel / setThinking：只允许空闲时改（改完当场�
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
     });
 
-    await callMethod(app, "session.send", { sessionId, input: { content: "慢慢说" } });
+    await pressSend(app, sessionId, { content: "慢慢说" });
     expect(app.chatRunner.state(sessionId).status).toBe("working");
     const before = await app.sessions.get(sessionId);
     const driver = app.agentRegistry.get(sessionId);
@@ -846,7 +899,7 @@ describe("session.setModel / setThinking：只允许空闲时改（改完当场�
 
   it("暂停（`isOutputPaused`）时允许改：它手上没活", async () => {
     const { app, sessionId } = await makeHarness();
-    await callMethod(app, "session.send", { sessionId, input: { content: "先说一句" } });
+    await pressSend(app, sessionId, { content: "先说一句" });
     await idle(app, sessionId);
     // 中断之后输出闸关着，但手上一批活已经完了 —— 这是「闲 + 闸关」，不是忙
     const aborted = await callMethod(app, "session.abort", { sessionId });
@@ -895,8 +948,8 @@ describe("session.list：侧栏那一格（F-I3）", () => {
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
     });
 
-    await callMethod(app, "session.send", { sessionId, input: { content: "慢慢说" } });
-    await callMethod(app, "session.send", { sessionId, input: { content: "排一句" } });
+    await pressSend(app, sessionId, { content: "慢慢说" });
+    await pressSend(app, sessionId, { content: "排一句" });
 
     const during = await callMethod(app, "session.list", { workspaceId });
     const entry = during.sessions.find((item) => item.id === sessionId);

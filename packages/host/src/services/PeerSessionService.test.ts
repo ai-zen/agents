@@ -128,12 +128,19 @@ const NO_AGENT: SessionPresence = {
 /** 执行者：只记「谁收到了什么」，四件事与内存消息表由用例摆 */
 class FakeRunner implements PeerSessionRunner {
   readonly deliveries: Array<{ sessionId: string; input: DeliveryInput }> = [];
+  /** 复活被叫过的那些会话（按发生顺序）：验「创建者先把它装起来」用 */
+  readonly starts: string[] = [];
   /** 每段会话此刻的四件事（没摆过就是「没有 agent」那一份） */
   readonly presences = new Map<string, SessionPresence>();
   /** 每段会话此刻在内存里的消息（`agent.messages`）；没摆过就是 `null`（= 没有 agent 对象） */
   readonly memory = new Map<string, AgentNS.Message[]>();
   /** 让 `deliver` 抛这个错（试「目标不存在」那条） */
   failWith?: unknown;
+
+  async start(sessionId: string): Promise<boolean> {
+    this.starts.push(sessionId);
+    return true;
+  }
 
   async deliver(
     sessionId: string,
@@ -244,15 +251,14 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
         autoHandoff: true,
       },
     ]);
-    // 先落真行再投（消息行要挂在这段会话上）
+    // 先落真行再叫醒、再投（消息行要挂在这段会话上；投递不叫醒任何人，所以叫醒是单独那一手）
     expect(harness.creator.persisted).toEqual(["c-child-1"]);
+    expect(harness.runner.starts).toEqual(["c-child-1"]);
     const delivery = harness.runner.deliveries[0]!;
     expect(delivery.sessionId).toBe("c-child-1");
     expect(delivery.input).toEqual({
       content: "查一下登录页",
       source: { kind: "agent", label: "父会话" },
-      // 这里就是创建者：刚建出来的会话由创建者装上 agent
-      mayStart: true,
     });
   });
 

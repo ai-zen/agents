@@ -56,7 +56,7 @@
  * 推出去**，以及**把握在手上的那几条投递推进队列**。它没有 `done` promise、没有 `settle()`、
  * 没有「这一轮的产出清单」—— 那些都是「轮」的零件。
  *
- * - **生**：{@link ChatRunner.deliver} 第一次需要它时（那段会话还没有 agent，或者手里那个已经
+ * - **生**：{@link ChatRunner.start} 把这一段叫起来时（那段会话还没有 agent，或者手里那个已经
  *   换了人）创建，就地（同步）把监听订在 agent 上 —— agent 一被叫醒就立刻广播消息，迟一拍
  *   就漏。
  * - **灭**：agent 退役（`AgentRegistry` 的 `retired`）/ 被 kill / `forget` / `killScope` 时，
@@ -70,7 +70,7 @@
  *
  * ## 投递的内容由调用方给
  *
- * `deliver` 收的是 `{ content, source, mayStart? }`：
+ * `deliver` 收的是 `{ content, source }`：
  *
  * - `content` 是**发给模型的那一份**，也是**落库的那一份** —— 同一条消息只有一份内容，落库照抄
  *   那一份，不做任何清理（prompt caching 要的是前后两次请求的前缀逐字一致）；
@@ -200,8 +200,17 @@ export interface MessageStore {
 }
 
 /** 会话仓储里本文件用到的部分（`SessionRepository` 结构上满足） */
+/**
+ * 一段会话的可读那一行（本文件只读它：身份、项目、模型与档位）。
+ *
+ * `ensurePersisted` 只有一个调用方：{@link ChatRunner.start} —— 它以同一个 id 把草稿落成真行
+ * （已在库里就是幂等返回），因为装配要读那一行上的身份与模型。`session.send` 自己也会调它
+ * （首次发送就落库），两处都是幂等的，谁先到谁写（PLAN §4）。
+ */
 export interface SessionStore {
   get(id: string): Promise<Session | undefined>;
+  /** 草稿 → 库里那一行（含那条隐藏的 cwd 消息）；既不是草稿、库里也没有 → `not_found` */
+  ensurePersisted(id: string): Promise<Session>;
 }
 
 /** 推事件：接线层把它变成 JSON-RPC 通知（`WsHub.push`） */
@@ -325,12 +334,12 @@ export type MessageAssetLinker = (context: {
 /**
  * 一次投递的入参。
  *
- * 两样必给的：`content`（发给模型的那一份，也是落库的那一份）与 `source`（谁说的）。另一样是
- * 特定那条路的产物：
+ * 两样必给的：`content`（发给模型的那一份，也是落库的那一份）与 `source`（谁说的）。
  *
- * - `mayStart`：**允许把它叫起来**（给这段会话装上 agent）。只有两个创建者给 `true` ——
- *   界面上的发送按钮、刚建出来的那段会话的第一句；其它来源给了也白给（这里只认 `true`，
- *   不认「真值」）。
+ * **没有 `mayStart`**（P0 接口正交，PLAN §5.1）：投递只管把话塞进队列，「它死了要不要叫起来」
+ * 是另一个动作（{@link ChatRunner.start} / `session.start`），由客户端按当时的处境编排。
+ * 把那个意图压成一个参数塞进来，等于让投递同时干「投递 + 开闸 + 复活 + 判阶段」四件事，
+ * 而那四件各有自己的判据与失败语义 —— 参数又是可以伪造的，「谁能复活」就变成了「谁肯传这个值」。
  *
  * **这里没有 `attachments`**：回执只有 `userMessageId`，每张附件最后是怎么走的由准备它的调用方
  * （`session.send` 的 handler）回报给客户端 —— 同一句话不许有两个出处。
@@ -339,13 +348,6 @@ export interface DeliveryInput {
   content: AgentNS.MessageContent;
   /** core 的判别结构：`{kind:"user"}` = 用户本人（不加来源注释），其余由 core 落地时加注释 */
   source: AgentNS.MessageSource;
-  /**
-   * **允许把它叫起来**（给这段会话装上 agent）。
-   *
-   * 只有两个创建者给 `true`：界面上的发送按钮、刚建出来的那段会话的第一句。其它来源
-   * （`post_message`、定时器、外部程序）一律不给 —— 死会话叫不醒。
-   */
-  mayStart?: boolean;
 }
 
 /** 装载/重启后的修复结果：修好之后的消息（顺序即会话顺序，core 原样） */
@@ -1663,7 +1665,7 @@ export class ChatRunner {
    * 它管三件事：
    *   - 桥**不写库**（{@link SessionBridge} 的 `handoffActive`）—— 写文档那一趟马上要随旧记忆
    *     被替掉；
-   *   - `pause` / `resume` 拒（那期间闸归交接收口管）；
+   *   - `pause` / `resume` / `kill` 拒（那期间闸归交接收口管）；
    *   - `canHandoffNow` 报 `handoff_in_progress`。
    *
    * **投递不在它管的范围里**：交接期间只关输出闸、不关输入闸 —— 别人的话照收、排在 inbox 里，
@@ -1675,8 +1677,8 @@ export class ChatRunner {
   /**
    * 装配窗口里收着的投递（会话 id → 条目，保持到达顺序）。
    *
-   * 只有一条路会往里放东西：agent 不在、调用方又允许把它叫起来（`mayStart`：两个创建者）。装好之后
-   * 「按到达顺序一次推给它」—— 不等待、没有超时、不丢。
+   * 只有一条路会往里放东西：**装配还在进行中**（`start` 已经把它叫起来了，agent 还没就位），
+   * 这时投进来的话先收着。装好之后「按到达顺序一次推给它」—— 不等待、没有超时、不丢。
    */
   private readonly assemblingBuffers = new Map<string, DeliveryEntry[]>();
   /**
@@ -1710,14 +1712,21 @@ export class ChatRunner {
   /**
    * 投一条内容给某段会话 —— **投递唯一的入口**（PLAN §5.1 / A15）。
    *
-   * 只判两件事：**会话在不在**（不在 → `not_found`）、**agent 活不活**（不在 → 只有
-   * `mayStart` 才装上 agent 把它叫起来，否则 `session_dead`）。不判「有没有资格发给我」
+   * 它只做一件事：**入队**。判据只有两条 —— 目标在不在（不在 → `not_found`）、活不活
+   * （不在 → `session_dead`，**不管来源是谁，包括界面上的发送按钮**）。不判「有没有资格发给我」
    * （投递不看关系）、不判「它在不在干」（在不在干不是拒绝的理由，队列本来就收）、不判「这条会不会
    * 被处理」（不承诺）。
    *
-   * **交接期间照收**（PLAN §5.3 / PRD 4.5）：那期间只关输出闸、不关输入闸 —— 话进 inbox 排着，
-   * 这一任不取；记忆换完之后新 agent 按原顺序取走。所以这里没有「正在交接」这个拒因，
-   * 也没有任何别的「状态不对」的拒因。
+   * 三件**不在这里**的事（从前正是它们把这个口撑成了复合动作）：
+   *   - **不复活**：叫醒一段死会话是 {@link start}（`session.start`），客户端判断了再调 ——
+   *     这里的 `session_dead` 就是「你先去叫醒它」；
+   *   - **不动闸**：用户点发送就是继续，那是客户端在投递之前调 `session.resume`（PRD 4.4），
+   *     这里只收不取（输出闸关着也照收）；
+   *   - **不判阶段**：交接期间只关输出闸、不关输入闸（PLAN §5.3 / PRD 4.5），话进 inbox 排着、
+   *     这一任不取，所以这里没有「正在交接」这个拒因，也没有任何别的「状态不对」的拒因。
+   *
+   * 唯一的第三格：**正在装配**（{@link start} 已经把它叫起来了、agent 还没就位）。那不是死 ——
+   * 这几条先收在 {@link assemblingBuffers} 里，装好按到达顺序一次推给它（不等待、没有超时、不丢）。
    *
    * 回执里**没有状态、没有「叫醒了没有」、没有结果**：那三样都是对未来的断言，而未来只能靠
    * 观测（`state()` / 事件）。`await` 的边界就是「已入队」。
@@ -1748,43 +1757,65 @@ export class ChatRunner {
 
     const live = this.options.agents.get(sessionId);
     if (live) {
-      // 用户点「发送」就是「继续」：中断之后闸还关着，先把闸开开再投 —— 不然这条只能排队，
-      // 而他等的是一句回答。别的来源（自动推送 / subagent 回件）不开闸：那不是他按的。
-      // 交接期间不开：那阵子输出闸归交接收口管（收口自己会开），投递只收不取。
-      if (input.mayStart === true && !this.handoffs.has(sessionId)) live.resumeOutput();
       this.bridgeFor(sessionId, live).push(entry);
       return { userMessageId };
     }
 
-    // 走到这里就是「死」：除了创建者（`mayStart`）不许把它叫起来，一律拒
-    if (input.mayStart !== true) {
-      throw new HostError("session_dead");
+    // 装配窗口：`start` 正在装这一段（装着的时候它确实还没有 agent，但它不是死的）
+    if (this.assembling.has(sessionId)) {
+      this.bufferOf(sessionId).push(entry);
+      return { userMessageId };
     }
-    this.bufferOf(sessionId).push(entry);
-    await this.assembleAndDrain(sessionId, session);
-    return { userMessageId };
+
+    // 走到这里就是「死」：投递不叫醒任何人，复活是另一个动作（客户端先调 `start` 再回来投）
+    throw new HostError("session_dead");
   }
 
   /**
-   * 装配出 agent 并把装配窗口里收着的投递一次推给它。
+   * 复活：**确保这段会话有 agent**（PLAN §5.1 / §10.1 的「复活入口」）。
    *
-   * 同一段会话串成一条链：三条同时到达的投递只会装配一次，推的顺序 = 到达顺序。
+   * 四步，别的什么都不做（**不投递、不动闸**）：
+   *   1. 已经有 agent → 幂等 no-op（复用，不重建），回 `false`；
+   *   2. 草稿会话（`session.create` 只发 id、没写库）→ 先 `ensurePersisted` 落成真行
+   *      （那一步同时写上这条会话的第一条隐藏 cwd 消息，PLAN §4）；既不是草稿、库里也没有 →
+   *      `not_found` 照抛；
+   *   3. 装配：`reconcile` + `resolveHistory` 读库 → `acquire`（在且合用就复用，不在就装）；
+   *   4. 装配窗口里收着的投递按到达顺序一次推给它。
+   *
+   * 装配失败**不吞**：错往上抛给调用方（他刚按了发送，得知道这句没发出去）。
+   *
+   * 同一段会话串成一条链（{@link assembling}）：并发的两三次 `start` 只装配一次。
+   */
+  async start(sessionId: string): Promise<boolean> {
+    // 已经有 agent：这一段本来就活着，什么都不用做
+    if (this.options.agents.get(sessionId)) return false;
+    return await this.assembleAndDrain(sessionId);
+  }
+
+  /**
+   * 装配出 agent 并把装配窗口里收着的投递一次推给它；回「这一次真的装了没有」。
+   *
+   * 同一段会话串成一条链：几条同时到达的 `start` 只会装配一次，推的顺序 = 到达顺序。
+   * 链里再判一次「已经有了」：前一条链可能刚把它装好（并发的第二次 `start`）。
+   *
+   * `ensurePersisted` 在链**里面**：草稿落库也是「叫醒它」的一部分，而 `assembling` 必须在
+   * 第一个 `await` 之前就登记好 —— 那之后投进来的话才算「正在装配」，进缓冲而不是被当成死会话。
+   *
    * 装配失败就把缓冲清掉再把错抛回去 —— 留着只会在下一次装配之后凭空多推一遍。
    */
-  private assembleAndDrain(
-    sessionId: string,
-    session: Session,
-  ): Promise<void> {
+  private assembleAndDrain(sessionId: string): Promise<boolean> {
     const previous = this.assembling.get(sessionId) ?? Promise.resolve();
     const run = previous
       .catch(() => undefined) // 前一条装配失败不挡这一条：每一批各自交代自己的成败
       .then(async () => {
         try {
-          const agent =
-            this.options.agents.get(sessionId) ??
-            (await this.ensureAgent(sessionId, session));
+          if (this.options.agents.get(sessionId)) return false;
+          // 草稿先落库（已在库里就是幂等返回）；两样都不是 → `not_found`
+          const session = await this.options.sessions.ensurePersisted(sessionId);
+          const agent = await this.ensureAgent(sessionId, session);
           const bridge = this.bridgeFor(sessionId, agent);
           for (const entry of this.takeBuffered(sessionId)) bridge.push(entry);
+          return true;
         } catch (error) {
           this.assemblingBuffers.delete(sessionId);
           throw error;
@@ -2259,8 +2290,8 @@ export class ChatRunner {
    * 杀死：**用户按的那一手**（`session.kill`；PRD 4.4「会让它死的三件」之一）。
    *
    * 与 {@link forget}（删会话）的差别只有一处：**会话行、消息、记忆一个字都不动**。杀死之后
-   * 这一段只是「没有 agent 了」（`state().alive === false`）—— 下一句话由人点发送时按库里的
-   * 事实重新装配，历史一句不少（PRD 4.2：投递不复活，只有创建者能把它叫起来）。
+   * 这一段只是「没有 agent 了」（`state().alive === false`）—— 下一句话由人点发送时先调
+   * {@link start} 按库里的事实重新装配，历史一句不少（PRD 4.2：投递不复活，复活是另一个动作）。
    *
    * 三步，顺序都是有理由的：
    *   1. 交接期间拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断（PRD 4.5），与

@@ -983,6 +983,8 @@ describe("到交接线才提问（R59 / F-D2）", () => {
   /** 建一段会话、投一句，等它闲下来（交接线判断就挂在那一拍）；回这段会话的 id */
   async function sendAndWaitIdle(app: HostApp, workspaceId: string): Promise<string> {
     const session = await seedSession(app, workspaceId);
+    // 界面按发送的两步（PLAN §5.1）：先复活，再投
+    await callMethod(app, "session.start", { sessionId: session.id });
     await callMethod(app, "session.send", {
       sessionId: session.id,
       input: { content: "说点什么" },
@@ -1072,7 +1074,6 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     await app.chatRunner.deliver(created.sessionId, {
       content: "接着说",
       source: { kind: "user" },
-      mayStart: true,
     });
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const now = app.chatRunner.state(created.sessionId);
@@ -1459,6 +1460,8 @@ describe("升级自检（D4 / F-E3 / 裁定 R66）", () => {
 describe("题与死会话", () => {
   /** 投一句并等它闲下来（`onIdle` 那一拍就是这里触发的） */
   async function sendAndWaitIdle(app: HostApp, sessionId: string): Promise<void> {
+    // 界面按发送的两步（PLAN §5.1）：先复活，再投
+    await callMethod(app, "session.start", { sessionId });
     await callMethod(app, "session.send", {
       sessionId,
       input: { content: "说点什么" },

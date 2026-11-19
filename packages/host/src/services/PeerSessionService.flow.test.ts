@@ -25,6 +25,7 @@ import {
 } from "../runtime/TestSupport.js";
 import type { Session } from "../storage/types.js";
 import type { SessionCreateParams, SessionCreateResult, SessionView } from "../wire/index.js";
+import { HostError } from "../wire/index.js";
 import { PeerSessionService } from "./PeerSessionService.js";
 import type { PeerSessionSessionCreator } from "./PeerSessionService.js";
 
@@ -104,8 +105,8 @@ interface Harness {
   /**
    * 把 `c-child-1` 这一段先叫起来（落一行、装配出 agent、落一句「热身」并等它闲下来）。
    *
-   * **留着它只为不动下面的行数断言**：`mayStart` 到位之后，`create` 自己就能把刚建出来的那段
-   * 叫起来，这一步已经不是必需的。
+   * **只为了不动下面的行数断言**（那几条要看到「热身 + 回答」在历史里）：`create` 自己会把
+   * 刚建出来的那一段叫起来（它显式调了 `start`，见 PLAN §5.1）。
    */
   warmUp(): Promise<void>;
   /** 把后台的写库推进到「没有立即的后续」为止 */
@@ -138,7 +139,17 @@ function makeHarness(rounds: FakeRound[]): Harness {
 
   const runner = new ChatRunner({
     messages: store,
-    sessions: { get: async (id) => rows.get(id) },
+    sessions: {
+      get: async (id) => rows.get(id),
+      // 「库里那一行」：本文件的登记器已经在 `create` 那一刻把它放好了
+      ensurePersisted: async (id) => {
+        const row = rows.get(id);
+        if (!row) {
+          throw new HostError("not_found", { params: { entity: "session" } });
+        }
+        return row;
+      },
+    },
     scopes,
     agents: registry,
     emit: () => undefined,
@@ -182,10 +193,11 @@ function makeHarness(rounds: FakeRound[]): Harness {
     },
     warmUp: async () => {
       rows.set("c-child-1", session("c-child-1"));
+      // 界面/创建者叫醒它的两步（PLAN §5.1）：先复活，再投递
+      await runner.start("c-child-1");
       await runner.deliver("c-child-1", {
         content: "热身",
         source: { kind: "user" },
-        mayStart: true,
       });
       await harness.waitFor(() => {
         const now = runner.state("c-child-1");

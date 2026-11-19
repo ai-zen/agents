@@ -41,6 +41,7 @@ import { FakeAgent } from "./runtime/TestSupport.js";
 import type {
   SessionCreateResult,
   SessionSendResult,
+  SessionStartResult,
   SessionStateResult,
   MessageDeltaPayload,
   MessageListResult,
@@ -274,7 +275,10 @@ describe("端到端冒烟：本地凭证 → 项目 → 会话 → 一轮 → �
     const sessionId = createdSession.id;
     expect(sessionId.length).toBeGreaterThan(0);
 
-    // ---- 步骤 3：投一句（回执只有那条用户消息的 id，其余靠事件） ----
+    // ---- 步骤 3：先复活、再投一句（PLAN §5.1：投递不叫醒任何人，所以这两步是分开的） ----
+    const started = await client.call("session.start", { sessionId });
+    expect((started.result as SessionStartResult).started).toBe(true);
+
     client.request("session.send", {
       sessionId,
       input: { content: "你好" },

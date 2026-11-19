@@ -387,7 +387,8 @@ export class SessionService {
    * 出来就报错，不写半成品行 —— 一条没有助手或没有模型的会话没有可用的身份。
    *
    * **这一行现在不写库**：只把 id 与身份留在草稿里（R56 / F-C2「没有用户消息就不写」）。
-   * 首次 `session.send` 时由 {@link ensurePersisted} 用同一个 id 落库。
+   * 第一次真正用到它时由 {@link ensurePersisted} 用同一个 id 落库：`session.start` 或
+   * `session.send`，**谁先到谁写**（PLAN §4）。
    */
   async create(
     params: SessionCreateParams & SessionOriginInput,
@@ -461,7 +462,10 @@ export class SessionService {
   }
 
   /**
-   * 把草稿落成 `sessions` 的一行（R56：首次 `send` 时用同一个 id 写）。
+   * 把草稿落成 `sessions` 的一行（R56：第一次真正用到它时用同一个 id 写）。
+   *
+   * 两个调用方：`session.send`（首次发话就落库）与 `ChatRunner.start`（草稿会话先落库再装配，
+   * 见 PLAN §4「一段会话的诞生」——谁先到谁写）。
    *
    * 已经在库里就直接返回那一行（重复调用是幂等的）；草稿不在、库里也没这一行就是
    * `not_found`。先把草稿摘掉再写库：两次并发的调用里后到的那一次就抢不到同一份草稿，

@@ -28,6 +28,7 @@ import { AgentNS as AgentNSValue, sumUsage } from "@ai-zen/agents-core";
 import type { Session } from "../storage/types.js";
 import type { InboxInsertInput, StoredInboxEntry } from "../storage/InboxRepository.js";
 import type { EventName } from "../wire/events.js";
+import { HostError } from "../wire/errors.js";
 import type {
   SessionChangedPayload,
   SessionChangeKind,
@@ -167,8 +168,19 @@ interface Harness {
   dead: Array<{ sessionId: string; kind: SessionDeathKind }>;
   /** 装配过几次（每装配一次 agent 记一笔：复活那条用例要看它） */
   builds: string[];
-  /** 投递（省掉重复的 `source` 样板：不给就按用户本人说） */
+  /** `ensurePersisted` 被叫过的 id（草稿落库就靠它看） */
+  persisted: string[];
+  /** 复活（`ChatRunner.start`）：段会话没有 agent 时装上，活着就是幂等 no-op */
+  start(): Promise<boolean>;
+  /** 投递（不给 `source` 就按用户本人说） */
   deliver(input: DeliveryInput): Promise<{ userMessageId: string }>;
+  /**
+   * 界面上按一次发送：**先复活、再投递**（PLAN §5.1 那个复合动作的另外两步与这里无关）。
+   *
+   * 这两个动作在宿主这一层是正交的，所以用例里也得自己编排 —— 本文件的主角是投递，
+   * 所以把这固定搭配合成一句；要单验 `deliver` / `start` 的用例直接用那两个口。
+   */
+  say(input: DeliveryInput): Promise<{ userMessageId: string }>;
   /** 把后台的投递 / 写库推进到「没有立即的后续」为止 */
   settle(): Promise<void>;
   waitFor(check: () => boolean): Promise<void>;
@@ -196,12 +208,23 @@ function createHarness(
      * 闸一关，`deliver` 就不会把它们叫起来取走（闸本身怎么开怎么关是另一件事，不在这里验）。
      */
     pauseOnBuild?: boolean;
+    /**
+     * 这一段还是**草稿**（`session.create` 只发了 id，还没落库）：`sessions.get` 读不到它，
+     * 只有 `ensurePersisted` 能把它写成真行。
+     */
+    draft?: boolean;
+    /** 装配卡在这一拍上（验「装配窗口里投进来的话先收着」） */
+    buildGate?: Promise<void>;
   } = {},
 ): Harness {
   const clock = new ManualClock();
   const store = options.store ?? new RecordingMessageStore();
   const inbox = options.inbox ?? new RecordingInboxStore();
   const session = makeSession();
+  /** 草稿落库了没有（`ensurePersisted` 翻它一下，之后 `get` 就读得到） */
+  let landed = options.draft !== true;
+  /** 真的被叫过 `ensurePersisted` 的 id（验「草稿先落库再装配」） */
+  const persisted: string[] = [];
   const { scope } = createFakeScope("/tmp/ai-zen-bridge");
   const scopes = new ScopeRegistry({ createScope: async () => scope });
   const pushed: Array<{ name: EventName; payload: unknown }> = [];
@@ -214,6 +237,7 @@ function createHarness(
     scopes,
     createAgent: async (context) => {
       buildContexts.push(context.sessionId);
+      if (options.buildGate) await options.buildGate;
       const built = new FakeAgent(options.rounds ?? [{ deltas: [{ content: "好" }] }]);
       if (options.pauseOnBuild) built.pauseOutput();
       return built;
@@ -229,7 +253,18 @@ function createHarness(
     // inbox 里还没被取走的那些（三条事件写它、装配时读它）
     inbox,
     sessions: {
-      get: async (id: string) => (id === session.id ? session : undefined),
+      get: async (id: string) => (landed && id === session.id ? session : undefined),
+      // 草稿先落库：本文件没有真库，所以「落库」就是把这个开关翻过来（之后 `get` 就读得到）
+      ensurePersisted: async (id: string) => {
+        if (id !== session.id) {
+          throw new HostError("not_found", { params: { entity: "session" } });
+        }
+        if (!landed) {
+          landed = true;
+          persisted.push(id);
+        }
+        return session;
+      },
     },
     scopes,
     agents,
@@ -255,7 +290,13 @@ function createHarness(
     idle,
     dead,
     builds: buildContexts,
+    persisted,
+    start: () => runner.start(SESSION_ID),
     deliver: (input) => runner.deliver(SESSION_ID, input),
+    say: async (input) => {
+      await runner.start(SESSION_ID);
+      return await runner.deliver(SESSION_ID, input);
+    },
     settle: async () => {
       for (let i = 0; i < 16; i += 1) await flushMicrotasks();
     },
@@ -303,11 +344,11 @@ function lastChange(harness: Harness, name: EventName): SessionChangeKind | unde
 /**
  * 造一条用户投递（最常走的那条路）。
  *
- * 这一段的第一句都从界面投进来（这个用例集模拟的就是「用户发消息」那一条路）：会话还没有 agent 时
- * 只有创建者能把它叫起来，所以第一句带 `mayStart`。后面几句加不加都一样（已经活着就不看这一格）。
+ * 投递本身只有 `{ content, source }` 两样：「它死了要不要叫起来」不在这张入参上（P0 接口正交，
+ * PLAN §5.1）—— 要叫醒就先 `start`（用例里那个 `harness.say` 就是这两步，即界面上按一次发送）。
  */
-function userSays(content: string, extra: Partial<DeliveryInput> = {}): DeliveryInput {
-  return { content, source: { kind: "user" }, mayStart: true, ...extra };
+function userSays(content: string): DeliveryInput {
+  return { content, source: { kind: "user" } };
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +359,7 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
   it("投一条用户消息：回执只有消息 id；落地的用户消息与它引出的回答各落一行", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "收到。" }] }] });
 
-    const receipt = await harness.deliver(userSays("你好"));
+    const receipt = await harness.say(userSays("你好"));
     // 回执里没有状态、没有「叫醒了没有」、没有结果
     expect(Object.keys(receipt)).toEqual(["userMessageId"]);
 
@@ -350,11 +391,9 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
   it("别的来源投进来：正文最前面带来源注释，库里的与模型看到的是同一份", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "看到了。" }] }] });
 
-    await harness.deliver({
+    await harness.say({
       content: "登录页的测试补齐了",
       source: { kind: "agent", label: "补测试" },
-      // 这一段还没有 agent，第一条由创建者叫起来（来源是谁与能不能起来是两回事）
-      mayStart: true,
     });
     await harness.waitIdle();
 
@@ -375,19 +414,19 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 生死：死会话投不进去，只有创建者能把它叫起来
+// 生死：投递不叫醒任何人；复活是另一个动作（`start`）
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner.deliver：死会话一律拒，只有创建者能叫起来（`mayStart`）", () => {
-  it("外部来源投到死会话 → `session_dead`；`mayStart` 才装配起来接着跑", async () => {
+describe("ChatRunner.deliver：死的目标一律拒（`session_dead`），不管来源是谁", () => {
+  it("死了就 `session_dead`：界面发的那一句、别的来源发的那一句，一模一样", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "接着来。" }] }] });
 
     // 先把这一段跑起来，让它有历史（第一句 + 它的回答）
-    await harness.deliver(userSays("第一句"));
+    await harness.say(userSays("第一句"));
     await harness.waitIdle();
     expect((await harness.rows()).length).toBe(2);
 
-    // 用户按杀死（= 硬着陆，不可复活）
+    // 用户按杀死（= 硬着陆）
     harness.runner.forget(SESSION_ID);
     await harness.settle();
     expect(harness.registry.get(SESSION_ID)).toBeUndefined();
@@ -406,16 +445,34 @@ describe("ChatRunner.deliver：死会话一律拒，只有创建者能叫起来�
       at: new Date(harness.clock.now()).toISOString(),
     });
 
-    // 外面投进来：拒（这一条路不许死而复生）
-    await expect(
-      harness.deliver(userSays("外面的一句", { mayStart: false })),
-    ).rejects.toMatchObject({
-      code: "session_dead",
-    });
+    // **没有「创建者例外」**：界面那个发送按钮投的那一条与定时器投的那一条同一条下场 ——
+    // 投递不叫醒任何人（PLAN §5.1）
+    for (const source of [
+      { kind: "user" } as const,
+      { kind: "system", label: "timer" } as const,
+    ]) {
+      await expect(
+        harness.runner.deliver(SESSION_ID, { content: "死会话不收", source }),
+      ).rejects.toMatchObject({ code: "session_dead" });
+    }
     expect(harness.registry.get(SESSION_ID)).toBeUndefined();
+    // 一个字节都不收、一个字节都不写：没装配、没入队
+    expect(harness.builds).toEqual([SESSION_ID]);
+    expect(harness.runner.state(SESSION_ID).inbox).toEqual([]);
+  });
 
-    // 界面那个发送按钮（创建者）：把它叫起来、再投递
-    await harness.deliver(userSays("界面发的一句", { mayStart: true }));
+  it("先 `start` 再投：装配起来接着跑，历史一条不少", async () => {
+    const harness = createHarness({ rounds: [{ deltas: [{ content: "接着来。" }] }] });
+
+    await harness.say(userSays("第一句"));
+    await harness.waitIdle();
+    expect(harness.runner.kill(SESSION_ID)).toBe(true);
+    await harness.settle();
+    expect(harness.runner.state(SESSION_ID).alive).toBe(false);
+
+    // 界面按发送 = 客户端编排的两步（PLAN §5.1）：先复活，再投递
+    await harness.start();
+    await harness.deliver(userSays("人发的一句"));
     await harness.waitIdle();
 
     const revived = harness.registry.get(SESSION_ID);
@@ -426,7 +483,7 @@ describe("ChatRunner.deliver：死会话一律拒，只有创建者能叫起来�
     expect(revived!.messages.map((message) => message.content)).toEqual([
       "第一句",
       "接着来。",
-      "界面发的一句",
+      "人发的一句",
       "接着来。",
     ]);
     expect((await harness.rows()).map((row) => row.role)).toEqual([
@@ -437,17 +494,91 @@ describe("ChatRunner.deliver：死会话一律拒，只有创建者能叫起来�
     ]);
   });
 
-  it("`mayStart` 只认 `true`：给了别的真值也叫不起来", async () => {
+  it("`deliver` 不动闸：输出闸关着时投进去，`outputPaused` 仍是 `true`", async () => {
+    const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
+    await harness.say(userSays("先说一句"));
+    await harness.waitIdle();
+    // 闸关着（生产上：用户按了中断、或者按了暂停）
+    harness.runner.pause(SESSION_ID);
+    expect(harness.runner.state(SESSION_ID).outputPaused).toBe(true);
+
+    await harness.deliver(userSays("再说一句"));
+
+    // 投递只收不取，也不替谁开闸 —— 「继续」是客户端在投递之前自己调的那一手（PRD 4.4）
+    expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({
+      outputPaused: true,
+      inbox: [expect.objectContaining({ preview: "再说一句" })],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 复活：`start` 只管「确保这段有 agent」
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner.start：确保这段有 agent（不投递、不动闸）", () => {
+  it("活的幂等：连调两次只装配一次，第二次回 `false`", async () => {
+    const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
+
+    expect(await harness.start()).toBe(true);
+    expect(await harness.start()).toBe(false);
+
+    expect(harness.builds).toEqual([SESSION_ID]);
+    expect(harness.registry.get(SESSION_ID)).toBeDefined();
+    // 只做「有 agent」这一件：队列里一条也没多出来
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({ alive: true, inbox: [] });
+  });
+
+  it("草稿会话：先落库再装配（`ensurePersisted` 之后才读得到那一行）", async () => {
+    const harness = createHarness({ draft: true });
+
+    // 草稿在库里还没有行：投递连「目标」都找不到（`not_found`），复活才知道怎么办
+    await expect(harness.deliver(userSays("草稿里的话"))).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect(harness.builds).toEqual([]);
+
+    expect(await harness.start()).toBe(true);
+    // 落库那一步真的走过（写行 + 那条隐藏的 cwd 消息在 `SessionService` 里）
+    expect(harness.persisted).toEqual([SESSION_ID]);
+    expect(harness.builds).toEqual([SESSION_ID]);
+    expect(harness.runner.state(SESSION_ID).alive).toBe(true);
+  });
+
+  it("不存在（不是草稿、库里也没有）→ `not_found`，一个 agent 都不装", async () => {
     const harness = createHarness();
-    await expect(
-      harness.runner.deliver(SESSION_ID, {
-        content: "偷偷叫起来",
-        source: { kind: "system", label: "timer" },
-        // 类型上就不该是别的值；这一条防的是「真值判断」被写回来
-        mayStart: false,
-      }),
-    ).rejects.toMatchObject({ code: "session_dead" });
+    await expect(harness.runner.start("c-missing")).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect(harness.builds).toEqual([]);
+  });
+
+  it("装配窗口里投进来的话先收着，装好按到达顺序一次推给它（不等待、不丢）", async () => {
+    const gate = deferred<void>();
+    const harness = createHarness({ buildGate: gate.promise });
+
+    const starting = harness.start();
+    await harness.settle();
+    // 这一拍它确实还没有 agent —— 但它不是死的：`start` 正在装它
     expect(harness.registry.get(SESSION_ID)).toBeUndefined();
+    const first = await harness.deliver(userSays("装配中第一句"));
+    const second = await harness.deliver(userSays("装配中第二句"));
+    // 收在装配窗口里，界面上按到达顺序看得见（它们真的排着，只是还没人取）
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({
+      alive: false,
+      inbox: [expect.objectContaining({ preview: "装配中第一句" }), expect.objectContaining({ preview: "装配中第二句" })],
+    });
+
+    gate.resolve();
+    expect(await starting).toBe(true);
+    await harness.waitIdle();
+
+    // 装好之后按到达顺序落地（回执里那两个 id 就是落地那两条）
+    const users = (await harness.rows()).filter(
+      (row) => row.role === AgentNSValue.Role.User,
+    );
+    expect(users.map((row) => row.id)).toEqual([first.userMessageId, second.userMessageId]);
   });
 });
 
@@ -462,7 +593,7 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
       rounds: [{ gate: gate.promise, deltas: [{ content: "说到一半" }] }],
     });
 
-    await harness.deliver(userSays("开跑"));
+    await harness.say(userSays("开跑"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
     expect(harness.runner.abort(SESSION_ID)).toBe(true);
@@ -486,25 +617,29 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
     expect(harness.runner.abort(SESSION_ID)).toBe(false);
   });
 
-  it("中断之后：用户点发送＝继续（开闸），别的来源不开闸", async () => {
+  it("中断之后：闸是关着的，投递不会替谁开闸（要开就明调 `resume`）", async () => {
     const gate = deferred<void>();
     const harness = createHarness({
       rounds: [{ gate: gate.promise, deltas: [{ content: "说到一半" }] }],
     });
 
-    await harness.deliver(userSays("开跑"));
+    await harness.say(userSays("开跑"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
     harness.runner.abort(SESSION_ID);
     gate.resolve();
     await harness.settle();
     expect(harness.runner.state(SESSION_ID).outputPaused).toBe(true);
 
-    // 自动推来的那一条：只是排队，不替他把闸开开（那不是他按的）
-    await harness.deliver(userSays("外面推的", { mayStart: false }));
+    // 投递进来两条（一条来自用户、一条来自外部）：两条都只是排队，没有一条顺手开闸
+    await harness.deliver(userSays("外面推的"));
+    await harness.deliver({
+      content: "人按的",
+      source: { kind: "user" },
+    });
     expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
 
-    // 用户点发送：开闸
-    await harness.deliver(userSays("继续"));
+    // 「用户点发送就是继续」这一手在客户端（PLAN §5.1）：它显式调 `resume`，闸才开
+    expect(harness.runner.resume(SESSION_ID)).toBe(true);
     expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(false);
   });
 });
@@ -516,7 +651,7 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
 describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () => {
   it("暂停只关输出闸、继续只开闸：忙闲与死活一格都不动", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
     expect(harness.runner.state(SESSION_ID).outputPaused).toBe(false);
 
@@ -547,7 +682,7 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
 
   it("交接期间 pause / resume 仍拒（`busy` / `handoff_in_progress`），但投递照收", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
     // 交接开始：输出闸由这次交接自己关上（生产上关在写文档那一批的批头）
     harness.runner.beginHandoff(SESSION_ID);
@@ -569,7 +704,7 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
     expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
 
     // 投递不拒：交接期间只关输出闸、不关输入闸 —— 话照收，排在 inbox 里
-    await expect(harness.deliver(userSays("交接中说的话"))).resolves.toMatchObject({
+    await expect(harness.say(userSays("交接中说的话"))).resolves.toMatchObject({
       userMessageId: expect.any(String),
     });
     expect(harness.runner.state(SESSION_ID).inbox.map((item) => item.preview)).toEqual([
@@ -587,7 +722,7 @@ describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
     expect(lastChange(harness, "session.changed")).toBeUndefined();
 
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
     // 装配出 agent 那一拍：这一段有了 agent
     expect(harness.eventsOf("session.changed")).toContainEqual(
@@ -604,7 +739,7 @@ describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活
 
   it("两道闸各推自己的那一条：暂停/继续走 `output:*`，关门走 `input:*`", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
 
     harness.runner.pause(SESSION_ID);
@@ -646,7 +781,7 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
     const harness = createHarness({
       rounds: [{ gate: gate.promise, deltas: [{ content: "说到一半" }] }],
     });
-    await harness.deliver(userSays("开跑"));
+    await harness.say(userSays("开跑"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
     expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({
@@ -660,7 +795,7 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
 
   it("输出闸关着 → `output_paused`", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
     harness.registry.get(SESSION_ID)!.pauseOutput();
 
@@ -672,7 +807,7 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
 
   it("已经在交 → `handoff_in_progress`（它先于闸：交接期间闸本来就关着）", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
     harness.runner.beginHandoff(SESSION_ID);
     // 交接期间闸也是关着的那一种处境：报的仍然是在交接，不是 output_paused
@@ -686,7 +821,7 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
 
   it("闲着、闸开着、不在交接 → `ok`", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
 
     expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({ ok: true });
@@ -700,15 +835,15 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
 describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推一条 `handoff_started`", () => {
   it("交接进行中投进来的话照收：投递成功、条目在 inbox 里，交接完成后按原顺序被取走", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("交接前"));
+    await harness.say(userSays("交接前"));
     await harness.waitIdle();
 
     // 交接开始：输出闸关上（这一任不取），输入闸照开
     harness.runner.beginHandoff(SESSION_ID);
     harness.registry.get(SESSION_ID)!.pauseOutput();
 
-    const first = await harness.deliver(userSays("交接中第一句"));
-    const second = await harness.deliver(userSays("交接中第二句"));
+    const first = await harness.say(userSays("交接中第一句"));
+    const second = await harness.say(userSays("交接中第二句"));
     // 投递成功：回执只有消息 id
     expect(first.userMessageId).toEqual(expect.any(String));
     expect(second.userMessageId).toEqual(expect.any(String));
@@ -771,11 +906,11 @@ describe("ChatRunner.state：现读四件事与 inbox", () => {
       ],
     });
 
-    await harness.deliver(userSays("第一条"));
+    await harness.say(userSays("第一条"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
     // 它正卡在工具里：下一条只能排着
-    await harness.deliver(userSays("第二条"));
+    await harness.say(userSays("第二条"));
     const readout = harness.runner.state(SESSION_ID);
     expect(readout.status).toBe("working");
     expect(readout.inbox.map((item) => item.preview)).toEqual(["第二条"]);
@@ -806,7 +941,7 @@ describe("ChatRunner.state：现读四件事与 inbox", () => {
       at: new Date(harness.clock.now()).toISOString(),
     });
 
-    await harness.deliver(userSays("起来"));
+    await harness.say(userSays("起来"));
     await harness.waitIdle();
     expect(harness.runner.state(SESSION_ID).status).toBe("idle");
   });
@@ -820,7 +955,7 @@ describe("ChatRunner：变闲那一刻", () => {
   it("闲下来之后：写库已经落干净、报一格 idle、叫一次 onIdle", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
 
-    await harness.deliver(userSays("说点什么"));
+    await harness.say(userSays("说点什么"));
     await harness.waitIdle();
     await harness.waitFor(() => harness.idle.length === 1);
 
@@ -842,11 +977,11 @@ describe("ChatRunner：一段会话一条桥", () => {
   it("同一段会话再跑一次还是同一个 agent（常驻），且落库接着往下写", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
 
-    await harness.deliver(userSays("第一句"));
+    await harness.say(userSays("第一句"));
     await harness.waitIdle();
     const first = harness.registry.get(SESSION_ID);
 
-    await harness.deliver(userSays("第二句"));
+    await harness.say(userSays("第二句"));
     await harness.waitFor(() => harness.idle.length === 2);
     await harness.settle();
 
@@ -868,7 +1003,7 @@ describe("ChatRunner：一段会话一条桥", () => {
 
   it("forget：硬着陆那个 agent，桥跟着灭（之后再投一律拒）", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
-    await harness.deliver(userSays("一句"));
+    await harness.say(userSays("一句"));
     await harness.waitIdle();
     const agent = harness.registry.get(SESSION_ID)!;
 
@@ -893,7 +1028,7 @@ describe("ChatRunner：一段会话一条桥", () => {
 describe("ChatRunner：报「死」时带上为什么死", () => {
   it("core 说 killed：`terminated`（真死，一次只报一条）", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
-    await harness.deliver(userSays("一句"));
+    await harness.say(userSays("一句"));
     await harness.waitIdle();
 
     harness.registry.kill(SESSION_ID);
@@ -905,7 +1040,7 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
 
   it("退役（换模型 / 换思考档 / 配置变了）：`retired` —— 不是「这段没了」", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
-    await harness.deliver(userSays("一句"));
+    await harness.say(userSays("一句"));
     await harness.waitIdle();
 
     // 空闲时改装配事实：当场退役（`SessionService.setModel` / `setThinking` 走的就是这一手）
@@ -919,7 +1054,7 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
 
   it("forget：`forgotten`（会话被删，不是意外死）", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
-    await harness.deliver(userSays("一句"));
+    await harness.say(userSays("一句"));
     await harness.waitIdle();
 
     harness.runner.forget(SESSION_ID);
@@ -940,10 +1075,10 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
     // 第一条被取走、卡在工具里，后两句只能排着（各自落一行）
-    await harness.deliver(userSays("第一条"));
+    await harness.say(userSays("第一条"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
-    await harness.deliver(userSays("第二条"));
-    await harness.deliver(userSays("第三条"));
+    await harness.say(userSays("第二条"));
+    await harness.say(userSays("第三条"));
     await harness.waitFor(() => harness.inbox.rows.length === 2);
     const messageIds = (await harness.rows()).map((row) => row.id);
 
@@ -974,10 +1109,10 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     const inbox = new RecordingInboxStore();
 
     const before = createHarness({ store, inbox, rounds: [stuckInToolRound(toolGate.promise)] });
-    await before.deliver(userSays("第一条"));
+    await before.say(userSays("第一条"));
     await before.waitFor(() => before.registry.get(SESSION_ID)?.state === "working");
-    await before.deliver(userSays("第二条"));
-    await before.deliver(userSays("第三条"));
+    await before.say(userSays("第二条"));
+    await before.say(userSays("第三条"));
     await before.waitFor(() => inbox.rows.length === 2);
 
     expect(before.runner.kill(SESSION_ID)).toBe(true);
@@ -986,7 +1121,7 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     await before.waitFor(() => inbox.rows.length === 0);
 
     const after = createHarness({ store, inbox, pauseOnBuild: true });
-    await after.deliver(userSays("重开之后的一句"));
+    await after.say(userSays("重开之后的一句"));
     expect(after.runner.state(SESSION_ID).inbox.map((item) => item.preview)).toEqual([
       "重开之后的一句",
     ]);
@@ -994,9 +1129,9 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     toolGate.resolve();
   });
 
-  it("杀完再投报 `session_dead`（不复活）；人点发送才重新装配起来，历史一句不少", async () => {
+  it("杀完再投报 `session_dead`（不复活）；先 `start` 才重新装配起来，历史一句不少", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
-    await harness.deliver(userSays("第一句"));
+    await harness.say(userSays("第一句"));
     await harness.waitIdle();
 
     expect(harness.runner.kill(SESSION_ID)).toBe(true);
@@ -1004,14 +1139,15 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     expect(harness.runner.state(SESSION_ID).alive).toBe(false);
 
     // 任何投递都不复活会话（PRD 4.2 / 4.4）：报「这段没了」，而不是叫起一个新的
-    await expect(
-      harness.deliver(userSays("外面的一句", { mayStart: false })),
-    ).rejects.toMatchObject({ code: "session_dead" });
+    await expect(harness.deliver(userSays("外面的一句"))).rejects.toMatchObject({
+      code: "session_dead",
+    });
     expect(harness.runner.state(SESSION_ID).alive).toBe(false);
     expect(harness.builds).toEqual([SESSION_ID]);
 
-    // 界面上的发送按钮（创建者）：重新装配起来，记忆照旧在（会话行与消息一个字没动）
-    await harness.deliver(userSays("人发的一句", { mayStart: true }));
+    // 界面按发送的两步（PLAN §5.1）：先复活，再投 —— 记忆照旧在（会话行与消息一个字没动）
+    await harness.start();
+    await harness.deliver(userSays("人发的一句"));
     await harness.waitIdle();
 
     expect(harness.runner.state(SESSION_ID).alive).toBe(true);
@@ -1038,7 +1174,7 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
 
   it("交接期间拒（`busy` / `handoff_in_progress`）：agent 没被杀掉", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
-    await harness.deliver(userSays("一句"));
+    await harness.say(userSays("一句"));
     await harness.waitIdle();
     harness.runner.beginHandoff(SESSION_ID);
 
@@ -1057,7 +1193,7 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
 
   it("杀死只报一条 `agent_gone`（core 的 `killed` 不重报），并带上「为什么死」", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
-    await harness.deliver(userSays("一句"));
+    await harness.say(userSays("一句"));
     await harness.waitIdle();
 
     harness.runner.kill(SESSION_ID);
@@ -1100,7 +1236,7 @@ describe("ChatRunner：subagent 的消息不落库，只推事件", () => {
       ],
     });
 
-    await harness.deliver(userSays("交给助手"));
+    await harness.say(userSays("交给助手"));
     await harness.waitIdle();
 
     // subagent 的话**不入库**（`CORE.md` §17）：它是临时工，不是一段会话。库是这条会话的转录，
@@ -1153,7 +1289,7 @@ describe("ChatRunner：subagent 的消息不落库，只推事件", () => {
       ],
     });
 
-    await harness.deliver(userSays("交给助手"));
+    await harness.say(userSays("交给助手"));
     await harness.waitIdle();
     await harness.settle();
 
@@ -1278,7 +1414,7 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     const toolGate = deferred<void>();
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
-    await harness.deliver(userSays("第一条"));
+    await harness.say(userSays("第一条"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
     // 第一条进来时落过一行，随即被取走 —— 库里那一行跟着没了
@@ -1288,8 +1424,8 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     await harness.waitFor(() => harness.inbox.rows.length === 0);
 
     // 它卡在工具里：后面这两条只能排队，各自落一行（逐条实时写，不攒批）
-    await harness.deliver(userSays("第二条"));
-    await harness.deliver(userSays("第三条"));
+    await harness.say(userSays("第二条"));
+    await harness.say(userSays("第三条"));
     await harness.waitFor(() => harness.inbox.rows.length === 2);
     expect(harness.inbox.rows.map((row) => row.content)).toEqual([
       JSON.stringify("第二条"),
@@ -1310,10 +1446,10 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     const toolGate = deferred<void>();
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
-    await harness.deliver(userSays("第一条"));
+    await harness.say(userSays("第一条"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
-    await harness.deliver(userSays("第二条"));
-    await harness.deliver(userSays("第三条"));
+    await harness.say(userSays("第二条"));
+    await harness.say(userSays("第三条"));
     await harness.waitFor(() => harness.inbox.rows.length === 2);
 
     // 不取件的时候也照样清（清空不看输出闸），库里那两行一起没
@@ -1331,9 +1467,9 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     const toolGate = deferred<void>();
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
-    await harness.deliver(userSays("第一条"));
+    await harness.say(userSays("第一条"));
     await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
-    await harness.deliver(userSays("第二条"));
+    await harness.say(userSays("第二条"));
     await harness.waitFor(() => harness.inbox.rows.length === 1);
 
     // `HostApp.stop()` 那一步：先标记「这是收尾」，再把 agent 全部硬着陆（存量在内存里作废）——
@@ -1360,11 +1496,11 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     const inbox = new RecordingInboxStore();
 
     const before = createHarness({ store, inbox, rounds: [stuckInToolRound(toolGate.promise)] });
-    await before.deliver(userSays("第一句"));
+    await before.say(userSays("第一句"));
     await before.waitFor(() => before.registry.get(SESSION_ID)?.state === "working");
-    await before.deliver(userSays("第二句"));
-    await before.deliver(userSays("第三句"));
-    await before.deliver(userSays("第四句"));
+    await before.say(userSays("第二句"));
+    await before.say(userSays("第三句"));
+    await before.say(userSays("第四句"));
     await before.waitFor(() => inbox.rows.length === 3);
 
     // 把「存下来的那一刻」改成很久以前：这一格要验的正是「读回来的是存下来的那个值，
@@ -1382,7 +1518,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
 
     // 「关掉」= 丢掉旧的 runner 与 registry（不 kill：kill 是「作废存量」，这里要验的正相反）
     const after = createHarness({ store, inbox, pauseOnBuild: true });
-    await after.deliver(userSays("重启后的一句"));
+    await after.say(userSays("重启后的一句"));
 
     // 界面上看得见：放回来的那三句按原顺序排在队头，新投的那条在它们后面
     const readout = after.runner.state(SESSION_ID);
@@ -1440,7 +1576,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     });
 
     const harness = createHarness({ store, inbox, pauseOnBuild: true });
-    await harness.deliver(userSays("新的一句"));
+    await harness.say(userSays("新的一句"));
 
     // 队列里只有「还在等的那一句」与新投的这一句：落地过的那条没有放回来
     const agent = harness.registry.get(SESSION_ID)!;

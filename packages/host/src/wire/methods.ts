@@ -480,7 +480,7 @@ export interface SessionDeleteResult {
 }
 
 /**
- * `session.send` 入参（PRD 4.2 / 5.1：唯一的对外动作是投递）。
+ * `session.send` 入参（PRD 4.2 / 5.1：**只做投递**）。
  *
  * 投递只有两条判据：目标在不在、活不活（PLAN §5.1）。忙不忙不是判据 —— 活着就收下入队，
  * 闲 / 忙一律收（输出闸关着也只收不取），什么时候取走是它自己的事，与投递方无关。
@@ -490,8 +490,8 @@ export interface SessionDeleteResult {
  *
  * 两种拒因，各说一件事：
  *   - 有问题在挡着这段会话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
- *   - 目标是死的（宿主那边没有 agent 对象）时是 `session_dead`：界面上那个发送按钮先复活
- *     再投，那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）。
+ *   - 目标是死的（宿主那边没有 agent 对象）时是 `session_dead`：**不管来源是谁**。要复活就
+ *     先调 `session.start`（那是另一件事），再回来投 —— 投递本身不叫醒任何人。
  *
  * **没有「正在交接」这个拒因**：交接期间只关输出闸、不关输入闸，话照收、排在 inbox 里，
  * 只是这一任不取；交接完成即开闸，压着的按原顺序接着跑（PRD 4.5 / PLAN §5.3）。
@@ -520,6 +520,34 @@ export interface SessionSendResult {
   userMessageId: string;
   /** 每个附件最后是怎么走的（沿用现有 AttachmentOutcome 形状） */
   attachments: AttachmentOutcome[];
+}
+
+/**
+ * `session.start` 入参：**确保这段会话有 agent**（PRD 1.2「死的就调接口复活、再投递」）。
+ *
+ * 它与 `session.send` 的分工是死的（PLAN §5.1）：`start` 只管「把它叫起来」，`send` 只管
+ * 「把话塞进队列」。复活要装配（可能失败、要读库、要建 Scope），投递只是收下 —— 两件事的
+ * 判据与失败语义都不一样，所以是两个动作，而不是投递上的一个隐式参数。
+ *
+ * **投递不会叫醒任何人**：`session.send` 对死的目标一律回 `session_dead`（来源是谁都一样）。
+ * 客户端按发送时先把这段判一遍，死的就先调这一条、再投（PRD 1.2 的原话就是「先说活、再投」）。
+ *
+ * 「谁能复活谁」宿主不判（PRD 1.2「宿主不做任何限制」）：能不能复活看的是调用方手上有没有
+ * 这个方法（agent 手上没有，见 PRD 4.6），不是宿主按参数猜来源。
+ */
+export interface SessionStartParams {
+  sessionId: string;
+}
+
+/**
+ * `session.start` 出参：这一次装了没有。
+ *
+ * `true` = 这一次真的装配了一条 agent（草稿会话会先落库，再装配）；`false` = 它本来就活着，
+ * 这一手是幂等 no-op（复用，不重建）。回执里没有状态、没有「它现在忙不忙」—— 那些靠
+ * `session.state` 现读。
+ */
+export interface SessionStartResult {
+  started: boolean;
 }
 
 /**
@@ -570,8 +598,8 @@ export interface SessionResumeResult {
  * `session.kill` 入参：**用户按杀死**（PRD 4.4 里「会让它死的」三条路之一）。
  *
  * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了。杀死之后：在途
- * 那一批掐断，没被取走的条目作废（库里那些行也一起删），界面上的「发话」还能把 agent 重新叫
- * 起来 —— 别的来源一律报 `session_dead`（不复活，PRD 4.2 / 4.4）。
+ * 那一批掐断，没被取走的条目作废（库里那些行也一起删），投递一律报 `session_dead`（不复活，
+ * PRD 4.2 / 4.4）—— 要接着说话就再调一手 `session.start`。
  *
  * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给
  * （PRD 4.5，与 `session.pause` / `session.resume` 同一个口径）。
@@ -2009,8 +2037,10 @@ export interface MethodMap {
   "session.pin": { params: SessionPinParams; result: SessionPinResult };
   /** F-C10 / D17：硬删，图片按引用清理；删除前给出代价。 */
   "session.delete": { params: SessionDeleteParams; result: SessionDeleteResult };
-  /** F-C2 / F-H7 / F-D10：投递一句（忙也收、id 投递时就定、问题挡着则拒）。 */
+  /** F-C2 / F-H7 / F-D10：投递一句（忙也收、id 投递时就定、问题挡着则拒、死的报 `session_dead`）。 */
   "session.send": { params: SessionSendParams; result: SessionSendResult };
+  /** PRD 1.2 / PLAN §5.1：复活（确保这段有 agent）—— 与投递正交，复合动作归客户端编排。 */
+  "session.start": { params: SessionStartParams; result: SessionStartResult };
   /** D14：中止是用户的显式动作（掐掉在途的网络请求与工具，并把输出闸关上）。 */
   "session.abort": { params: SessionAbortParams; result: SessionAbortResult };
   /** PRD 4.4：「暂停」只翻输出闸（手上这批跑完、从下一批起不取件），不掐在途。 */
@@ -2201,6 +2231,7 @@ export const METHOD_NAMES = [
   "session.pin",
   "session.delete",
   "session.send",
+  "session.start",
   "session.abort",
   "session.pause",
   "session.resume",
