@@ -112,7 +112,7 @@ describe("握手", () => {
       const reply = await new Promise<unknown>((resolve, reject) => {
         socket.addEventListener("open", () => {
           socket.send(
-            JSON.stringify({ jsonrpc: "2.0", id: 1, method: "conversation.list", params: {} }),
+            JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session.list", params: {} }),
           );
         });
         socket.addEventListener("message", (event) => resolve(event.data));
@@ -143,13 +143,13 @@ describe("调用与错误", () => {
   it("业务错误原样到 ClientError，且文案跟着连接语言走（宿主出文案）", async () => {
     const zh = await connect("zh");
     const en = await connect("en");
-    const params = { conversationId: "not-a-real-conversation" };
+    const params = { sessionId: "not-a-real-session" };
 
     const zhError = (await zh
-      .call("conversation.get", params)
+      .call("session.get", params)
       .catch((caught: unknown) => caught)) as ClientError;
     const enError = (await en
-      .call("conversation.get", params)
+      .call("session.get", params)
       .catch((caught: unknown) => caught)) as ClientError;
 
     expect(zhError.code).toBe("not_found");
@@ -164,12 +164,12 @@ describe("调用与错误", () => {
   it("setLanguage 立刻改这条连接的话术", async () => {
     const client = await connect("en");
     const before = (await client
-      .call("conversation.get", { conversationId: "nope" })
+      .call("session.get", { sessionId: "nope" })
       .catch((caught: unknown) => caught)) as ClientError;
 
     expect(await client.setLanguage("zh")).toBe("zh");
     const after = (await client
-      .call("conversation.get", { conversationId: "nope" })
+      .call("session.get", { sessionId: "nope" })
       .catch((caught: unknown) => caught)) as ClientError;
 
     expect(after.message).not.toBe(before.message);
@@ -180,16 +180,16 @@ describe("镜像对真实例（打开一段空对话）", () => {
   it("四件事读得回来，消息是空的", async () => {
     const client = await connect("zh");
     const { workspace } = await client.call("workspace.create", { cwd: workspaceDir });
-    const created = await client.call("conversation.create", {
+    const created = await client.call("session.create", {
       workspaceId: workspace.id,
       agentId: "default",
     });
-    if (!created.conversation) throw new Error("对话没建出来");
-    const conversationId = created.conversation.id;
+    if (!created.session) throw new Error("对话没建出来");
+    const sessionId = created.session.id;
 
-    const mirror = await client.open(conversationId);
+    const mirror = await client.open(sessionId);
 
-    expect(mirror.conversationId).toBe(conversationId);
+    expect(mirror.sessionId).toBe(sessionId);
     // 刚建出来的会话没有 agent 对象：死活那一格是 false（忙闲与两道闸照旧各报各的）
     expect(mirror.alive).toBe(false);
     expect(mirror.status).toBe("idle");
@@ -201,31 +201,31 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
   /** 一小段字节：内容不重要，重要的是长度与摘要能原样到达宿主 */
   const PAYLOAD = new Uint8Array(2048).map((_, index) => (index * 7) % 251);
 
-  /** 建一个项目 + 一段对话，并把这段对话**先落库**（R56：`conversation.create` 只是草稿） */
-  async function persistedConversation(client: Client): Promise<string> {
+  /** 建一个项目 + 一段对话，并把这段对话**先落库**（R56：`session.create` 只是草稿） */
+  async function persistedSession(client: Client): Promise<string> {
     const cwd = await fs.mkdtemp(join(tmpdir(), "ai-zen-client-upload-"));
     const { workspace } = await client.call("workspace.create", { cwd });
-    const created = await client.call("conversation.create", {
+    const created = await client.call("session.create", {
       workspaceId: workspace.id,
       agentId: "default",
     });
-    if (!created.conversation) throw new Error("对话没建出来");
-    const conversationId = created.conversation.id;
+    if (!created.session) throw new Error("对话没建出来");
+    const sessionId = created.session.id;
 
-    // 草稿落库靠第一次 `conversation.send`（它内部调 `ensurePersisted`）：先发一句话，
+    // 草稿落库靠第一次 `session.send`（它内部调 `ensurePersisted`）：先发一句话，
     // 再把这边停掉 —— 这一段的目的是「让对话在库里有一行」，不是为了跑模型
-    await client.call("conversation.send", { conversationId, input: { content: "先落库" } });
-    await client.call("conversation.abort", { conversationId }).catch(() => undefined);
-    await idle(client, conversationId);
-    return conversationId;
+    await client.call("session.send", { sessionId, input: { content: "先落库" } });
+    await client.call("session.abort", { sessionId }).catch(() => undefined);
+    await idle(client, sessionId);
+    return sessionId;
   }
 
   it("上传一张图：assets/ 下落了文件、asset.end 回了 AssetRef、send 的 attachments 里有它", async () => {
     const client = await connect("zh");
-    const conversationId = await persistedConversation(client);
+    const sessionId = await persistedSession(client);
 
     const asset = await uploadAsset(client, {
-      conversationId,
+      sessionId,
       data: PAYLOAD,
       mime: "image/png",
       name: "probe.png",
@@ -248,8 +248,8 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     expect(new Uint8Array(written)).toEqual(PAYLOAD);
 
     // 带着 assetId 发一次：`attachments` 里就是这一张的结局
-    const accepted = await client.call("conversation.send", {
-      conversationId,
+    const accepted = await client.call("session.send", {
+      sessionId,
       input: { content: "看看这张", assetIds: [asset.assetId] },
     });
     expect(accepted.attachments).toHaveLength(1);
@@ -263,21 +263,21 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     }
 
     // 这一投会去连配置里的假端点（必然失败），收摊时把它停掉
-    await client.call("conversation.abort", { conversationId }).catch(() => undefined);
+    await client.call("session.abort", { sessionId }).catch(() => undefined);
   }, 30_000);
 
   it("同一张图上传两次：第二次在 begin 就命中，只落一份文件、只回同一个 assetId", async () => {
     const client = await connect("zh");
-    const conversationId = await persistedConversation(client);
+    const sessionId = await persistedSession(client);
 
     const first = await uploadAsset(client, {
-      conversationId,
+      sessionId,
       data: PAYLOAD,
       mime: "image/png",
       name: "once.png",
     });
     const second = await uploadAsset(client, {
-      conversationId,
+      sessionId,
       data: PAYLOAD,
       mime: "image/png",
       name: "twice.png",
@@ -293,9 +293,9 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
 
   it("asset.get：原图与缩略图两档都取得到字节，内容与上传的逐字节一致", async () => {
     const client = await connect("zh");
-    const conversationId = await persistedConversation(client);
+    const sessionId = await persistedSession(client);
     const asset = await uploadAsset(client, {
-      conversationId,
+      sessionId,
       data: PAYLOAD,
       mime: "image/png",
       name: "replay.png",
@@ -317,7 +317,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
 
   it("超过一张上限：多出来的逐条报告，前 4 张照常上传", async () => {
     const client = await connect("zh");
-    const conversationId = await persistedConversation(client);
+    const sessionId = await persistedSession(client);
 
     // 本地前置校验用的就是这条上限：真宿主的 `hello.limits.maxAssetBytes`
     expect(client.hello?.limits.maxAssetBytes).toBe(DEFAULT_MAX_ASSET_BYTES);
@@ -329,7 +329,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
       name: `${index}.png`,
     }));
 
-    const result = await uploadAssets(client, { conversationId, sources });
+    const result = await uploadAssets(client, { sessionId, sources });
 
     expect(result.assets).toHaveLength(4);
     expect(result.failures.map((failure) => failure.name)).toEqual(["5.png"]);
@@ -337,10 +337,10 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
   }, 30_000);
 });
 
-/** 等这段对话不再忙（`conversation.send` 投进去之后它会忙一阵） */
-async function idle(client: Client, conversationId: string): Promise<void> {
+/** 等这段对话不再忙（`session.send` 投进去之后它会忙一阵） */
+async function idle(client: Client, sessionId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const { state } = await client.call("conversation.state", { conversationId });
+    const { state } = await client.call("session.state", { sessionId });
     if (state.status !== "working") return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

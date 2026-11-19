@@ -69,7 +69,7 @@ export type PeerSessionRejectReason = "depth_exceeded" | "model_unresolved" | "t
 /**
  * `create_session` 的答案。
  *
- * 成功只给两个字段：`sessionId`（子会话的 conversationId）与可读的 `label`。**没有结果** ——
+ * 成功只给两个字段：`sessionId`（子会话的 sessionId）与可读的 `label`。**没有结果** ——
  * 建完即回：这里从来不等那边答完，也不会有任何东西被推回给发起者。
  */
 export type PeerSessionCreated =

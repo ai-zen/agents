@@ -5,33 +5,33 @@
  *      整条替换、`message.removed` 删除；子 Agent 的消息按 `toolCallId` 归栏。
  *   2. 重连补回来的那一份：锚点还在 → 替换 + 追加；锚点不在 → 整段替换。
  *   3. 打开期间攒下的那一批（`replay: true`）：属于快照已包含那些消息的增量不再折一遍。
- *   4. 与镜像无关的事件（`notice` / `question` / `error`）不认领；`conversation.changed` 认领，
+ *   4. 与镜像无关的事件（`notice` / `question` / `error`）不认领；`session.changed` 认领，
  *      但它只改两处：死活那一格（`agent_started` / `agent_gone`）与交接态（`handoff_started` 置成
  *      「正在交接」、`memory_replaced` 清回 `null`），其余 change 一格不动。
  *   5. 四件事各占一格：忙闲来自 `state`、两道闸来自 `output:*` / `input:*`、死活来自
- *      `conversation.changed`；还没读到是 `null`（不借「死」或「闲」占位），`applyReadout` 一次补齐。
+ *      `session.changed`；还没读到是 `null`（不借「死」或「闲」占位），`applyReadout` 一次补齐。
  *
  * 这里全是纯函数与纯对象：不起 socket、不调契约方法。
  */
 
 import { describe, expect, it } from "vitest";
 
-import type { ConversationChangeKind, EventPayload } from "@ai-zen/agents-host";
+import type { SessionChangeKind, EventPayload } from "@ai-zen/agents-host";
 
-import { ConversationMirror, toMirrorEvent } from "./mirror.js";
+import { SessionMirror, toMirrorEvent } from "./mirror.js";
 import { assistantMessage, userMessage } from "./testSupport/fakeHost.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
 
 function stateEvent(status: EventPayload<"state">["status"]): EventPayload<"state"> {
-  return { conversationId: "c1", status, at: AT };
+  return { sessionId: "c1", status, at: AT };
 }
 
 function addedEvent(
   message: EventPayload<"message.added">["message"],
   toolCallId?: string,
 ): EventPayload<"message.added"> {
-  return { conversationId: "c1", message, at: AT, ...(toolCallId ? { toolCallId } : {}) };
+  return { sessionId: "c1", message, at: AT, ...(toolCallId ? { toolCallId } : {}) };
 }
 
 function deltaEvent(
@@ -39,38 +39,38 @@ function deltaEvent(
   delta: EventPayload<"message.delta">["delta"],
   toolCallId?: string,
 ): EventPayload<"message.delta"> {
-  return { conversationId: "c1", messageId, delta, at: AT, ...(toolCallId ? { toolCallId } : {}) };
+  return { sessionId: "c1", messageId, delta, at: AT, ...(toolCallId ? { toolCallId } : {}) };
 }
 
 function changedEvent(
   message: EventPayload<"message.changed">["message"],
   toolCallId?: string,
 ): EventPayload<"message.changed"> {
-  return { conversationId: "c1", message, at: AT, ...(toolCallId ? { toolCallId } : {}) };
+  return { sessionId: "c1", message, at: AT, ...(toolCallId ? { toolCallId } : {}) };
 }
 
 function removedEvent(messageId: string, toolCallId?: string): EventPayload<"message.removed"> {
-  return { conversationId: "c1", messageId, at: AT, ...(toolCallId ? { toolCallId } : {}) };
+  return { sessionId: "c1", messageId, at: AT, ...(toolCallId ? { toolCallId } : {}) };
 }
 
-function conversationChangedEvent(
-  change: ConversationChangeKind,
+function sessionChangedEvent(
+  change: SessionChangeKind,
   at = AT,
-): EventPayload<"conversation.changed"> {
-  return { conversationId: "c1", workspaceId: "w1", change, at };
+): EventPayload<"session.changed"> {
+  return { sessionId: "c1", workspaceId: "w1", change, at };
 }
 
-function mirrorOf(): ConversationMirror {
-  // 刚建出来还没读 `conversation.state`：四件都是 `null`（还没读到），一格都不借来占位
-  return new ConversationMirror({ conversationId: "c1" });
+function mirrorOf(): SessionMirror {
+  // 刚建出来还没读 `session.state`：四件都是 `null`（还没读到），一格都不借来占位
+  return new SessionMirror({ sessionId: "c1" });
 }
 
 /** 两道闸那四条事件的载荷：只带会话 id（哪一道、开还是关由事件名说） */
 function pauseEvent() {
-  return { conversationId: "c1", at: AT };
+  return { sessionId: "c1", at: AT };
 }
 
-/** 分量读数的现读值（`conversation.state` 拿回来的那一份：四件事 + 名册 + 交接态） */
+/** 分量读数的现读值（`session.state` 拿回来的那一份：四件事 + 名册 + 交接态） */
 function readout(overrides: {
   status?: "working" | "idle";
   inputPaused?: boolean;
@@ -131,7 +131,7 @@ describe("四条到达事件", () => {
 
   it("还没读到四件事时每一格都是 null（既不借「死」也不借「闲」占位）", () => {
     const mirror = mirrorOf();
-    // 打开对话的那一刻：事件还没到、`conversation.state` 也还没读
+    // 打开对话的那一刻：事件还没到、`session.state` 也还没读
     expect(mirror.snapshot()).toMatchObject({
       status: null,
       inputPaused: null,
@@ -190,14 +190,14 @@ describe("四条到达事件", () => {
   it("死活那一格由 `agent_started` / `agent_gone` 换（不经过 `state`）", () => {
     const mirror = mirrorOf();
     mirror.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("agent_started"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("agent_started"),
     });
     expect(mirror.alive).toBe(true);
 
     mirror.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("agent_gone"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("agent_gone"),
     });
     expect(mirror.alive).toBe(false);
     // 死了也照旧有自己的忙闲（「手上没活」与「没有 agent」是两件事）
@@ -239,15 +239,15 @@ describe("四条到达事件", () => {
   });
 });
 
-describe("交接态：`conversation.changed` 那一格", () => {
-  it("`handoff_started` → 「正在交接」，不用重拉 `conversation.state` 也能学到", () => {
+describe("交接态：`session.changed` 那一格", () => {
+  it("`handoff_started` → 「正在交接」，不用重拉 `session.state` 也能学到", () => {
     const mirror = mirrorOf();
     // 刚打开时不在交接（这一格来自 `applyReadout`，或就是 `null`）
     expect(mirror.handoff).toBeNull();
 
     mirror.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("handoff_started", "2026-01-01T00:00:07.000Z"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("handoff_started", "2026-01-01T00:00:07.000Z"),
     });
 
     // 形状与 `applyReadout` 收到的那一格一致：开始时刻就是这条事件的 `at`
@@ -258,21 +258,21 @@ describe("交接态：`conversation.changed` 那一格", () => {
   it("随后 `memory_replaced` → 交接收口，`handoff` 回到 `null`", () => {
     const mirror = mirrorOf();
     mirror.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("handoff_started"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("handoff_started"),
     });
     expect(mirror.handoff).not.toBeNull();
 
     mirror.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("memory_replaced"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("memory_replaced"),
     });
     expect(mirror.handoff).toBeNull();
     expect(mirror.snapshot().handoff).toBeNull();
   });
 
   it("其余 change 一格都不动（既不清，也不置起来）", () => {
-    const others: ConversationChangeKind[] = [
+    const others: SessionChangeKind[] = [
       "created",
       "renamed",
       "pinned",
@@ -283,30 +283,30 @@ describe("交接态：`conversation.changed` 那一格", () => {
     // 不在交接时：它们也不会把它变成「正在交接」
     const idle = mirrorOf();
     for (const change of others) {
-      idle.apply({ kind: "conversation.changed", payload: conversationChangedEvent(change) });
+      idle.apply({ kind: "session.changed", payload: sessionChangedEvent(change) });
       expect(idle.handoff).toBeNull();
     }
 
     // 正在交接时：它们不会把它收掉（收口只认 `memory_replaced`）
     const busy = mirrorOf();
     busy.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("handoff_started", "2026-01-01T00:00:07.000Z"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("handoff_started", "2026-01-01T00:00:07.000Z"),
     });
     for (const change of others) {
-      busy.apply({ kind: "conversation.changed", payload: conversationChangedEvent(change) });
+      busy.apply({ kind: "session.changed", payload: sessionChangedEvent(change) });
       expect(busy.handoff).toEqual({ since: "2026-01-01T00:00:07.000Z" });
     }
   });
 
-  it("`conversation.changed` 只改它该改的那一格：消息与其余几格一个字不动", () => {
+  it("`session.changed` 只改它该改的那一格：消息与其余几格一个字不动", () => {
     const mirror = mirrorOf();
     mirror.applyReadout(readout({ status: "working", outputPaused: true }));
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
 
     mirror.apply({
-      kind: "conversation.changed",
-      payload: conversationChangedEvent("handoff_started"),
+      kind: "session.changed",
+      payload: sessionChangedEvent("handoff_started"),
     });
 
     expect(mirror.snapshot()).toMatchObject({
@@ -402,10 +402,10 @@ describe("toMirrorEvent", () => {
     expect(toMirrorEvent("message.changed", changedEvent(userMessage("m1", "问")))?.kind).toBe("message.changed");
     expect(toMirrorEvent("message.removed", removedEvent("m1"))?.kind).toBe("message.removed");
     expect(toMirrorEvent("state", stateEvent("working"))?.kind).toBe("state");
-    // `conversation.changed` 认领（死活与交接态都用它）；里面是哪一格由 `apply` 那一步判
+    // `session.changed` 认领（死活与交接态都用它）；里面是哪一格由 `apply` 那一步判
     expect(
-      toMirrorEvent("conversation.changed", conversationChangedEvent("handoff_started"))?.kind,
-    ).toBe("conversation.changed");
+      toMirrorEvent("session.changed", sessionChangedEvent("handoff_started"))?.kind,
+    ).toBe("session.changed");
   });
 
   it("两道闸的四条事件各自折成同名的那一格（名字自己说清哪一道、开还是关）", () => {
@@ -417,7 +417,7 @@ describe("toMirrorEvent", () => {
 
   it("另外三个事件不认领（它们说的不是消息，也不是那四件事）", () => {
     for (const event of ["notice", "question", "error", "some.future.event"]) {
-      expect(toMirrorEvent(event, { conversationId: "c1" })).toBeNull();
+      expect(toMirrorEvent(event, { sessionId: "c1" })).toBeNull();
     }
   });
 });

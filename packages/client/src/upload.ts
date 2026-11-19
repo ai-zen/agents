@@ -4,7 +4,7 @@
  * ## 三段式（可能只有一段）
  *
  * ```
- * asset.begin { purpose, mime, bytes, name?, sha256, conversationId }
+ * asset.begin { purpose, mime, bytes, name?, sha256, sessionId }
  *   → { deduped: false, uploadId, maxBytes, receivedBytes, asset: null }   新上传，接着发字节
  *   → { deduped: true,  uploadId: null, ...,           asset: AssetRef }  已经有了，到此为止
  * 若干二进制帧（见 chunkFrame.ts）                              → 没有回执，按 uploadId 落盘
@@ -28,9 +28,9 @@
  *
  * ## 一段对话的归属
  *
- * `asset.begin` 要 `conversationId`（宿主要确认这段对话存在、并在消息落库时把引用记到它名下）：
+ * `asset.begin` 要 `sessionId`（宿主要确认这段对话存在、并在消息落库时把引用记到它名下）：
  * 没有归属的上传只会在 `assets/` 里留下一个没人认领的文件。所以上传必须发生在**已经有一段对话**
- * 之后 —— 调用方手里得有 `conversationId`（草稿对话在 `asset.begin` 那一步由宿主落库）。
+ * 之后 —— 调用方手里得有 `sessionId`（草稿对话在 `asset.begin` 那一步由宿主落库）。
  */
 
 import { createHash } from "node:crypto";
@@ -98,7 +98,7 @@ export type AssetSource =
 /** `uploadAsset` 的入参：一段对话 + 一份内容（文件路径或字节）+ 可选分片大小 */
 export type UploadAssetOptions = {
   /** 这段素材归属哪段对话（`asset.begin` 必填） */
-  conversationId: string;
+  sessionId: string;
   /** 每片多少字节，缺省 {@link DEFAULT_CHUNK_SIZE} */
   chunkSize?: number;
 } & (
@@ -108,7 +108,7 @@ export type UploadAssetOptions = {
 
 /** `uploadAssets` 的入参：一次给多份内容（一次拖进几张图就是几条） */
 export interface UploadAssetsOptions {
-  conversationId: string;
+  sessionId: string;
   sources: readonly AssetSource[];
   chunkSize?: number;
 }
@@ -157,7 +157,7 @@ export async function uploadAsset(
     bytes: loaded.bytes.byteLength,
     ...(loaded.name === null ? {} : { name: loaded.name }),
     sha256: digest,
-    conversationId: options.conversationId,
+    sessionId: options.sessionId,
   });
 
   // 命中去重：宿主已经有这份字节，回的是既有引用（客户端一个帧也不欠）
@@ -317,7 +317,7 @@ function perSource(source: AssetSource, options: UploadAssetsOptions): UploadAss
   const chunk = options.chunkSize === undefined ? {} : { chunkSize: options.chunkSize };
   if ("path" in source) {
     return {
-      conversationId: options.conversationId,
+      sessionId: options.sessionId,
       path: source.path,
       ...(source.mime === undefined ? {} : { mime: source.mime }),
       ...(source.name === undefined ? {} : { name: source.name }),
@@ -325,7 +325,7 @@ function perSource(source: AssetSource, options: UploadAssetsOptions): UploadAss
     };
   }
   return {
-    conversationId: options.conversationId,
+    sessionId: options.sessionId,
     data: source.data,
     mime: source.mime,
     ...(source.name === undefined ? {} : { name: source.name }),

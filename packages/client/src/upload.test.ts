@@ -38,7 +38,7 @@ import {
 } from "./testSupport/fakeHost.js";
 
 const CLIENT_INFO: ClientInfo = { name: "upload-test", version: "0.0.0-test" };
-const CONVERSATION_ID = "conv-upload-1";
+const SESSION_ID = "conv-upload-1";
 
 /** 造一段可辨认的字节（每片内容不同，串台时一眼能看出来） */
 function bytesOf(length: number, seed: number): Uint8Array {
@@ -149,7 +149,7 @@ describe("分帧", () => {
     const before = binaryFrames(host).length;
 
     const asset = await uploadAsset(client, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       data: payload,
       mime: "image/png",
       name: "shot.png",
@@ -179,7 +179,7 @@ describe("分帧", () => {
       name: "shot.png",
       // 摘要在 `begin` 就交上去：宿主据此判断「这段对话里是不是已经有这份字节」
       sha256: sha256(payload),
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
     });
     const end = host.frames.filter((frame) => frame.method === "asset.end").at(-1);
     expect(end?.params).toEqual({ uploadId: "upload-1", sha256: sha256(payload) });
@@ -188,7 +188,7 @@ describe("分帧", () => {
   it("文本帧与二进制帧在同一条连接上互不影响（JSON-RPC 照常收发）", async () => {
     const before = host.frames.length;
     await uploadAsset(client, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       data: bytesOf(10, 1),
       mime: "image/png",
     });
@@ -203,7 +203,7 @@ describe("本地前置校验", () => {
   it("单张超过握手给的上限：本地就拒，一个字节都不发", async () => {
     const beforeFrames = host.messages.length;
     const error = (await uploadAsset(client, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       data: bytesOf(2048, 3),
       mime: "image/png",
     }).catch((caught: unknown) => caught)) as ClientError;
@@ -219,7 +219,7 @@ describe("本地前置校验", () => {
 
   it("空文件：本地拒（没有可上传的内容）", async () => {
     const error = (await uploadAsset(client, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       data: new Uint8Array(0),
       mime: "image/png",
     }).catch((caught: unknown) => caught)) as ClientError;
@@ -228,7 +228,7 @@ describe("本地前置校验", () => {
 
   it("读不了的文件：给的是路径与原因，不是一句 unexpected", async () => {
     const error = (await uploadAsset(client, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       path: join(tmpdir(), "ai-zen-does-not-exist.png"),
     }).catch((caught: unknown) => caught)) as ClientError;
 
@@ -242,7 +242,7 @@ describe("本地前置校验", () => {
     const payload = bytesOf(120, 5);
     await fs.writeFile(file, payload);
     try {
-      await uploadAsset(client, { conversationId: CONVERSATION_ID, path: file });
+      await uploadAsset(client, { sessionId: SESSION_ID, path: file });
       const begin = host.frames.filter((frame) => frame.method === "asset.begin").at(-1);
       expect(begin?.params).toMatchObject({
         mime: "image/png",
@@ -278,7 +278,7 @@ describe("宿主的拒", () => {
     });
     try {
       const error = (await uploadAsset(strictClient, {
-        conversationId: CONVERSATION_ID,
+        sessionId: SESSION_ID,
         data: bytesOf(64, 9),
         mime: "image/png",
       }).catch((caught: unknown) => caught)) as ClientError;
@@ -314,7 +314,7 @@ describe("宿主的拒", () => {
     });
     try {
       const error = (await uploadAsset(strictClient, {
-        conversationId: CONVERSATION_ID,
+        sessionId: SESSION_ID,
         data: bytesOf(64, 11),
         mime: "image/png",
       }).catch((caught: unknown) => caught)) as ClientError;
@@ -336,13 +336,13 @@ describe("并发", () => {
 
     const [a, b] = await Promise.all([
       uploadAsset(client, {
-        conversationId: CONVERSATION_ID,
+        sessionId: SESSION_ID,
         data: first,
         mime: "image/png",
         chunkSize: 128,
       }),
       uploadAsset(client, {
-        conversationId: CONVERSATION_ID,
+        sessionId: SESSION_ID,
         data: second,
         mime: "image/jpeg",
         chunkSize: 128,
@@ -370,7 +370,7 @@ describe("并发", () => {
       name: `${index}.png`,
     }));
 
-    const result = await uploadAssets(client, { conversationId: CONVERSATION_ID, sources });
+    const result = await uploadAssets(client, { sessionId: SESSION_ID, sources });
 
     // 握手说一条消息最多 4 张：前 4 张成了，第 5、6 张各有一条明确的失败
     expect(result.assets).toHaveLength(4);
@@ -384,7 +384,7 @@ describe("并发", () => {
 
   it("批量里有一份坏的：它进 failures，其余照常上传", async () => {
     const result = await uploadAssets(client, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       sources: [
         { data: bytesOf(8, 31), mime: "image/png" },
         { data: new Uint8Array(0), mime: "image/png", name: "empty.png" },
@@ -411,7 +411,7 @@ describe("连接状态", () => {
 
     // 关掉之后 `asset.begin` 发不出去：本地上游就把这一趟上传结束了
     const error = (await uploadAsset(closed, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       data: bytesOf(8, 41),
       mime: "image/png",
     }).catch((caught: unknown) => caught)) as ClientError;
@@ -466,7 +466,7 @@ describe("去重命中（asset.begin 说已经有了）", () => {
 
   it("`begin` 命中即结束：不发二进制帧、不调 `asset.end`，直接回既有引用", async () => {
     const asset = await uploadAsset(dedupeClient, {
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       data: bytesOf(12, 7),
       mime: "image/png",
       name: "already.png",
@@ -481,7 +481,7 @@ describe("去重命中（asset.begin 说已经有了）", () => {
     const begin = dedupeHost.frames.find((frame) => frame.method === "asset.begin");
     expect(begin?.params).toMatchObject({
       sha256: sha256(bytesOf(12, 7)),
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
     });
   });
 });

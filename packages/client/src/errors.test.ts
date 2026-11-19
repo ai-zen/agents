@@ -14,16 +14,16 @@ describe("fromHostError", () => {
       data: {
         code: "not_found",
         message: "这段对话不存在了",
-        detail: { conversationId: "c1" },
-        params: { what: "conversation" },
+        detail: { sessionId: "c1" },
+        params: { what: "session" },
       },
     });
 
     expect(error).toBeInstanceOf(ClientError);
     expect(error.code).toBe("not_found");
     expect(error.message).toBe("这段对话不存在了");
-    expect(error.detail).toEqual({ conversationId: "c1" });
-    expect(error.params).toEqual({ what: "conversation" });
+    expect(error.detail).toEqual({ sessionId: "c1" });
+    expect(error.params).toEqual({ what: "session" });
     expect(error.rpcCode).toBe(-32004);
     expect(error.fromHost).toBe(true);
   });

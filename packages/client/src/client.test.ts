@@ -13,7 +13,7 @@ import { Client, type SyncOutcome } from "./client.js";
 import { ClientError } from "./errors.js";
 import {
   assistantMessage,
-  conversationState,
+  sessionState,
   FakeMethodError,
   helloResult,
   listed,
@@ -141,8 +141,8 @@ describe("调用", () => {
           startedAt: "2026-01-01T00:00:00.000Z",
           pid: 4242,
         }),
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
       },
     });
@@ -151,11 +151,11 @@ describe("调用", () => {
     const version = await client.call("host.version");
     expect(version.pid).toBe(4242);
 
-    const { state } = await client.call("conversation.state", { conversationId: "c1" });
-    expect(state.conversationId).toBe("c1");
+    const { state } = await client.call("session.state", { sessionId: "c1" });
+    expect(state.sessionId).toBe("c1");
 
-    const stateFrame = host.frames.find((frame) => frame.method === "conversation.state");
-    expect(stateFrame?.params).toEqual({ conversationId: "c1" });
+    const stateFrame = host.frames.find((frame) => frame.method === "session.state");
+    expect(stateFrame?.params).toEqual({ sessionId: "c1" });
     // 无入参的方法发出去的帧里没有 params 这个键
     const versionFrame = host.frames.find((frame) => frame.method === "host.version");
     expect(versionFrame?.params).toBeUndefined();
@@ -164,11 +164,11 @@ describe("调用", () => {
   it("业务错误原样传到 ClientError（不重写文案、不猜原因）", async () => {
     const host = await startFake({
       methods: {
-        "conversation.get": () => {
+        "session.get": () => {
           throw new FakeMethodError({
             code: "not_found",
             message: "这段对话不存在了",
-            detail: { conversationId: "c1" },
+            detail: { sessionId: "c1" },
           });
         },
       },
@@ -176,11 +176,11 @@ describe("调用", () => {
     const client = await connect(host);
 
     const error = await client
-      .call("conversation.get", { conversationId: "c1" })
+      .call("session.get", { sessionId: "c1" })
       .catch((caught: unknown) => caught);
     expect((error as ClientError).code).toBe("not_found");
     expect((error as ClientError).message).toBe("这段对话不存在了");
-    expect((error as ClientError).detail).toEqual({ conversationId: "c1" });
+    expect((error as ClientError).detail).toEqual({ sessionId: "c1" });
   });
 
   it("等不到回执的调用以 call_timeout 收场", async () => {
@@ -217,9 +217,9 @@ describe("事件", () => {
     client.subscribe("state", (payload) => states.push(payload));
     client.subscribe("message.delta", (payload) => deltas.push(payload));
 
-    host.push("state", { conversationId: "c1", status: "busy", at: "2026-01-01T00:00:01.000Z" });
+    host.push("state", { sessionId: "c1", status: "busy", at: "2026-01-01T00:00:01.000Z" });
     host.push("message.delta", {
-      conversationId: "c1",
+      sessionId: "c1",
       messageId: "m1",
       delta: { content: "你" },
       at: "2026-01-01T00:00:02.000Z",
@@ -249,7 +249,7 @@ describe("事件", () => {
         level: "info",
         text: "好",
         duration: null,
-        conversationId: null,
+        sessionId: null,
         createdAt: "2026-01-01T00:00:00.000Z",
       },
       at: "2026-01-01T00:00:03.000Z",
@@ -283,11 +283,11 @@ describe("镜像：打开一段对话", () => {
 
     const host = await startFake({
       methods: {
-        "conversation.state": async (params) => {
+        "session.state": async (params) => {
           // 卡住这一跳：镜像已经进表、四件事还没读到
           await gate;
           return {
-            state: conversationState((params as { conversationId: string }).conversationId),
+            state: sessionState((params as { sessionId: string }).sessionId),
           };
         },
         "message.list": () => listed("c1", []),
@@ -296,7 +296,7 @@ describe("镜像：打开一段对话", () => {
     const client = await connect(host);
 
     const opening = client.open("c1");
-    await waitFor(() => host.frames.some((frame) => frame.method === "conversation.state"));
+    await waitFor(() => host.frames.some((frame) => frame.method === "session.state"));
 
     // 还没读到：四件都没有值（不借「死」占位，也不借「闲」占位）
     const pending = client.mirror("c1");
@@ -326,8 +326,8 @@ describe("镜像：打开一段对话", () => {
 
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": async () => {
           // 卡住这一跳，好在「订阅之后、快照落地之前」这一段里推事件
@@ -343,18 +343,18 @@ describe("镜像：打开一段对话", () => {
     await waitFor(() => host.frames.some((frame) => frame.method === "message.list"));
 
     host.push("message.added", {
-      conversationId: "c1",
+      sessionId: "c1",
       message: assistantMessage("m2", "答"),
       at: "2026-01-01T00:00:01.000Z",
     });
     host.push("message.delta", {
-      conversationId: "c1",
+      sessionId: "c1",
       messageId: "m2",
       delta: { content: "到一半" },
       at: "2026-01-01T00:00:02.000Z",
     });
-    host.push("state", { conversationId: "c1", status: "working", at: "2026-01-01T00:00:03.000Z" });
-    host.push("output:paused", { conversationId: "c1", at: "2026-01-01T00:00:04.000Z" });
+    host.push("state", { sessionId: "c1", status: "working", at: "2026-01-01T00:00:03.000Z" });
+    host.push("output:paused", { sessionId: "c1", at: "2026-01-01T00:00:04.000Z" });
     release();
 
     const mirror = await opening;
@@ -366,15 +366,15 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.messages[1]?.content).toBe("答到一半");
     // 消息是整段拉的（没有 after）
     const frames = host.frames.filter((frame) => frame.method === "message.list");
-    expect(frames[0]?.params).toEqual({ conversationId: "c1" });
+    expect(frames[0]?.params).toEqual({ sessionId: "c1" });
     expect(client.mirror("c1")).toBe(mirror);
   });
 
   it("同一段对话开两次：只拉一次快照，第二次拿的是同一个镜像", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": () => listed("c1", []),
       },
@@ -390,8 +390,8 @@ describe("镜像：打开一段对话", () => {
   it("关掉镜像之后，那段的事件不再折进来", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": () => listed("c1", []),
       },
@@ -401,7 +401,7 @@ describe("镜像：打开一段对话", () => {
     const mirror = await client.open("c1");
     client.closeMirror("c1");
     host.push("message.added", {
-      conversationId: "c1",
+      sessionId: "c1",
       message: userMessage("m1", "问"),
       at: "2026-01-01T00:00:01.000Z",
     });
@@ -409,11 +409,11 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.messages).toEqual([]);
     expect(client.mirror("c1")).toBeUndefined();
   });
-  it("`conversation.state` 的其余几格进镜像：名册铺栏、交接态非空即「正在交接」", async () => {
+  it("`session.state` 的其余几格进镜像：名册铺栏、交接态非空即「正在交接」", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": () => ({
-          state: conversationState("c1", {
+        "session.state": () => ({
+          state: sessionState("c1", {
             // 活着、手上没活、输出闸关着：四件事必须各报各的
             status: "idle",
             outputPaused: true,
@@ -441,7 +441,7 @@ describe("镜像：打开一段对话", () => {
 
     // 之后到达的消息事件按 toolCallId 归进那一栏，**不调 message.list { toolCallId }**
     host.push("message.added", {
-      conversationId: "c1",
+      sessionId: "c1",
       message: assistantMessage("s1", "子 agent 说的话"),
       toolCallId: "call-1",
       at: "2026-01-01T00:00:06.000Z",
@@ -458,11 +458,11 @@ describe("镜像：打开一段对话", () => {
     ).toEqual([]);
   });
 
-  it("`handoff_started` 直接进镜像那一格：不必重拉 `conversation.state`", async () => {
+  it("`handoff_started` 直接进镜像那一格：不必重拉 `session.state`", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": () => listed("c1", [userMessage("m1", "问")]),
       },
@@ -472,8 +472,8 @@ describe("镜像：打开一段对话", () => {
     // 打开这一拍不在交接
     expect(mirror.handoff).toBeNull();
 
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "handoff_started",
       at: "2026-01-01T00:00:07.000Z",
@@ -484,8 +484,8 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:07.000Z" });
 
     // 别的 kind（`renamed`）不动那一格：收口只认 `memory_replaced`
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "renamed",
       at: "2026-01-01T00:00:08.000Z",
@@ -494,7 +494,7 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:07.000Z" });
 
     // 这条事件只改镜像那一格：没有因此多拉一次读数，也没多拉一次消息
-    expect(host.frames.filter((frame) => frame.method === "conversation.state")).toHaveLength(1);
+    expect(host.frames.filter((frame) => frame.method === "session.state")).toHaveLength(1);
     expect(host.frames.filter((frame) => frame.method === "message.list")).toHaveLength(1);
     expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
   });
@@ -503,11 +503,11 @@ describe("镜像：打开一段对话", () => {
     let stateCalls = 0;
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => {
+        "session.state": (params) => {
           stateCalls += 1;
           // 首载那一读照常回；`memory_replaced` 之后的重拉卡住不回来（读数一直迟到）
           if (stateCalls > 1) return new Promise(() => undefined);
-          return { state: conversationState((params as { conversationId: string }).conversationId) };
+          return { state: sessionState((params as { sessionId: string }).sessionId) };
         },
         "message.list": () => listed("c1", []),
       },
@@ -515,16 +515,16 @@ describe("镜像：打开一段对话", () => {
     const client = await connect(host);
     const mirror = await client.open("c1");
 
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "handoff_started",
       at: "2026-01-01T00:00:07.000Z",
     });
     await waitFor(() => mirror.handoff !== null);
 
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "memory_replaced",
       at: "2026-01-01T00:00:09.000Z",
@@ -540,13 +540,13 @@ describe("镜像：打开一段对话", () => {
   it("`memory_replaced` → 全量整段替换镜像，顺带把「正在交接」收掉", async () => {
     // 这段记忆「换过之后」的样子，由假宿主在下面换掉
     let current = [userMessage("m1", "旧记忆里的那句")];
-    let state = conversationState("c1", {
+    let state = sessionState("c1", {
       subAgents: [],
       handoff: { since: "2026-01-01T00:00:05.000Z" },
     });
     const host = await startFake({
       methods: {
-        "conversation.state": () => ({ state }),
+        "session.state": () => ({ state }),
         "message.list": () => listed("c1", current),
       },
     });
@@ -557,9 +557,9 @@ describe("镜像：打开一段对话", () => {
 
     // 交接收尾：记忆换过了 —— 旧的没了，交接期间那几条也不在库里
     current = [userMessage("m2", "换过之后的第一句")];
-    state = conversationState("c1");
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    state = sessionState("c1");
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "memory_replaced",
       at: "2026-01-01T00:00:09.000Z",
@@ -569,7 +569,7 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.handoff).toBeNull();
     // 全量重拉（不带 after）：这是一次整段替换，不是续传
     const pulls = host.frames.filter((frame) => frame.method === "message.list");
-    expect(pulls.at(-1)?.params).toEqual({ conversationId: "c1" });
+    expect(pulls.at(-1)?.params).toEqual({ sessionId: "c1" });
   });
 
   it("`memory_replaced` 的重拉是「全量替换」而不是又一次首载：镜像还是同一个，栏也还在", async () => {
@@ -577,8 +577,8 @@ describe("镜像：打开一段对话", () => {
     let current = [userMessage("m1", "旧记忆里的那句")];
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId, {
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId, {
             subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
           }),
         }),
@@ -590,7 +590,7 @@ describe("镜像：打开一段对话", () => {
 
     // 子 agent 那一栏的内容只来自事件（不入库，重拉也拉不回来）
     host.push("message.added", {
-      conversationId: "c1",
+      sessionId: "c1",
       message: assistantMessage("s1", "子 agent 说的那句"),
       toolCallId: "call-1",
       at: "2026-01-01T00:00:06.000Z",
@@ -598,8 +598,8 @@ describe("镜像：打开一段对话", () => {
     await waitFor(() => mirror.subAgent("call-1").length === 1);
 
     current = [userMessage("m2", "换过之后的第一句")];
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "memory_replaced",
       at: "2026-01-01T00:00:09.000Z",
@@ -617,8 +617,8 @@ describe("镜像：打开一段对话", () => {
     let fail = true;
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": () => {
           if (fail) throw new FakeMethodError({ code: "internal", message: "这一下拉不动" });
@@ -641,8 +641,8 @@ describe("镜像：打开一段对话", () => {
   it("别的 kind（`settings_changed`）不触发重拉", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": () => listed("c1", [userMessage("m1", "问")]),
       },
@@ -650,8 +650,8 @@ describe("镜像：打开一段对话", () => {
     const client = await connect(host);
     const mirror = await client.open("c1");
 
-    host.push("conversation.changed", {
-      conversationId: "c1",
+    host.push("session.changed", {
+      sessionId: "c1",
       workspaceId: "w1",
       change: "renamed",
       at: "2026-01-01T00:00:09.000Z",
@@ -666,11 +666,11 @@ describe("重连：把镜像补回来", () => {
   it("按本地最后一条 id 补：锚点还在 → 替换 + 追加", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": (params) => {
-          const query = params as { conversationId: string; after?: string };
+          const query = params as { sessionId: string; after?: string };
           // 第一次是全量（打开），之后按 `after` 续传
           if (query.after === undefined) {
             return listed("c1", [userMessage("m1", "问"), assistantMessage("m2", "答到一半")]);
@@ -702,7 +702,7 @@ describe("重连：把镜像补回来", () => {
     const requests = host.frames.filter((frame) => frame.method === "message.list");
     expect(requests).toHaveLength(2);
     // 该 id 还在：交出去的就是它（含它自身的最新内容 + 之后全部）
-    expect(requests[1]?.params).toEqual({ conversationId: "c1", after: "m2" });
+    expect(requests[1]?.params).toEqual({ sessionId: "c1", after: "m2" });
 
     // 锚点那条是**替换**，不是又追加一条
     expect(mirror.messages.map((message) => message.content)).toEqual(["问", "答完了", "接着问"]);
@@ -716,11 +716,11 @@ describe("重连：把镜像补回来", () => {
   it("锚点不在（宿主回 anchor: null）→ 服务端给的是全量，整段替换", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": (params) => {
-          const query = params as { conversationId: string; after?: string };
+          const query = params as { sessionId: string; after?: string };
           if (query.after === undefined) return listed("c1", [userMessage("m1", "会被撤回的那条")]);
           return listed("c1", [userMessage("x1", "现在只剩这条")]);
         },
@@ -737,11 +737,11 @@ describe("重连：把镜像补回来", () => {
   it("本地一条都没有时 resync 不带 after：问的就是全量", async () => {
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => ({
-          state: conversationState((params as { conversationId: string }).conversationId),
+        "session.state": (params) => ({
+          state: sessionState((params as { sessionId: string }).sessionId),
         }),
         "message.list": (params) => {
-          const query = params as { conversationId: string; after?: string };
+          const query = params as { sessionId: string; after?: string };
           // 本地没有可续的那一条，`after` 不该被交代出去
           return query.after === undefined
             ? listed("c1", [])
@@ -757,7 +757,7 @@ describe("重连：把镜像补回来", () => {
 
     const pulls = host.frames.filter((frame) => frame.method === "message.list");
     expect(pulls).toHaveLength(2);
-    expect(pulls[1]?.params).toEqual({ conversationId: "c1" });
+    expect(pulls[1]?.params).toEqual({ sessionId: "c1" });
     expect(mirror.messages).toEqual([]);
   });
 
@@ -779,17 +779,17 @@ describe("重连：把镜像补回来", () => {
     const seen = new Map<string, number>();
     const host = await startFake({
       methods: {
-        "conversation.state": (params) => {
-          const conversationId = (params as { conversationId: string }).conversationId;
-          const times = (seen.get(conversationId) ?? 0) + 1;
-          seen.set(conversationId, times);
-          if (conversationId === "gone" && times > 1) {
+        "session.state": (params) => {
+          const sessionId = (params as { sessionId: string }).sessionId;
+          const times = (seen.get(sessionId) ?? 0) + 1;
+          seen.set(sessionId, times);
+          if (sessionId === "gone" && times > 1) {
             throw new FakeMethodError({ code: "not_found", message: "这段对话不存在了" });
           }
-          return { state: conversationState(conversationId) };
+          return { state: sessionState(sessionId) };
         },
         "message.list": (params) =>
-          listed((params as { conversationId: string }).conversationId, [
+          listed((params as { sessionId: string }).sessionId, [
             userMessage("m1", "问"),
           ]),
       },
@@ -804,8 +804,8 @@ describe("重连：把镜像补回来", () => {
 
     await client.reconnect();
 
-    expect(outcomes.map((outcome) => outcome.conversationId).sort()).toEqual(["c1", "gone"]);
-    const failed = outcomes.find((outcome) => outcome.conversationId === "gone");
+    expect(outcomes.map((outcome) => outcome.sessionId).sort()).toEqual(["c1", "gone"]);
+    const failed = outcomes.find((outcome) => outcome.sessionId === "gone");
     expect(failed?.ok).toBe(false);
     if (failed && !failed.ok) expect(failed.error.code).toBe("not_found");
     expect(client.connected).toBe(true);
@@ -840,7 +840,7 @@ describe("类型（编译期）", () => {
     // 事件名与载荷按 `EventMap` 收窄：`state` 的载荷里只有那一格
     client.subscribe("state", (payload) => {
       expectTypeOf(payload.status).toEqualTypeOf<
-        import("@ai-zen/agents-host").ConversationActivity
+        import("@ai-zen/agents-host").SessionActivity
       >();
     });
     await client.close();

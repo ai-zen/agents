@@ -14,7 +14,7 @@
  *   · 中途把连接掐掉（断线 → 重连 → 补镜像那条链）；
  *   · 按需推事件（`message.delta` 这类只有真跑起来才会有的推送）。
  *
- * 夹具（`helloResult` / `conversationState` / `assistantMessage`）用的都是**契约里的类型**：
+ * 夹具（`helloResult` / `sessionState` / `assistantMessage`）用的都是**契约里的类型**：
  * 宿主改了形状而这里没跟上时，`tsc` 会先报错。
  */
 
@@ -25,7 +25,7 @@ import type { Socket } from "node:net";
 import { AgentNS } from "@ai-zen/agents-core";
 import type {
   AgentNS as AgentNSTypes,
-  ConversationState,
+  SessionState,
   HostHelloResult,
   MessageListResult,
 } from "@ai-zen/agents-host";
@@ -173,7 +173,7 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
 }
 
 /**
- * 一份 `conversation.state` 的 `state`：一段对话此刻的读数 = **四件事各一格** + 队里还压着什么 +
+ * 一份 `session.state` 的 `state`：一段对话此刻的读数 = **四件事各一格** + 队里还压着什么 +
  * 子 agent 名册 + 交接态 + 读数的时刻。
  *
  * 默认摆的是「刚建出来、还没有 agent」那一份：忙闲 `idle`（没有人，手上当然没活）、两道闸都
@@ -182,12 +182,12 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
  * 这里**没有**用量、没有「请求中 / 思考中 / 输出中」这类阶段：用量在每条消息的 `usage` 上，
  * 阶段由客户端按到达的事件自己推。
  */
-export function conversationState(
-  conversationId: string,
-  overrides: Partial<ConversationState> = {},
-): ConversationState {
+export function sessionState(
+  sessionId: string,
+  overrides: Partial<SessionState> = {},
+): SessionState {
   return {
-    conversationId,
+    sessionId,
     status: "idle",
     inputPaused: false,
     outputPaused: false,
@@ -204,11 +204,11 @@ export function conversationState(
 
 /** 一条 `message.list` 的回执：`anchor` 是命中的那条（没命中 / 没给 `after` 就是 `null`） */
 export function listed(
-  conversationId: string,
+  sessionId: string,
   messages: AgentNSTypes.Message[],
   anchor: string | null = null,
 ): MessageListResult {
-  return { conversationId, anchor, messages };
+  return { sessionId, anchor, messages };
 }
 
 /** 一条 assistant 消息（`AgentNS.Message` 原样，不包外壳） */

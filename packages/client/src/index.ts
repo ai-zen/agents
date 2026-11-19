@@ -8,7 +8,7 @@
  * | 一条已经握过手的连接：`call` / `subscribe` / `close` / `reconnect` | {@link Client}（`client.ts`） |
  * | 「有就上、没有就拉一个」 | {@link ensureHost}（`connection.ts`） |
  * | 记住上次连的是哪台、说哪种语言 | `settings.ts` |
- * | 断线之后把镜像补回来（四件事 + 消息） | `mirror.ts`（`ConversationMirror`）/ {@link Client.resync} |
+ * | 断线之后把镜像补回来（四件事 + 消息） | `mirror.ts`（`SessionMirror`）/ {@link Client.resync} |
  * | 重连几次、等多久 | `reconnect.ts` |
  * | 把图片传上去、回一个能放进消息的引用 | `upload.ts`（`uploadAsset` / `uploadAssets`） |
  * | 按素材 id 把内容取回来（历史里的 `__asset_id`） | `asset.ts`（`getAsset` / `getSectionAsset`） |
@@ -71,7 +71,7 @@ export type {
 export { ClientError, fromHostError, isClientError, localError } from "./errors.js";
 export type { ClientErrorCode, LocalErrorCode } from "./errors.js";
 
-export { ConversationMirror, toMirrorEvent } from "./mirror.js";
+export { SessionMirror, toMirrorEvent } from "./mirror.js";
 export type { MirrorEvent, MirrorSnapshot, SubAgentColumn } from "./mirror.js";
 
 export {
@@ -142,10 +142,10 @@ export type {
   ClientInfo,
   HostHelloParams,
   HostHelloResult,
-  // 状态形状（`conversation.state` 读回来的那四件事；`state` 事件推的是其中忙闲那一格）
-  ConversationActivity,
-  ConversationPresence,
-  ConversationState,
+  // 状态形状（`session.state` 读回来的那四件事；`state` 事件推的是其中忙闲那一格）
+  SessionActivity,
+  SessionPresence,
+  SessionState,
   InboxItem,
   NoticeView,
   QuestionView,
@@ -154,7 +154,7 @@ export type {
   ErrorData,
   // 消息本体与增量（core 的定义）
   AgentNS,
-  // 上传产物与附件结局（`asset.end` 回的那个引用、`conversation.send` 回的逐条结局）
+  // 上传产物与附件结局（`asset.end` 回的那个引用、`session.send` 回的逐条结局）
   AssetRef,
   AssetVariant,
   AttachmentDelivery,

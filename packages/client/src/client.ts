@@ -23,7 +23,7 @@
  * ## 不重放、不 ack
  *
  * 事件是 JSON-RPC 通知（无 `id`），断线即作废。重连之后由 {@link Client.resync} 把镜像补回来
- * （`conversation.state` 读那四件事 + `message.list({ after })` 拉增量，见 `mirror.ts`）。所以这里没有
+ * （`session.state` 读那四件事 + `message.list({ after })` 拉增量，见 `mirror.ts`）。所以这里没有
  * 「补发」的逻辑，也没有「确认收到」的往返。
  *
  * ## 传输用 Node 内建的全局 `WebSocket`
@@ -50,7 +50,7 @@ import type {
 import { addressLabel, parseAddress, webSocketUrl, type HostTarget } from "./address.js";
 import { ClientError, fromHostError, localError } from "./errors.js";
 import { encodeFrame, parseIncoming, requestFrame } from "./frames.js";
-import { ConversationMirror, toMirrorEvent, type MirrorEvent } from "./mirror.js";
+import { SessionMirror, toMirrorEvent, type MirrorEvent } from "./mirror.js";
 
 /** 取消订阅（`subscribe` / `onClose` / `onSync` 的返回值） */
 export type Unsubscribe = () => void;
@@ -107,7 +107,7 @@ const BINARY_DRAIN_INTERVAL_MS = 2;
  * `call` 的其余入参：方法本身没有入参（`NoParams`）时可以整段省掉。
  *
  * 由 `MethodParams` 推出来，所以 `call("host.version")` 与
- * `call("conversation.state", { conversationId })` 各自是各自的样子 —— 不必为了「有的方法没参数」
+ * `call("session.state", { sessionId })` 各自是各自的样子 —— 不必为了「有的方法没参数」
  * 在契约或调用点写宽松重载。
  */
 export type MethodCallArgs<M extends MethodName> =
@@ -117,8 +117,8 @@ export type MethodCallArgs<M extends MethodName> =
 
 /** 一次补镜像的结果：补上了给镜像，没补上给原因（两条路都要让调用方看见） */
 export type SyncOutcome =
-  | { ok: true; conversationId: string; mirror: ConversationMirror }
-  | { ok: false; conversationId: string; error: ClientError };
+  | { ok: true; sessionId: string; mirror: SessionMirror }
+  | { ok: false; sessionId: string; error: ClientError };
 
 /**
  * 一次快照的落法 —— `message.list` 怎么问、回来怎么并（见 {@link Client.loadSnapshot}）。
@@ -158,12 +158,12 @@ export class Client implements ContractCaller {
   private readonly closeHandlers = new Set<(error: ClientError) => void>();
   private readonly syncHandlers = new Set<(outcome: SyncOutcome) => void>();
   /**
-   * 打开着的镜像（`conversationId` → 镜像）。这张表就是「我要跟着哪几段对话」的全部依据：
+   * 打开着的镜像（`sessionId` → 镜像）。这张表就是「我要跟着哪几段对话」的全部依据：
    * 重连之后按它逐段补回。
    */
-  private readonly mirrors = new Map<string, ConversationMirror>();
+  private readonly mirrors = new Map<string, SessionMirror>();
   /**
-   * 拉快照期间到达的事件先攒在这里（`conversationId` → 按到达顺序排的队）。
+   * 拉快照期间到达的事件先攒在这里（`sessionId` → 按到达顺序排的队）。
    *
    * 有键 = 这一段正在拉快照。没键 = 事件直接折进镜像。
    */
@@ -365,7 +365,7 @@ export class Client implements ContractCaller {
    * 这四步的先后不能换：
    *   1. **先订阅**：镜像先进 {@link Client.mirrors} 表，并给它开一个缓冲队列。从这一刻起，
    *      与镜像有关的事件一律先进队列 —— 拉取期间发生的事一条都不会丢。
-   *   2. **读四件事**（`conversation.state`）：先读它，是因为之后再到达的事件总比这个读数值新，
+   *   2. **读四件事**（`session.state`）：先读它，是因为之后再到达的事件总比这个读数值新，
    *      补在它后面不会把状态往回拨；反过来的话（先读消息、后读状态），补的那一批就会把新的
    *      状态覆盖成旧的。
    *   3. **拉全量**（`message.list`，不带 `after`）：整段主线消息。
@@ -379,38 +379,38 @@ export class Client implements ContractCaller {
    * 已经在镜像表里的对话直接回那一个（同一段不并发拉两份快照）。拉取失败时**不留半份镜像**：
    * 一个只有事件、没有历史的镜像比没有更糟。
    */
-  async open(conversationId: string): Promise<ConversationMirror> {
-    const existing = this.mirrors.get(conversationId);
+  async open(sessionId: string): Promise<SessionMirror> {
+    const existing = this.mirrors.get(sessionId);
     if (existing) {
       // 正在拉快照就跟它一起等：第二个调用方拿到的不该是「还没拉全」的那一份
-      await this.snapshots.get(conversationId);
+      await this.snapshots.get(sessionId);
       return existing;
     }
 
     // 四件事先空着（`null` = 还没读到）：既不借「死」占位（那会让界面去提示复活一段好端端的
     // 对话），也不借「闲」占位（那会让界面以为它会理你）；`applyReadout` 之后四件一次补齐
-    const mirror = new ConversationMirror({ conversationId });
-    this.mirrors.set(conversationId, mirror);
+    const mirror = new SessionMirror({ sessionId });
+    this.mirrors.set(sessionId, mirror);
     try {
-      await this.loadSnapshot(conversationId, mirror, "replace");
+      await this.loadSnapshot(sessionId, mirror, "replace");
     } catch (error) {
-      this.mirrors.delete(conversationId);
-      this.buffers.delete(conversationId);
-      this.snapshots.delete(conversationId);
+      this.mirrors.delete(sessionId);
+      this.buffers.delete(sessionId);
+      this.snapshots.delete(sessionId);
       throw error;
     }
     return mirror;
   }
 
   /** 这段对话的镜像（没打开过就是空） */
-  mirror(conversationId: string): ConversationMirror | undefined {
-    return this.mirrors.get(conversationId);
+  mirror(sessionId: string): SessionMirror | undefined {
+    return this.mirrors.get(sessionId);
   }
 
   /** 不再跟着这段对话（关掉它 / 换对话时调） */
-  closeMirror(conversationId: string): void {
-    this.mirrors.delete(conversationId);
-    this.buffers.delete(conversationId);
+  closeMirror(sessionId: string): void {
+    this.mirrors.delete(sessionId);
+    this.buffers.delete(sessionId);
   }
 
   /**
@@ -426,11 +426,11 @@ export class Client implements ContractCaller {
    *
    * 没打开过的对话就是一次 `open`。拉取期间到达的事件同样先攒后补（与 {@link Client.open} 同一条规矩）。
    */
-  async resync(conversationId: string): Promise<ConversationMirror> {
-    const mirror = this.mirrors.get(conversationId);
-    if (!mirror) return this.open(conversationId);
+  async resync(sessionId: string): Promise<SessionMirror> {
+    const mirror = this.mirrors.get(sessionId);
+    if (!mirror) return this.open(sessionId);
 
-    await this.loadSnapshot(conversationId, mirror, "continue");
+    await this.loadSnapshot(sessionId, mirror, "continue");
     return mirror;
   }
 
@@ -722,10 +722,10 @@ export class Client implements ContractCaller {
   /**
    * 一条事件 → 镜像：那段对话正在拉快照就先进队列，否则当场折进去。
    *
-   * 事件带 `conversationId` 是契约里每一条事件都有的定位信息；没有它的（将来的新事件）这里
+   * 事件带 `sessionId` 是契约里每一条事件都有的定位信息；没有它的（将来的新事件）这里
    * 就不认领 —— 与镜像无关的事件（`notice` / `question` / `error`）由 `toMirrorEvent` 回空。
    *
-   * `conversation.changed` 在这里也过一道：镜像只认它里面与交接态有关的那两格
+   * `session.changed` 在这里也过一道：镜像只认它里面与交接态有关的那两格
    * （`handoff_started` / `memory_replaced`），其余 change 一格不动 —— 这条事件只改镜像那一格，
    * **不**触发任何拉取（`memory_replaced` 的重拉在 {@link Client.reloadOnMemoryReplaced}，是另一件事）。
    */
@@ -735,7 +735,7 @@ export class Client implements ContractCaller {
     const event = toMirrorEvent(method, payload);
     if (!event) return;
 
-    const queue = this.buffers.get(mirror.conversationId);
+    const queue = this.buffers.get(mirror.sessionId);
     if (queue) {
       queue.push(event);
       return;
@@ -743,22 +743,22 @@ export class Client implements ContractCaller {
     mirror.apply(event);
   }
 
-  private mirrorByPayload(payload: unknown): ConversationMirror | undefined {
+  private mirrorByPayload(payload: unknown): SessionMirror | undefined {
     if (payload === null || typeof payload !== "object") return undefined;
-    const conversationId = (payload as { conversationId?: unknown }).conversationId;
-    if (typeof conversationId !== "string") return undefined;
-    return this.mirrors.get(conversationId);
+    const sessionId = (payload as { sessionId?: unknown }).sessionId;
+    if (typeof sessionId !== "string") return undefined;
+    return this.mirrors.get(sessionId);
   }
 
   /**
-   * `conversation.changed` 里唯一需要客户端**动一次**的那一格：`memory_replaced`。
+   * `session.changed` 里唯一需要客户端**动一次**的那一格：`memory_replaced`。
    *
    * 交接期间这段对话写出来的那几条只在内存里、从不落库（宿主那边只跳过写库，事件照推）。所以
    * 提交或回滚之后，客户端手里那几条是**库里根本不存在**的消息 —— 宿主推这一条就是让这里
-   * **整段替换**：重拉一次 `conversation.state` 与 `message.list` 全量。
+   * **整段替换**：重拉一次 `session.state` 与 `message.list` 全量。
    *
    * 「正在交接」那一格不靠这次重拉收：它在事件到达的那一刻就被镜像自己清掉了
-   * （`mirror.ts` 的 `conversationChanged`，提交与回滚推的都是这一格），所以读数没回来之前界面
+   * （`mirror.ts` 的 `sessionChanged`，提交与回滚推的都是这一格），所以读数没回来之前界面
    * 就已经不在交接态上了。
    *
    * 同这一段正在拉快照时不再并发拉第二份（`snapshotWhileBuffering` 自己会串起来），拉取期间
@@ -767,15 +767,15 @@ export class Client implements ContractCaller {
    * 没打开过这段对话就什么都不做：下次 `open` 本来就是一次全量。
    */
   private reloadOnMemoryReplaced(method: string, payload: unknown): void {
-    if (method !== "conversation.changed") return;
+    if (method !== "session.changed") return;
     if (payload === null || typeof payload !== "object") return;
-    const fact = payload as { conversationId?: unknown; change?: unknown };
+    const fact = payload as { sessionId?: unknown; change?: unknown };
     if (fact.change !== "memory_replaced") return;
-    const conversationId = typeof fact.conversationId === "string" ? fact.conversationId : "";
-    const mirror = this.mirrors.get(conversationId);
+    const sessionId = typeof fact.sessionId === "string" ? fact.sessionId : "";
+    const mirror = this.mirrors.get(sessionId);
     if (!mirror) return;
     // 拉失败不吵：镜像留在上一份，下一次 `resync`（或再一条 `memory_replaced`）会补上
-    void this.reloadMirror(conversationId, mirror).catch(() => undefined);
+    void this.reloadMirror(sessionId, mirror).catch(() => undefined);
   }
 
   /**
@@ -785,8 +785,8 @@ export class Client implements ContractCaller {
    * 整段替换），**但不建镜像** —— 手上这一份留着，子 Agent 那几栏也留着（`replaceAll` 只换主线；
    * 子 agent 的消息不入库，重拉也拉不回来）。
    */
-  private async reloadMirror(conversationId: string, mirror: ConversationMirror): Promise<void> {
-    await this.loadSnapshot(conversationId, mirror, "replace");
+  private async reloadMirror(sessionId: string, mirror: SessionMirror): Promise<void> {
+    await this.loadSnapshot(sessionId, mirror, "replace");
   }
 
   /**
@@ -798,7 +798,7 @@ export class Client implements ContractCaller {
    *      {@link SnapshotMode}）；
    *   2. 失败时镜像怎么办 —— 首载把半份镜像整段丢掉（{@link Client.open}），另两处留着上一份。
    *
-   * 其余逐字相同，也正是这个方法的内容：先读 `conversation.state`（四件事 + 名册 + 交接态一起收下，
+   * 其余逐字相同，也正是这个方法的内容：先读 `session.state`（四件事 + 名册 + 交接态一起收下，
    * 名册用来铺子 agent 那几栏），再拉消息，拉取期间到达的事件先攒后补
    * （{@link Client.snapshotWhileBuffering}）。三处各写一遍时，任何一处漏掉「先攒后补」或漏读
    * 一格都没人会发现；收在这里之后，`message.list` 再多一个参数也只改这一行。
@@ -808,22 +808,22 @@ export class Client implements ContractCaller {
    * 里「正在交接」不会一直挂着。
    */
   private async loadSnapshot(
-    conversationId: string,
-    mirror: ConversationMirror,
+    sessionId: string,
+    mirror: SessionMirror,
     mode: SnapshotMode,
   ): Promise<void> {
-    await this.snapshotWhileBuffering(conversationId, async () => {
-      const { state } = await this.call("conversation.state", { conversationId });
+    await this.snapshotWhileBuffering(sessionId, async () => {
+      const { state } = await this.call("session.state", { sessionId });
       mirror.applyReadout(state);
       if (mode === "replace") {
-        const listed = await this.call("message.list", { conversationId });
+        const listed = await this.call("message.list", { sessionId });
         mirror.replaceAll(listed.messages);
         return;
       }
       // 续传：`after` 就是本地主线最后一条（本地一条都没有时等于一次全量），接在哪里看 `anchor`
       const after = mirror.lastMessageId();
       const listed = await this.call("message.list", {
-        conversationId,
+        sessionId,
         ...(after === undefined ? {} : { after }),
       });
       mirror.mergeFrom(listed.anchor, listed.messages);
@@ -840,41 +840,41 @@ export class Client implements ContractCaller {
    * 同一段已有一次快照在路上时，第二个调用方等那一次（同一时刻不并发拉两份）。
    */
   private async snapshotWhileBuffering(
-    conversationId: string,
+    sessionId: string,
     load: () => Promise<void>,
   ): Promise<void> {
-    const running = this.snapshots.get(conversationId);
+    const running = this.snapshots.get(sessionId);
     if (running) return running;
 
     const queue: MirrorEvent[] = [];
-    this.buffers.set(conversationId, queue);
+    this.buffers.set(sessionId, queue);
     const task = (async () => {
       try {
         await load();
       } finally {
-        this.buffers.delete(conversationId);
-        this.snapshots.delete(conversationId);
-        const mirror = this.mirrors.get(conversationId);
+        this.buffers.delete(sessionId);
+        this.snapshots.delete(sessionId);
+        const mirror = this.mirrors.get(sessionId);
         if (mirror) {
           for (const event of queue) mirror.apply(event, { replay: true });
           mirror.endReplay();
         }
       }
     })();
-    this.snapshots.set(conversationId, task);
+    this.snapshots.set(sessionId, task);
     return task;
   }
 
   /** 重连之后把打开着的镜像逐段补回来 */
   private async resyncAll(): Promise<void> {
-    for (const conversationId of [...this.mirrors.keys()]) {
+    for (const sessionId of [...this.mirrors.keys()]) {
       try {
         // 一段补不上（对话被删 / 那一刻宿主出错）不该拖住其它段，所以逐段 try：
         // 失败的这一段照旧留在表里，下次重连或调用方手动 `resync` 时再试
-        const mirror = await this.resync(conversationId);
-        this.notifySync({ ok: true, conversationId, mirror });
+        const mirror = await this.resync(sessionId);
+        this.notifySync({ ok: true, sessionId, mirror });
       } catch (error) {
-        this.notifySync({ ok: false, conversationId, error: toClientError(error) });
+        this.notifySync({ ok: false, sessionId, error: toClientError(error) });
       }
     }
   }
