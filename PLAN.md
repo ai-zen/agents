@@ -214,7 +214,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **`tx` 是声明式批次，不是「在事务里跑一段 JS」**：回调里的 `all` / `get` / `run` 只**登记**语句（拿到带下标的凭据），回调返回后整批一次性送进 worker：`BEGIN IMMEDIATE` → 按登记顺序逐条执行 → `COMMIT`，任一条失败整批 `ROLLBACK`，结果按凭据对回调用方。边界是**读到的值回不到 JS 里去决定下一条写什么**（要那样得让 worker 等主线程）；需要按读到的值分支的场合，把条件写进 SQL（PRD R19 / R31）。
 
-**表骨架**（`storage/migrations.ts`，眼下到 **v6**）：`workspaces`（`cwd` 不可变且 `UNIQUE`，**没有** `updatedAt`）、`sessions`（`agentId` / `modelId` NOT NULL、`nameIsAuto`、`thinkingLevel` 可空、`compactedAt` / `compactionMode` 可空、v4 的四列见下；v5 加 `pendingHandoff`（待交接的 mode，可空））、`messages`（`seq`、`status`、`omit`、`content`、`searchText`）、`assets`（`sha256` 全局 UNIQUE + 宽高，**不记归属**）、`session_assets`（关系行，`assetId` 为 `ON DELETE RESTRICT`）、`asset_vendor_files`（厂商 `file_id` 缓存）、`notices`（`code` + `params` + `durationMs`）、`credentials`、`meta` + FTS5 虚表 `messages_fts`（`tokenize='trigram'`，三触发器同步）。
+**表骨架**（`storage/migrations.ts`，眼下到 **v6**）：**表名、列名、索引名一律按 `session` 写**（`sessions` / `session_assets` / `sessionId` / `idx_sessions_*`）；**没有兼容改名那一版** —— 库里没有旧版本，改名的批次直接落在 v1 的建表语句上，不做 RENAME 迁移。`workspaces`（`cwd` 不可变且 `UNIQUE`，**没有** `updatedAt`）、`sessions`（`agentId` / `modelId` NOT NULL、`nameIsAuto`、`thinkingLevel` 可空、`compactedAt` / `compactionMode` 可空、v4 的四列见下；v5 加 `pendingHandoff`（待交接的 mode，可空））、`messages`（`seq`、`status`、`omit`、`content`、`searchText`）、`assets`（`sha256` 全局 UNIQUE + 宽高，**不记归属**）、`session_assets`（关系行，`assetId` 为 `ON DELETE RESTRICT`）、`asset_vendor_files`（厂商 `file_id` 缓存）、`notices`（`code` + `params` + `durationMs`）、`credentials`、`meta` + FTS5 虚表 `messages_fts`（`tokenize='trigram'`，三触发器同步）。
 
 **v5 除了加那列，还删了两样**：`questions` 整张表（题不落库，`PRD.md` 4.10）与 `messages.parentToolCallId` 列及它的索引（subagent 的话不入库，`CORE.md` §17）—— 两份都不该有地方可存。
 
