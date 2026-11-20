@@ -133,22 +133,16 @@ describe("fileToContentSection：传输方式选择", () => {
     expect(upload).toHaveBeenCalledTimes(3);
   });
 
-  it("上传失败自动降级为 base64 内联，并给出 warning", async () => {
+  it("上传失败原样抛错，不换成 base64 内联", async () => {
     const upload = vi.fn(async () => {
       throw new Error("boom");
     });
     const file = await tmpImage();
-    const r = await fileToContentSection({
-      source: { path: file },
-      endpoint: deepseek,
-      deps: { upload },
-    });
 
-    expect(r.transport).toBe("inline");
-    expect(r.warning).toMatch(/Files API upload failed/);
-    const section = r.section as { type: string; image_url: { url: string } };
-    expect(section.type).toBe("image_url");
-    expect(section.image_url.url.startsWith("data:image/png;base64,")).toBe(true);
+    await expect(
+      fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } }),
+    ).rejects.toThrow("boom");
+    expect(upload).toHaveBeenCalledTimes(1);
   });
 
   it("端点不支持 Files API：图片走 image_url + base64", async () => {
@@ -242,8 +236,8 @@ describe("fileToContentSection：传输方式选择", () => {
  * 默认上传实现走的是**真 HTTP**（`fetch` + `FormData`），不再是 `openai` 包。
  *
  * 这里用本地 `node:http` 假端点钉住线格式：路径、鉴权头、multipart 的两个字段名。
- * 换实现时这三样最容易悄悄错 —— 而错了的表现是「上传失败 → 静默降级成内联」，
- * 界面上一切正常，只是每张图都变成请求体里的 base64。
+ * 换实现时这三样最容易悄悄错 —— 错了的表现以前是「上传失败 → 静默降级成内联」，
+ * 界面上一切正常、只是每张图都变成请求体里的 base64；现在降级已经删了，错了就是直接抛错。
  */
 describe("默认上传实现（真 HTTP，不注入 upload）", () => {
   async function fakeEndpoint(): Promise<{
@@ -303,22 +297,20 @@ describe("默认上传实现（真 HTTP，不注入 upload）", () => {
 
       expect(r.transport).toBe("files-api");
       expect(r.section).toEqual({ type: "file", file_id: "file-from-http" });
-      expect(r.warning).toBeUndefined();
     } finally {
       await fake.close();
     }
   });
 
-  it("端点返回非 2xx：抛错，由调用方降级为内联并给出 warning", async () => {
+  it("端点返回非 2xx：原样抛错，不换成 base64 内联", async () => {
     const fake = await fakeEndpoint();
     fake.reply.status = 500;
     fake.reply.body = JSON.stringify({ error: "nope" });
     try {
       const file = await tmpImage();
-      const r = await fileToContentSection({ source: { path: file }, endpoint: fake.endpoint });
-      expect(r.transport).toBe("inline");
-      expect(r.warning).toMatch(/Files API upload failed/);
-      expect(r.warning).toContain("500");
+      await expect(
+        fileToContentSection({ source: { path: file }, endpoint: fake.endpoint }),
+      ).rejects.toThrow(/File upload failed: HTTP 500/);
     } finally {
       await fake.close();
     }

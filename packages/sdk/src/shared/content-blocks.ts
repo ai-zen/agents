@@ -6,7 +6,7 @@
  * | 条件 | 结果 |
  * |------|------|
  * | http(s) URL | 直接 `image_url`（不上传、不内联） |
- * | 端点声明 `capabilities.filesApi` | 上传 Files API → `file` 块（`file_id`），失败降级为内联 |
+ * | 端点声明 `capabilities.filesApi` | 上传 Files API → `file` 块（`file_id`）；上传失败即抛，不换传输方式 |
  * | 其余端点 + 图片 | `image_url` + base64 data URL |
  * | 其余端点 + 非图片 | `file` 块 + `file_data`（base64 data URL） |
  * | 模型明确不支持视觉（`vision === false`）且是图片 | 退化为 `text`，只给路径提示 |
@@ -95,7 +95,12 @@ export interface FileToSectionResult {
   transport: ContentTransport;
   /** 实际处理的字节数（URL 来源为 0） */
   bytes: number;
-  /** 降级 / 退化时的人类可读说明，供上层拼提示 */
+  /**
+   * 退化为文本提示时的人类可读说明，供上层拼提示。
+   *
+   * 唯一产生者是下面「模型看不见图 → 退化为文本」那一支。上传失败不再是产生者：
+   * 那条路径现在直接抛错，由调用方落成「这一次没成」。
+   */
   warning?: string;
 }
 
@@ -184,6 +189,8 @@ function textSection(text: string): AgentNS.MessageContentSection {
  * 抛错场景（均由调用方决定如何呈现给模型）：
  * - `source.url` 不是 http(s)（本地 URL 服务商访问不到）
  * - 本地文件不存在 / 不是文件 / 扩展名不支持
+ * - 端点声明了 Files API 但上传失败（HTTP 非 2xx、网络错误、取消）：不换成 base64 内联，
+ *   原错误原样抛——换传输方式是调用方该知道的事，不该在这里静默发生
  * - 需要内联但体积超过上限，且端点不支持上传
  */
 export async function fileToContentSection(
@@ -266,21 +273,15 @@ export async function fileToContentSection(
     };
   }
 
-  // ---- 4. 端点支持 Files API：上传（每次调用都真上传），失败降级内联 ----
-  let warning: string | undefined;
+  // ---- 4. 端点支持 Files API：上传（每次调用都真上传），失败原样抛 ----
   if (supportsFilesApi(endpoint) && endpoint?.apiKey) {
-    try {
-      const upload = input.deps?.upload ?? defaultUpload;
-      const fileId = await upload({ endpoint, data: ensureBytes(), filename, signal });
-      return {
-        section: { type: "file", file_id: fileId },
-        transport: "files-api",
-        bytes: byteLength,
-      };
-    } catch (error: any) {
-      if (signal?.aborted) throw error;
-      warning = `Files API upload failed, falling back to base64 inline: ${error?.message ?? error}`;
-    }
+    const upload = input.deps?.upload ?? defaultUpload;
+    const fileId = await upload({ endpoint, data: ensureBytes(), filename, signal });
+    return {
+      section: { type: "file", file_id: fileId },
+      transport: "files-api",
+      bytes: byteLength,
+    };
   }
 
   // ---- 5. 内联（base64 data URL）----
@@ -299,6 +300,5 @@ export async function fileToContentSection(
       : { type: "file", file_data: dataUrl, filename },
     transport: "inline",
     bytes: byteLength,
-    warning,
   };
 }

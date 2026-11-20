@@ -116,14 +116,13 @@ export class ViewImageTool extends SdkCallbackTool {
           : result.transport === "inline"
             ? `, inlined as base64 (${(result.bytes / 1024).toFixed(0)} KB)`
             : "";
-      const extra = result.warning ? ` (fallback: ${result.warning})` : "";
-
-      return [{ type: "text", text: `${label}${how}${extra}` }, result.section];
+      return [{ type: "text", text: `${label}${how}` }, result.section];
     } catch (error: unknown) {
       // 中断（abort）时返回明确的中断结果
       if (signal?.aborted) {
         return "Image view aborted";
       }
+      // 上传失败等一律走这里：这一次没成，原因原样交给模型（不降级成内联 base64）
       return `Failed to view image: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

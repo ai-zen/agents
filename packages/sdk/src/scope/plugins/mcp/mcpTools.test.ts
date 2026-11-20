@@ -533,7 +533,7 @@ describe("createCallMcpTool", () => {
       expect(mockUpload).not.toHaveBeenCalled();
     });
 
-    it("上传失败时降级为 base64 内联，媒体块不丢", async () => {
+    it("上传失败：媒体块换成一条失败说明（不降级内联，也不静默丢）", async () => {
       mockUpload.mockRejectedValueOnce(new Error("boom"));
       const tool = callMcpTool(
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
@@ -543,9 +543,8 @@ describe("createCallMcpTool", () => {
         { server: "github", tool: "shot", arguments: {} },
         visionCtx,
       );
-      expect(result).toEqual([
-        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
-      ]);
+      expect(result).toBe("[media] Failed to convert (image/png): boom");
+      expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
     it("resource_link 转为文本线索", async () => {

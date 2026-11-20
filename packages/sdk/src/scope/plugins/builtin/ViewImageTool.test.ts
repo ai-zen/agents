@@ -174,6 +174,24 @@ describe("ViewImageTool", () => {
     }
   });
 
+  it("上传失败：结果是「没看到这张图」+ 原错误，不改走 base64 内联", async () => {
+    mockUpload.mockRejectedValue(new Error("File upload failed: HTTP 413"));
+
+    const dir = await fs.mkdtemp(join(tmpdir(), "viewimg-"));
+    const imgPath = join(dir, "big.png");
+    await fs.writeFile(imgPath, Buffer.from([1, 2, 3]));
+
+    try {
+      const tool = new ViewImageTool(makeEnv(dir, deepseekConfig, uploadDeps));
+      const result = await tool.call({ path_or_url: "big.png" }, visionCtx);
+
+      expect(mockUpload).toHaveBeenCalledTimes(1);
+      expect(result).toBe("Failed to view image: File upload failed: HTTP 413");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("isAvailable: 仅当 Agent 绑定的模型是视觉模型时为 true", () => {
     const config: AppConfig = {
       ...deepseekConfig,
