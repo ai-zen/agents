@@ -70,7 +70,9 @@ Port resolution has three sources, in order: `--port` > `port` in `<aiZenDir>/ho
 Clients find it through `<aiZenDir>/run/host.json` (written atomically; removed on a clean
 stop). The file carries `pid` + `version` + `protocol`, so a client can tell "crashed
 leftover" from "different build still running" before it even connects. Logs go to
-`<aiZenDir>/logs/host.log` — a daemon must never write to the client's terminal.
+`<aiZenDir>/logs/host/host.log` — a daemon must never write to the client's terminal.
+Each process gets its own directory under `logs/` (`host/` for this daemon, `cli/` for the
+CLI); a directory there is written by exactly one process.
 
 ### Loopback only, with a token and an origin check in front
 
