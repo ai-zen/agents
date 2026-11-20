@@ -176,6 +176,32 @@ describe("discoverMcpServers", () => {
     expect(result[0].description).toBe("可托管的伪终端（pty）");
   });
 
+  it('透传 oauth 字段（形状按 McpServerConfig["oauth"]，不被静默丢弃）', async () => {
+    writeMcpConfig("mcp.json", {
+      remote: {
+        type: "http",
+        url: "https://api.example.com/mcp",
+        oauth: {
+          authorizationUrl: "https://auth.example/a",
+          tokenUrl: "https://auth.example/t",
+          clientId: "client-1",
+          clientSecret: "secret-1",
+          scope: "mcp",
+        },
+      },
+    });
+
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
+    expect(result).toHaveLength(1);
+    expect(result[0].oauth).toEqual({
+      authorizationUrl: "https://auth.example/a",
+      tokenUrl: "https://auth.example/t",
+      clientId: "client-1",
+      clientSecret: "secret-1",
+      scope: "mcp",
+    });
+  });
+
   it("跳过 disabled: true 的 server", async () => {
     writeMcpConfig("mcp.json", {
       active: { type: "stdio", command: "active-mcp" },

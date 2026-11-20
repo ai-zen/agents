@@ -54,6 +54,15 @@ describe("discoverSkills", () => {
     expect(result[1].id).toBe("deploy");
   });
 
+  it("dirPath 等于 SKILL.md 所在目录（不含 SKILL.md 本身）", async () => {
+    writeSkill("my-skill", "my-skill", "A skill with a directory path");
+
+    const result = await discoverSkills([dir]);
+    expect(result).toHaveLength(1);
+    expect(result[0].dirPath).toBe(join(dir, "my-skill"));
+    expect(result[0].dirPath).not.toContain("SKILL.md");
+  });
+
   it("跳过没有 SKILL.md 的目录", async () => {
     mkdirSync(join(dir, "empty-dir"), { recursive: true });
     writeSkill("valid", "valid", "A valid skill");

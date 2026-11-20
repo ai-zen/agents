@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
 // ---- 类型 ----
@@ -139,7 +139,7 @@ async function readSkillFromPath(
       description: fm.description ?? "",
       subAgent: fm.subAgent ?? false,
       content,
-      dirPath: skillMdPath.replace(/\/SKILL\.md$/, ""),
+      dirPath: dirname(skillMdPath),
       license: fm.license,
       compatibility: fm.compatibility,
       metadata: fm.metadata,

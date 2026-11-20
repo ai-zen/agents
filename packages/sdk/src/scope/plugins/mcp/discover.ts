@@ -24,6 +24,11 @@ function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerCon
     env: raw.env as Record<string, string> | undefined,
     url: raw.url as string | undefined,
     headers: raw.headers as Record<string, string> | undefined,
+    // oauth 是对象就原样带上（形状见 McpServerConfig["oauth"]），否则视为没配
+    oauth:
+      typeof raw.oauth === "object" && raw.oauth !== null && !Array.isArray(raw.oauth)
+        ? (raw.oauth as McpServerConfig["oauth"])
+        : undefined,
   };
 
   return config;
