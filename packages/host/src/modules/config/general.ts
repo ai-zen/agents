@@ -1,4 +1,4 @@
-import type { AppConfig, ConfigManager } from "@ai-zen/agents-sdk";
+import type { AppConfig, ConfigManager, ReasoningPresets } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import type { Language } from "../i18n/index.js";
@@ -44,5 +44,16 @@ export class GeneralConfig {
 
   language(): Language {
     return this.current.language ?? "en";
+  }
+
+  /**
+   * 思考档位表。它不是 `AppConfig` 的一格（那份表在 `reasoning-presets.json`，与 `config.json`
+   * 各自独立），所以这一格没有「内存里那份」可读，每次现读磁盘。
+   *
+   * 不把它并进 `current`：那样一份内存副本就同时代表两个文件，其中一个在磁盘上被改过之后，
+   * 一次 `reload()` 会把另一个的结果一起抹掉。
+   */
+  presets(): Promise<ReasoningPresets> {
+    return this.deps.config.readReasoningPresets();
   }
 }

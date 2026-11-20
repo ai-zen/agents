@@ -95,10 +95,14 @@ describe("消息", () => {
       updatedAt: 1,
     });
     const messages = messageTable(db);
-    messages.upsertMany("s-1", [message("m-1", "第一句"), message("m-2", "第二句")]);
+    const first = message("m-1", "第一句");
+    messages.upsertMany("s-1", [first, message("m-2", "第二句")]);
 
     // 同一条消息再写一次（流式追加）：整条覆盖，seq 不动，所以顺序里它还在原位。
-    messages.upsert("s-1", message("m-1", "第一句改过"));
+    // 改的是**同一个对象**，与真实流式一致：`createdAt` 是 core 在构造那一刻给的，
+    // 换一个新对象再写一遍会换掉那个时刻。
+    first.content = "第一句改过";
+    messages.upsert("s-1", first);
 
     expect(messages.listBySession("s-1").map((item) => item.id)).toEqual(["m-1", "m-2"]);
     expect(messages.listBySession("s-1", { after: "m-1" }).map((item) => item.id)).toEqual([
