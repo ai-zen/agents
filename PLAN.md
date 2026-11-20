@@ -489,7 +489,9 @@ pin 与退出信号必须分开，理由各一条：
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删会话 / 删工作区之后确认一句、撞硬线、撤回之后、subagent 结束、附件超限…… |
 | `desktop` 的构建前提 | 类型检查依赖 `agents/packages/host/dist` 已构建，构建顺序没写进脚本（PRD Q12） |
 | 测试规模的口径 | 默认套件是一个文件一个库 + 一次 `tx` 清表；新增碰库的用例照这个形状写，否则单条用例要付 55ms 的建库钱 |
-| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | **✅ 已完成**（2026-11-20，`9181d9b`–`73a0c29` + cli 的 `35e5bbe`）。**改前**：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。**改后（已落地）**：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（`packages/logger`：零运行时依赖、一实例一文件一轮转、不读 env、不持单例、不写 stdout、**不带级别开关**——实测生产代码零传值）。落点：`logs/host/host.log`、`logs/cli/{cli,launch,keys}.log`。细节见 `.ai-zen/pending/20261120-logging-governance.md` |
+| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | **✅ 已完成**（2026-11-20，`9181d9b`–`73a0c29` + cli 的 `35e5bbe`）。**改前**：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。**改后（已落地）**：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（`packages/logger`：零运行时依赖、一实例一文件一轮转、不读 env、不持单例、不写 stdout、**不带级别开关**——实测生产代码零传值）。落点：`logs/host/host.log`、`logs/cli/{cli,launch,keys}.log`。| 定时器（PRD 4.4） | **需求已定、实现为零**：只做「往 inbox 投递」—— 能吵醒本来就活着的会话（闲不闲无所谓），不能造、不能复活。宿主里除 30s 那个 `unref` 版本自检以外没有第二个定时器；§5.1 那张投递来源表里的「定时器」还只是写法 |
+| 交接取消的用例 | 「取消之后那条投递还在、还能被消费」**没有钉住**：`HandoffDocumentService.test.ts:1104` 的取消只验「不留文档、不开新会话」，`ChatRunner.test.ts:842-861` 只验「交接中投两条、顺序对」 |
+| 明确不动（别再拿「本仓没人读」当理由） | core 的 `started` / `requestSent`（`Agent.ts:610` / `:1195`）、sdk 的 `onBeforeHandoff` / `onHandoff` / `handoffDir`（`HandoffService.ts:139` / `:119`）、client 的 `snapshot()` / `toMirrorEvent` / `mirror()`（`client.ts:403`、`mirror.ts:73` / `:241`）—— 形状没问题，本仓暂时不用不等于该删。「`@ai-zen/async-queue` 一个字不动」这句**已经过期**：队列按 `CORE.md` §13 加过 `takeAll` / `asTakeAll` / `clear`。另有一条没拍板的想法：给它加**插队**（某一条越过已排队的先被取走），2026-11-18 提的，只到「可以考虑」 |
 
 ---
 
@@ -505,6 +507,8 @@ pin 与退出信号必须分开，理由各一条：
 6. 测试安放：一个事实只在一处断言（表结构归 `migrations.test.ts`、`tx` 边界归 `Database.test.ts`、契约语义归 `*Service.test.ts`、SQL 独有行为归 `*Repository.test.ts`、接线归 `WsHub.test.ts`、真进程归 e2e）。同一件事在两层都断言，删掉弱的那一份。
 7. 删用例的判据是必要性：生产代码零调用者的方法连用例一起删（留着给假安全覆盖）；被测对象根本拿不到的依赖不要摆进夹具。
 8. 按 `AGENTS.md` 第 7 条：**提交但不推送** —— 每完成一部分就提交（一个主题一个提交，中文 conventional commits，正文写「改前 / 改后 / 为什么」）；但不执行 `git push` / `rebase` / `commit --amend` / `push --force`，推不推只由用户说。
+9. **措辞禁用词**（注释、命名、文案、提交信息一律不许出现）：`consumption`、`gate`、`hold/release`、`suspend/resume`、`once` / `busy` 当状态值、`queued`、`run.state`、`usage`（快照）、`settle`、`回投`、`conversation` / 「对话」/「兄弟会话」/「驱动者」/「待办」/ `mayStart`；也不许把「一次运行 / 一次回答」说成「轮 / 段 / 圈」（工具轮次 `ToolRound` 除外）。
+10. **跨包改签名后重建 `dist`**，顺序 `core → sdk → testing → client → host`；`cli` 走 `link:` 消费这些 `dist`，不重建它手上就是老名字（表现为运行时炸掉或超时）。
 
 ---
 
