@@ -15,7 +15,7 @@ import { z } from "zod";
 import { sessionIdSchema } from "./session.js";
 
 /**
- * 对象入参的失败文案：`not_an_object`（与 `WsHub` 的 `asRecord`、`session.ts` 同一词）。
+ * 对象入参的失败文案：`not_an_object`（与 `session.ts` 里那份同一词）。
  */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 

@@ -15,14 +15,13 @@
  *   1. **可选就是可选**：`foo?: T` → `.optional()`，`T | null` → `.nullable()`。写错一格，
  *      第三波 `z.infer` 顶掉手写类型时当场红。
  *   2. **文案用既有的 reason 词**，Zod 的英文句子一句都不出网。`hello` 那三个字段是个例外里
- *      的例外：它们今天由接线层的 `asHelloParams` 校，客户端已经按 `missing_token` /
- *      `missing_name` / `missing_version` 分支了 —— 这里**逐字沿用**，不换成别的域那个
- *      `empty`（换了就是改契约）。
+ *      的例外：客户端已经按 `missing_token` / `missing_name` / `missing_version` 分支了 ——
+ *      这里**逐字沿用**，不换成别的域那个 `empty`（换了就是改契约）。
  */
 
 import { z } from "zod";
 
-/** `not_an_object`：与 `session.ts` / `WsHub.asRecord` 同一个词 */
+/** `not_an_object`：与 `session.ts` 里那份同一个词 */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
 // ---------------------------------------------------------------------------
@@ -32,21 +31,19 @@ const OBJECT_ERROR = { error: "not_an_object" } as const;
 /**
  * 握手凭证（`HostHelloParams.token`）。
  *
- * 口径逐字来自 `asHelloParams`：非字符串、空白串都算「凭证没给」，reason 是既有的
- * `missing_token`；两侧空白剥掉（`verifyToken` 不该看见空格）。
+ * 非字符串、空白串都算「凭证没给」，reason 是既有的 `missing_token`（客户端按它分支）；
+ * 两侧空白剥掉（`verifyToken` 不该看见空格）。
  */
 export const hostTokenSchema = z.string("missing_token").trim().min(1, "missing_token");
 
 /**
  * 客户端自报的身份（`ClientInfo`）：连接列表与日志上写的那几格。
  *
- * - `name` / `version`：必填且不能空白，reason 沿用 `asClientInfo` 的
- *   `missing_name` / `missing_version`；
- * - `platform`：可选，仅供展示。空白串**不拒**（`asHelloParams` 把它当「没给」，别为了
- *   一格展示字段把握手拒掉）。
+ * - `name` / `version`：必填且不能空白，reason 是 `missing_name` / `missing_version`
+ *   （与 `token` 那格同一套；客户端按它们分支）；
+ * - `platform`：可选，仅供展示。空白串**不拒**（一层展示字段，别为了它把握手拒掉）。
  *
- * 根上不是对象时报 `not_an_object`，字段名由 `parseParams` 从路径拼出来（`clientInfo`）——
- * 与 `asHelloParams` 那句 `asRecord(value, "clientInfo")` 同一个出口。
+ * 根上不是对象时报 `not_an_object`，字段名由 `parseParams` 从路径拼出来（`clientInfo`）。
  */
 export const clientInfoSchema = z.object(
   {
@@ -64,7 +61,7 @@ export const clientInfoSchema = z.object(
 /**
  * `host.hello` 入参：凭证 + 可选语言 + 客户端身份（PLAN §6：首帧 `hello`，凭证不放查询串）。
  *
- * `language` **不 trim、不 min**：`asHelloParams` 只判它是不是字符串，空白串由
+ * `language` **不 trim、不 min**：这一层只判它是不是字符串，空白串由
  * `handleHello` 当作「没声明语言」再回落默认语言（`normalizeLanguage` 自己会 trim）。
  * 这里若加上 `.min(1)`，`language: ""` 就会从「回落默认」变成「握手被拒」—— 那是改语义。
  */
@@ -119,7 +116,7 @@ export const hostReloadParams = z.object({}, OBJECT_ERROR);
  *
  * 这里**不枚举** `Language`：`normalizeLanguage` 认 `zh-CN` / `EN` 这类带地区 / 大写的写法，
  * 认不出来回落默认语言 —— 它的职责是「收敛」，不是「驳回」。所以形状只要求「非空字符串」，
- * reason 沿用 `handleSetLanguage` 既有的 `missing_language`（字符串之外的值与空白串都算
+ * reason 用 `missing_language`（这个字段一贯的词：字符串之外的值与空白串都算
  * 「没说清要哪种语言」）。
  */
 export const hostSetLanguageParams = z.object(

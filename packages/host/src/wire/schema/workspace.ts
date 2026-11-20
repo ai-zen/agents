@@ -15,7 +15,7 @@ import { z } from "zod";
 
 import { sessionIdSchema } from "./session.js";
 
-/** 对象入参的失败文案：`not_an_object`（与 `WsHub` 的 `asRecord` 同一个词） */
+/** 对象入参的失败文案：`not_an_object`（与 `session.ts` 里那份同一个词） */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
 // ---------------------------------------------------------------------------
@@ -33,8 +33,8 @@ const workspaceIdSchema = sessionIdSchema;
 /**
  * 一个项目的显示名：必填、非空、两侧空白不算内容。
  *
- * 就是 `WorkspaceService.requireName` 原来那条判据（`workspace.rename` 的 `name` 走它）。
- * 第三波把 `requireName` 删掉时行为不变：`"  "` 是 `empty`，`"  我的项目  "` 归一成 `"我的项目"`。
+ * 判据是「非空文本 + 两侧空白不算内容」（`workspace.rename` 的 `name` 就是这一格）：
+ * `"  "` 是 `empty`，`"  我的项目  "` 归一成 `"我的项目"`。
  */
 export const workspaceNameSchema = z.string("empty").trim().min(1, "empty");
 

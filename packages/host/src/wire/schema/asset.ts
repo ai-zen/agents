@@ -11,13 +11,14 @@
  *   2. **执行点只有一处**：`WsHub.parseParams` 在分发之前统一校验；
  *   3. **文案用既有的 reason 词**，Zod 的英文句子一句都不出网（PRD D8）。
  *
- * 与 `UploadReceiver` 里那套 `require*` 的分工（迁移是分批的，两边现在并存）：
- *   - **超限**要读配置（`maxAssetBytes`，20MB/张），留在服务层 —— 那是取值，不是形状；
+ * 形状只在这一层判（`WsHub.parseParams` 是唯一执行点）；`UploadReceiver` 里剩下的是边界判不了
+ * 的那几条取值检查：
+ *   - **超限**要读配置（`maxAssetBytes`，20MB/张），留在那一层 —— 那是取值，不是形状；
  *   - **用途枚举**与**摘要长度**没有第二个判据，归形状：`bad_value` / `not_a_sha256_digest`
  *     都是这一层能独立判死的；
- *   - `mime` 的格式校验（`type/subtype`）**仍留在** `UploadReceiver`：那条正则不是这一层的
- *     事实，抄一份到这里就是立了第二份，两处只要有一处先改，客户端先撞上哪一边要看运气。
- *     这一层只保证它是「一个非空字符串」。
+ *   - `mime` 的格式校验（`type/subtype`）**留在** `UploadReceiver`（`requireMime`）：那条正则不是
+ *     这一层的事实，抄一份到这里就是立了第二份，两处只要有一处先改，客户端先撞上哪一边要看
+ *     运气。这一层只保证它是「一个非空字符串」。
  *
  * 文案词表沿用同波那几份（`session.ts` / `message.ts` / `model.ts`）的分工：
  *   - `empty` = 必填且不能空；
@@ -32,8 +33,8 @@ import { sessionIdSchema } from "./session.js";
 /**
  * 对象入参的失败文案：`not_an_object`。
  *
- * 与 `WsHub` 里 `asRecord`、`schema/session.ts` 的同一个词 —— 客户端早就按它写了分支。
- * （`session.ts` 里那份是私有的，本波不动它；四个新文件各留一份同名常量。）
+ * 与 `schema/session.ts` 里那份是同一个词 —— 客户端早就按它写了分支。
+ * （`session.ts` 里那份是私有的，所以每个 schema 文件各留一份同名常量，值一样。）
  */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
@@ -58,8 +59,8 @@ export const assetIdSchema = z.string("empty").trim().min(1, "empty");
 /**
  * 一个上传句柄：非空字符串。
  *
- * 文案沿用 `UploadReceiver.requireUploadId` 那个词（`missing_upload_id`）：这个字段今天出网
- * 报的就是它，换成 `empty` 等于改契约。
+ * 文案用 `missing_upload_id`：这个字段一贯的词（客户端那边同一个词也在用），并到 `empty` 里
+ * 去等于改契约。
  */
 export const uploadIdSchema = z.string("missing_upload_id").trim().min(1, "missing_upload_id");
 
@@ -72,11 +73,11 @@ export const sha256Schema = z
 /**
  * 一段声明的字节数：正整数。
  *
- * 判据与 `UploadReceiver.requireDeclaredBytes` 逐条一致（整数、大于 0）。上限**不在**这里：
- * 要读配置（`maxAssetBytes`）才知道这一档是多少 —— 那是取值，留在服务层。
+ * 判据是整数且大于 0。上限**不在**这里：要读配置（`maxAssetBytes`）才知道这一档是多少 ——
+ * 那是取值，留在 `UploadReceiver`。
  *
- * 文案用 `not_positive_integer`（同波那几份的公共词；`requireDeclaredBytes` 今天报的是多一个
- * `a` 的 `not_a_positive_integer`，两者是同一条判据的两种拼法 —— 见交付说明的歧义清单）。
+ * 文案用 `not_positive_integer`（同波那几份的公共词）：这个域里没有第二种拼法，客户端按
+ * reason 分支时只可能撞到它。
  */
 const declaredBytesSchema = z
   .number("not_positive_integer")

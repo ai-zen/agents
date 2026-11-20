@@ -15,7 +15,7 @@ import { z } from "zod";
 import { NOTICE_LEVELS } from "../states.js";
 import { sessionIdSchema } from "./session.js";
 
-/** `not_an_object`：与 `session.ts` / `WsHub.asRecord` 同一个词 */
+/** `not_an_object`：与 `session.ts` 里那份同一个词 */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,8 @@ const OBJECT_ERROR = { error: "not_an_object" } as const;
 /**
  * 一条通知的 id：非空字符串，两侧空白不算内容。
  *
- * reason 用既有的 `empty` —— `NoticeService.dismiss` 原来就是拿这个词拒空 id 的，一个字没换。
+ * reason 用既有的 `empty` —— 空 id 一直是按这个词拒的，一个字没换（`NoticeService.dismiss` 拿
+ * 不到就回 `dismissed: false`，不报错）。
  */
 export const noticeIdSchema = z.string("empty").trim().min(1, "empty");
 

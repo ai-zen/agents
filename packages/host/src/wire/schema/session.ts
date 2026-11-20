@@ -23,8 +23,8 @@
  *   | `foo: T \| null` | `.nullable()` |
  *   | `foo?: T \| null` | `.nullish()` |
  *
- * 另一条是**收紧的边界只到「服务层原来已经这么判」为止**：必填的 id / 名字服务层原来走
- * `requireId` / `requireThreshold`（空白与 0 都当参数不对），这里照样收；而服务层当「没给」
+ * 另一条是**收紧的边界只到「这套边界原来已经这么判」为止**：必填的 id / 名字（空白不算值）、
+ * 阈值那两格（`0` 不算）本来就把它们当参数不对，这里照样收；而服务层当「没给」
  * 处理的那些空白（`message.list` 的 `after` / `around`、`session.list` 的筛选条件这类），这里
  * 就只校类型，不替它改语义 —— 校验层的职责是「形状对不对」，不是重新立法。
  *
@@ -42,7 +42,7 @@ import { z } from "zod";
 /**
  * 对象入参的失败文案：`not_an_object`。
  *
- * 与 `WsHub` 里 `asRecord` 那一处同一个词 —— 客户端早就按它写了分支，换了词等于改契约。
+ * 每个 schema 文件各有一份同值字面量 —— 客户端早就按它写了分支，换了词等于改契约。
  */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
@@ -53,11 +53,11 @@ const OBJECT_ERROR = { error: "not_an_object" } as const;
 /**
  * 一段会话的 id：非空字符串，两侧空白不算内容。
  *
- * `empty` 是既有那套 reason 里的词（`SessionService.requireId` 用的就是它）；这里把「类型不是
+ * `empty` 是既有那套 reason 里的词（会话 id 一直报的就是它）；这里把「类型不是
  * 字符串」也归到 `empty`：对客户端来说，这两种情况说的是同一件事 —— 「这个字段没给出能用的值」。
  *
  * `.trim()` 是**归一化**不是检查：迁到 schema 上的方法不再自己剥空白（服务层原来逐处
- * `requireId` / `requireSession` 各 trim 一次），从边界下来就是干净的那一串。
+ * 自己 `trim()` 一次），从边界下来就是干净的那一串。
  */
 export const sessionIdSchema = z.string("empty").trim().min(1, "empty");
 
@@ -83,8 +83,8 @@ export const agentIdSchema = z
  * 必填的文本类参数：非空字符串，两侧空白不算内容。
  *
  * 与 `sessionIdSchema` 同一口径（同一个 reason 词 `empty`），只是不给它单独起一个导出的名字
- * —— 会话名、`beforeMessageId`、`cwd`、`workspaceId` 这些字段服务层原来都走同一条
- * `requireId`（`trim()` 之后为空就当参数不对），形状就是这一份。
+ * —— 会话名、`beforeMessageId`、`cwd`、`workspaceId` 这些字段原来都由同一条判据管
+ * （`trim()` 之后为空就当参数不对），形状就是这一份。
  *
  * `.trim()` 同样是归一化：改名、撤回点、一次性会话的目录基准，从边界下来就已经是干净的那一串
  * （`TransientRunner` 原来自己 `trim()` 一次 `cwd`，口径一致）。
@@ -97,8 +97,8 @@ const nonEmptyText = z.string("empty").trim().min(1, "empty");
  * 省略 = 不动、`null` = 回到「跟模型走」、正整数 = 这一段自己的数字 —— 所以是 `.nullish()`
  * （`undefined` 与 `null` 都收），不是 `.optional()`。
  *
- * 数字部分与 `SessionService.requireThreshold` 逐条一致：`0` 不收（阈值量的是「请求前的输入
- * 用量」的绝对 token 数，0 是个没有意义的线；要「这条线不设」请给 `null`），负数、小数、
+ * 数字部分：`0` 不收（阈值量的是「请求前的输入用量」的绝对 token 数，0 是个没有意义的线；
+ * 要「这条线不设」请给 `null`），负数、小数、
  * `NaN` / `Infinity` 同理，失败文案沿用既有的 `not_positive_integer`。
  */
 const thresholdSchema = z
@@ -229,16 +229,15 @@ export const messageInputSchema = z.object(
  * 所以这里只校类型，不把空白归一化成「没给」：
  *   - `workspaceId` 空串在服务层就是「按空 id 查」，回空列表（不是错误，也不是「全要」）；
  *   - `limit` / `offset` 服务层用 `Math.max(x, 0)` 兜住负数（负数当 0），小数也是 `slice` 自己
- *     截断 —— 那是它已经定下的语义，校验层不替它改判（要不要收紧成非负整数见交付说明里的
- *     歧义清单）。
+ *     截断 —— 那是它已经定下的语义，校验层不替它改判。
  */
 export const sessionListParams = z.object(
   {
     workspaceId: z.string("not_a_string").optional(),
     /** true 只看置顶，false 只看未置顶，不传全要 */
     pinned: z.boolean("not_boolean").optional(),
-    limit: z.number("not_a_number").optional(),
-    offset: z.number("not_a_number").optional(),
+    limit: z.number("not_a_number").finite().optional(),
+    offset: z.number("not_a_number").finite().optional(),
   },
   OBJECT_ERROR,
 );
@@ -272,8 +271,8 @@ export const sessionStateParams = z.object({ sessionId: sessionIdSchema }, OBJEC
 /**
  * `session.rename` 入参：改名字（PRD D1 / F-C3）。
  *
- * 名字只是名字，不碰 id、不碰排序，所以形状就是「一段会话 + 一个非空的名字」：空名字在服务层
- * 是 `empty`（`requireId(params.name)`），这里同一个口径。
+ * 名字只是名字，不碰 id、不碰排序，所以形状就是「一段会话 + 一个非空的名字」：空名字就是
+ * `empty`，这里同一个口径。
  */
 export const sessionRenameParams = z.object(
   { sessionId: sessionIdSchema, name: nonEmptyText },
@@ -359,7 +358,7 @@ export const sessionClearInboxParams = z.object({ sessionId: sessionIdSchema }, 
 /**
  * `session.revert` 入参：从某条用户消息开始（含它）往后硬删（PRD F-C8 / D24）。
  *
- * `beforeMessageId` 是撤回点，空串在服务层是 `empty`（`requireId`）；「它是不是一条 user
+ * `beforeMessageId` 是撤回点，空串就是 `empty`；「它是不是一条 user
  * 消息」**不在这里** —— 那要读那条消息（服务层查库，拒因 `not_a_user_message`），是取值不是形状。
  */
 export const sessionRevertParams = z.object(

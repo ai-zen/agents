@@ -14,7 +14,7 @@ import { z } from "zod";
 
 import { sessionIdSchema } from "./session.js";
 
-/** `not_an_object`：与 `session.ts` / `WsHub.asRecord` 同一个词 */
+/** `not_an_object`：与 `session.ts` 里那份同一个词 */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ const OBJECT_ERROR = { error: "not_an_object" } as const;
 /**
  * 一道题的 id：非空字符串，两侧空白不算内容。
  *
- * reason 用既有的 `empty`（`QuestionService.dismiss` / `dismiss` 系列与 `session.ts` 同一套）：
+ * reason 用既有的 `empty`（与 `session.ts` 同一套）：
  * 对客户端来说「类型不对」与「给了个空串」是同一件事 —— 这个字段没给出能用的值。空 id 到了
  * 服务层只会落成 `not_found`（题根本不存在），所以在边界上先按形状拒掉。
  */
@@ -45,7 +45,7 @@ export const questionListParams = z.object({ sessionId: sessionIdSchema }, OBJEC
 /**
  * `question.answer` 入参：答哪道题 + 选了哪个候选值。
  *
- * `value` 只校「非空字符串」（reason 沿用 `QuestionService.answer` 里那句 `empty`），**不枚举**，
+ * `value` 只校「非空字符串」（reason 用 `empty`，与 `questionId` 那一格同一套），**不枚举**，
  * 因为候选是**每道题自己带着的**，不是一套全局词表：
  *   - `kind: "handoff"` 才刚好三道（`self` / `summary` / `decline`，交接线的「自交接 /
  *     独立摘要 / 不交接」）；

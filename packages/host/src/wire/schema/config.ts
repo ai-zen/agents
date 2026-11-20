@@ -25,15 +25,15 @@ import { z } from "zod";
 /**
  * 对象入参的失败文案：`not_an_object`。
  *
- * 与 `session.ts`、`WsHub` 的 `asRecord` 是同一个词 —— 客户端早就按它写了分支。
+ * 与 `session.ts` 里那份是同一个词 —— 客户端早就按它写了分支。
  */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
 /**
  * 必填文本：两侧空白不算内容，且顺手归一化掉。
  *
- * 与 `ConfigService.requireText` 一模一样（`empty` 那个词也是从它来的）；迁到 schema 上的方法
- * 不再自己剥空白，从边界下来就是干净的那一串。
+ * 判据就是「非空文本 + 剥掉两侧空白」，`empty` 是客户端已经在用的那个词；服务层不再自己剥空白，
+ * 从边界下来就是干净的那一串。
  */
 const requiredTextSchema = z.string("empty").trim().min(1, "empty");
 
@@ -72,7 +72,7 @@ export const endpointInputSchema = z.object(
  * 字符串 = 换成它。
  *
  * 三种写法各有语义（`DefaultSelection` 里那几个 id 的类型就是 `string | null`），所以是
- * `.nullish()`。字符串那一半沿用 `requireText` 那条：空白不算内容。
+ * `.nullish()`。字符串那一半按 `empty` 那条：空白不算内容。
  */
 const nullableSelectionSchema = requiredTextSchema.nullish();
 
@@ -105,7 +105,7 @@ export const defaultSelectionPatchSchema = z.object(
  */
 export const configLimitsPatchSchema = z.object(
   {
-    /** 工具输出上限（字符数）：正整数的判定与 `ConfigService.mergeLimits` 那条逐字一致 */
+    /** 工具输出上限（字符数）：正整数的判定只在这一层（`mergeLimits` 已经不判它了） */
     maxToolOutput: z
       .number("not_positive_integer")
       .int("not_positive_integer")
@@ -120,7 +120,7 @@ export const configLimitsPatchSchema = z.object(
  *
  * 三个都是闭合集合，取值来自 SDK（`AbortedMessageStrategy` = `drop` / `keep`、
  * `AbortedToolRoundStrategy` = `drop` / `fill`、`AutoRefreshWhen | "off"`）。
- * 失败文案用 `not_allowed` —— 就是 `ConfigService.requireChoice` 原来那一个词。
+ * 失败文案用 `not_allowed` —— 这三个字段一贯的词（闭合集合认不出的取值就报它）。
  */
 export const configBehaviorPatchSchema = z.object(
   {

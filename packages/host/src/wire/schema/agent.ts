@@ -31,14 +31,15 @@ import { agentIdSchema } from "./session.js";
 /**
  * 对象入参的失败文案：`not_an_object`。
  *
- * 与 `session.ts`、`WsHub` 的 `asRecord` 是同一个词 —— 客户端早就按它写了分支。
+ * 与 `session.ts` 里那个常量同一个词 —— 客户端早就按它写了分支。这个常量每个 schema 文件各留
+ * 一份字面量（`session.ts` 没导出它），值一样，不构成第二套契约。
  */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
 
 /**
  * 必填文本：两侧空白不算内容，且顺手归一化掉。
  *
- * 与 `AgentService.requireName` 一模一样（`empty` 那个词也是从它来的）。`agentId` 用的不是它，
+ * 判据就是「非空文本 + 剥掉两侧空白」，`empty` 是客户端已经在用的那个词。`agentId` 用的不是它，
  * 是 `agentIdSchema`（助手 id 同时是文件名，字符集更严）。
  */
 const requiredTextSchema = z.string("empty").trim().min(1, "empty");

@@ -24,7 +24,7 @@ import { sessionIdSchema } from "./session.js";
 /**
  * 对象入参的失败文案：`not_an_object`。
  *
- * 与 `WsHub` 的 `asRecord`、`session.ts` 里的那个常量同一个词 —— 客户端早就按它写了分支。
+ * 与 `session.ts` 里的那个常量同一个词 —— 客户端早就按它写了分支。
  * （`session.ts` 没把它导出，所以这里各自留一份字面量；值一样，不构成第二套契约。）
  */
 const OBJECT_ERROR = { error: "not_an_object" } as const;
@@ -36,10 +36,9 @@ const OBJECT_ERROR = { error: "not_an_object" } as const;
 /**
  * 必填的一段文本：非空字符串，两侧空白不算内容。
  *
- * 就是 `ModelService.requireText` 原来那条判据（`model.id` / `model.name` / `model.endpointId` /
- * `imageModel.id` / `imageModel.name` / `imageModel.modelName` / `imageModel.endpointId` 走它）。
- * `.trim()` 是**归一化**不是检查：从边界下来就是干净的那一串，第三波把服务层的 `requireText`
- * 删掉时行为不变。
+ * 判据是「非空文本 + 两侧空白不算内容」，`empty` 是客户端已经在用的那个词（`model` 与
+ * `imageModel` 上面那几格必填文本报的都是它）。
+ * `.trim()` 是**归一化**不是检查：从边界下来就是干净的那一串。
  */
 const requiredTextSchema = z.string("empty").trim().min(1, "empty");
 
@@ -65,8 +64,8 @@ const dryRunSchema = z.boolean("not_boolean").optional();
 /**
  * 一条阈值：**正整数**。
  *
- * `0` 与负数、小数、非数字一律 `not_positive_integer`（与 `SessionService.requireThreshold`、
- * `ConfigService` 的上限那几个字段同一个词）—— 阈值量的是绝对 token 数，0 是条没有意义的线。
+ * `0` 与负数、小数、非数字一律 `not_positive_integer`（与 `session.setThresholds`、
+ * `config.patch` 的上限那几个字段同一个词）—— 阈值量的是绝对 token 数，0 是条没有意义的线。
  */
 const thresholdSchema = z
   .number("not_positive_integer")
@@ -131,7 +130,7 @@ export const modelPatchSchema = z.object(
 /**
  * 图片模型写入（PRD F-F4）：`ImageModelInput` 的形状。
  *
- * `id` / `name` / `endpointId` / `modelName` 四格必填（`ModelService.saveImage` 逐个 `requireText`）；
+ * `id` / `name` / `endpointId` / `modelName` 四格必填（reason 都是 `empty`）；
  * `description` / `defaultSize` / `defaultQuality` 三格可省略。与文本模型不同，这里**没有**阈值、
  * 没有 `defaultParams`、没有 `vision` —— 图片模型既不看上下文窗口也没有思考概念。
  */
