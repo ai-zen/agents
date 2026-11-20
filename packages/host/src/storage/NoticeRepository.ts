@@ -24,6 +24,10 @@ function parseParams(value: string | null): Record<string, unknown> | null {
     }
     return null;
   } catch {
+    // 这一列只有本仓能写（`create()` 里 `JSON.stringify`），所以这个分支没有正常读者 ——
+    // 按「答不出谁会走到就删」本该删。留着是因为同一条口径已经存在：`level` 认不出来时
+    // 按 `info` 摆（`NoticeService.test.ts`「手改坏的数据不该让整条列表读不出来」）。
+    // 删了会让同一种坏数据在两列上得到两种后果：一列降级、一列炸掉整页列表。
     return null;
   }
 }
