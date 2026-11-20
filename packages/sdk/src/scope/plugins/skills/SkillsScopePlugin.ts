@@ -1,5 +1,6 @@
 import type { Tool } from "@ai-zen/agents-core";
 import { isAbsolute, join } from "node:path";
+import type { LogSink } from "../../../shared/logger.js";
 import type { SkillInfo } from "./discover.js";
 import { discoverSkills } from "./discover.js";
 import { createCallSkillSubAgentTool, createLoadSkillTool } from "./skillTools.js";
@@ -24,13 +25,20 @@ export class SkillsScopePlugin implements ScopePlugin {
   /** 解析后的 skill 目录（供 instantiate 时传给工具读取正文） */
   private dirs: string[] = [];
 
-  constructor(options?: { paths?: string[] }) {
+  /** 日志口（可选）：合规校验没过时每条报一句；不注入就不记 */
+  private readonly logger?: LogSink;
+
+  constructor(options?: { paths?: string[]; logger?: LogSink }) {
     this.paths = options?.paths ?? [];
+    this.logger = options?.logger;
   }
 
   async discover(scope: Scope, options?: { silent?: boolean }): Promise<void> {
     this.dirs = this.paths.map((p) => (isAbsolute(p) ? p : join(scope.cwd, p)));
-    this.skills = await discoverSkills(this.dirs, options);
+    this.skills = await discoverSkills(this.dirs, {
+      silent: options?.silent,
+      logger: this.logger,
+    });
   }
 
   candidates(): ScopeCandidates {

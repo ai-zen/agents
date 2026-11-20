@@ -1,6 +1,7 @@
 import type { Tool } from "@ai-zen/agents-core";
 import { isAbsolute, join } from "node:path";
 import type { AgentDefinition } from "../../../types/index.js";
+import type { LogSink } from "../../../shared/logger.js";
 import { discoverSubAgents } from "./discover.js";
 import { createSubAgentTool } from "./subAgentTools.js";
 import type { Scope, FilterOutput } from "../../Scope.js";
@@ -18,13 +19,17 @@ export class SubAgentsScopePlugin implements ScopePlugin {
   private readonly paths: string[];
   private subagents: AgentDefinition[] = [];
 
-  constructor(options?: { paths?: string[] }) {
+  /** 日志口（可选）：有文件读不出来、被跳过时报一句；不注入就不记 */
+  private readonly logger?: LogSink;
+
+  constructor(options?: { paths?: string[]; logger?: LogSink }) {
     this.paths = options?.paths ?? [];
+    this.logger = options?.logger;
   }
 
   async discover(scope: Scope): Promise<void> {
     const dirs = this.paths.map((p) => (isAbsolute(p) ? p : join(scope.cwd, p)));
-    this.subagents = await discoverSubAgents(dirs);
+    this.subagents = await discoverSubAgents(dirs, { logger: this.logger });
   }
 
   candidates(): ScopeCandidates {

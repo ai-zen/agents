@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { AgentError, AgentNS, Message } from "@ai-zen/agents-core";
 import type OpenAI from "openai";
-import { getLogger, type Logger } from "../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../shared/logger.js";
 import { readSkill } from "../scope/plugins/skills/discover.js";
 import { FALLBACK_HANDOFF_TEMPLATE, HANDOFF_SKILL_ID } from "../config/factory-skills.js";
 import { completeOnce } from "./completeOnce.js";
@@ -156,8 +156,8 @@ export interface HandoffServiceOptions {
    *   - **注入**：SDK 一个字节都不动 `agent.messages`，由调用方落到库、落到内存（宿主走这条）。
    */
   commitMemory?: (commit: MemoryCommit) => void | Promise<void>;
-  /** 可注入日志（可选，默认使用全局单例） */
-  logger?: Logger;
+  /** 可注入日志（可选）：不注入就什么都不写（库缺省沉默） */
+  logger?: LogSink;
 }
 
 /** 交给 {@link HandoffServiceOptions.commitMemory} 的那一份 */
@@ -235,7 +235,7 @@ export class HandoffService {
   private readonly onHandoff?: HandoffServiceOptions["onHandoff"];
   private readonly onMigrated?: HandoffServiceOptions["onMigrated"];
   private readonly commitMemory?: HandoffServiceOptions["commitMemory"];
-  private readonly logger: Logger;
+  private readonly logger: LogSink;
 
   /**
    * 这一趟交接是不是本服务自己在跑（防重入 + 插件让行）。
@@ -278,7 +278,7 @@ export class HandoffService {
     this.onHandoff = onHandoff;
     this.onMigrated = onMigrated;
     this.commitMemory = commitMemory;
-    this.logger = logger ?? getLogger();
+    this.logger = logger ?? SILENT_LOG;
   }
 
   /** 这一趟交接是不是本服务自己在跑（`AutoMigratePlugin` / `ContextGuardPlugin` 据此让行） */

@@ -3,7 +3,8 @@ import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import { AutoMigratePlugin } from "./AutoMigratePlugin.js";
 import { HandoffAbortedError } from "../runtime/HandoffService.js";
 import type { HandoffService } from "../runtime/HandoffService.js";
-import { setLogger } from "../shared/logger.js";
+import type { LogSink } from "../shared/logger.js";
+import { messagesAt, recordingLog } from "../test-support/log.js";
 import { sendRound } from "../test-support/agent-round.js";
 
 const MAX_HANDOFF_TOKENS = 50_000;
@@ -58,11 +59,16 @@ async function goIdle(
   await plugin.onIdle();
 }
 
-function createPlugin(options: { service: HandoffService; resolveMode?: any }): AutoMigratePlugin {
+function createPlugin(options: {
+  service: HandoffService;
+  resolveMode?: any;
+  logger?: LogSink;
+}): AutoMigratePlugin {
   return new AutoMigratePlugin({
     service: options.service,
     handoffTokens: MAX_HANDOFF_TOKENS,
     resolveMode: options.resolveMode,
+    logger: options.logger,
   });
 }
 
@@ -193,19 +199,16 @@ describe("AutoMigratePlugin", () => {
 
   it("agent 已关门（AgentError closed）时不报错、也不降级 summary", async () => {
     const { service, migrate } = stubService();
-    const errors: string[] = [];
-    setLogger({ info: () => {}, warn: () => {}, error: (m) => errors.push(m) });
-    try {
-      migrate.mockRejectedValueOnce(
-        new (await import("@ai-zen/agents-core")).AgentError("closed", "往已经关了的 agent 投递"),
-      );
-      await goIdle(createPlugin({ service }), { promptTokens: MAX_HANDOFF_TOKENS + 1 });
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    const log = recordingLog();
+    migrate.mockRejectedValueOnce(
+      new (await import("@ai-zen/agents-core")).AgentError("closed", "往已经关了的 agent 投递"),
+    );
+    await goIdle(createPlugin({ service, logger: log.logger }), {
+      promptTokens: MAX_HANDOFF_TOKENS + 1,
+    });
 
-    // 会话已经没了：既不该记一条「迁移失败」，也不该再走一轮 summary
-    expect(errors).toEqual([]);
+    // 会话已经没了：既不该记一条「迁移失败」，也不该再走一次 summary
+    expect(messagesAt(log.records, "error")).toEqual([]);
   });
 
   it("交接成功之后才回声（onMigrated 带上实际执行者与用量）", async () => {
@@ -237,21 +240,16 @@ describe("AutoMigratePlugin", () => {
     migrate.mockRejectedValueOnce(boom);
     const onMigrated = vi.fn(async () => {});
     const onFailed = vi.fn(async () => {});
-    setLogger({ info: () => {}, warn: () => {}, error: () => {} });
-    try {
-      await goIdle(
-        new AutoMigratePlugin({
-          service,
-          handoffTokens: MAX_HANDOFF_TOKENS,
-          resolveMode: async () => "self" as const,
-          onMigrated,
-          onFailed,
-        }),
-        { promptTokens: MAX_HANDOFF_TOKENS + 1 },
-      );
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    await goIdle(
+      new AutoMigratePlugin({
+        service,
+        handoffTokens: MAX_HANDOFF_TOKENS,
+        resolveMode: async () => "self" as const,
+        onMigrated,
+        onFailed,
+      }),
+      { promptTokens: MAX_HANDOFF_TOKENS + 1 },
+    );
 
     expect(onMigrated).not.toHaveBeenCalled();
     expect(onFailed).toHaveBeenCalledWith({
@@ -266,21 +264,16 @@ describe("AutoMigratePlugin", () => {
     migrate.mockRejectedValueOnce(new HandoffAbortedError());
     const onMigrated = vi.fn(async () => {});
     const onFailed = vi.fn(async () => {});
-    setLogger({ info: () => {}, warn: () => {}, error: () => {} });
-    try {
-      await goIdle(
-        new AutoMigratePlugin({
-          service,
-          handoffTokens: MAX_HANDOFF_TOKENS,
-          resolveMode: async () => "self" as const,
-          onMigrated,
-          onFailed,
-        }),
-        { promptTokens: MAX_HANDOFF_TOKENS + 1 },
-      );
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    await goIdle(
+      new AutoMigratePlugin({
+        service,
+        handoffTokens: MAX_HANDOFF_TOKENS,
+        resolveMode: async () => "self" as const,
+        onMigrated,
+        onFailed,
+      }),
+      { promptTokens: MAX_HANDOFF_TOKENS + 1 },
+    );
 
     expect(onMigrated).not.toHaveBeenCalled();
     expect(onFailed).not.toHaveBeenCalled();
@@ -311,39 +304,31 @@ describe("AutoMigratePlugin", () => {
   it("失败回声自己抛错也不接：那是「把闸开回来」的唯一一道门", async () => {
     const { service, migrate } = stubService();
     migrate.mockRejectedValueOnce(new Error("boom"));
-    setLogger({ info: () => {}, warn: () => {}, error: () => {} });
-    try {
-      await expect(
-        goIdle(
-          new AutoMigratePlugin({
-            service,
-            handoffTokens: MAX_HANDOFF_TOKENS,
-            resolveMode: async () => "self" as const,
-            onFailed: async () => {
-              throw new Error("闸没打开");
-            },
-          }),
-          { promptTokens: MAX_HANDOFF_TOKENS + 1 },
-        ),
-      ).rejects.toThrow("闸没打开");
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    await expect(
+      goIdle(
+        new AutoMigratePlugin({
+          service,
+          handoffTokens: MAX_HANDOFF_TOKENS,
+          resolveMode: async () => "self" as const,
+          onFailed: async () => {
+            throw new Error("闸没打开");
+          },
+        }),
+        { promptTokens: MAX_HANDOFF_TOKENS + 1 },
+      ),
+    ).rejects.toThrow("闸没打开");
   });
 
-  it("用户取消不记 error 日志（默认 logger 是 console.error，TUI 下会撕画面）", async () => {
+  it("用户取消不记 error 日志（取消是用户按的停，不是迁移失败）", async () => {
     const { service, migrate } = stubService();
     migrate.mockRejectedValueOnce(new HandoffAbortedError());
-    const errors: string[] = [];
-    // 全局 logger 是模块级状态：必须在 finally 里复原，否则本文件的其它用例会继承它
-    setLogger({ info: () => {}, warn: () => {}, error: (m) => errors.push(m) });
-    try {
-      await goIdle(createPlugin({ service }), { promptTokens: MAX_HANDOFF_TOKENS + 1 });
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    const log = recordingLog();
 
-    expect(errors).toEqual([]);
+    await goIdle(createPlugin({ service, logger: log.logger }), {
+      promptTokens: MAX_HANDOFF_TOKENS + 1,
+    });
+
+    expect(messagesAt(log.records, "error")).toEqual([]);
   });
 
   /**

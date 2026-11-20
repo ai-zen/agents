@@ -3,16 +3,19 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigManager } from "./ConfigManager.js";
-import { setLogger } from "../shared/logger.js";
+import { messagesAt, recordingLog } from "../test-support/log.js";
 import { FACTORY_REASONING_PRESETS } from "./reasoning-presets.js";
 import type { ReasoningPresets } from "../types/index.js";
 
 let dir: string;
 let mgr: ConfigManager;
+/** 配置管理器的日志口（记账的那一份）：策略表读不出来时从这里报 */
+let log: ReturnType<typeof recordingLog>;
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(join(tmpdir(), "aiz-presets-"));
-  mgr = new ConfigManager(join(dir, "config.json"));
+  log = recordingLog();
+  mgr = new ConfigManager(join(dir, "config.json"), undefined, log.logger);
 });
 
 afterEach(async () => {
@@ -85,35 +88,27 @@ describe("ensureReasoningPresets：释放出厂策略", () => {
     });
   });
   it("文件在但不是 JSON → 不覆盖、返回空（你的表原样留着）", async () => {
-    setLogger({ info: () => {}, warn: () => {}, error: () => {} });
-    try {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(mgr.reasoningPresetsPath, "{ 不是 json", "utf-8");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(mgr.reasoningPresetsPath, "{ 不是 json", "utf-8");
 
-      const written = await mgr.ensureReasoningPresets();
+    const written = await mgr.ensureReasoningPresets();
 
-      expect(written).toEqual([]);
-      // 关键：磁盘上那份没被出厂值盖掉 —— 读不出来就动它，等于把用户标了 custom 的条目一起抹了
-      expect(await fs.readFile(mgr.reasoningPresetsPath, "utf-8")).toBe("{ 不是 json");
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    expect(written).toEqual([]);
+    // 关键：磁盘上那份没被出厂值盖掉 —— 读不出来就动它，等于把用户标了 custom 的条目一起抹了
+    expect(await fs.readFile(mgr.reasoningPresetsPath, "utf-8")).toBe("{ 不是 json");
+    // 没写盘是「按设计不做」，但得有人知道这一次没同步：注入的日志口收到一条 error
+    expect(messagesAt(log.records, "error")).toHaveLength(1);
   });
 });
 
 describe("readReasoningPresets：读表", () => {
   it("文件损坏 → 报一句 error 再交出出厂表（不是默默换一张表）", async () => {
-    const errors: string[] = [];
-    setLogger({ info: () => {}, warn: () => {}, error: (message) => errors.push(message) });
-    try {
-      await fs.writeFile(mgr.reasoningPresetsPath, "{ 不是 json", "utf-8");
+    await fs.writeFile(mgr.reasoningPresetsPath, "{ 不是 json", "utf-8");
 
-      expect(await mgr.readReasoningPresets()).toEqual(FACTORY_REASONING_PRESETS);
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toContain("思考策略表");
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    expect(await mgr.readReasoningPresets()).toEqual(FACTORY_REASONING_PRESETS);
+    const errors = messagesAt(log.records, "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("思考策略表");
   });
 
   it("读磁盘内容（用户改动立即生效）", async () => {

@@ -3,7 +3,7 @@ import { fileToContentSection, resolveModelAndEndpoint } from "../../../shared/c
 import type { AgentNS } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../../disclosure.js";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "../builtin/outputGuard.js";
-import { getLogger } from "../../../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type {
   Endpoint,
@@ -20,10 +20,13 @@ const EMPTY_HINT = "(No MCP servers available, ask the user to add one)";
  * 创建 load_mcp 工具。
  * server 枚举由 filteredMcps （完整 McpServerConfig[]）自动推导，
  * 查找配置也直接使用 filteredMcps，与枚举来源一致。
+ *
+ * @param logger 日志口（可选）：报「连上了、清单多大」那两句走它；不注入就不记（库缺省沉默）
  */
 export function createLoadMcpTool(
   mcpManager: McpConnectionManager,
   filteredMcps: McpServerConfig[],
+  logger: LogSink = SILENT_LOG,
 ): CallbackTool {
   // 构建 id→config 查找表
   const configMap = new Map<string, McpServerConfig>();
@@ -90,7 +93,7 @@ export function createLoadMcpTool(
 
       // 静默模式：只回吐摘要（清单仍留在管理器内，供 call_mcp_tool 使用）
       if (!includeManifest) {
-        getLogger().info(
+        logger.info(
           `[load_mcp] ${serverName}: connected (manifest not disclosed: ${manifest.tools.length} tools, ${manifest.resources.length} resources)`,
         );
         return JSON.stringify({
@@ -101,7 +104,7 @@ export function createLoadMcpTool(
         });
       }
 
-      getLogger().info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
+      logger.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
       return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
     },
   });

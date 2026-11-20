@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { getLogger } from "../../../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import type { McpServerConfig } from "../../../types/index.js";
 
 /**
@@ -58,7 +58,17 @@ function normalizeTransport(
  *
  * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。
  */
-export async function discoverMcpServers(paths: string[]): Promise<McpServerConfig[]> {
+/** 发现 MCP 配置时的选项 */
+export interface DiscoverMcpServersOptions {
+  /** 日志口（可选）：某个配置文件 parse 不了时报一句；不注入就不记（库缺省沉默） */
+  logger?: LogSink;
+}
+
+export async function discoverMcpServers(
+  paths: string[],
+  options: DiscoverMcpServersOptions = {},
+): Promise<McpServerConfig[]> {
+  const logger = options.logger ?? SILENT_LOG;
   const seen = new Set<string>();
   const items: McpServerConfig[] = [];
 
@@ -89,9 +99,7 @@ export async function discoverMcpServers(paths: string[]): Promise<McpServerConf
         items.push(normalized);
       }
     } catch (err: unknown) {
-      getLogger().warn(
-        `[sdk] Failed to parse MCP config: ${path} — ${(err as Error)?.message ?? err}`,
-      );
+      logger.warn(`[sdk] Failed to parse MCP config: ${path} — ${(err as Error)?.message ?? err}`);
     }
   }
 

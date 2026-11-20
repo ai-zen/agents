@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import { discoverSubAgents } from "./discover.js";
-import { setLogger } from "../../../shared/logger.js";
+import { recordingLog, messagesAt } from "../../../test-support/log.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -67,21 +67,17 @@ describe("discoverSubAgents", () => {
   });
 
   it("跳过解析失败的 JSON，但要报一句（不默默跳过）", async () => {
-    const warns: string[] = [];
-    setLogger({ info: () => {}, warn: (message) => warns.push(message), error: () => {} });
-    try {
-      writeAgentFile("good", "helper");
-      writeFileSync(join(dir, "bad.json"), "{ not json }");
+    const log = recordingLog();
+    writeAgentFile("good", "helper");
+    writeFileSync(join(dir, "bad.json"), "{ not json }");
 
-      const result = await discoverSubAgents([dir]);
-      expect(result).toHaveLength(1);
-      expect(result[0].function!.name).toBe("helper");
-      // skills / mcp / usertools 三条发现路径都会报，这里从前一声不吹
-      expect(warns).toHaveLength(1);
-      expect(warns[0]).toContain("bad.json");
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
+    const result = await discoverSubAgents([dir], { logger: log.logger });
+    expect(result).toHaveLength(1);
+    expect(result[0].function!.name).toBe("helper");
+    // skills / mcp / usertools 三条发现路径都会报，这里从前一声不吹
+    const warns = messagesAt(log.records, "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("bad.json");
   });
 
   it("目录不存在时返回空数组", async () => {

@@ -3,7 +3,7 @@ import type { AgentPlugin, OuterLoopContext } from "@ai-zen/agents-core";
 import { HandoffAbortedError } from "../runtime/HandoffService.js";
 import type { HandoffContext, HandoffMode, HandoffService } from "../runtime/HandoffService.js";
 import { lastPromptTokens } from "../runtime/lastPromptTokens.js";
-import { getLogger } from "../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../shared/logger.js";
 import type { SdkAgent } from "../runtime/SdkAgent.js";
 
 /** 触发迁移时的用量信息（供执行者选择、确认文案使用） */
@@ -54,6 +54,12 @@ export interface AutoMigrateOptions {
    * 它自己崩了被吞成一行日志，闸就可能一直关着。
    */
   onFailed?: (info: AutoMigrateTriggerInfo & { error: unknown }) => void | Promise<void>;
+  /**
+   * 日志口（可选）：迁移失败且没有被回应声接住的那一条从前走全局日志，现在从这里出去。
+   *
+   * 不注入就不记 —— 库不替调用方往 stdout 写（宿主注入自己那份，带上来源标签）。
+   */
+  logger?: LogSink;
 }
 
 /**
@@ -91,11 +97,14 @@ export interface AutoMigrateOptions {
  */
 export class AutoMigratePlugin implements AgentPlugin {
   private options: AutoMigrateOptions;
+  /** 日志口（构造时定下缺省：不注入就是 {@link SILENT_LOG}） */
+  private readonly logger: LogSink;
   /** 认领到的 agent（见类注释最后一段：`onIdle()` 不带 ctx） */
   private agent?: SdkAgent;
 
   constructor(options: AutoMigrateOptions) {
     this.options = options;
+    this.logger = options.logger ?? SILENT_LOG;
   }
 
   /** 只登记 agent：`onIdle()` 没有 ctx，而交接需要它。不做任何判断。 */
@@ -134,12 +143,12 @@ export class AutoMigratePlugin implements AgentPlugin {
       });
     } catch (err: any) {
       // 用户主动取消不是失败：服务已把会话退回交接前，这里再报错只会在界面上
-      // 凭空多一条「迁移失败」（默认 logger 是 console.error，TUI 下直接撕画面）
+      // 凭空多一条「迁移失败」（日志口是注入的，宿主那格可能是终端）
       if (err instanceof HandoffAbortedError) return;
       // agent 已经关门/被硬杀（`stop()` / `kill()` 之后又走到 idle）：没什么可交接的。
       // 不报错、也不降级 summary —— 那会为一个已经没有的会话白烧一次全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
-      getLogger().error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
+      this.logger.error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
       // 失败回声是「把闸开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里炸出来
       await onFailed?.({ promptTokens, handoffTokens, error: err });
       return;

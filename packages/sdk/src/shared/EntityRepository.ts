@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { resolve, sep } from "node:path";
-import { getLogger } from "./logger.js";
+import { SILENT_LOG, type LogSink } from "./logger.js";
 
 /**
  * 通用实体仓储 — 对磁盘 JSON 文件的 CRUD 操作。
@@ -12,7 +12,15 @@ import { getLogger } from "./logger.js";
  *   - `list()` 跳过读不出来的那**一条**并报一句（一个坏文件不许让整张列表读不出来）
  */
 export class EntityRepository<T extends { id: string }> {
-  constructor(private dir: string) {}
+  /**
+   * @param dir 实体目录
+   * @param logger 日志口（可选）：`list()` 跳过读不出来的那一条时从它报一句。缺省不记
+   *   —— 库不替调用方往 stdout 写（谁要这一行，谁把自己那份日志注进来）
+   */
+  constructor(
+    private dir: string,
+    protected readonly logger: LogSink = SILENT_LOG,
+  ) {}
 
   /**
    * 获取实体的文件路径；`id` 必须落在本仓储目录内，否则抛错。
@@ -55,7 +63,7 @@ export class EntityRepository<T extends { id: string }> {
         const entity = await this.read(id);
         if (entity !== null) entities.push(entity);
       } catch (error) {
-        getLogger().warn(
+        this.logger.warn(
           `[entity] 读不出来，列表里跳过这一条：${this.path(id)}（${String(error)}）`,
         );
       }

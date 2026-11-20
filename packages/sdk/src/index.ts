@@ -36,11 +36,17 @@ export type { DisclosureParam } from "./scope/disclosure.js";
 // 发现
 export { discoverBuiltinTools } from "./scope/plugins/builtin/discover.js";
 export { discoverSubAgents } from "./scope/plugins/subagents/discover.js";
+export type { DiscoverSubAgentsOptions } from "./scope/plugins/subagents/discover.js";
 export { discoverSkills, readSkill } from "./scope/plugins/skills/discover.js";
-export type { SkillInfo, Frontmatter } from "./scope/plugins/skills/discover.js";
+export type {
+  SkillInfo,
+  Frontmatter,
+  DiscoverSkillsOptions,
+} from "./scope/plugins/skills/discover.js";
 export { discoverMcpServers } from "./scope/plugins/mcp/discover.js";
+export type { DiscoverMcpServersOptions } from "./scope/plugins/mcp/discover.js";
 export { discoverUserTools, discoverUserToolFiles } from "./scope/plugins/usertools/discover.js";
-export type { UserToolFile } from "./scope/plugins/usertools/discover.js";
+export type { UserToolFile, DiscoverUserToolsOptions } from "./scope/plugins/usertools/discover.js";
 
 // Scope — 全局上下文 + 能力装配编排容器
 export { Scope } from "./scope/Scope.js";
@@ -222,6 +228,6 @@ export {
 export { createSubAgentTool } from "./scope/plugins/subagents/subAgentTools.js";
 
 // 共享
-export { getLogger, setLogger } from "./shared/logger.js";
-export type { Logger, LogFunctions } from "./shared/logger.js";
+// 日志口：只有类型（谁要用日志，就从参数收一个 `LogSink` 往下传；不注入就不记）
+export type { LogSink } from "./shared/logger.js";
 export { SdkError, ContextOverflowError } from "./shared/errors.js";

@@ -4,6 +4,7 @@ import { discoverMcpServers } from "./discover.js";
 import { createCallMcpTool, createLoadMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import { McpConnectionManager } from "./McpConnectionManager.js";
 import type { McpServerConfig } from "../../../types/index.js";
+import type { LogSink } from "../../../shared/logger.js";
 import type { Scope, FilterOutput } from "../../Scope.js";
 import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 
@@ -26,16 +27,22 @@ export class McpScopePlugin implements ScopePlugin {
 
   private readonly paths: string[];
   private readonly mcpManager: McpConnectionManager | undefined;
+  /** 日志口（可选）：连接管理器与 `load_mcp` 那两句都走它；不注入就不记 */
+  private readonly logger?: LogSink;
   private servers: McpServerConfig[] = [];
 
-  constructor(options?: { paths?: string[] }) {
+  constructor(options?: { paths?: string[]; logger?: LogSink }) {
     this.paths = options?.paths ?? [];
-    this.mcpManager = this.paths.length > 0 ? new McpConnectionManager() : undefined;
+    this.logger = options?.logger;
+    this.mcpManager =
+      this.paths.length > 0
+        ? new McpConnectionManager(undefined, undefined, options?.logger)
+        : undefined;
   }
 
   async discover(scope: Scope): Promise<void> {
     const files = this.paths.map((p) => (isAbsolute(p) ? p : join(scope.cwd, p)));
-    const discovered = await discoverMcpServers(files);
+    const discovered = await discoverMcpServers(files, { logger: this.logger });
     await this.reconcileConnections(discovered);
     this.servers = discovered;
   }
@@ -80,7 +87,7 @@ export class McpScopePlugin implements ScopePlugin {
 
     const result: Tool[] = [];
     if (allow.has("load_mcp") && m && filteredMcps.length > 0) {
-      result.push(createLoadMcpTool(m, filteredMcps));
+      result.push(createLoadMcpTool(m, filteredMcps, this.logger));
     }
     if (allow.has("call_mcp_tool") && m) {
       // env 供 call_mcp_tool 读取 maxToolOutput，与内置工具共用同一上限口径；

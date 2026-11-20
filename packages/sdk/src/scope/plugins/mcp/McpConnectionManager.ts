@@ -3,7 +3,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { getLogger } from "../../../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import type {
   McpServerConfig,
   McpServerManifest,
@@ -62,17 +62,22 @@ export class McpConnectionManager {
   private _transportFactory?: (config: McpServerConfig) => Transport;
   /** 可替换的 Client 工厂，用于测试注入 */
   private _clientFactory?: () => Client;
+  /** 日志口（构造时定下缺省：不注入就什么都不写） */
+  private readonly logger: LogSink;
 
   /**
    * @param transportFactory 可选的自定义 transport 工厂（用于测试注入）
    * @param clientFactory 可选的自定义 Client 工厂（用于测试注入）
+   * @param logger 日志口（可选）：建连失败、清单没拉到、断线、关不掉从这里报；缺省不记
    */
   constructor(
     transportFactory?: (config: McpServerConfig) => Transport,
     clientFactory?: () => Client,
+    logger: LogSink = SILENT_LOG,
   ) {
     this._transportFactory = transportFactory;
     this._clientFactory = clientFactory;
+    this.logger = logger;
   }
 
   // ---- 对外查询 ----
@@ -170,7 +175,7 @@ export class McpConnectionManager {
         // 取消挂着的建连，并清掉它可能建好的资源。清理自己再失败也要留一行：
         // 主错误下面照抛，但「建到一半的东西没清掉」是另一件事
         await this.disconnect(name).catch((cleanupError: unknown) => {
-          getLogger().warn(
+          this.logger.warn(
             `[McpConnectionManager] 连接超时后清理 "${name}" 失败：${String(cleanupError)}`,
           );
         });
@@ -207,7 +212,7 @@ export class McpConnectionManager {
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
       } catch (err: unknown) {
-        getLogger().error(
+        this.logger.error(
           `[McpConnectionManager] Failed to list tools for "${name}": ${(err as Error)?.message ?? err}`,
         );
       }
@@ -223,7 +228,7 @@ export class McpConnectionManager {
           mimeType: r.mimeType,
         }));
       } catch (err: unknown) {
-        getLogger().error(
+        this.logger.error(
           `[McpConnectionManager] Failed to list resources for "${name}": ${(err as Error)?.message ?? err}`,
         );
       }
@@ -237,7 +242,7 @@ export class McpConnectionManager {
           description: p.description,
         }));
       } catch (err: unknown) {
-        getLogger().error(
+        this.logger.error(
           `[McpConnectionManager] Failed to list prompts for "${name}": ${(err as Error)?.message ?? err}`,
         );
       }
@@ -262,7 +267,7 @@ export class McpConnectionManager {
     const prevOnError = transport.onerror;
     transport.onerror = (error: Error) => {
       prevOnError?.(error);
-      getLogger().error(
+      this.logger.error(
         `[McpConnectionManager] Transport error for "${name}": ${error?.message ?? error}`,
       );
     };
@@ -282,12 +287,12 @@ export class McpConnectionManager {
     try {
       await client?.close();
     } catch (error) {
-      getLogger().warn(`[McpConnectionManager] 关闭 MCP client 失败：${String(error)}`);
+      this.logger.warn(`[McpConnectionManager] 关闭 MCP client 失败：${String(error)}`);
     }
     try {
       await transport?.close();
     } catch (error) {
-      getLogger().warn(`[McpConnectionManager] 关闭 MCP transport 失败：${String(error)}`);
+      this.logger.warn(`[McpConnectionManager] 关闭 MCP transport 失败：${String(error)}`);
     }
   }
 
@@ -295,7 +300,7 @@ export class McpConnectionManager {
   private markDisconnected(name: string): void {
     const entry = this.servers.get(name);
     if (!entry || entry.state !== "connected") return;
-    getLogger().error(`[McpConnectionManager] MCP server "${name}" disconnected`);
+    this.logger.error(`[McpConnectionManager] MCP server "${name}" disconnected`);
     this.clearTimeout(name);
     this.servers.set(name, { state: "disconnected" });
   }

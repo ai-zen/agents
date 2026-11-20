@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { getLogger } from "../../../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
 // ---- 类型 ----
 
@@ -38,6 +38,14 @@ export interface SkillInfo {
 
 // ---- 发现（返回完整 SkillInfo，含 subAgent 等元数据）----
 
+/** 发现 / 读取一个 Skill 时的选项 */
+export interface DiscoverSkillsOptions {
+  /** 静默：不写日志（批量探测 / 只读一层目录清单时用） */
+  silent?: boolean;
+  /** 日志口（可选）：合规校验没过时每条报一句；不注入就不记（库缺省沉默） */
+  logger?: LogSink;
+}
+
 /**
  * 扫描多个目录中发现的所有 Skill（含 SKILL.md 的子目录）。
  * 按优先级从高到低传入路径列表，同名 skill 靠前的路径优先（先到先得）。
@@ -45,9 +53,8 @@ export interface SkillInfo {
  */
 export async function discoverSkills(
   paths: string[],
-  options?: { silent?: boolean },
+  options?: DiscoverSkillsOptions,
 ): Promise<SkillInfo[]> {
-  const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const items: SkillInfo[] = [];
 
@@ -71,7 +78,7 @@ export async function discoverSkills(
 
       const skillMdPath = join(dir, entry.name, "SKILL.md");
       // 不必先 `access`：`readSkillFromPath()` 自己 catch-all，读不到就回 null
-      const skill = await readSkillFromPath(entry.name, skillMdPath, silent);
+      const skill = await readSkillFromPath(entry.name, skillMdPath, options);
       if (skill) {
         seen.add(entry.name);
         items.push(skill);
@@ -92,12 +99,11 @@ export async function discoverSkills(
 export async function readSkill(
   skillDirs: string[],
   skillId: string,
-  options?: { silent?: boolean },
+  options?: DiscoverSkillsOptions,
 ): Promise<SkillInfo | null> {
-  const silent = options?.silent ?? false;
   for (const dir of skillDirs) {
     // `readSkillFromPath()` 读不到就回 null，所以不必先探测再读
-    const skill = await readSkillFromPath(skillId, join(dir, skillId, "SKILL.md"), silent);
+    const skill = await readSkillFromPath(skillId, join(dir, skillId, "SKILL.md"), options);
     if (skill) return skill;
   }
   return null;
@@ -108,7 +114,7 @@ export async function readSkill(
 async function readSkillFromPath(
   skillId: string,
   skillMdPath: string,
-  silent?: boolean,
+  options: DiscoverSkillsOptions = {},
 ): Promise<SkillInfo | null> {
   try {
     const content = await fs.readFile(skillMdPath, "utf-8");
@@ -116,10 +122,11 @@ async function readSkillFromPath(
     if (!fm.name) return null;
 
     // 规范合规校验
-    if (!silent) {
+    if (!options.silent) {
       const errors = validateSkill(skillId, fm);
+      const logger = options.logger ?? SILENT_LOG;
       for (const err of errors) {
-        getLogger().warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
+        logger.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
       }
     }
 

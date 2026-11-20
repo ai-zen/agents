@@ -1,4 +1,5 @@
 import type { ScopePlugin } from "../ScopePlugin.js";
+import type { LogSink } from "../../shared/logger.js";
 import { BuiltinToolsScopePlugin } from "./builtin/BuiltinToolsScopePlugin.js";
 import { UserToolsScopePlugin } from "./usertools/UserToolsScopePlugin.js";
 import { SkillsScopePlugin } from "./skills/SkillsScopePlugin.js";
@@ -11,6 +12,11 @@ export interface AllInOneOptions {
   toolsPaths?: string[];
   subAgentsPaths?: string[];
   mcpPaths?: string[];
+  /**
+   * 日志口（可选）：四个会读盘的插件（用户工具 / Skill / MCP / subagent）把它们发现的
+   * 「这个文件读不出来」报到这里；不传则一律不记（库缺省沉默）。
+   */
+  logger?: LogSink;
 }
 
 /**
@@ -25,9 +31,9 @@ export interface AllInOneOptions {
 export function allInOne(options?: AllInOneOptions): ScopePlugin[] {
   return [
     new BuiltinToolsScopePlugin(),
-    new UserToolsScopePlugin({ paths: options?.toolsPaths }),
-    new SkillsScopePlugin({ paths: options?.skillsPaths }),
-    new McpScopePlugin({ paths: options?.mcpPaths }),
-    new SubAgentsScopePlugin({ paths: options?.subAgentsPaths }),
+    new UserToolsScopePlugin({ paths: options?.toolsPaths, logger: options?.logger }),
+    new SkillsScopePlugin({ paths: options?.skillsPaths, logger: options?.logger }),
+    new McpScopePlugin({ paths: options?.mcpPaths, logger: options?.logger }),
+    new SubAgentsScopePlugin({ paths: options?.subAgentsPaths, logger: options?.logger }),
   ];
 }

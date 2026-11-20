@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AppConfig, AgentDefinition, ReasoningPresets } from "../types/index.js";
-import { getLogger } from "../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../shared/logger.js";
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_DEFINITION,
@@ -36,10 +36,23 @@ export class ConfigManager {
   /** 配置坏了被恢复出厂之后要通知的那一下（不注入就只是恢复，不告诉任何人） */
   private readonly onRecovered?: ConfigRecoveredHandler;
 
-  constructor(configPath: string, onRecovered?: ConfigRecoveredHandler) {
+  /** 日志口（不注入就不记）：策略表 / 出厂 Skill 读不出来时的那几句话走它 */
+  private readonly logger: LogSink;
+
+  /**
+   * @param configPath `config.json` 的路径（`basePath` 取它的同级目录）
+   * @param onRecovered 配置被恢复出厂之后的回调（可选）
+   * @param logger 日志口（可选）：读不出来但已降级的那几处从这里报一句；缺省不记
+   */
+  constructor(
+    configPath: string,
+    onRecovered?: ConfigRecoveredHandler,
+    logger: LogSink = SILENT_LOG,
+  ) {
     this.configPath = configPath;
     this.basePath = dirname(configPath);
     this.onRecovered = onRecovered;
+    this.logger = logger;
   }
 
   // -----------------------------------------------------------------------
@@ -314,12 +327,12 @@ export class ConfigManager {
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         return parsed as ReasoningPresets;
       }
-      getLogger().error("[ConfigManager] 思考策略表不是合法对象，按出厂值提供服务");
+      this.logger.error("[ConfigManager] 思考策略表不是合法对象，按出厂值提供服务");
     } catch (error) {
       // 文件还没释放过是首次启动的正常路径，不吵；其余（读不出来、不是 JSON）要说一声 ——
       // 交出厂表是调用方要的（它要一张能用的表），但换了一张表不能装成没换
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        getLogger().error(`[ConfigManager] 思考策略表读不出来，按出厂值提供服务：${String(error)}`);
+        this.logger.error(`[ConfigManager] 思考策略表读不出来，按出厂值提供服务：${String(error)}`);
       }
     }
     return { ...FACTORY_REASONING_PRESETS };
@@ -346,7 +359,7 @@ export class ConfigManager {
       // 只有「还没有这个文件」可以当成要释放出厂值。文件在却读不出来（不是 JSON、权限不对）
       // 时**不覆盖** —— 那会把用户标了 `custom: true` 的条目一起抹掉，那是「擅自修」
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        getLogger().error(
+        this.logger.error(
           `[ConfigManager] 思考策略表读不出来，本次不写盘（你的表原样留着）：${String(error)}`,
         );
         return [];
@@ -406,7 +419,7 @@ export class ConfigManager {
         existing = await fs.readFile(file, "utf-8");
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          getLogger().error(
+          this.logger.error(
             `[ConfigManager] 出厂 Skill「${skill.id}」读不出来，本次不覆盖：${String(error)}`,
           );
           continue;

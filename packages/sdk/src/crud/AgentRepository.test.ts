@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import { AgentRepository } from "./AgentRepository.js";
-import { setLogger } from "../shared/logger.js";
+import { messagesAt, recordingLog } from "../test-support/log.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -9,10 +9,13 @@ import type { AgentDefinition } from "../types/index.js";
 
 let repo: AgentRepository;
 let dir: string;
+/** 仓储的日志口（记账的那一份）：`list()` 跳过读不出来的文件时从这里报 */
+let log: ReturnType<typeof recordingLog>;
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(join(tmpdir(), "ai-zen-crud-test-"));
-  repo = new AgentRepository(dir);
+  log = recordingLog();
+  repo = new AgentRepository(dir, log.logger);
 });
 
 afterEach(async () => {
@@ -74,15 +77,10 @@ describe("AgentRepository", () => {
   it("跳过格式错误的 JSON，但报一句（一个坏文件不许让整张列表读不出来）", async () => {
     await repo.write(sampleAgent("a"));
     await fs.writeFile(join(dir, "bad.json"), "{ not json }");
-    const warns: string[] = [];
-    setLogger({ info: () => {}, warn: (message) => warns.push(message), error: () => {} });
-    try {
-      expect((await repo.list()).map((entity) => entity.id)).toEqual(["a"]);
-    } finally {
-      setLogger({ info: console.log, warn: console.warn, error: console.error });
-    }
 
     // 跳过的是这一条（不是整张表），而且跳得有个说法
+    expect((await repo.list()).map((entity) => entity.id)).toEqual(["a"]);
+    const warns = messagesAt(log.records, "warn");
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("bad.json");
   });

@@ -2,12 +2,14 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Tool, CallbackTool } from "@ai-zen/agents-core";
-import { getLogger } from "../../../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
 /** 单个用户工具文件的加载参数 */
 export interface DiscoverUserToolsOptions {
   /** 静默：不写日志（测试 / 批量探测用） */
   silent?: boolean;
+  /** 日志口（可选）：某个文件被拒了从它报一句；不注入就不记（库缺省沉默） */
+  logger?: LogSink;
   /** 单文件 import 的超时（毫秒），默认 {@link DEFAULT_IMPORT_TIMEOUT_MS}；`0` 表示不限 */
   importTimeoutMs?: number;
 }
@@ -122,14 +124,14 @@ async function importWithTimeout(url: string, timeoutMs: number): Promise<unknow
   }
 }
 
-/** 「这个文件被拒了」的出口：只走 logger，怎么展示是宿主的事 */
+/** 「这个文件被拒了」的出口：只走注入进来的日志，怎么展示是宿主的事 */
 function reportReject(
   file: string,
   reason: string,
   opts: DiscoverUserToolsOptions,
   level: "warn" | "error" = "warn",
 ): void {
-  if (!opts.silent) getLogger()[level](`[usertools] ${file} — ${reason}`);
+  if (!opts.silent) (opts.logger ?? SILENT_LOG)[level](`[usertools] ${file} — ${reason}`);
 }
 
 /**
@@ -261,7 +263,7 @@ async function loadToolFile(
       return null;
     }
 
-    return normalizeToolExport({ default: exported }, filepath, opts.silent);
+    return normalizeToolExport({ default: exported }, filepath, opts);
   } catch (err: any) {
     reportReject(filepath, `failed to load — ${err?.message ?? err}`, opts, "error");
     return null;
@@ -278,7 +280,11 @@ async function loadToolFile(
 /**
  * 统一各种导出格式为 Tool 实例。
  */
-function normalizeToolExport(exported: any, filepath: string, silent?: boolean): Tool | null {
+function normalizeToolExport(
+  exported: any,
+  filepath: string,
+  opts: DiscoverUserToolsOptions = {},
+): Tool | null {
   // 情况 1：直接是 Tool 实例
   if (exported instanceof Tool) {
     return exported;
@@ -317,8 +323,8 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
     });
   }
 
-  if (!silent) {
-    getLogger().error(`[usertools] Unrecognized tool format: ${filepath}`);
+  if (!opts.silent) {
+    (opts.logger ?? SILENT_LOG).error(`[usertools] Unrecognized tool format: ${filepath}`);
   }
   return null;
 }
