@@ -750,6 +750,47 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
 
     agent.kill();
   });
+
+  it("这一回合里先报过一次错、模型随后把文档写成了 → 交接成功，不报失败", async () => {
+    // 判据只有「文档写出来了没有」：先出的那个错只解释「为什么没写出来」。
+    // 这一趟里 core 在开跑那一拍照报一次 `failed`（插件抛错走的就是这条路：报完事件、
+    // 循环接着跑，见 `Agent.dispatchHook` 的 catch），模型随后照样把文档写了出来 ——
+    // 这次交接是成的，盘上那份文档不许被前面那个错判死。
+    const { service } = await makeService();
+    const writeTool = new CallbackTool({
+      function: {
+        name: "write",
+        description: "写文件",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      callback: async (args: any) => {
+        await fs.writeFile(args.path, args.content, "utf-8");
+        return "ok";
+      },
+    });
+    const { client } = makeStreams((body) =>
+      /Handoff document absolute path: (.+)/.exec(String(body.messages.at(-1).content))![1]!.trim(),
+    );
+    const agent = new Agent({ client, model: "m", tools: [writeTool] });
+    // 只在第一拍崩这一次：报出去的是一格 `failed`，这一批照旧跑完
+    let fired = 0;
+    agent.use({
+      onOuterLoopStart: () => {
+        if (fired++ > 0) return;
+        throw new Error("upstream 500: the first request of the round blew up");
+      },
+    });
+
+    const ctx = await service.handoff({ agent: agent as any });
+
+    // 文档写出来了就是成了：模式仍是 self（没有降级 summary 再烧一次全量输入）
+    expect(ctx.mode).toBe("self");
+    expect(existsSync(ctx.handoffPath)).toBe(true);
+    // 盘上那篇就是模型自己写的那一份（不是降级之后重新生成的摘要）
+    expect(await fs.readFile(ctx.handoffPath, "utf-8")).toBe(docContent());
+
+    agent.kill();
+  });
 });
 
 // ---------------------------------------------------------------------------
