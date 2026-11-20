@@ -8,6 +8,7 @@ import {
 import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
+import type { LogSink } from "../../../shared/logger.js";
 import { promises as fs } from "node:fs";
 
 const EMPTY_HINT = "(No Skills are currently available, please ask the user to add one)";
@@ -15,10 +16,13 @@ const EMPTY_HINT = "(No Skills are currently available, please ask the user to a
 /**
  * 创建 load_skill 工具。
  * 枚举所有允许的 skill（不限是否支持 subagent），由 filteredSkills 提供完整信息。
+ *
+ * @param logger 日志口（可选）：加载时合规校验没过的那几句走它；不注入就不记
  */
 export function createLoadSkillTool(
   skillDirs: string[],
   filteredSkills: SkillInfo[],
+  logger?: LogSink,
 ): CallbackTool {
   const ids = filteredSkills.map((s) => s.id);
   const allowedIds = new Set(ids);
@@ -56,7 +60,7 @@ export function createLoadSkillTool(
       if (!allowedIds.has(skillId)) {
         return `❌ Skill "${skillId}" is not available here. Available skills: ${ids.join(", ") || "(none)"}`;
       }
-      const skill = await readSkill(skillDirs, skillId);
+      const skill = await readSkill(skillDirs, skillId, { logger });
       if (!skill) {
         return `❌ Skill "${skillId}" not found, please verify the name`;
       }
@@ -99,6 +103,7 @@ export function createLoadSkillTool(
 export function createCallSkillSubAgentTool(
   skillDirs: string[],
   filteredSkills: SkillInfo[],
+  logger?: LogSink,
 ): AgentToolLazy {
   // 只保留支持 subagent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
@@ -153,7 +158,7 @@ export function createCallSkillSubAgentTool(
           `❌ Skill "${skillId}" is not available here. Available SubAgent skills: ${ids.join(", ") || "(none)"}`,
         );
       }
-      const skill = await readSkill(skillDirs, skillId);
+      const skill = await readSkill(skillDirs, skillId, { logger });
       if (!skill) {
         throw new Error(`❌ Skill "${skillId}" not found, please verify the name`);
       }

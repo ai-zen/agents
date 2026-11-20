@@ -55,11 +55,11 @@ export class SkillsScopePlugin implements ScopePlugin {
 
     const result: Tool[] = [];
     if (allow.has("load_skill") && filteredSkills.length > 0) {
-      result.push(createLoadSkillTool(this.dirs, filteredSkills));
+      result.push(createLoadSkillTool(this.dirs, filteredSkills, this.logger));
     }
     // call_skill_sub_agent：只要有支持 subagent 的 skill 就注册
     if (allow.has("call_skill_sub_agent") && filteredSkills.some((s) => s.subAgent)) {
-      result.push(createCallSkillSubAgentTool(this.dirs, filteredSkills));
+      result.push(createCallSkillSubAgentTool(this.dirs, filteredSkills, this.logger));
     }
     return result;
   }
