@@ -1,5 +1,8 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 
+import type { Notice } from "./notice/types.js";
+import type { Question } from "./question/types.js";
+
 /**
  * 推给客户端的事实。全部是「事实变了」，不是「阶段到了」——所以这里没有「这一轮跑完了」这种东西，
  * 要知道它闲没闲看 `agent.status`。
@@ -33,4 +36,21 @@ export type HostEvent =
       readonly type: "agent.inbox";
       readonly sessionId: string;
       readonly inbox: readonly AgentNS.InboxEntry[];
+    }
+  | { readonly type: "notice"; readonly notice: Notice }
+  /** 不给 `sessionId` 的意思是清掉了全部，所以这一格可缺省，不是 `string | null` */
+  | { readonly type: "notice.cleared"; readonly sessionId?: string }
+  | {
+      readonly type: "question.asked";
+      readonly sessionId: string;
+      readonly question: Question;
+    }
+  /**
+   * 答了就没了，所以这条只带 `questionId`，不重复整道题：客户端据此把那一块收起来。
+   */
+  | {
+      readonly type: "question.answered";
+      readonly sessionId: string;
+      readonly questionId: string;
+      readonly value: string;
     };

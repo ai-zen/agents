@@ -14,6 +14,13 @@ import { openDatabase } from "./infra/db.js";
 import { Delivery } from "./modules/agent/delivery.js";
 import { inboxTable } from "./modules/agent/inbox.js";
 import type { HostApiDeps } from "./modules/api/deps.js";
+import { AssetService } from "./modules/asset/service.js";
+import { assetTable, sessionAssetTable } from "./modules/asset/table.js";
+import { CredentialService } from "./modules/credential/service.js";
+import { credentialTable } from "./modules/credential/table.js";
+import { NoticeService } from "./modules/notice/service.js";
+import { noticeTable } from "./modules/notice/table.js";
+import { QuestionRegistry } from "./modules/question/registry.js";
 import { AgentRegistry } from "./modules/api/registry.js";
 import { createAppRouter } from "./modules/api/router.js";
 import { AgentDefinitionService } from "./modules/config/agents.js";
@@ -122,7 +129,18 @@ export class HostApp {
 
     const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
     const sessions = new SessionService({ sessions: sessionRows, t });
-    this.agents = new AgentRegistry({ sessions, workspaces });
+    this.agents = new AgentRegistry({ sessions, workspaces, events });
+
+    // `assets` 与 `session_assets` 的表引了 `messages`，所以只能在它之后建
+    const assets = new AssetService({
+      assets: assetTable(this.db),
+      sessionAssets: sessionAssetTable(this.db),
+      dataRoot: deps.dataRoot,
+      t,
+    });
+    const notices = new NoticeService({ notices: noticeTable(this.db), events });
+    const credentials = new CredentialService({ credentials: credentialTable(this.db), t });
+    const questions = new QuestionRegistry({ events, t });
 
     this.scopes = new ScopeRegistry({
       createScope: async (cwd) => {
@@ -150,6 +168,10 @@ export class HostApp {
       inbox,
       delivery: new Delivery({ inbox }),
       agents: this.agents,
+      assets,
+      notices,
+      credentials,
+      questions,
       events,
       t,
       onError: (error, what) => this.log.error(what, { error }),

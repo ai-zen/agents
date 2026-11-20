@@ -12,8 +12,9 @@
 |---|---|---|
 | 1 | `modules/config/discovery.ts`（Skill、工具、subagent 的分层目录扫描） | 按优先级合并成一份有效清单；只发现真实存在的目录 |
 | 2 | `modules/session/auto-name.ts` | 变闲那一刻给名字还是自动起的会话起一次名，用户改过的不动 |
-| 3 | `modules/agent/` 剩下的：`agent.alive` 事件（PRD 4.4 要求死活可见，现在没人发）、subagent 最后一片正文（core 不转发 `responseFinished`） | 界面能在一段会话变活/变死时自动知道 |
-| 4 | `modules/asset/`、`credential/`、`question/`、`handoff/`、`search/`、`notice/` | 每个类 0~2 条用例；多加的每一条要说出它证明的是哪个人会犯的错 |
+| 3 | `modules/handoff/`（交接与压缩：换记忆、断点消息、待交接标记兑现） | 交接期间不落库；收口时一条 memory_replaced |
+| 4 | `modules/search/`（全文检索） | messages 表上的 FTS 与 trigram 分词；短查询退化到 LIKE |
+| 5 | 三处已知缺口：subagent 最后一片正文（core 不转发 `responseFinished`）、连接上的凭证校验（`credential/` 已建但 `createContext` 还没用它）、题挂着时挡不挡 `agent.send` | 每条要能说出具体可见的后果 |
 
 ## 门禁
 

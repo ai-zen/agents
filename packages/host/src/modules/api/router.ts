@@ -1,6 +1,10 @@
 import { agentRouter } from "./agent.js";
+import { assetRouter } from "./asset.js";
+import { credentialRouter } from "./credential.js";
 import type { HostApiDeps } from "./deps.js";
 import { eventsProcedure } from "./events.js";
+import { noticeRouter } from "./notice.js";
+import { questionRouter } from "./question.js";
 import { sessionRouter } from "./session.js";
 import { createTrpc } from "./trpc.js";
 
@@ -16,6 +20,10 @@ export function createAppRouter(deps: HostApiDeps) {
   return api.router({
     session: sessionRouter(deps, api),
     agent: agentRouter(deps, api),
+    asset: assetRouter(deps, api),
+    notice: noticeRouter(deps, api),
+    credential: credentialRouter(deps, api),
+    question: questionRouter(deps, api),
     events: eventsProcedure(deps, api),
   });
 }

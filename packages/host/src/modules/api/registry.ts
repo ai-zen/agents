@@ -1,12 +1,15 @@
 import type { Agent } from "@ai-zen/agents-core";
 
+import type { Bus } from "../../infra/bus.js";
 import type { AgentSubscription } from "../agent/subscription.js";
+import type { HostEvent } from "../events.js";
 import type { SessionService } from "../session/service.js";
 import type { WorkspaceService } from "../workspace/service.js";
 
 export interface AgentRegistryDeps {
   readonly sessions: SessionService;
   readonly workspaces: WorkspaceService;
+  readonly events: Bus<HostEvent>;
 }
 
 interface AliveAgent {
@@ -38,6 +41,8 @@ export class AgentRegistry {
    */
   add(sessionId: string, agent: Agent, subscription: AgentSubscription): void {
     this.alive.set(sessionId, { agent, subscription });
+    // 先报活、再让它跑：客户端可能在它跑起来之前就要把这一段挂到界面上
+    this.deps.events.emit({ type: "agent.alive", sessionId, alive: true });
     void agent.start();
   }
 
@@ -54,6 +59,8 @@ export class AgentRegistry {
     this.alive.delete(sessionId);
     entry.agent.kill();
     entry.subscription.detach();
+    // 报死排在这两步之后：订阅还在写库时先报「没了」，客户端会紧接着收到一条那时的消息
+    this.deps.events.emit({ type: "agent.alive", sessionId, alive: false });
   }
 
   killAll(): void {
