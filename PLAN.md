@@ -461,7 +461,6 @@ pin 与退出信号必须分开，理由各一条：
 | **W2 CLI 收口** | `npx` 现下现起 + 下载屏 + `/ws` + `/shutdown` + 命令集增删；同批发 `agents-host@0.1.0-alpha.1` | ✅ 完成 |
 | **W3 归档与文档** | `cli-old` 降级为只读归档、旧包名清干净、文档跟上新契约 | ✅ 完成 |
 | **W4 桌面端完整问答视图** | 问答面板 → 完整视图 → 22 项零入口 → 体验欠账；真 GUI 竖切六步（连上 / 流式 / 作答交接问题 / 撤回 / 搜索命中并定位 / 置顶） | ⬜ 未开始（优先级最低） |
-| **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清；判据是**必要性**（不是「能删就删」）：不可能发生的条件删掉、真实会发生的坏输入与外部失败留着并写清「谁会走到」 | ✅ 第一遍完成；第二遍只在有新证据时做 |
 | **W6 运行期可输入与重开回看** | 跑中发送进 inbox、投递回执、inbox 条数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧运行中输入与 `/sessions` | ✅ 完成 |
 | **W7 平级会话阶段 1** | `create_session` / `read_session_status`、建完即回（其中「结果投回并唤醒发起者」已被 PRD 4.6 判死，见 §14） | ✅ 完成（回投那半已废） |
 | **W8 agent 常驻与投递收口** | agent 常驻跨轮复用、Scope 去空闲回收、配置改成就地刷新、投递收敛成一个入口、平级会话进阶段 2 | ✅ 完成 |
@@ -483,14 +482,10 @@ pin 与退出信号必须分开，理由各一条：
 | 客户端自造问题 | 契约只有 `question.list` / `question.answer`；问题由宿主内部产生（交接线 / 二次确认）。集成用例因此绕开契约直开库造一行 |
 | 平级会话阶段 3 | **✅ 已完成**（`2c7f788`）：`session.list` 给个派生的 `createdBy: "user" | "agent"`（从 `lineage` 派生、不落库），客户端不用自己解释 `lineage === null`。**没有「超时」这回事**（PRD 4.4：生死全手动、没有超时；这一格是旧计划的残留，已删）。`/sessions` 那条命令在 TUI，本仓没有 TUI 包。**「补投」不再是欠账**：会话间通信只有投递（PRD 4.6）。**「跨重启的孤儿」半条出列**（W10）：血缘与会话本身的身份落到了 `sessions.lineage` / `autoHandoff` 上，重启之后仍认得它与谁开的它；**没有** `peer_sessions` 那张表，也不再需要 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
-| **desktop 未跟改（另一个仓）** | `desktop/packages/{main,shared,render}` 都 `link:` 本地 agents 包，但 `shared` / `render` 还把 `@ai-zen/agents-core` 钉在 `^4.1.0` —— 与 `5.0.0-alpha.0` 对不上，会在他俩的树里落两份 core。它读的 `InboxItem.source` 也已是判别结构。本仓没装 desktop 的依赖（那边连 `tsc` 都没有），所以**行级影响未核实**；动它要装 electron 那一套，属于另一个 workspace。 |
-| 「有方法、没入口」的契约面 | 以 `cli/src` + `packages/client/src` 为准数（2026-11-20）：**零调用点 11 条** —— `workspace.rename` / `workspace.remove` / `session.delete` / `session.kill` / `session.setThresholds` / `agent.restoreFactory` / `model.listImages` / `handoff.listDocuments` / `search.sessions` / `search.messages` / `host.upgrade`。**`host.upgrade` 出列**：它不是死方法，是远端唯一那条「受校验的重启」（见 §8 升级）。其余逐条按 PRD §4 的判据定删或留；`config.patch` / `getDiscovery` / `saveMcp` / `deleteMcp` / `notice.*` 已有消费面，不在这一格里 |
-| 兜底治理第二遍 | 只做了契约面与一轮文件清扫；`retry` / `fallback` / `catch` 密集文件还有未过一遍的 |
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删会话 / 删工作区之后确认一句、撞硬线、撤回之后、subagent 结束、附件超限…… |
-| `desktop` 的构建前提 | 类型检查依赖 `agents/packages/host/dist` 已构建，构建顺序没写进脚本（PRD Q12） |
 | 测试规模的口径 | 默认套件是一个文件一个库 + 一次 `tx` 清表；新增碰库的用例照这个形状写，否则单条用例要付 55ms 的建库钱 |
-| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | **✅ 已完成**（2026-11-20，`9181d9b`–`73a0c29` + cli 的 `35e5bbe`）。**改前**：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。**改后（已落地）**：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（`packages/logger`：零运行时依赖、一实例一文件一轮转、不读 env、不持单例、不写 stdout、**不带级别开关**——实测生产代码零传值）。落点：`logs/host/host.log`、`logs/cli/{cli,launch,keys}.log`。| 定时器（PRD 4.4） | **需求已定、实现为零**：只做「往 inbox 投递」—— 能吵醒本来就活着的会话（闲不闲无所谓），不能造、不能复活。宿主里除 30s 那个 `unref` 版本自检以外没有第二个定时器；§5.1 那张投递来源表里的「定时器」还只是写法 |
-| 交接取消的用例 | 「取消之后那条投递还在、还能被消费」**没有钉住**：`HandoffDocumentService.test.ts:1104` 的取消只验「不留文档、不开新会话」，`ChatRunner.test.ts:842-861` 只验「交接中投两条、顺序对」 |
+| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | **✅ 已完成**（2026-11-20，`9181d9b`–`73a0c29` + cli 的 `35e5bbe`）。**改前**：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。**改后（已落地）**：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（`packages/logger`：零运行时依赖、一实例一文件一轮转、不读 env、不持单例、不写 stdout、**不带级别开关**——实测生产代码零传值）。落点：`logs/host/host.log`、`logs/cli/{cli,launch,keys}.log`。细节见 `.ai-zen/pending/20261120-logging-governance.md` |
+| 定时器（PRD 4.4） | **需求已定、实现为零**：只做「往 inbox 投递」—— 能吵醒本来就活着的会话（闲不闲无所谓），不能造、不能复活。宿主里除 30s 那个 `unref` 版本自检以外没有第二个定时器；§5.1 那张投递来源表里的「定时器」还只是写法 |
 | 明确不动（别再拿「本仓没人读」当理由） | core 的 `started` / `requestSent`（`Agent.ts:610` / `:1195`）、sdk 的 `onBeforeHandoff` / `onHandoff` / `handoffDir`（`HandoffService.ts:139` / `:119`）、client 的 `snapshot()` / `toMirrorEvent` / `mirror()`（`client.ts:403`、`mirror.ts:73` / `:241`）—— 形状没问题，本仓暂时不用不等于该删。「`@ai-zen/async-queue` 一个字不动」这句**已经过期**：队列按 `CORE.md` §13 加过 `takeAll` / `asTakeAll` / `clear`。另有一条没拍板的想法：给它加**插队**（某一条越过已排队的先被取走），2026-11-18 提的，只到「可以考虑」 |
 
 ---
