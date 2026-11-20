@@ -4,15 +4,15 @@
  * ## 它假的是「模型提供方」，不是本项目的任何一层
  *
  * 只依赖 `node:http`：它接的是 `openai` SDK 发出来的那个 HTTP 请求。所以 core / sdk /
- * server / CLI 谁都能用，也不需要知道对方存在。
+ * client 的用例都能用，也不需要知道对方存在。
  *
  * ## 为什么需要一个「假模型」
  *
- * 各包的单元测试里 Agent 一律是被驱动的假件（`agent.fire("chunk-parsed", …)`、
- * `createMockClient([[chunk({content:"…"})]])`），那是对的：它们要隔离的正是传输。但那条
- * 隔离留了一段**谁都没走的路** —— `openai` SDK 发 `stream: true` + `stream_options.include_usage`，
- * 客户端逐片解析 SSE、把正文拼成消息、流末拿真实 `completion_tokens`、core 再把每片
- * 广播成 `chunk-parsed`：这一段只有在真有 HTTP 流的时候才成立。
+ * 各包的单元测试大多用手捏的 chunk / 客户端驱动 Agent
+ * （`createMockClient([[chunk({ content: "…" })]])`），那是对的：它们要隔离的正是传输。
+ * 但那条隔离留了一段**谁都没走的路** —— `openai` SDK 发 `stream: true` +
+ * `stream_options.include_usage`，客户端逐片解析 SSE、把正文拼成消息、流末拿真实
+ * `completion_tokens`、core 再把每片广播成 `delta`：这一段只有在真有 HTTP 流的时候才成立。
  *
  * 用真模型验它要 key、要网、要钱，而且答复不确定（断言只能写「非空」）。这个假端点换来
  * 三件事：

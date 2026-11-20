@@ -3,7 +3,6 @@
  *
  * 这个包只管「把一行字写出去」。它**不读环境变量、不持全局单例、不写 stdout / stderr、
  * 不认识「通知」这个概念** —— 谁想知道刚刚写出去了一条什么，订阅 `onRecord` 自己处理。
- * 于是「日志」这件事没有隐藏的第二个出口，谁在用这个包，一眼能看全。
  *
  * 三件事在这里定死：
  *
@@ -28,10 +27,7 @@ import { dirname } from "node:path";
 export type LogLevel = "info" | "warn" | "error";
 
 /**
- * 三方法的结构类型。
- *
- * SDK / 宿主 / 命令行都用这个形状对接口，谁也不必依赖本包 —— 注入方给自己那一层的
- * `LogSink` 是结构相容的即可。
+ * 三方法的结构类型：`FileLogger` 与 `withSource()` 的产物都是它。
  */
 export interface LogSink {
   info(message: string, detail?: unknown): void;
@@ -61,9 +57,9 @@ export interface FileLoggerOptions {
   source?: string;
   /** 注入时钟（用例要可复现），缺省 `Date.now` */
   now?: () => number;
-  /** 每写一条就回调一次。同步、fire-and-forget；它抛错不许影响写盘 */
+  /** 每写一条就回调一次。同步、fire-and-forget；它抛错只报给 `onWriteError`，不影响写盘 */
   onRecord?: (record: LogRecord) => void;
-  /** 落盘失败（开流 / 写 / 轮转）的唯一出口；它抛错也不许影响主流程 */
+  /** 落盘失败（开流 / 写 / 轮转）的唯一出口；它自己抛错会被吞掉 */
   onWriteError?: (error: unknown) => void;
 }
 
