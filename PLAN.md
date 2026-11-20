@@ -470,13 +470,13 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 每条都跑，不许减项：
 
 1. `npm run pretest`（`tsc --noEmit -p tsconfig.test.json`）零错误。
-2. `./node_modules/.bin/vitest run` 全绿；**失败不许用 `.skip` 换绿**，要么修好要么删掉并说明。当前基线：**906 passed / 59 文件**。
+2. `./node_modules/.bin/vitest run` 全绿；**失败不许用 `.skip` 换绿**，要么修好要么删掉并说明。当前基线（`packages/host`）：**889 passed / 55 文件**；`packages/logger` 19、`packages/sdk` 744。
 3. 真进程竖切跑通（不是只有单测绿）：`npm run test:e2e` 的两条真子进程 + 真 WebSocket 用例。
 4. **不必要性审查**：新增的每个可选入参、可空返回、防御分支，都要答得出「哪个客户端的哪一行会走到」；答不出来就删。
 5. 文档同步：改了行为就改 `PRD.md` / `PLAN.md` 的对应条目，不许文档落后于代码。
 6. 测试安放：一个事实只在一处断言（表结构归 `migrations.test.ts`、`tx` 边界归 `Database.test.ts`、契约语义归 `*Service.test.ts`、SQL 独有行为归 `*Repository.test.ts`、接线归 `WsHub.test.ts`、真进程归 e2e）。同一件事在两层都断言，删掉弱的那一份。
 7. 删用例的判据是必要性：生产代码零调用者的方法连用例一起删（留着给假安全覆盖）；被测对象根本拿不到的依赖不要摆进夹具。
-8. 不自己 commit（用户的规矩）；要提交时用中文 conventional commits，正文写「改前 / 改后 / 为什么」。
+8. 按 `AGENTS.md` 第 7 条：**提交但不推送** —— 每完成一部分就提交（一个主题一个提交，中文 conventional commits，正文写「改前 / 改后 / 为什么」）；但不执行 `git push` / `rebase` / `commit --amend` / `push --force`，推不推只由用户说。
 
 ---
 
