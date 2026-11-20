@@ -178,8 +178,13 @@ export class McpConnectionManager {
       await Promise.race([promise, timeout]);
     } catch (err) {
       if (String((err as Error)?.message ?? "").includes("timed out")) {
-        // 取消挂着的建连，并清掉它可能建好的资源
-        await this.disconnect(name).catch(() => {});
+        // 取消挂着的建连，并清掉它可能建好的资源。清理自己再失败也要留一行：
+        // 主错误下面照抛，但「建到一半的东西没清掉」是另一件事
+        await this.disconnect(name).catch((cleanupError: unknown) => {
+          getLogger().warn(
+            `[McpConnectionManager] 连接超时后清理 "${name}" 失败：${String(cleanupError)}`,
+          );
+        });
       }
       throw err;
     } finally {
@@ -325,14 +330,18 @@ export class McpConnectionManager {
     });
   }
 
-  /** 静默关闭连接资源（断开/取消路径共用） */
+  /** 关闭连接资源（断开/取消路径共用）：关不掉要留一行，不能装成关掉了 */
   private async closeQuietly(client?: Client, transport?: Transport): Promise<void> {
     try {
       await client?.close();
-    } catch {}
+    } catch (error) {
+      getLogger().warn(`[McpConnectionManager] 关闭 MCP client 失败：${String(error)}`);
+    }
     try {
       await transport?.close();
-    } catch {}
+    } catch (error) {
+      getLogger().warn(`[McpConnectionManager] 关闭 MCP transport 失败：${String(error)}`);
+    }
   }
 
   /** 运行期断线：标记 disconnected 并记日志（已在连接状态才处理，避免重复日志） */

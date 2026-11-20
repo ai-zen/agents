@@ -1,6 +1,7 @@
 import type { AgentDefinition } from "../../../types/index.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { getLogger } from "../../../shared/logger.js";
 
 /**
  * 扫描多个目录中发现的所有 SubAgent 完整定义。
@@ -37,8 +38,12 @@ export async function discoverSubAgents(paths: string[]): Promise<AgentDefinitio
             agents.push(def);
           }
         }
-      } catch {
-        // 跳过解析失败的文件
+      } catch (error) {
+        // 跳过坏文件是对的（一个坏文件不该让整张 SubAgent 列表读不出来），但要留一行：
+        // skills / mcp / usertools 三条发现路径都报了，只有这里一声不吹
+        getLogger().warn(
+          `[subagents] ${join(dir, file)} 读不出来或不是合法定义，跳过：${String(error)}`,
+        );
       }
     }
   }
