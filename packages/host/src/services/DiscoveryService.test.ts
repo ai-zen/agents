@@ -208,15 +208,6 @@ describe("DiscoveryService 读 MCP", () => {
     expect(shadowed?.problem?.messageKey).toBe("discovery.shadowed");
     expect(shadowed?.problem?.params.path).toBe(near.path);
     expect(far.entries.find((entry) => entry.id === "only-user")?.problem).toBeNull();
-
-    // 与 SDK 的合并口径一致：同 id 取近的那一层
-    const effective = await service.effectiveMcpServers(project);
-    expect(effective.map((host) => host.id).sort()).toEqual([
-      "only-user",
-      "only-workspace",
-      "shared",
-    ]);
-    expect(effective.find((host) => host.id === "shared")?.transport).toBe("stdio");
   });
 
   it("文件不存在与文件坏了分开报", async () => {

@@ -32,12 +32,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import {
-  discoverMcpServers,
-  discoverSkills,
-  discoverSubAgents,
-  discoverUserToolFiles,
-} from "@ai-zen/agents-sdk";
+import { discoverSkills, discoverSubAgents, discoverUserToolFiles } from "@ai-zen/agents-sdk";
 import type { ConfigManager, McpServerConfig } from "@ai-zen/agents-sdk";
 import type { LogSink } from "@ai-zen/agents-logger";
 
@@ -336,11 +331,6 @@ export class DiscoveryService {
     };
   }
 
-  /** 只取 MCP 的 5 层路径（`scopeAbilityPaths` 里那一格的单独取法） */
-  mcpPaths(cwd: string): string[] {
-    return this.mcpLayers(cwd).map((layer) => layer.path);
-  }
-
   // -------------------------------------------------------------------------
   // 读：一层的状态与条目
   // -------------------------------------------------------------------------
@@ -376,16 +366,6 @@ export class DiscoveryService {
       problem: reading.problem,
       entries: reading.entries,
     };
-  }
-
-  /**
-   * 5 层 MCP 链按 SDK 口径合并的结果（`discoverMcpServers`，同 id 先到先得）。
-   *
-   * 与 {@link DiscoveryService.readMcpLayers} 的分层清单对照着看：两边对不上，说明某一层的
-   * 文件坏了，或者那一条被更近的层盖住了。
-   */
-  async effectiveMcpServers(cwd: string): Promise<McpServerConfig[]> {
-    return await discoverMcpServers(this.mcpPaths(cwd), { logger: this.logger });
   }
 
   // -------------------------------------------------------------------------
