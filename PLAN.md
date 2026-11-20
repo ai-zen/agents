@@ -461,7 +461,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删会话 / 删工作区之后确认一句、撞硬线、撤回之后、subagent 结束、附件超限…… |
 | `desktop` 的构建前提 | 类型检查依赖 `agents/packages/host/dist` 已构建，构建顺序没写进脚本（PRD Q12） |
 | 测试规模的口径 | 默认套件是一个文件一个库 + 一次 `tx` 清表；新增碰库的用例照这个形状写，否则单条用例要付 55ms 的建库钱 |
-| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | 现状：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。已定的形状：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（不引第三方库）。细节与未决项见 `.ai-zen/pending/20261120-logging-governance.md` |
+| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | 现状：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。已定的形状：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（不引第三方库，**不带级别开关**——实测生产代码零传值：`cli` 一处 `info` 都不打，`host` 那 7 条里有一条是「这段会话为什么没 agent」的唯一线索，关不得）。细节见 `.ai-zen/pending/20261120-logging-governance.md` |
 
 ---
 
