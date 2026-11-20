@@ -71,7 +71,7 @@ src/
     config/           磁盘上的配置：general · models · agents · mcp · discovery
     workspace/        项目行（cwd）
     scope/            能力容器（活，按目录，无表）
-    session/          会话行 + 消息 + 草稿 + 自动命名
+    session/          会话行 + 消息 + 自动命名
     agent/            执行体（活）+ inbox 表 + 一次性执行
     connection/       客户端连接（活：语言、凭证、上传）
     asset/            素材
@@ -90,6 +90,8 @@ session/   行 ──▶ agent/ 活      按 sessionId
 ```
 
 非对称的后果：**先叫醒再递话是客户端的编排**，不是宿主的兜底。
+
+**没有草稿。** 输入框里的内容是客户端的状态；会话在发送那一刻随消息一起产生，建行与投递是同一个动作。宿主里因此没有「存在但还没落库」的会话，也就没有第二份形状要同步。
 
 ---
 
