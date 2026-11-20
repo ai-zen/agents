@@ -323,7 +323,34 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **凭证交付**：凭证自身一份真相在库里；`<数据根>/run/token` 只是交付口（内容只有本地那串），对外实例不写它。文件权限尽力而为设成 `0600`（Windows 上 `mode` / `chmod` 不改 ACL），文档与文案都不把它当安全保证。
 
-**升级**：`host.upgrade` 比磁盘版本与运行版本，确认新版本真的落盘才安排一次收尾，进程退出后由启动方式重新拉起；不自装包、不 re-exec。启动后还有一道低频自检（30s、`unref`）比一次磁盘版本（R66）；回退不算升级。
+**升级**（2026-11-20 定：**远端也要能升**；本机与远端同一条路）：宿主不自装包、不 re-exec（PRD 第 237 行），它只做「验目标版本 → 记 pin → 安排收尾」，拉起归启动方式。三段分工：
+
+| 段 | 谁 | 干什么 |
+|---|---|---|
+| ① 挑版本 | 客户端（`npm view`） | 全部 dist-tag 里取 semver 最高的那个。纯网络查询，与宿主在哪台机器无关，所以留在客户端 |
+| ② 验 + 记 + 请重拉 | 宿主 `HostApp.upgradeHost` | 两条判据（见下）验「这一版拿得到」→ 写 pin → 以 `reason: "upgrade"` 退出 |
+| ③ 拉起 | **启动方式** | 读 pin，`npx -y @ai-zen/agents-host@<pin> serve` |
+
+两条判据，各自答得出谁会走到：
+
+1. `readDiskVersion() === target`：磁盘已经就地换过 —— 桌面端（`spawnHostEntry` 起的是应用安装目录里那份）、docker 换镜像、`npm i -g`。**这一条是现在的行为，保留**。
+2. 否则问 registry（node 内置 `fetch`，不引依赖）：`@ai-zen/agents-host` 的 `versions` 里有这个号就算成立。走到这条的是 **npx 拉起的宿主** —— 它自己那份 `package.json` 在 npx 缓存里，一版一格（实测 `~/.npm/_npx/<hash>/` 里 alpha.3 / .5 / .6 / .7 各占一格），原地永不变化，判据 1 在它身上永远不成立。
+3. 两条都不成立 → `not_available` + 原因，**不退出**。这是唯一能把「这一版压根不存在 / 现在查不到」挡在弄死远端服务之前的地方。
+
+pin 与退出信号必须分开，理由各一条：
+
+| 物 | 落点 | 为什么不能用另一个代替 |
+|---|---|---|
+| **pin** | `<数据根>/run/next-version.json`（持久记忆，客户端与启动方式都读） | 它答的是「这台部署下次该跑哪一版」，不是一次性动作。`run/` 是宿主与启动方式的交接处，`host.json` / `token` 已经在那儿 |
+| **信号** | `ExitReason` 加 `"upgrade"`（眼下只有 `"requested"`），`defaultExit` 按它给专属退出码 | 只有 pin 的话，一次 `/shutdown` 之后 supervisor 会照着老 pin 把服务又拉起来，「关就是关」就不成立了 |
+
+客户端那一半：`/upgrade` 删掉本机的 `npx` 预下（`npm.ts` 那半只留查询）与 `cli/host-version.json` 那一格，`connectHost` 改读 `run/next-version.json` —— 一个事实一处落点。远端敲 `/upgrade` 的顺序因此与本机一字不差：查 → 比 → 交宿主 → 宿主记 pin 并退出 → 连接屏等重连（远端要等启动方式把新版拉下来，屏上给「重试」，不自动轮询）。
+
+**认这个代价**：① 远端升级失败（拉不下来 / 探测通过之后断网）→ 远端起不来，只能运维上那台机器；`fetch` 那条探测挡不住「探测之后网断了」。② 远端要有 npm —— npx 起的宿主本来就有。③ 远端 `/shutdown` 之后不会被拉起，保持「关就是关」。
+
+启动后还有一道低频自检（30s、`unref`）比一次磁盘版本（R66）；回退不算升级。
+
+**待拍**：③ 那条「读 pin 重拉」是我们给（新增 `agents-host up`：读 pin → `npx` 拉 → exec 它，自己不服务；远端 unit 一行 `ExecStart=… agents-host up`），还是只出文档、让运维在 unit 里拼。倾向前者 —— 远端要能升级，就意味着这条启动路径是产品的一部分，不该留在配置里。
 
 ---
 
@@ -442,6 +469,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | **W10 平级会话阶段 2** | 编排元数据落到会话行（`lineage` / `autoHandoff` / `createdAt`），进程内只剩 `label` 一个可读名 | ✅ 完成 |
 | **W11 素材引用去 base64** | 引用改成内容段上的本地扩展字段 `__asset_id`（不再往 `image_url.url` / `file.file_id` 里塞 `asset://`），素材全局去重、关系行随消息落库 | ✅ 完成 |
 | **W12 本轮重写** | 题进内存（v5 删表）、判断收一处（四个拒因）、交接期间不收件、`session.pause`/`resume`、记忆形状只在 SDK 一处算（400 字节 / 断点 / cwd 只在创建时）、inbox 三事件恢复、`applyChunk` 只吃 `AgentNS.Delta`、删 `seq` | ✅ 完成 |
+| **W13 远端升级** | 宿主：`upgradeHost` 两条判据（磁盘就地换过 / registry 有这一版，后者用内置 `fetch`）+ 写 pin `<数据根>/run/next-version.json` + `ExitReason` 加 `upgrade` 与专属退出码；客户端：`/upgrade` 删本机 `npx` 预下与 `cli/host-version.json`，`connectHost` 改读 pin；启动方式：读 pin 重拉（我们自己给 `agents-host up`，还是只出文档 —— 待拍，见 §8 升级） | ⬜ 未开始 |
 
 **并行规则**：同波次里两个 agent 的目录不重叠才能同时派；跨目录要改别人的文件先报。
 
@@ -456,7 +484,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 平级会话阶段 3 | 只剩一件事：**「agent 建的」标记**（`session.list` 给个派生的 `createdBy: "user" | "agent"`，客户端不用自己解释 `lineage === null`）。**没有「超时」这回事**（PRD 4.4：生死全手动、没有超时；这一格是旧计划的残留，已删）。`/sessions` 那条命令在 TUI，本仓没有 TUI 包。**「补投」不再是欠账**：会话间通信只有投递（PRD 4.6）。**「跨重启的孤儿」半条出列**（W10）：血缘与会话本身的身份落到了 `sessions.lineage` / `autoHandoff` 上，重启之后仍认得它与谁开的它；**没有** `peer_sessions` 那张表，也不再需要 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
 | **desktop 未跟改（另一个仓）** | `desktop/packages/{main,shared,render}` 都 `link:` 本地 agents 包，但 `shared` / `render` 还把 `@ai-zen/agents-core` 钉在 `^4.1.0` —— 与 `5.0.0-alpha.0` 对不上，会在他俩的树里落两份 core。它读的 `InboxItem.source` 也已是判别结构。本仓没装 desktop 的依赖（那边连 `tsc` 都没有），所以**行级影响未核实**；动它要装 electron 那一套，属于另一个 workspace。 |
-| 6 条「有方法、没入口」的契约面 | `config.patch` / `getDiscovery` / `saveMcp` / `deleteMcp`、`agent.*`（6 条）、`model.*`（7 条）、`completion.files`、`notice.*`（3 条）、`session.state.statusBlocks`（已删）等在两端都没有完整消费面；删或留按 PRD §4 的判据逐条定 |
+| 「有方法、没入口」的契约面 | 以 `cli/src` + `packages/client/src` 为准数（2026-11-20）：**零调用点 11 条** —— `workspace.rename` / `workspace.remove` / `session.delete` / `session.kill` / `session.setThresholds` / `agent.restoreFactory` / `model.listImages` / `handoff.listDocuments` / `search.sessions` / `search.messages` / `host.upgrade`。**`host.upgrade` 出列**：它不是死方法，是远端唯一那条「受校验的重启」（见 §8 升级）。其余逐条按 PRD §4 的判据定删或留；`config.patch` / `getDiscovery` / `saveMcp` / `deleteMcp` / `notice.*` 已有消费面，不在这一格里 |
 | 兜底治理第二遍 | 只做了契约面与一轮文件清扫；`retry` / `fallback` / `catch` 密集文件还有未过一遍的 |
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删会话 / 删工作区之后确认一句、撞硬线、撤回之后、subagent 结束、附件超限…… |
 | `desktop` 的构建前提 | 类型检查依赖 `agents/packages/host/dist` 已构建，构建顺序没写进脚本（PRD Q12） |
