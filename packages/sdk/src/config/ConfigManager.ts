@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AppConfig, AgentDefinition, ReasoningPresets } from "../types/index.js";
+import { getLogger } from "../shared/logger.js";
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_DEFINITION,
@@ -195,8 +196,11 @@ export class ConfigManager {
       };
       await fs.writeFile(defaultPath, JSON.stringify(updated, null, 2), "utf-8");
       return updated;
-    } catch {
-      // 文件不存在或不可解析，继续走初始化流程
+    } catch (error) {
+      // 文件不在 → 正常首次启动，走下面的初始化流程。
+      // 读得到却读不出来（不是合法 JSON、权限不对）是另一件事：**不能当成「没有这个文件」** ——
+      // 下面的「目录里已有文件就返回 null」会让它静默消失，用户永远不知道自己的定义坏了
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
     await fs.mkdir(agentsDir, { recursive: true });
@@ -235,11 +239,12 @@ export class ConfigManager {
     const subDir = join(this.basePath, "sub-agents");
     const defaultPath = join(subDir, `${DEFAULT_SUBAGENT_ID}.json`);
 
+    // 不必先 `access`：`readFile` 在文件不在时自己抛 ENOENT
     try {
-      await fs.access(defaultPath);
       return JSON.parse(await fs.readFile(defaultPath, "utf-8")) as AgentDefinition;
-    } catch {
-      // 文件不存在，继续
+    } catch (error) {
+      // 只有「本来就没有」才继续往下建；解析不了 / 读不出来要抛，不能当成「没有」
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
     await fs.mkdir(subDir, { recursive: true });
@@ -305,11 +310,17 @@ export class ConfigManager {
    */
   async readReasoningPresets(): Promise<ReasoningPresets> {
     try {
-      const raw = await fs.readFile(this.reasoningPresetsPath, "utf-8");
-      const parsed = JSON.parse(raw) as ReasoningPresets;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    } catch {
-      // 缺失或损坏 → 回落出厂种子
+      const parsed: unknown = JSON.parse(await fs.readFile(this.reasoningPresetsPath, "utf-8"));
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as ReasoningPresets;
+      }
+      getLogger().error("[ConfigManager] 思考策略表不是合法对象，按出厂值提供服务");
+    } catch (error) {
+      // 文件还没释放过是首次启动的正常路径，不吵；其余（读不出来、不是 JSON）要说一声 ——
+      // 交出厂表是调用方要的（它要一张能用的表），但换了一张表不能装成没换
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        getLogger().error(`[ConfigManager] 思考策略表读不出来，按出厂值提供服务：${String(error)}`);
+      }
     }
     return { ...FACTORY_REASONING_PRESETS };
   }
@@ -331,8 +342,15 @@ export class ConfigManager {
       onDisk = JSON.parse(
         await fs.readFile(this.reasoningPresetsPath, "utf-8"),
       ) as ReasoningPresets;
-    } catch {
-      onDisk = null;
+    } catch (error) {
+      // 只有「还没有这个文件」可以当成要释放出厂值。文件在却读不出来（不是 JSON、权限不对）
+      // 时**不覆盖** —— 那会把用户标了 `custom: true` 的条目一起抹掉，那是「擅自修」
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        getLogger().error(
+          `[ConfigManager] 思考策略表读不出来，本次不写盘（你的表原样留着）：${String(error)}`,
+        );
+        return [];
+      }
     }
 
     if (!onDisk || typeof onDisk !== "object" || Array.isArray(onDisk)) {
@@ -382,11 +400,17 @@ export class ConfigManager {
       const dir = join(this.basePath, "skills", skill.id);
       const file = join(dir, "SKILL.md");
 
+      // 读不出来 ≠ 不存在：只有 ENOENT 才能当「还没释放过」，否则下面会拿出厂内容把它盖掉
       let existing: string | null = null;
       try {
         existing = await fs.readFile(file, "utf-8");
-      } catch {
-        existing = null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          getLogger().error(
+            `[ConfigManager] 出厂 Skill「${skill.id}」读不出来，本次不覆盖：${String(error)}`,
+          );
+          continue;
+        }
       }
 
       // 用户声明自有 → 永不覆盖

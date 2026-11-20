@@ -69,14 +69,14 @@ export class EntityRepository<T extends { id: string }> {
     await fs.writeFile(this.path(entity.id), JSON.stringify(entity, null, 2), "utf-8");
   }
 
-  /** 删除实体，不存在时不抛异常 */
+  /** 删除实体；本来就不存在算成功，删不掉（权限等）照抛 */
   async delete(id: string): Promise<void> {
-    const p = this.path(id);
     try {
-      await fs.access(p);
-      await fs.unlink(p);
-    } catch {
-      // 文件不存在，忽略
+      await fs.unlink(this.path(id));
+    } catch (error) {
+      // 只有 ENOENT 可以当「已经没有了」；EACCES / EPERM / EISDIR 必须报 ——
+      // 吞了它们，调用方会把「没删掉」当成「删掉了」（宿主那边就会回 `removed: true`）
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
 }

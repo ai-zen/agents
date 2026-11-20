@@ -31,6 +31,20 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     if (testDir) await fs.rm(testDir, { recursive: true, force: true });
   });
 
+  it("文件在但不是合法 JSON → 抛，不当成「没有这个文件」", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    await fs.mkdir(join(testDir, "agents"), { recursive: true });
+    await fs.writeFile(
+      join(testDir, "agents", `${DEFAULT_AGENT_ID}.json`),
+      "{ 这不是 JSON",
+      "utf-8",
+    );
+
+    // 当成「没有」的话，用户的自定义定义会静默消失（下面的初始化流程见目录里已有文件就收手）
+    await expect(mgr.ensureDefaultAgent()).rejects.toBeInstanceOf(SyntaxError);
+  });
+
   it("全新空目录 → 创建 agents/ 并写入 default.json", async () => {
     testDir = await tempDir();
     const mgr = makeManager(testDir);
@@ -182,6 +196,19 @@ describe("ConfigManager.ensureDefaultSubAgent", () => {
 
   afterEach(async () => {
     if (testDir) await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("文件在但不是合法 JSON → 抛，不当成「没有这个文件」", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    await fs.mkdir(join(testDir, "sub-agents"), { recursive: true });
+    await fs.writeFile(
+      join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`),
+      "{ 这不是 JSON",
+      "utf-8",
+    );
+
+    await expect(mgr.ensureDefaultSubAgent()).rejects.toBeInstanceOf(SyntaxError);
   });
 
   it("全新空目录 → 创建 sub-agents/ 并写入 sub-agent-default.json", async () => {
