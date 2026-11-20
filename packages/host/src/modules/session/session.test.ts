@@ -10,15 +10,22 @@ import { openDatabase } from "../../infra/db.js";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 
 import { createTranslator } from "../i18n/index.js";
+import { workspaceTable } from "../workspace/table.js";
 import { messageTable } from "./messages.js";
 import { SessionService } from "./service.js";
 import { sessionTable } from "./table.js";
 import type { NewSession } from "./types.js";
 
-function newService(): SessionService {
+/** 会话挂在外键上，所以每一个库都得先有一个项目行，不然插入会被 `foreign_keys` 拦住 */
+function newDatabase() {
   const db = openDatabase(":memory:");
+  workspaceTable(db).put({ id: "ws-1", name: "项目一", cwd: "/tmp/ws-1", createdAt: 1 });
+  return db;
+}
+
+function newService(): SessionService {
   return new SessionService({
-    sessions: sessionTable(db),
+    sessions: sessionTable(newDatabase()),
     t: createTranslator(() => "zh"),
   });
 }
@@ -69,7 +76,7 @@ describe("会话行", () => {
 
 describe("消息", () => {
   it("seq 按写入顺序递增；after 从它本身开始；找不到时退回整段", () => {
-    const db = openDatabase(":memory:");
+    const db = newDatabase();
     sessionTable(db).put({
       id: "s-1",
       workspaceId: "ws-1",

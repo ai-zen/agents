@@ -7,7 +7,13 @@
  *
  * `code` 说的是世界的状态，不是入参的形状——形状由边界上的 schema 声明，到这里一律已经成立。
  */
-export type ErrorCode = "not_found" | "invalid_params" | "busy" | "unsupported" | "config_invalid";
+export type ErrorCode =
+  | "not_found"
+  | "invalid_params"
+  | "conflict"
+  | "busy"
+  | "unsupported"
+  | "config_invalid";
 
 export class HostError extends Error {
   constructor(

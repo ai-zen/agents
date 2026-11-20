@@ -22,6 +22,12 @@ function makeAgent(messages: AgentNS.Message[] = []): Agent {
 /** 段上的本地扩展与厂商多塞的键（都是认不出的字段） */
 type LooseSection = AgentNS.MessageContentSection & Record<string, unknown>;
 
+/**
+ * 厂商自造的段类型：`audio` / `video` 这样的段不在 `MessageContentSection` 里，
+ * 而 `formatContentSection` 要回答「认不出的段怎么办」—— 用例只能把它们按段递进去。
+ */
+type UnknownSection = { type: string } & Record<string, unknown>;
+
 describe("formatContentSection", () => {
   it("text 段只留 index / type / text", () => {
     const section: LooseSection = {
@@ -36,9 +42,15 @@ describe("formatContentSection", () => {
   });
 
   it("image_url 段的内层只留 url / detail", () => {
+    // 内层也带一个认不出的键（`width`）：这条用例要证明的正是它被剥掉
+    const imageUrl: AgentNS.ImageUrlContentSection["image_url"] & { width: number } = {
+      url: "data:image/png;base64,AAA",
+      detail: "low",
+      width: 32,
+    };
     const section: LooseSection = {
       type: "image_url",
-      image_url: { url: "data:image/png;base64,AAA", detail: "low", width: 32 },
+      image_url: imageUrl,
       __asset_id: "a2",
     };
 
@@ -62,14 +74,14 @@ describe("formatContentSection", () => {
   });
 
   it("认不出的段类型只剩 type（有 index 就带上）", () => {
-    expect(formatContentSection({ type: "audio", url: "https://x/a.mp3" } as LooseSection)).toEqual(
-      {
-        type: "audio",
-      },
-    );
-    expect(
-      formatContentSection({ index: 2, type: "video", video_url: { url: "u" } } as LooseSection),
-    ).toEqual({ index: 2, type: "video" });
+    const audio: UnknownSection = { type: "audio", url: "https://x/a.mp3" };
+    const video: UnknownSection = { index: 2, type: "video", video_url: { url: "u" } };
+
+    expect(formatContentSection(audio as AgentNS.MessageContentSection)).toEqual({ type: "audio" });
+    expect(formatContentSection(video as AgentNS.MessageContentSection)).toEqual({
+      index: 2,
+      type: "video",
+    });
   });
 
   it("不改入参", () => {

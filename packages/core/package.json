@@ -14,6 +14,7 @@
     "prebuild": "npm run clean",
     "build": "tsc",
     "prepublishOnly": "npm run build",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:integration": "vitest run --reporter=verbose src/integration.test.ts"
   },

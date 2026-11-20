@@ -695,8 +695,11 @@ describe("Agent 工具段里按中断", () => {
       function = { name: "hang", description: "h", parameters: {} } as any;
       async exec(ctx: ToolCallContext) {
         toolStarted = true;
+        const signal = ctx.signal;
+        // 上下文的 `signal` 是可选的：缺了它就只能干等，宁可当场炸也不要挂成超时
+        if (signal === undefined) throw new Error("工具调用上下文里没有 signal");
         await new Promise<void>((resolve) => {
-          ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+          signal.addEventListener("abort", () => resolve(), { once: true });
         });
         return "不该被用到";
       }

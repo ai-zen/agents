@@ -172,7 +172,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
   });
 
   it("省略 messages 时不做末条类型校验；提供模板时仍要求末条为 User", () => {
-    const fn = {
+    const fn: AgentNS.FunctionDefine = {
       name: "lazyFn",
       description: "测试",
       parameters: { type: "object", properties: {}, required: [] },
@@ -349,7 +349,7 @@ const usageOf = (prompt: number, completion: number, total: number): AgentNS.Usa
 });
 
 describe("AgentToolLazy 委派用量", () => {
-  const functionOf = (name: string) => ({
+  const functionOf = (name: string): AgentNS.FunctionDefine => ({
     name,
     description: "测试",
     parameters: { type: "object", properties: {}, required: [] },
