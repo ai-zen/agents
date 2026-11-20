@@ -36,6 +36,7 @@ import type {
 } from "../wire/events.js";
 import { AgentRegistry } from "./AgentRegistry.js";
 import type {
+  AbortedStrategies,
   ChatEventEmitter,
   ChatRunnerOptions,
   SessionDeathKind,
@@ -220,6 +221,8 @@ function createHarness(
     draft?: boolean;
     /** 装配卡在这一拍上（验「装配窗口里投进来的话先收着」） */
     buildGate?: Promise<void>;
+    /** 中断策略（缺省跟 core 一致：`fill` / `keep`）；验「策略从配置现读」时传 `drop` */
+    abortedStrategies?: AbortedStrategies;
   } = {},
 ): Harness {
   const clock = new ManualClock();
@@ -255,6 +258,8 @@ function createHarness(
 
   const runnerOptions: ChatRunnerOptions = {
     messages: store,
+    // 中断策略：本文件不出配置，缺省取 core 的那份
+    abortedStrategies: () => options.abortedStrategies ?? { toolRounds: "fill", messages: "keep" },
     // inbox 里还没被取走的那些（三条事件写它、装配时读它）
     inbox,
     sessions: {
@@ -1403,6 +1408,27 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     // 只写真变了的那两行（m1 一个字不动）：返回值就是修完之后的消息，所以看仓储的记账
     expect(harness.store.writes.slice(written).map((row) => row.id)).toEqual(["m2", "m3"]);
     expect(harness.store.peek("m3")?.message.status).toBe(AgentNSValue.MessageStatus.Aborted);
+  });
+
+  it("策略从配置现读：`drop` 时那半截助手消息连库里的行一起删", async () => {
+    const harness = createHarness({ abortedStrategies: { messages: "drop" } });
+    harness.store.seed({
+      id: "m1",
+      sessionId: SESSION_ID,
+      createdAt: 1,
+      message: {
+        id: "m1",
+        role: AgentNSValue.Role.Assistant,
+        status: AgentNSValue.MessageStatus.Pending,
+        content: "说到一半",
+      },
+    });
+
+    const messages = await harness.runner.reconcile(SESSION_ID);
+
+    // `drop`：这条不该留在历史里，库里那行也不该在
+    expect(messages).toEqual([]);
+    expect(harness.store.peek("m1")).toBeUndefined();
   });
 });
 

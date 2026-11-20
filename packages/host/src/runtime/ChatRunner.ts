@@ -82,6 +82,7 @@ import {
   reconcileAbortedMessages,
   reconcileAbortedToolRounds,
 } from "@ai-zen/agents-core";
+import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
 import type { Agent, AgentEvents } from "@ai-zen/agents-core";
 import type {
   AgentDefinition,
@@ -319,6 +320,14 @@ export interface DeliveryInput {
 /** 装载/重启后的修复结果：修好之后的消息（顺序即会话顺序，core 原样） */
 export type ReconcileResult = AgentNS.Message[];
 
+/** 两个中断策略的取值（与 `config.json` 上那两格同名，见 {@link ChatRunnerOptions.abortedStrategies}） */
+export interface AbortedStrategies {
+  /** 工具轮不完整时：`fill` 保住整轮并补一条原因 / `drop` 整组删干净；不给就是 core 的缺省 */
+  toolRounds?: AbortedToolRoundStrategy;
+  /** 被中断的 assistant 消息：`keep` 留住已输出的内容 / `drop` 丢掉；不给就是 core 的缺省 */
+  messages?: AbortedMessageStrategy;
+}
+
 /**
  * 一段会话此刻的读数（{@link ChatRunner.state} 的返回）—— **就是 wire 的
  * {@link SessionState}**：同一个形状只在契约里定义一次，这里直接用它，不再维护第二份。
@@ -362,6 +371,14 @@ function deathKindOfRetire(reason: AgentLifecycleReason): SessionDeathKind {
 export interface ChatRunnerOptions {
   messages: MessageStore;
   sessions: SessionStore;
+  /**
+   * 中断策略（`config.json` 的 `abortedToolRoundStrategy` / `abortedMessageStrategy`）。
+   *
+   * 装配 agent 时这两个开关由 `createAgent` 从 `scope.config` 读；**装载即修复必须用同一份** ——
+   * 拿 `drop` 的段按 `fill` 修库，就会先写进几条马上要被 core 删掉的行，而这会话要是一直不跑，
+   * 库与内存就一直不一致。所以这里是现读入口，不是写死的常量。
+   */
+  abortedStrategies: () => AbortedStrategies | Promise<AbortedStrategies>;
   /**
    * Scope 的持有者（能力容器）。
    *
@@ -2076,9 +2093,9 @@ export class ChatRunner {
    *
    * 两步：
    *   1. 在途（`pending` / `writing`）消息当作被中断 —— 进程是在写它们的时候没的；
-   *   2. 交 core 的两支归一：`reconcileAbortedToolRounds` 用 `fill`（半截工具调用补上未完成
-   *      的原因）、`reconcileAbortedMessages` 用 `keep`（已输出的内容留在上下文里，模型下一条
-   *      消息能接着半截说）。
+   *   2. 交 core 的两支归一：`reconcileAbortedToolRounds` 与 `reconcileAbortedMessages`，
+   *      策略**从配置现读**（与装配 agent 时 `createAgent` 读的是同一份，见
+   *      {@link ChatRunnerOptions.abortedStrategies}）。
    *
    * 只写回状态/`omit` 真的变了的那些行，于是「启动时扫一遍」不会把整段历史重写一次。
    *
@@ -2092,9 +2109,14 @@ export class ChatRunner {
       includeHidden: true,
     });
     // `row.message` 就是 `payload` 解析出来的那一条，修復会就地改它 —— 于是「改没改」得先把
-    // 原样照下来（整条序列化一份，不看具体哪几格），改完再对着它判要不要写回。
-    const before = rows.map((row) => JSON.stringify(row.message));
+    // 原样照下来（整条序列化一份，不看具体哪几格），改完再按 id 判要不要写回。
+    //
+    // **按 id 对，不按下标对**：`drop` 策略会把消息从数组里摘掉，下标当场就错位了。
+    const before = new Map(rows.map((row) => [row.id, JSON.stringify(row.message)]));
+    const createdAtOf = new Map(rows.map((row) => [row.id, row.createdAt]));
     const messages = rows.map((row) => row.message);
+    // 策略从配置现读：与装配 agent 时 `createAgent` 读的那一份是同一个来源
+    const strategies = await this.options.abortedStrategies();
 
     for (const message of messages) {
       if (
@@ -2105,17 +2127,20 @@ export class ChatRunner {
       }
     }
 
-    reconcileAbortedToolRounds(messages, "fill");
-    reconcileAbortedMessages(messages, "keep");
+    // 两支归一会**就地改、并回传被「丢掉」的那些**（`drop` 策略下才有）—— 库里的行得跟着删
+    const removed = [
+      ...reconcileAbortedToolRounds(messages, strategies.toolRounds),
+      ...reconcileAbortedMessages(messages, strategies.messages),
+    ];
 
     const changed: MessageUpsertInput[] = [];
-    messages.forEach((message, index) => {
-      const row = rows[index];
-      if (!row) return;
-      if (JSON.stringify(message) === before[index]) return;
-      changed.push(toRow(message, sessionId, row.createdAt));
-    });
+    for (const message of messages) {
+      if (JSON.stringify(message) === before.get(message.id)) continue;
+      changed.push(toRow(message, sessionId, createdAtOf.get(message.id) ?? this.clock.now()));
+    }
     if (changed.length > 0) await this.options.messages.upsertMany(changed);
+    // 真删掉的那些：库里也不能留着（否则下次读到的是模型那边已经不存在的消息）
+    for (const message of removed) await this.options.messages.delete(message.id);
 
     return messages;
   }

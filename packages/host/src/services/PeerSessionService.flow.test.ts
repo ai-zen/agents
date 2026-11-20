@@ -141,6 +141,7 @@ function makeHarness(rounds: FakeRound[]): Harness {
 
   const runner = new ChatRunner({
     messages: store,
+    abortedStrategies: () => ({ toolRounds: "fill", messages: "keep" }),
     sessions: {
       get: async (id) => rows.get(id),
       // 「库里那一行」：本文件的登记器已经在 `create` 那一刻把它放好了

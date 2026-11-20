@@ -671,6 +671,14 @@ export class HostApp {
       agents: this.agentRegistry,
       emit: (name, payload) => this.emitEvent(name, payload),
       clock: this.clock,
+      // 装载即修复用的中断策略：与装配 agent 时 `createAgent` 读 `scope.config` 是同一份来源
+      abortedStrategies: async () => {
+        const config = await this.configManager.read();
+        return {
+          toolRounds: config.abortedToolRoundStrategy,
+          messages: config.abortedMessageStrategy,
+        };
+      },
       // 历史里的 `__asset_id` 每次装配前按当前模型还原（换模型 / 重启之后历史里的图还能发）
       prepareHistory: (context) => this.assetService.resolveHistory(context),
       // 用户消息落库那一刻扫 content 里的 `__asset_id`，记成关系行（`session_assets`）
