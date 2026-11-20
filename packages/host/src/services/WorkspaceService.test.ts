@@ -108,7 +108,6 @@ describe("WorkspaceService.create", () => {
     expect(result.workspace.name).toBe("project");
     expect(result.workspace.folder).toEqual({ cwd: projectDir, exists: true });
     expect(result.workspace.sessionCount).toBe(0);
-    expect(result.workspace.lastActivityAt).toBeNull();
   });
 
   it("同一个 cwd 登记两次报参数错（R14）", async () => {
@@ -158,8 +157,6 @@ describe("WorkspaceService.list", () => {
 
     const got = await service.get({ workspaceId: created.workspace.id });
     expect(got.workspace.sessionCount).toBe(1);
-    expect(got.workspace.lastActivityAt).toBe(new Date(9_000).toISOString());
-    expect(got.workspace.updatedAt).toBe(new Date(9_000).toISOString());
   });
 });
 

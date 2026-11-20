@@ -204,10 +204,7 @@ export interface WorkspaceView {
   /** cwd 不可变（PRD D9）：创建时定死，这里只读 */
   folder: FolderFact;
   createdAt: string;
-  updatedAt: string;
   sessionCount: number;
-  /** 最近一次有会话活动的时间（没有则为空） */
-  lastActivityAt: string | null;
 }
 
 /** `workspace.list` 入参 */

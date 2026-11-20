@@ -257,28 +257,15 @@ export class WorkspaceService {
     return row;
   }
 
-  /**
-   * 组装一个项目的对外形状。
-   *
-   * `updatedAt` 在 `workspaces` 表里没有对应列，这里取名下会话 `updatedAt` 的最大值当它；
-   * 一条会话都没有时就是创建时间。`lastActivityAt` 是同一份读数。会话行的 `updatedAt` 由
-   * 改名 / 置顶 / 换模型这类写操作推进，新消息不动它。
-   */
+  /** 组装一个项目的对外形状。`sessionCount` 是列出来那一刻现读的条数。 */
   private async toView(row: WorkspaceRow): Promise<WorkspaceView> {
     const sessions = await this.sessions.listByWorkspace(row.id);
-    const lastActivityAt = sessions.reduce<number | null>(
-      (latest, session) =>
-        latest === null || session.updatedAt > latest ? session.updatedAt : latest,
-      null,
-    );
     return {
       id: row.id,
       name: row.name,
       folder: await toFolderFact(row.cwd),
       createdAt: iso(row.createdAt),
-      updatedAt: iso(lastActivityAt ?? row.createdAt),
       sessionCount: sessions.length,
-      lastActivityAt: lastActivityAt === null ? null : iso(lastActivityAt),
     };
   }
 }

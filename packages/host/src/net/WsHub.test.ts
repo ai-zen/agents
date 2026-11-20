@@ -89,9 +89,7 @@ function handlers(): HandlerTable {
         name: context.params.name ?? context.params.cwd,
         folder: { cwd: context.params.cwd, exists: true },
         createdAt: NOW,
-        updatedAt: NOW,
         sessionCount: 0,
-        lastActivityAt: null,
       },
     }),
 
@@ -292,9 +290,7 @@ describe("分发与错误（PLAN §6）", () => {
         name: "项目一",
         folder: { cwd: "/tmp/proj", exists: true },
         createdAt: NOW,
-        updatedAt: NOW,
         sessionCount: 0,
-        lastActivityAt: null,
       },
     });
   });
