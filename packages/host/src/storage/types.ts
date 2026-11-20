@@ -14,7 +14,7 @@
 
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { HandoffMode } from "../wire/methods.js";
-import type { CompactionMode, ProblemFact } from "../wire/states.js";
+import type { CompactionMode } from "../wire/states.js";
 
 /* ------------------------------- workspaces ------------------------------- */
 
@@ -167,17 +167,14 @@ export interface MessageRow {
   createdAt: number;
   /** core 的 `AgentNS.Message` 原样一份 JSON（含 `hidden`），不拆不改不补 */
   payload: string;
-  /** 回显用的失败事实（`ProblemFact`）的 JSON；NULL = 这条没有失败事实 */
-  problem: string | null;
   /** 供全文检索的纯文本（从正文抽出来的那一段，不含 JSON 键名） */
   searchText: string;
 }
 
 /**
- * 一条读过库的消息：先是 core 的消息对象，不是拆开的列。
+ * 一条读过库的消息：就是 core 的消息对象，不是拆开的列。
  *
- * 消费者一律拿 `.message`（正文、角色、状态、用量、`hidden` 全在它身上）。`problem` 是宿主
- * 附加在消息之外的那一条失败事实，所以它在消息对象外面。
+ * 消费者一律拿 `.message` —— 正文、角色、状态、用量、`hidden`、`error` 全在它身上。
  */
 export interface StoredMessage {
   id: string;
@@ -186,8 +183,6 @@ export interface StoredMessage {
   createdAt: number;
   /** 消息本身：`payload` 列 `JSON.parse` 出来的那一条，一个字都没动 */
   message: AgentNS.Message;
-  /** 回显用的失败事实；`null` = 这条没有 */
-  problem: ProblemFact | null;
 }
 
 /**
@@ -200,8 +195,6 @@ export interface MessageUpsertInput {
   createdAt: number;
   /** 消息本身：原样落进 `payload`（`JSON.stringify`，不拆字段） */
   message: AgentNS.Message;
-  /** 回显用的失败事实；不给 = 这条没有失败事实（列上留 NULL） */
-  problem?: ProblemFact | null;
 }
 
 /**

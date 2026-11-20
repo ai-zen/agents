@@ -104,8 +104,9 @@ export const MIGRATIONS: Migration[] = [
       //   - `createdAt`：侧栏「最后一条什么时候说的」与搜索的排序；
       //   - `searchText`：FTS 的索引产物（正文纯文本，触发器只碰它）。
       //
-      // `problem` 是**回显用的失败事实**（`ProblemFact`）：宿主附加的一条事实，活得比进程长
-      // （PRD 4.15），所以它不在消息对象的 JSON 里，单独一列（没有就是 NULL）。
+      // `problem` 没有单独一列：消息自己带着 `error`（core 的 `AgentError`，与 `failed` 事件是
+      // 同一个实例），它就在 `payload` 里。宿主曾经把它翻译成自己的 `ProblemFact` 再存一列，
+      // 那一列从写进去那天起就没人读 —— 而真正要被回显的 `message.error` 反而没落库。
       //
       // `hidden` 是生成列：SQLite 自己从 `payload` 里取 `$.hidden`，JS 侧不维护它。取值只有
       // 1 / 0 / NULL（消息上没有这个键时是 NULL），所以「给用户看」的条件写 `hidden IS NOT 1`。
@@ -119,7 +120,6 @@ export const MIGRATIONS: Migration[] = [
          seq        INTEGER NOT NULL,
          createdAt  INTEGER NOT NULL,
          payload    TEXT NOT NULL,
-         problem    TEXT,
          searchText TEXT NOT NULL DEFAULT '',
          hidden     INTEGER GENERATED ALWAYS AS (json_extract(payload, '$.hidden') = 1) VIRTUAL,
          UNIQUE (sessionId, seq)

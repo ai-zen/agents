@@ -25,8 +25,8 @@
  *    FTS（触发器只碰这一列）。从正文抽纯文本不改变消息的形状 —— 消息对象本身仍是 `payload`
  *    里那一份，读的时候一个字都不重建。
  *
- * `problem` 是**回显用的失败事实**（`ProblemFact`），宿主附加在消息之外的一条事实：它活得比
- * 进程长（PRD 4.15），所以单独一列存它的 JSON，没有时是 NULL。它不在消息对象里。
+ * `problem` 曾经是宿主自己造的一份失败事实（`ProblemFact`），单独一列；它从写进去那天起就没有
+ * 读者 —— 而消息自己带着 `error`（core 的 `AgentError`），现在就在 `payload` 里。那一列已删。
  *
  * FTS 索引的同步交给 `messages` 上的触发器（在 migrations.ts 里建），所以本文件写消息时只写
  * `messages` 表。
@@ -51,7 +51,7 @@ const TRIGRAM_MIN_LENGTH = 3;
 /** 搜索结果的片段长度上限 */
 const SNIPPET_LENGTH = 160;
 
-const COLUMNS = "id, sessionId, seq, createdAt, payload, problem, searchText";
+const COLUMNS = "id, sessionId, seq, createdAt, payload, searchText";
 
 /**
  * 「这条消息给用户看」的条件：`hidden` 生成列不为 1。
@@ -82,12 +82,10 @@ const UPSERT_SQL = `
     (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?),
     ?,
     ?,
-    ?,
     ?
   )
   ON CONFLICT (id) DO UPDATE SET
     payload    = excluded.payload,
-    problem    = excluded.problem,
     searchText = excluded.searchText
 `;
 
@@ -142,7 +140,6 @@ function toStoredMessage(row: MessageRow): StoredMessage {
     seq: row.seq,
     createdAt: row.createdAt,
     message: JSON.parse(row.payload) as AgentNS.Message,
-    problem: row.problem === null ? null : (JSON.parse(row.problem) as ProblemFact),
   };
 }
 
@@ -154,7 +151,6 @@ function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
     input.sessionId,
     input.createdAt,
     JSON.stringify(input.message),
-    input.problem === undefined || input.problem === null ? null : JSON.stringify(input.problem),
     toSearchText(input.message.content),
   ];
 }

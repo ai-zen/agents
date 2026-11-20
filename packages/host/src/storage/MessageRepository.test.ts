@@ -7,12 +7,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentError, AgentNS } from "@ai-zen/agents-core";
 import { Database } from "./Database.js";
 import { migrate } from "./migrations.js";
 import { MessageRepository } from "./MessageRepository.js";
 import type { MessageUpsertInput } from "./types.js";
-import type { ProblemFact } from "../wire/states.js";
 
 let dir: string;
 let db: Database;
@@ -76,7 +75,6 @@ function message(input: {
   id: string;
   sessionId?: string;
   createdAt?: number;
-  problem?: ProblemFact | null;
   message?: Partial<AgentNS.Message>;
 }): MessageUpsertInput {
   return {
@@ -108,7 +106,6 @@ describe("MessageRepository.upsert", () => {
     expect(stored?.message.name).toBe("user");
     expect(stored?.message.hidden).toBe(false);
     expect(stored?.seq).toBe(1);
-    expect(stored?.problem).toBeNull();
   });
 
   it("`payload` 一个键都不动：不认识的字段照样存、照样读回来", async () => {
@@ -128,18 +125,13 @@ describe("MessageRepository.upsert", () => {
     expect(stored?.message).toEqual(payload);
   });
 
-  it("失败事实（`problem`）是消息之外的一列：给了就存、不给就是 null", async () => {
-    const problem: ProblemFact = {
-      code: "internal",
-      messageKey: "error.internal",
-      params: {},
-      message: "坏了",
-    };
-    await repo.upsert(message({ id: "m1", message: { content: "半截" }, problem }));
-    expect((await repo.get("m1"))?.problem).toEqual(problem);
+  it("消息自带的 `error` 跟着 payload 走：存进去什么就回来什么", async () => {
+    const error = new AgentError("request-failed", "连不上端点");
+    await repo.upsert(message({ id: "m1", message: { content: "半截", error } }));
 
-    await repo.upsert(message({ id: "m1", message: { content: "半截" } }));
-    expect((await repo.get("m1"))?.problem).toBeNull();
+    const stored = await repo.get("m1");
+    // `AgentError.toJSON()` 就是 `{ code, message }`（栈与 cause 不落库）
+    expect(stored?.message.error).toEqual({ code: "request-failed", message: "连不上端点" });
   });
 
   it("同一条消息反复写：整条覆盖，但 seq 与 createdAt 不变", async () => {

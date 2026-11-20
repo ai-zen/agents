@@ -34,7 +34,6 @@ export const zh = {
   "error.contextGuard":
     "这段会话在第 {used} 个 token 时到了 {limit} 这条线，请求在发出去之前就停下了。",
   // 某个钩子在请求发出前拒了这一次请求（core 的 `denied` 事件）：历史上一个字都没多
-  "error.denied": "这一次请求在发出去之前就被拦下了：{reason}",
 
   // ---- 通知：三档语气 + 是否到点消失（PRD L3 / F-I8）----
   "notice.settingsApplied": "配置已生效，不用重启。",

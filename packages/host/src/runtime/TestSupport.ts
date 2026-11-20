@@ -208,11 +208,7 @@ export class RecordingMessageStore implements MessageStore {
 }
 
 function cloneRow(row: MessageUpsertInput): MessageUpsertInput {
-  return {
-    ...row,
-    message: structuredClone(row.message),
-    problem: row.problem === undefined ? null : structuredClone(row.problem),
-  };
+  return { ...row, message: structuredClone(row.message) };
 }
 
 function toStored(row: MessageUpsertInput, seq: number): StoredMessage {
@@ -223,7 +219,6 @@ function toStored(row: MessageUpsertInput, seq: number): StoredMessage {
     createdAt: row.createdAt,
     // 逐条拷一份：真仓储每次读都是新的 `JSON.parse` 结果，改一条不该串到另一条上
     message: structuredClone(row.message),
-    problem: row.problem === undefined ? null : structuredClone(row.problem),
   };
 }
 

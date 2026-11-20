@@ -458,12 +458,11 @@ function toUnsubscribe(handle: unknown): (() => void) | undefined {
  * 消息 → 一行库。
  *
  * 消息原样进 `payload`（存储层 `JSON.stringify` 一条、读回来 `JSON.parse` 一条）：这里不拆
- * 字段、不挑字段、不补空值 —— `content` / `tool_calls` / `usage` / `hidden` / `source` 都在
- * 消息对象上，落库的就是它本人。
+ * 字段、不挑字段、不补空值 —— `content` / `tool_calls` / `usage` / `hidden` / `source` / `error`
+ * 全在消息对象上，落库的就是它本人。
  *
- * `problem` 是本文件额外给的那一条事实（`ProblemFact`：码 + 文案键 + 参数 + 一句现成的话）：
- * 它跟着消息行落库，活得比进程长（PRD 4.15）；完整错误对象走 `error` 事件，两路不互相替代。
- * 它在消息对象之外，所以单独传。
+ * 失败事实也一样：core 在发 `failed` 之前就把 `assistant.error` 填好了（与事件载荷同一个
+ * 实例），它跟着消息一起下去、一起回来 —— 宿主不另造一份。
  *
  * 导出的理由：交接换记忆要把 SDK 算好的那几条消息写成行，那一处不能再造一份映射 ——
  * 两份映射就是「同一条消息存成两种行」的来源。
@@ -472,42 +471,13 @@ export function toRow(
   message: AgentNS.Message,
   sessionId: string,
   createdAt: number,
-  extra: { problem?: ProblemFact } = {},
 ): MessageUpsertInput {
-  return {
-    id: message.id,
-    sessionId,
-    createdAt,
-    message,
-    problem: extra.problem ?? null,
-  };
+  return { id: message.id, sessionId, createdAt, message };
 }
 
 // ---------------------------------------------------------------------------
-// 失败事实（ProblemFact：码 + 文案键 + 参数 + 一句已渲染的话）
+// 失败：错误就挂在消息上，宿主这里只认「这一次是什么码」
 // ---------------------------------------------------------------------------
-
-/**
- * 造一条失败事实。
- *
- * `message` 用缺省语言渲染一份：落库/推送里总要有一句现成的话给日志和排查用；
- * 真正面向某个连接的语言由接线层按 `code` / `messageKey` / `params` 重新渲染（PLAN §8）。
- */
-function problem(
-  code: string,
-  messageKey: MessageKey,
-  params: Record<string, unknown> = {},
-  detail?: unknown,
-): ProblemFact {
-  const fact: ProblemFact = {
-    code,
-    messageKey,
-    params,
-    message: render(DEFAULT_LANGUAGE, messageKey, params),
-  };
-  if (detail !== undefined) fact.detail = detail;
-  return fact;
-}
 
 /**
  * `denied` 的 `detail` 里认一下上下文护栏的结构事实（`promptTokens` / `guardTokens`）。
@@ -524,35 +494,14 @@ function asContextOverflowDetail(
   return { promptTokens, guardTokens };
 }
 
-/** 任意抛出物 → 失败事实：core 的 `AgentError` 带上它的 `code`，其余都归为内部错误 + 原始原因 */
-function toProblem(error: unknown): ProblemFact {
-  if (error instanceof AgentError) {
-    return problem("internal", "error.internal", {}, { reason: error.message, code: error.code });
-  }
-  const reason = error instanceof Error ? error.message : String(error);
-  return problem("internal", "error.internal", {}, { reason });
-}
-
 /**
- * 一个钩子拒了这一次请求 → 失败事实（core 的 `denied` 事件）。
+ * 一个钩子拒了这一次请求时，这一条该归哪个码（core 的 `denied` 事件）。
  *
- * 两格分开读：`reason` 是写给模型 / 人读的文案，`detail` 才是给程序看的结构化事实。
- * 宿主按「是不是上下文溢出」分流 —— 判据是 `detail` 里的两个数字，不是文案里那几个词。
- *
- * `detail` 里没有那两个数字时（例如护栏只交回了一句现成的话）落到 `denied`：
- * 这一条说的是「这一次压根没发出去，被拦下了」，不是「宿主内部出错」。
+ * 判据是 `detail` 里有没有护栏那两个数字，不是 `reason` 文案里那几个词（去 parse 句子就是
+ * `CORE.md` §10 明确说的那条邪路）；没有那两个数字就是一般的「被拦下了」。
  */
-function toDeniedProblem(reason: string, detail: unknown): ProblemFact {
-  const overflow = asContextOverflowDetail(detail);
-  if (overflow) {
-    return problem(
-      "context_guard",
-      "error.contextGuard",
-      { limit: overflow.guardTokens, used: overflow.promptTokens },
-      { ...overflow, reason },
-    );
-  }
-  return problem("denied", "error.denied", { reason }, detail ?? { reason });
+function deniedCode(detail: unknown): string {
+  return asContextOverflowDetail(detail) ? "context_guard" : "denied";
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,16 +1090,15 @@ class SessionBridge {
   }
 
   /**
-   * core 报了一条 `failed`：**两路各走各的**（PRD 4.15）。
+   * core 报了一条 `failed`：两件事各走各的（PRD 4.15）。
    *
-   * - 回显用的失败事实（码 + 文案键 + 参数 + 一句现成的话）跟着那一行的 `problem` 列落库，活得比
-   *   进程长；
-   * - 完整的错误对象（core 的 `AgentError`：码 + 原文）走 `error` 事件，只在线时存在。
+   * - 那条消息自己带着 `error`（core 在发事件之前就填好了 `assistant.error`，与事件载荷是**同
+   *   一个实例**）→ 跟着消息一起落库、一起读回来，活得比进程长；
+   * - 同一个错误的码与原文另推一条 `error` 事件，只在线时存在，给日志与要看技术细节的地方。
    */
   private onFailed(error: unknown, message?: AgentNS.Message): void {
     if (this.closed) return;
-    const fact = toProblem(error);
-    if (message) this.enqueueWrite(message, fact);
+    if (message) this.enqueueWrite(message);
     this.options.emit("error", {
       sessionId: this.sessionId,
       messageId: message?.id ?? null,
@@ -1164,18 +1112,16 @@ class SessionBridge {
    * core 报了一条 `denied`：某个钩子拒了，这一次压根没发出去。
    *
    * 它**不挂在某条消息上**（core 的载荷里没有消息：能拒的几个钩子分别发生在占位之前、
-   * 工具之前（含「工具不存在」那一半）、委派之前），所以「回显用的失败事实」在这一条上没有行可写 ——
-   * 只有完整对象走 `error` 事件。
+   * 工具之前（含「工具不存在」那一半）、委派之前）—— 所以只有 `error` 事件，没有行可写。
    */
   private onDenied(event: AgentEvents["denied"]): void {
     if (this.closed) return;
-    const fact = toDeniedProblem(event.reason, event.detail);
     this.options.emit("error", {
       sessionId: this.sessionId,
       messageId: null,
-      code: fact.code,
+      code: deniedCode(event.detail),
       message: event.reason,
-      detail: event.detail ?? fact.detail,
+      detail: event.detail ?? { reason: event.reason },
       at: this.nowIso(),
     });
   }
@@ -1376,13 +1322,8 @@ class SessionBridge {
    *
    * subagent 的消息走不到这里：它们不落库（`CORE.md` §17）。
    */
-  private rowOf(message: AgentNS.Message, problem?: ProblemFact): MessageUpsertInput {
-    return toRow(
-      message,
-      this.sessionId,
-      this.createdAtOf.get(message.id) ?? this.clock.now(),
-      problem === undefined ? {} : { problem },
-    );
+  private rowOf(message: AgentNS.Message): MessageUpsertInput {
+    return toRow(message, this.sessionId, this.createdAtOf.get(message.id) ?? this.clock.now());
   }
 
   /** 节流：到点就写一条，不到点就排一个「到点再写」 */
@@ -1412,11 +1353,11 @@ class SessionBridge {
    * **交接态下整条跳过**（PLAN §5.3）：事件照推（调用方在调本方法之前已经推过了），所以用户
    * 看得见它在写，只是不入库。
    */
-  private enqueueWrite(message: AgentNS.Message, problem?: ProblemFact): void {
+  private enqueueWrite(message: AgentNS.Message): void {
     if (this.handoffActive()) return;
     this.lastWriteAt = this.clock.now();
     this.writeChain = this.writeChain
-      .then(() => this.options.messages.upsert(this.rowOf(message, problem)))
+      .then(() => this.options.messages.upsert(this.rowOf(message)))
       .catch((error: unknown) => this.options.onError?.(error, "message-write"));
   }
 

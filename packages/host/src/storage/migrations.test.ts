@@ -115,7 +115,7 @@ const EXPECTED_COLUMNS: Record<string, ColumnShape[]> = {
     ["lineage", "TEXT", 0, null, 0],
     ["pendingHandoff", "TEXT", 0, null, 0],
   ],
-  // `messages` 只有这七列在这里：`hidden` 是**生成列**，`PRAGMA table_info` 不列它
+  // `messages` 只有这六列在这里：`hidden` 是**生成列**，`PRAGMA table_info` 不列它
   // （它在 `table_xinfo` 里，flag = 2；单独那条用例盯它）
   messages: [
     ["id", "TEXT", 0, null, 1],
@@ -123,7 +123,6 @@ const EXPECTED_COLUMNS: Record<string, ColumnShape[]> = {
     ["seq", "INTEGER", 1, null, 0],
     ["createdAt", "INTEGER", 1, null, 0],
     ["payload", "TEXT", 1, null, 0],
-    ["problem", "TEXT", 0, null, 0],
     ["searchText", "TEXT", 1, "''", 0],
   ],
   inbox: [
@@ -397,7 +396,7 @@ describe("migrate", () => {
     });
   });
 
-  it("messages 表只有八列：整条消息一个 `payload`，`hidden` 是生成列", async () => {
+  it("messages 表只有七列：整条消息一个 `payload`，`hidden` 是生成列", async () => {
     await migrate(db);
 
     type ColumnInfo = { name: string; notnull: number; dflt_value: string | null; hidden: number };
@@ -409,7 +408,6 @@ describe("migrate", () => {
       "seq",
       "createdAt",
       "payload",
-      "problem",
       "searchText",
       "hidden",
     ]);
@@ -419,15 +417,11 @@ describe("migrate", () => {
       expect(columns.some((column) => column.name === name)).toBe(false);
     }
 
-    // `payload` / `searchText` 必须有值；`problem` 可空（没有失败事实就是 NULL）
+    // `payload` / `searchText` 必须有值
     expect(columns.find((column) => column.name === "payload")).toMatchObject({ notnull: 1 });
     expect(columns.find((column) => column.name === "searchText")).toMatchObject({
       notnull: 1,
       dflt_value: "''",
-    });
-    expect(columns.find((column) => column.name === "problem")).toMatchObject({
-      notnull: 0,
-      dflt_value: null,
     });
     // `seq` / `createdAt` 留着是为了 SQL 里排序与定位，不是消息对象的字段
     expect(columns.find((column) => column.name === "seq")).toMatchObject({ notnull: 1 });

@@ -40,7 +40,6 @@ export const en = {
   "error.contextGuard":
     "This session reached its {limit}-token limit at {used} tokens, so the request was stopped before it could fail.",
   // 某个钩子在请求发出前拒了这一次请求（core 的 `denied` 事件）：历史上一个字都没多
-  "error.denied": "This request was stopped before it was sent: {reason}",
 
   // ---- 通知：三档语气，`duration` 决定是否到点消失（PRD L3 / F-I8）----
   "notice.settingsApplied": "Settings applied — no restart needed.",
