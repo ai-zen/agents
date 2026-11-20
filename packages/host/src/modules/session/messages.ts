@@ -9,34 +9,28 @@ import type { AgentNS } from "@ai-zen/agents-core";
  * `seq` 与 `createdAt` 保持第一次的值 —— 让 `seq` 跟着改会把「按 `seq` 升序」的顺序在流式
  * 追加过程中一直重排。
  *
- * `seq` 与 `createdAt` 是 `payload` 之外仅有的两个真列：`seq` 是并发写入的单调量，算式推不出来；
- * `createdAt` 由宿主在第一次落库那一刻给（core 的 `Message` 上没有这个字段），所以也取不出来。
+ * `seq` 是 `payload` 之外仅有的一个真列：同一会话内的顺序是并发写入的单调量，从 `payload` 里
+ * 取不出来。`createdAt` 由 core 在构造消息时填，所以它是生成列，JS 不写它。
  */
 export function messageTable(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id        TEXT PRIMARY KEY,
       payload   TEXT NOT NULL,
-      sessionId TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+      sessionId TEXT    NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
       seq       INTEGER NOT NULL,
-      createdAt INTEGER NOT NULL,
+      createdAt INTEGER GENERATED ALWAYS AS (json_extract(payload, '$.createdAt')) STORED,
       UNIQUE (sessionId, seq)
     );
     CREATE INDEX IF NOT EXISTS messages_session_seq ON messages (sessionId, seq);
   `);
 
-  const upsertSql = `INSERT INTO messages (id, payload, sessionId, seq, createdAt)
-    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?), ?)
+  const upsertSql = `INSERT INTO messages (id, payload, sessionId, seq)
+    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?))
     ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`;
 
   function upsert(sessionId: string, message: AgentNS.Message): void {
-    db.prepare(upsertSql).run(
-      message.id,
-      JSON.stringify(message),
-      sessionId,
-      sessionId,
-      Date.now(),
-    );
+    db.prepare(upsertSql).run(message.id, JSON.stringify(message), sessionId, sessionId);
   }
 
   return {

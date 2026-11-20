@@ -100,5 +100,8 @@ describe("消息", () => {
     ]);
     expect(messages.listBySession("s-1", { after: "不存在" })).toHaveLength(2);
     expect(messages.get("m-1")?.content).toBe("第一句改过");
+    // `createdAt` 是生成列，值来自 core 构造消息时填的那一格；它如果没落到 payload 里，
+    // 这里会安静地拿到 null —— 那是一个不报错也不工作的功能。
+    expect(messages.lastAt("s-1")).toBe(messages.get("m-2")?.createdAt);
   });
 });

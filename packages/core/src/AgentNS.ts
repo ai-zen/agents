@@ -81,6 +81,8 @@ export namespace AgentNS {
     /** 消息唯一标识，强制必填：`Message` 构造时自动生成（或由 `newMessageId()` 给）。
      *  `formatHistory` 发出去的那一份没有它 —— 那是按白名单重排的另一个对象，不是这条消息本身 */
     id: string;
+    /** 这条消息产生的时刻（epoch 毫秒）。构造 `Message` 时自动填，不从外面传 */
+    createdAt: number;
     name?: string;
     content?: MessageContent;
     function_call?: FunctionCall;

@@ -146,7 +146,12 @@ describe("formatHistory 的逐段路径", () => {
         { type: "text", text: "一段" },
         { type: "text", text: "两段" },
       ]),
-      { id: "m-x", role: AgentNSValue.Role.Assistant, content: "字符串内容" } as AgentNS.Message,
+      {
+        id: "m-x",
+        createdAt: Date.now(),
+        role: AgentNSValue.Role.Assistant,
+        content: "字符串内容",
+      } as AgentNS.Message,
     ]);
 
     const originalContent = agent.formatContent.bind(agent);
@@ -178,9 +183,10 @@ describe("formatHistory 的逐段路径", () => {
 describe("formatHistory 的产物（逐字节回归）", () => {
   it("与改动前一致：前缀缓存依赖这份字节稳定", () => {
     const agent = makeAgent([
-      { id: "m1", role: AgentNSValue.Role.System, content: "你是助手" },
+      { id: "m1", createdAt: Date.now(), role: AgentNSValue.Role.System, content: "你是助手" },
       {
         id: "m2",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.User,
         content: [
           { type: "text", text: "看看这张" },
@@ -192,6 +198,7 @@ describe("formatHistory 的产物（逐字节回归）", () => {
       },
       {
         id: "m3",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.Assistant,
         content: "好的",
         reasoning_content: "想一下",
@@ -203,6 +210,7 @@ describe("formatHistory 的产物（逐字节回归）", () => {
       },
       {
         id: "m4",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.Tool,
         tool_call_id: "call-1",
         name: "f",
@@ -211,6 +219,7 @@ describe("formatHistory 的产物（逐字节回归）", () => {
       },
       {
         id: "m5",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.Function,
         name: "g",
         function_call: { name: "g", arguments: "{}" },
@@ -218,12 +227,14 @@ describe("formatHistory 的产物（逐字节回归）", () => {
       },
       {
         id: "m6",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.Assistant,
         content: "在写",
         status: AgentNSValue.MessageStatus.Pending,
       },
       {
         id: "m7",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.User,
         content: "被省掉",
         omit: true,
@@ -231,6 +242,7 @@ describe("formatHistory 的产物（逐字节回归）", () => {
       },
       {
         id: "m8",
+        createdAt: Date.now(),
         role: AgentNSValue.Role.User,
         content: [{ type: "text", text: "无状态" }],
       },

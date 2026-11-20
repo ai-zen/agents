@@ -27,10 +27,22 @@ describe("sumUsage", () => {
 
   it("累加 assistant 的 usage 与 tool 的 subAgentUsage（互斥出现）", () => {
     const messages: AgentNS.Message[] = [
-      { role: AgentNS.Role.System, content: "系统", id: "s" },
-      { id: "a1", role: AgentNS.Role.Assistant, content: "回复", usage: usage(100, 20, 120) },
+      { createdAt: Date.now(), role: AgentNS.Role.System, content: "系统", id: "s" },
+      {
+        id: "a1",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Assistant,
+        content: "回复",
+        usage: usage(100, 20, 120),
+      },
       // 工具消息：内部委派（subagent）的累计
-      { id: "t1", role: AgentNS.Role.Tool, content: "结果", subAgentUsage: usage(200, 30, 230) },
+      {
+        id: "t1",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Tool,
+        content: "结果",
+        subAgentUsage: usage(200, 30, 230),
+      },
     ];
     expect(sumUsage(messages)).toEqual(usage(300, 50, 350));
   });
@@ -43,8 +55,20 @@ describe("sumUsage", () => {
   it("嵌套自动成立：对 subagent 的 messages 求和即含孙级", () => {
     // subagent 自己的 messages：一轮自身回复 + 一次孙级委派
     const subAgentMessages: AgentNS.Message[] = [
-      { id: "sa", role: AgentNS.Role.Assistant, content: "子的回复", usage: usage(50, 10, 60) },
-      { id: "st", role: AgentNS.Role.Tool, content: "孙的结果", subAgentUsage: usage(80, 12, 92) },
+      {
+        id: "sa",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Assistant,
+        content: "子的回复",
+        usage: usage(50, 10, 60),
+      },
+      {
+        id: "st",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Tool,
+        content: "孙的结果",
+        subAgentUsage: usage(80, 12, 92),
+      },
     ];
     expect(sumUsage(subAgentMessages)).toEqual(usage(130, 22, 152));
   });

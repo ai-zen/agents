@@ -4,6 +4,7 @@ import { PickRequired } from "./Common.js";
 
 export class Message implements AgentNS.Message {
   id: string;
+  createdAt: number;
   name?: string | undefined;
   content?: string | AgentNS.MessageContentSection[];
   function_call?: AgentNS.FunctionCall | undefined;
@@ -23,6 +24,7 @@ export class Message implements AgentNS.Message {
   constructor(options: PickRequired<Message | "role">) {
     if (!options.role) throw new Error("Message must have a role");
     this.id = options.id ?? generateMessageId();
+    this.createdAt = options.createdAt ?? Date.now();
     this.name = options.name;
     this.content = options.content;
     this.function_call = options.function_call;
