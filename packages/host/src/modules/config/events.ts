@@ -7,4 +7,5 @@
 export type ConfigEvent =
   | { readonly kind: "general" }
   | { readonly kind: "models" }
+  | { readonly kind: "mcp"; readonly scope: string }
   | { readonly kind: "agentDefinition"; readonly agentDefinitionId: string };

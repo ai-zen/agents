@@ -10,12 +10,11 @@
 
 | # | 做什么 | 过关标准 |
 |---|---|---|
-| 1 | `modules/config/mcp.ts` + `modules/config/discovery.ts` | 五层 MCP 链与四层 Skill 按优先级合并成一份有效清单；只读、不写 |
-| 2 | `modules/scope/` | 能力容器按目录存活；被显式处置时拒绝撞上活着的执行体，不级联 |
-| 3 | `modules/session/auto-name.ts` | 变闲那一刻给名字还是自动起的会话起一次名，用户改过的不动 |
-| 4 | `modules/agent/`（assembly、subscription、delivery、service、transient） | 一段会话一个执行体、跨投递复用；投递不唤醒；中断不销毁 |
-| 5 | `modules/connection/` + tRPC router + 事件流 | 起宿主、连 WS、发一句话、收到流——一条跨进程用例 |
-| 6 | `modules/asset/`、`credential/`、`question/`、`handoff/`、`search/`、`notice/` | 每域 0~2 条用例；多加的每一条要说出它证明的是哪个人会犯的错 |
+| 1 | `modules/config/discovery.ts`（Skill、工具、subagent 的分层目录扫描） | 按优先级合并成一份有效清单；只发现真实存在的目录 |
+| 2 | `modules/session/auto-name.ts` | 变闲那一刻给名字还是自动起的会话起一次名，用户改过的不动 |
+| 3 | `modules/agent/`（assembly、subscription、delivery、service、transient） | 一段会话一个执行体、跨投递复用；投递不唤醒；中断不销毁 |
+| 4 | `modules/connection/` + tRPC router + 事件流 | 起宿主、连 WS、发一句话、收到流——一条跨进程用例 |
+| 5 | `modules/asset/`、`credential/`、`question/`、`handoff/`、`search/`、`notice/` | 每个类 0~2 条用例；多加的每一条要说出它证明的是哪个人会犯的错 |
 
 ## 门禁
 

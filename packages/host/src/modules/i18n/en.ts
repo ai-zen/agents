@@ -14,4 +14,10 @@ export const en: Record<string, string> = {
   "交接阈值 {handoff} 必须小于防护阈值 {guard}":
     "Handoff threshold {handoff} must be less than the guard threshold {guard}",
   "找不到思考档位表 {preset}": 'Cannot find the reasoning preset "{preset}"',
+  "读不出 MCP 配置 {path}": 'Cannot read the MCP config "{path}"',
+  "MCP 配置 {path} 不由宿主写入": 'The host does not write the MCP config "{path}"',
+  "MCP 配置 {path} 里没有名为 {name} 的服务器":
+    'The MCP config "{path}" has no server named "{name}"',
+  "目录 {cwd} 上的能力容器还有 {count} 段会话活着，无法拆除":
+    'Cannot dispose the scope at "{cwd}": {count} sessions are still live',
 };
