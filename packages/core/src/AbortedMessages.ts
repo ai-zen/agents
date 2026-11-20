@@ -3,7 +3,7 @@ import { AgentNS } from "./AgentNS.js";
 /**
  * 「被中断的 assistant 消息」如何处置 —— 只管**内容与思考**，不管工具调用。
  *
- * - `drop`：不保留（默认）—— **真删**，内存与库里都消失，随之补发 `messageRemoved`
+ * - `drop`：不保留（默认）—— **真删**，内存与库里都消失（被删的交给调用方，由它报 `messageRemoved`）
  * - `keep`：保留已经输出的部分 —— 把消息恢复为 `Completed`，让它进入历史
  */
 export type AbortedMessageStrategy = "drop" | "keep";

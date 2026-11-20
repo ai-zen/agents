@@ -7,17 +7,12 @@ import type { Tool } from "./Tool.js";
  *
  * 同一个实例既传给 `onToolStart` 钩子（执行前拦截），也传给 `Tool.exec(ctx)`。
  *
- * ## 这里没有 `preventDefault()`
+ * 工具从这里停不掉循环：它返回什么，就只是一条 tool 消息回给模型，引擎接着跑
+ *（停循环的两条路 —— 钩子拒、用户 `abort` —— 都不在工具手里，`CORE.md` §8）。
  *
- * 老代码允许工具主动置一个标志把整个循环停掉。`CORE.md` §8 把「停止」收成两条路：
- * **钩子拒**、**用户 `abort`**。工具自己不再能停循环 —— 它返回什么，就只是一条 tool 消息
- * 回给模型，引擎接着跑。
- *
- * ## 参数解析一律容错
- *
- * 参数烂 = 「没给出有效结果」，和「执行挂了」「工具不存在」是同一件事：一条 tool 消息
- * 回给模型，其它什么都不做。所以没有 `allowJsonParseError` 这个开关 —— 只有一种行为，
- * 解析失败时 `parsedArgs` 为 `undefined`、`parseError` 有值。
+ * 参数解析是容错的：参数烂 = 「没给出有效结果」，与「执行挂了」「工具不存在」同一件事 ——
+ * 一条 tool 消息回给模型，其他什么都不做。所以只有一种行为：解析失败时 `parsedArgs` 为
+ * `undefined`、`parseError` 有值。
  */
 export class ToolCallContext {
   /** 当前 agent（可读权限、上下文、模型等；subagent 工具可借此访问父 Agent） */
@@ -26,8 +21,8 @@ export class ToolCallContext {
   /**
    * 统一形状的工具调用：`{ id?, type?, function: { name, arguments } }`。
    *
-   * 要读名字 / 参数就读 `tool_call.function` —— 这里不再另存一份 `function_call` 兼容字段：
-   * 一个概念只该有一种形状，两份迟早会漂（而漂的时候两边都看着像是真的）。
+   * 要读名字 / 参数就读 `tool_call.function` —— 这里没有 `function_call` 兼容字段：
+   * 一个概念只有一种形状，两份迟早会漂（而漂的时候两边都看着像是真的）。
    */
   tool_call: AgentNS.ToolCall;
 

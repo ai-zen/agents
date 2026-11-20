@@ -31,9 +31,8 @@ export interface OuterLoopContext {
 /**
  * 内循环（这一次请求）的上下文。
  *
- * `body` 是**这次要发出去的请求体**，不是 `agent.messages` —— 它是按白名单重排的一份快照，
- * 一次性的。钩子可以直接改它的 `messages`：素材还原（库里只存引用、发送时才变成真东西）
- * 走的就是这一缝。这条不成立，宿主就只能让 core 认识素材，而 core 不该认识。
+ * `body` 是**这次要发出去的请求体**，不是 `agent.messages` —— 它是按白名单重排的一份，
+ * 一次性的。钩子可以直接改它（含 `messages`）：要发出去的那一份与活着的那一份不是同一个东西。
  */
 export interface InnerLoopContext {
   agent: Agent;
@@ -66,12 +65,11 @@ export interface SubAgentHookContext {
 /**
  * 父 agent 名册上的一项：**一次委派的一笔账**（`CORE.md` §17）。
  *
- * subagent 不是一段会话、不入库，跑完就散；但「这段会话派过几个 subagent、它们各自说了什么」
- * 必须答得出来。所以派遣时在父身上留这一项，要查 subagent 说过的话就顺
- * 「父的名册 → `agent` → 它的 `messages`」取 —— 那些话只在**subagent 自己那个对象**里。
+ * 要查 subagent 说过的话就顺「名册 → `agent` → 它的 `messages`」取 —— 那些话只在**subagent
+ * 自己那个对象**里。
  *
  * `agent` 是**活引用**（和事件里带出去的是同一个东西，不是拷贝）：它就是那一栏消息的唯一真相。
- * 于是这一项不能序列化、不能进库 —— 与 `source` 里不许放 `Agent` 引用是同一条理由。
+ * 于是这一项不能序列化、不能进库 —— 与 `source` 里不放 `Agent` 引用是同一条理由。
  */
 export interface SubAgentEntry {
   /** 委派那次工具调用的 id：客户端据此把 subagent 的话分到那一栏（§10） */
@@ -112,9 +110,8 @@ export interface SubAgentEntry {
  * 「要不要处理这一批」的判决应该发生在投递之前 —— 投了就得有人跑。
  *
  * `onToolStart` 与 `onUnknownTool` 是**两个正交的钩子**，按「工具存不存在」二选一派发，
- * 一次工具调用只发其中一个：前者问「这个工具要不要开始跑」，后者问「模型调了个不存在的
- * 工具，要怎么回应它」（MCP / 权限场景下是刚需：提示改调 `call_mcp_tool`、提示权限被禁）。
- * 把它们并成一个钩子的话，插件得自己判「工具在不在」才知道自己被叫来干什么。
+ * 一次工具调用只发其中一个。并成一个的话，插件得自己判「工具在不在」才知道自己被叫来
+ * 干什么。
  */
 export interface AgentPlugin {
   onInit?(): HookResult;
@@ -272,10 +269,10 @@ export interface DeniedEvent {
   hook: string;
   reason: string;
   /**
-   * 结构性的事实，给宿主/插件用（例如上下文护栏的 `promptTokens` / 阈值）。
+   * 结构性的事实，给宿主 / 插件用 —— core 自己发的是 `{ toolCall }` 与 `{ toolCall, subAgent }`。
    *
-   * 为什么不塞进 `reason`：那一格是写给**模型或人**读的文案；一旦有人想按数字判断
-   * （宿主现在就按「是不是上下文溢出」分流），就只能去 parse 字符串。
+   * 为什么不塞进 `reason`：那一格是写给**模型或人**读的文案；一旦有人想按数字判断，
+   * 就只能去 parse 字符串。
    */
   detail?: unknown;
 }
@@ -333,8 +330,8 @@ export interface AgentEvents {
  * 它**只摆字段、不造值**：`createdAt` 与 `messageId` 都由调用方给 —— 新投递给「现在」与一个
  * 新 mint 的 id，恢复给存下来的那两个。于是同一个形状承担两套语义，而代码只有这一份。
  *
- * 没有正文就是**钥匙**（`InboxKey`）：它只负责把这一回叫起来，不落地成消息，所以没有
- * `messageId`、没有 `source`，`priority` 恒为 `low`（内循环只看 high，钥匙天然取不到）。
+ * 没有正文就是**钥匙**（`AgentNS.InboxKey`）：它不落地成消息，所以没有 `messageId`、
+ * 没有 `source`，`priority` 只能是 `low`。
  */
 function toInboxEntry(
   fields:
@@ -415,8 +412,8 @@ export class Agent extends AgentContext {
    * **它的三个开关就是 core 的那三处状态，core 不另存一份**（存两份就得在两处同时改，
    * 迟早漂出一份「以为还在收件、其实闸早关了」）：
    * - 收不收件 = `isInputPaused` —— `stop()` / `kill()` 各自 `pauseInput()`；
-   * - 以后还有没有新货 = `isDone` —— `stop()` / `kill()` 各自 `done()`（它取代了原来的
-   *   `closed` 字段：**关门就是「不再有货」，不是另一处状态**）；
+   * - 以后还有没有新货 = `isDone` —— `stop()` / `kill()` 各自 `done()`（关门就是「不再有货」，
+   *   不是另一处状态）；
    * - 此刻取不取件 = `isOutputPaused` —— {@link isOutputPaused} 直接读它。
    */
   private inbox = new AsyncQueue<AgentNS.InboxEntry>();
@@ -514,7 +511,7 @@ export class Agent extends AgentContext {
         // 门：一个字就是判决。非门：返回值没人读，丢掉，接着问下一个插件。
         if (deniable && r !== undefined) return r;
       } catch (error) {
-        // 插件抛错**不许把 agent 打死**：异常会一路穿出 `start()`，循环就永久停在那儿，
+        // 插件抛错**不把 agent 打死**：异常会一路穿出 `start()`，循环就永久停在那儿，
         // 而且 `killed` 还是 false、输入闸也还开着 —— 一个看起来活着、塞进去也不动的僵尸。
         const wrapped = error instanceof Error ? error : new Error(String(error));
         this.emit("failed", { agent: this, error: wrapped });
@@ -551,7 +548,7 @@ export class Agent extends AgentContext {
     if (hook === "onSubAgentStart") {
       if (denied === undefined) {
         // 先记账、再发事件：订阅方在 `subAgentStarted` 那一刻就该能从名册里读到这一项
-        //（和「先记血缘、再问钩子」同一条理由：发出去的事件里不许有摸不到的东西）。
+        //（发出去的事件里不该有摸不到的东西）。被拒的另走一支，名册里什么都不留。
         this.subAgentRegistry.push({
           toolCallId: ctx.toolCallContext.tool_call.id ?? "",
           agent: ctx.subAgent,
@@ -585,7 +582,7 @@ export class Agent extends AgentContext {
   }
 
   // -------------------------------------------------------------------------
-  // 死活：五个动作
+  // 死活：关门与两道闸
   // -------------------------------------------------------------------------
 
   /**
@@ -620,7 +617,7 @@ export class Agent extends AgentContext {
    *   `AgentError("closed")`（这个 agent 已经终结）；
    * - `resumeOutput()`：**不能省**。`done()` 只是「以后没有新货」这个信号，它**不突破输出闸** ——
    *   不取件中调 stop 时消费者正挂在闸上，不翻回来它就永远挂在那儿：存量没人取，
-   *   `stopped` 也发不出来（以前那道「等开关翻开」的等待就是以放行它来收尾的）；
+   *   `stopped` 也发不出来；
    * - `done()`：宣告没有新货，迭代器取空存量后自己收尾。
    *
    * 不取件（{@link isOutputPaused}）中调它**不作废存量**：不取件说的是「现在别跑」，
@@ -650,8 +647,7 @@ export class Agent extends AgentContext {
    * 与 `stop()` 只差两处：**存心作废存量**（`clearInbox()`）与**掐在途**（`abortTurn()`）。
    *
    * 翻输出闸（`resumeOutput()`）与清空是两件事，都要，但理由不同：
-   * - 清空**不看那道闸** —— 它走的是队列的 `clear()`（作废，不是取件），闸关着也照样清得掉。
-   *   以前用 `takeAll()` 当清空，就被闸挡住了（「暂停中清不掉」），那是把作废当成了取件；
+   * - 清空不走取件口（作废与取件是两个口，见 {@link clearInbox}）：闸关着也照样清得掉；
    * - 翻闸是为**挂在闸上的循环**：不翻回来，迭代器永远停在闸上，收尾走不完、`killed` 发不出来。
    *   清空是同步的，消费者在微任务里才被唤到，所以队里的货一定是先被清掉、
    *   再轮到它看见空队列 + `isDone` 而收尾。
@@ -698,8 +694,8 @@ export class Agent extends AgentContext {
   /**
    * **打开输入闸**：又开始接投递。
    *
-   * 关门之后（`stop` / `kill` 动过）不许再开：那时队列已经宣告没有新货，再放人进来等于把件
-   * 投给一个永远不会再取件的队列。
+   * 关门之后（`stop` / `kill` 动过）它不再开（代码里就拦在那里）：那时队列已经宣告没有新货，
+   * 再放人进来等于把件投给一个永远不会再取件的队列。
    */
   resumeInput(): void {
     if (this.inbox.isDone || !this.inbox.isInputPaused) return;
@@ -777,7 +773,7 @@ export class Agent extends AgentContext {
    * 塞进 inbox，立刻返回。
    *
    * **投不进去就抛 `AgentError`**，不静默丢：塞的人可能是另一个 agent，他得知道自己投失败了
-   * 才能改投（宿主接住这个错，就去做「新装一个再投」）。而「投不进去」有两种，**调用方必须能
+   * 才能改投（宿主接住这个错，就去做「新装一个再投」）。而「投不进去」有两种，**调用方要能
    * 分开**（它们要做的事完全不同）：
    * - `closed`：这个 agent 已经终结（`stop()` / `kill()` 动过），再等也不会有人来取；
    * - `input_paused`：只是输入闸暂时关着（有人 `pauseInput()`），`resumeInput()` 之后还能投。
@@ -831,17 +827,10 @@ export class Agent extends AgentContext {
   /**
    * 把**旧的条目原样放回队列**（PRD 4.12：关掉再打开，没被处理的那几句还在等）。
    *
-   * 与 {@link push} 只差一件事 —— 这些条目**不是新的**，而这一件事决定三处：
-   *
-   * 1. **不走 `push()`**。`push()` 会重新盖 `createdAt`（于是一重启，所有排着的条目都变成
-   *    「刚刚」），还会再发一条 `inboxAdded`。前者比丢了这个字段更坏：`createdAt` 存在的唯一
-   *    理由就是让模型判断时效（`CORE.md` §3），改掉它会让模型**确信**一条陈年通知是刚发生的，
-   *    顺序也会跟着错；后者会让订阅方再插一行（库里那一条就变成两条）。
-   * 2. **不发 `inboxAdded`**。库里的行已经在（恢复读的就是它），恢复不是新变化 —— 三条事件
-   *    说的是「有了变化」，不是「队列里现在有这些」。
-   * 3. **`createdAt` / `source` / `content` / `messageId` 一个字段都不重算**：形状由
-   *    {@link toInboxEntry} 摆（与 `push()` 同一份），值全部由调用方给 —— 存下来是什么就是
-   *    什么，这里不生成任何缺省值（生成一个就等于把事实换成了猜的）。
+   * 与 {@link push} 只差一件事：这些条目**不是新的**。所以不走 `push()` —— 它会重盖
+   * `createdAt`（一重启，排着的条目全变成「刚刚」，而那个时刻存在的唯一理由就是让模型判断
+   * 时效），还会再发一条 `inboxAdded`（库里那一条就变成两条）。值全部由调用方给：形状由
+   * {@link toInboxEntry} 摆（与 `push()` 同一份），存下来是什么就是什么，这里不生成任何缺省值。
    *
    * 该拒的三种（`CORE.md` §3）：
    * - **一次性 agent**：它只吃一次投递，寿命在调用栈里，恢复它没有任何去处（写错代码，抛裸
@@ -925,7 +914,7 @@ export class Agent extends AgentContext {
   /**
    * 跑一次到死：起 → **`send`** → 关门 → 死透 → 交回消息。
    *
-   * **不是第六个死活动作**：它就是 {@link send} 外面套一层收尾，而 `send` 自己又是
+   * **不是又一个死活动作**：它就是 {@link send} 外面套一层收尾，而 `send` 自己又是
    * `start` + `push` + 等闲 的复合。一次性会话那几步由它收成一句。跑完之后这个 agent 就没了
    * （死了就死透，复活 = 新建）。
    *
@@ -977,7 +966,7 @@ export class Agent extends AgentContext {
    * 取件要看输出闸（不取件时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
    * {@link pauseOutput} 期间调它照样清得掉，宿主那条 `/clear` 才不会在暂停中失效。
    *
-   * 清空也是变化，所以报 `inboxCleared`（持久化挂在它上面，`CORE.md` §3）。事件仍由 agent 发:
+   * 清空也是变化，所以报 `inboxCleared`（持久化挂在它上面，`CORE.md` §3）。事件仍由 agent 发：
    * 队列不认识事件。空队列清一次什么都不发 —— 没变化就没有「一有变化就入库」。
    */
   clearInbox(): AgentNS.InboxEntry[] {
@@ -1001,7 +990,7 @@ export class Agent extends AgentContext {
    *
    * 三个时刻：派遣时加一项、结束时把 `endedAt` 填上（不移除）、外循环每一批的开头清空上一批。
    *
-   * 三条纪律：
+   * 三点：
    * - **它不参与任何内部判断**：内循环、取件、续下一次请求、`state` 那一格、中断都不看它。清空点选在哪儿
    *   因此不影响正确性，只影响「外面什么时候读到空」；
    * - **它是名册，不是消息的唯一真相**：subagent 说过的话在 `entry.agent.messages` 里，
@@ -1031,9 +1020,8 @@ export class Agent extends AgentContext {
   /**
    * 看一眼排队区：按入队顺序给出此刻还没被取走的条目，**一个都不取走**。
    *
-   * 三个时刻的事件（`inboxAdded` / `inboxTaken` / `inboxCleared`）是**通知**，不是唯一信息源：
-   * 宿主 subscribe 它们做持久化，同时用这里**现读**真队列与库里的那份对一遍 —— 事件丢一条、
-   * 重复一条都不致命（`CORE.md` §3、§10）。所以这里给的是「重读的那一半」，不是镜像。
+   * 它是「重读的那一半」：事件丢一条、重复一条都不致命，宿主拿它与库里的那份对一遍
+   *（`CORE.md` §3、§10）。
    *
    * 返回的数组是拷贝，**条目本身还是那一个**（不会给出过期副本）。
    */
@@ -1214,9 +1202,8 @@ export class Agent extends AgentContext {
           // `usage` 与 `finish_reason` 不是「这一片带来了什么」，它们是这次响应的外层字段：
           // 不属于增量，也就不进 `applyChunk`，在调用方这一侧钉到消息上。
           //
-          // 流式最后一个 chunk 才带 usage：钉到这次回答的 assistant 消息上（与 finish_reason 同处），
-          // 使用量随消息持久化，从而可按消息求和统计累计消耗（计费口径）与审计。
-          // core 不另存「上一次回答的用量」的快照：要读就读最后一条带 `usage` 的 assistant 消息。
+          // 流式最后一个 chunk 才带 usage：钉在 assistant 消息上随消息持久化 ——「上一次回答
+          // 花了多少」就是最后一条带 `usage` 的 assistant 消息。
           if (chunk.usage) {
             assistant.usage = chunk.usage as unknown as AgentNS.Usage;
           }
@@ -1297,8 +1284,8 @@ export class Agent extends AgentContext {
   /**
    * 掐在途：`abort()` 与 `kill()` 都走它。
    *
-   * 名字留着 —— 它说的是**动作**。而「这一次请求被掐过没有」**不另存一格**：
-   * `controller.signal.aborted` 就是那一格，多存一份 `aborted` 迟早会与 controller 不同步。
+   * 「这一次请求被掐过没有」**不另存一格**：`controller.signal.aborted` 就是那一格，
+   * 多存一份迟早会与 controller 不同步。
    */
   private abortTurn(): void {
     this.inflight?.controller.abort();
@@ -1423,10 +1410,9 @@ export class Agent extends AgentContext {
    * 换一格（只换 `state` 这一处；取不取件走 `output:paused` / `output:resumed`，
    * 不从这里过）。
    *
-   * **没有「重算状态」这一步**，三处置位就够了：`start()` 是 `idle`、外循环头（取到一批）
-   * 是 `working`、外循环尾（队列真空了）是 `idle`。`pauseOutput` / `resumeOutput` /
-   * `abort` 一格都不置
-   * —— 它们只翻那个开关。
+   * **没有「重算状态」这一步**，置位只有三处：字段初值就是 `idle`、外循环头（取到一批）
+   * 是 `working`、外循环尾（队列真空了）是 `idle`。`pauseOutput` / `resumeOutput` / `abort`
+   * 一格都不置 —— 它们只翻那个开关。
    *
    * 事件按到达值分名（`state:idle` / `state:working`）—— 于是「等到某一格」
    * 就是订 `state:idle` 那一类事件，不需要再维护一套条件变量。
@@ -1568,7 +1554,7 @@ export class Agent extends AgentContext {
     return formatContentSection(section);
   }
 
-  /** 按白名单重排一份历史（只留模型认识的字段，`__` 开头的键一律剥掉） */
+  /** 按白名单重排一份历史（只留模型认识的字段，`__` 开头的键不在白名单里，跟着一起没了） */
   formatHistory() {
     return this.messages
       .filter(

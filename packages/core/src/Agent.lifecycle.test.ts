@@ -88,17 +88,17 @@ function createMockClient(rounds: AnyChunk[][]) {
   return { client: { chat: { completions: { create } } } as any, create };
 }
 
-/** 轮询等待条件成立（最多等 1s） */
 /**
  * 等到它**真的停下来**：闲 且 队列空。
  *
- * 只看 `state === "idle"` 不够了 —— 状态由外循环的位置决定，push 之后要等外循环头
+ * 只看 `state === "idle"` 不够 —— 状态由外循环的位置决定，push 之后要等外循环头
  * 才变 `working`，所以「刚 push 完就问一次」会立刻通过。
  */
 async function settled(agent: Agent): Promise<void> {
   await until(() => agent.state === "idle" && agent.inboxSize === 0);
 }
 
+/** 轮询等待条件成立（最多等 1s） */
 async function until(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
   while (!predicate()) {
@@ -946,7 +946,7 @@ describe("Agent runOnce", () => {
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
-    // 不再被 core 套上「工具 X 被拒绝：」的前缀 —— 那句文案本来就是写给模型读的
+    // core 不给它加前缀：正文就是钩子返回的那个字符串（那句话是写给模型读的）
     expect(toolMsg.content).toBe("这个工具现在不许用");
     expect(denieds).toHaveLength(1);
     expect(denieds[0].hook).toBe("onToolStart");
@@ -1144,7 +1144,7 @@ describe("Agent runOnce", () => {
     agent.push(user("跑两下"));
     await settled(agent);
 
-    // 未知工具那一次：只有 onToolStart 的对应位置空着，onToolEnd 也不许来（没有 start 的 end
+    // 未知工具那一次：`onToolStart` 不该来，`onToolEnd` 也不该来（没有 start 的 end
     // 会让计时 / 配对计数 / 工具卡片这类插件收尾一件没开始的事，而且 `ctx.tool` 还是 undefined）
     expect(starts).toEqual(["echo"]);
     expect(ends).toEqual(["echo"]);
@@ -1385,8 +1385,8 @@ describe("Agent 恢复：把旧条目原样放回", () => {
   /**
    * 一条「上一次存下来」的条目：`createdAt` 是很久以前那一刻，来源不是用户本人。
    *
-   * 这两点是有意的 —— 它们正是「恢复 ≠ 投递」会被看出来的地方：投递会盖新的时间、也只带
-   * `{kind:"user"}` 时不加来源注释。
+   * 这两点是有意的 —— 它们正是「恢复 ≠ 投递」会被看出来的地方：投递会盖新的时间，而
+   * `{kind:"user"}` 这个来源也不加注释行。
    */
   const stored: AgentNS.InboxEntryWithContent = {
     messageId: "早先那条",

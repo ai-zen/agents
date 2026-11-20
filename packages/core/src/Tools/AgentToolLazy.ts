@@ -15,10 +15,11 @@ import { sumUsage } from "../Usage.js";
  * 交给这里的 agent，`messages` 里已经装好了历史，末尾那条 user 就是这一趟要回答的问题。
  * 所以**不需要把消息搬进 inbox**：`runOnce()` 不给正文，就是拧钥匙。
  *
- * ## 它造出来的必须是一次性 agent
+ * ## 它造出来的 agent 是一次性的
  *
- * `buildAgent` 交出来的 agent 必须 `lifetime: "one-shot"`（`CORE.md` §9）。这条路是用来
- * 干一件已经看得见结果的活，不是用来养一个常驻节点的 —— 那个得有人定地址、有人负责 `stop`。
+ * 这一趟走 `runOnce()`，它只接受 `lifetime: "one-shot"` 的 agent（常驻的调它直接抛，`CORE.md` §9）。
+ * 这条路是用来干一件已经看得见结果的活，不是用来养一个常驻节点的 —— 那个得有人定地址、
+ * 有人负责 `stop`。
  *
  * 初始消息有两种来源，二选一：
  * - 提供 `messages` 模板：`exec` 时把 `parsedArgs` 注入 `{{key}}` 占位符，替换 `agent.messages`；
@@ -60,8 +61,8 @@ export class AgentToolLazy implements Tool {
     }
 
     // 血缘**不在这里记**：只有名册一份（§17）。`dispatchSubAgentHook` 在发 `subAgentStarted`
-    // 之前就把这一项压进父的名册，订阅方在那一刻就已经能从 `host.subAgents` 摸到它。
-    // 拒了就什么都没发生 —— 没造出来的东西不该挂在世上。
+    // 之前就把这一项压进父 agent 的名册，订阅方在那一刻就已经能从父的 `subAgents` 摸到它。
+    // 拒了这一项压根不记 —— 没造出来的东西不该挂在世上。
     const subCtx: SubAgentHookContext = {
       agent: ctx.agent,
       subAgent: agent,
@@ -94,8 +95,8 @@ export class AgentToolLazy implements Tool {
       await ctx.agent.dispatchSubAgentHook("onSubAgentEnd", subCtx);
     }
 
-    // 被拒的那一次请求不产生任何消息。此时交回「最后一条消息的内容」，父模型读到的会是**它自己
-    // 那句问题原文** —— 等于 subagent 装傻复读了一遍。这种情况必须显式说「没产出」。
+    // 被拒的那一次请求不产生任何消息。此时若还交回「最后一条消息的内容」，父模型读到的会是
+    // **它自己那句问题原文** —— 等于 subagent 装傻复读了一遍，而调用方以为拿到了结果。
     if (agent.messages.length <= before) {
       return refused ?? "subagent 没有产出：这次请求被拒了，或者它一个字也没说";
     }
@@ -139,7 +140,7 @@ export class AgentToolLazy implements Tool {
   }
 
   /**
-   * 把模板里的 `{{key}}` 换成 `valueMap[key]`；没有对应键的占位符原样保留。
+   * 把模板里的 `{{key}}` 换成 `valueMap[key]`；找不到对应键的占位符留着（写作 `{{ key }}`）。
    */
   static replaceStringWithValues(template: string, valueMap: Record<string, any>): string {
     const regex = /{{\s?(\w+)\s?}}/g;
@@ -156,9 +157,8 @@ export class AgentToolLazy implements Tool {
    * 深拷贝一份消息列表，把每条消息的字符串 content 做占位符替换（内容块数组原样保留），
    * 并给 `role: user` 的消息补上 `source`。
    *
-   * 为什么 `source` 由这里补：§3 要求所有 user 消息都带 `source`，而模板是定义文件里的
-   * JSON，压根没有这个概念。规矩与「宿主注入的 cwd 消息由宿主自己填」是同一条 ——
-   * **谁注入谁填**。
+   * 为什么 `source` 由这里补：模板是定义文件里的 JSON，压根没有这个概念，而注入它的这一层
+   * 知道它从哪来（宿主注入的 cwd 消息同理 —— 谁注入谁填）。
    */
   static injectArgs(
     messages: AgentNS.Message[],

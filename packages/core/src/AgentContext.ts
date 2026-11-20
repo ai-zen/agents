@@ -28,10 +28,8 @@ export interface UnknownToolContext {
 }
 
 /**
- * AgentContext — 所有 Agent 的基类，只放**构造期**就定下来的配置。
- *
- * 这一次重写（`CORE.md`）把可变的运行状态全部搬进 `Agent`：这里没有 `runStatus`，也没有
- * 任何「现在是第几次」的计数。扩展方式是插件（`Agent.use`）与钩子（`CORE.md` §11）。
+ * AgentContext — 所有 Agent 的基类，只放**构造期**就定下来的配置。可变的运行状态全在 `Agent`
+ * 里；扩展方式是插件（`Agent.use`）与钩子（`CORE.md` §11）。
  */
 export class AgentContext {
   /**
@@ -54,7 +52,7 @@ export class AgentContext {
    */
   abortedMessageStrategy: AbortedMessageStrategy;
   /**
-   * 寿命：常驻还是只用一次。构造期定死，不许改（语义见 `AgentNS.AgentLifetime`）。
+   * 寿命：常驻还是只用一次（语义见 `AgentNS.AgentLifetime`）。
    *
    * 默认 `resident` —— 它是能力更大的那个；想要「跑完就死」得显式声明。
    */

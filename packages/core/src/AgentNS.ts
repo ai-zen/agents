@@ -78,8 +78,8 @@ export namespace AgentNS {
   export type MessageContent = string | MessageContentSection[];
 
   export interface Message {
-    /** 消息唯一标识，强制必填。Message 实例构造时自动生成、保证有值；
-     *  （formatHistory 发给模型的精简格式为独立白名单对象，不含内部字段，故不影响本类型） */
+    /** 消息唯一标识，强制必填：`Message` 构造时自动生成（或由 `newMessageId()` 给）。
+     *  `formatHistory` 发出去的那一份没有它 —— 那是按白名单重排的另一个对象，不是这条消息本身 */
     id: string;
     name?: string;
     content?: MessageContent;
@@ -91,39 +91,32 @@ export namespace AgentNS {
     status?: MessageStatus;
     finish_reason?: FinishReason;
     /**
-     * 产生本条 assistant 消息的那次 API 响应的 token 用量。
-     * 由流式响应的最后一个 chunk 写入；仅 assistant 消息会有值。
-     * 「上一次回答的用量」就是本会话最后一条带 `usage` 的 assistant 消息 —— 读法只有这一种，
-     * 不存在第二份快照。
-     * 将本会话全部 assistant 消息的 `usage` 求和，即计费口径的累计消耗
-     * （每次请求都会重发完整历史，故求和 = 实际消耗）。
+     * 产生本条 assistant 消息的那次 API 响应的 token 用量，由流式响应的最后一个 chunk 写入；
+     * 只有 assistant 消息有值。
+     *
+     * 每次请求都会重发完整历史，所以把一段会话里所有 assistant 消息的 `usage` 加起来就是实际
+     * 消耗（计费口径）。求和用 `sumUsage()`。
      */
     usage?: Usage;
     /**
-     * 本条 **tool 消息**内「内部委派」产生的累计 token 用量（如 subagent）。
-     * 由委派路径（`AgentToolLazy`）在 subagent 结束后写入，随消息持久化；
-     * 与 `usage`（本条消息自身那次响应）互斥出现。
-     *
-     * 求和请用 `sumUsage()`：它把两者一起加。嵌套天然成立 —— subagent 自己的 tool 消息
-     * 也带本字段，故对它的 messages 求和已含孙级，不会重复计。
+     * 本条 **tool 消息**内「内部委派」产生的累计 token 用量（如 subagent）：
+     * 委派跑完时由 `AgentToolLazy` 写进 `ctx.resultMessage`，随消息持久化；
+     * 与 `usage`（本条消息自身那次响应）互斥出现。求和用 `sumUsage()`。
      */
     subAgentUsage?: Usage;
     hidden?: boolean;
     omit?: boolean;
     /**
-     * 这条 user 消息从哪儿来。**所有 `role: user` 的消息都必须有**，包括宿主注入的
-     * 隐藏 cwd 消息（填 `{ kind: "system", label: "cwd" }`）。
-     *
-     * 不做「没有 source 就是用户」那种缺省：宿主注入的隐藏消息会被数进「用户说的话」，
-     * 自动命名的判据（这段只有一条用户消息）就永远不成立。一律带上之后判据只剩一个：
-     * `source.kind === "user"`。
+     * 这条 user 消息从哪儿来 —— 「谁说的话」只有这一个来源。宿主注入的隐藏 cwd 消息也要填
+     *（`{ kind: "system", label: "cwd" }`）：缺了它，注入消息就会被数进「用户说的话」，
+     * 而判据只有一条：`source.kind === "user"`。
      */
     source?: MessageSource;
     /**
      * 这条消息自己出的错 —— 与 `failed` 事件载荷是**同一个实例**，不另造一个形状。
      *
-     * 错误文本绝不要塞进 `content`：`content` 是模型说的话，塞进去之后只要「保留半截」
-     * 策略一生效，模型下一次请求就会看到自己「说」了一段 `ECONNREFUSED`。
+     * 错误文本不进 `content`：`content` 是模型说的话，塞进去之后只要「保留半截」策略一生效，
+     * 模型下一次请求就会看到自己「说」了一段 `ECONNREFUSED`。
      * 例外是 `role: tool`：那条消息的 `content` 本来就是给模型读的**结果**。
      */
     error?: AgentError;
@@ -200,13 +193,12 @@ export namespace AgentNS {
   export type AgentState = "working" | "idle";
 
   /**
-   * 寿命：常驻还是只用一次。构造期定死，不许改。
+   * 寿命：常驻还是只用一次，构造期定下。
    *
    * 它不只是「活多久」，是**能力差**（`CORE.md` §1）：
-   * - `resident`：`start` / `stop`；任何人可以 `push` 多次；将来可以接「结果靠事件
-   *   回来」的工具 —— 因为结果回来时它还在。
-   * - `one-shot`：`runOnce()` 专用；**开跑即关收**（第二次 `push` 抛 `closed`）；
-   *   不许接真异步工具 —— 栈一退就没收件人了。
+   * - `resident`：`start` / `stop`，任何人都能 `push` 多次 —— 结果以后回来的工具还有人在收；
+   * - `one-shot`：`send()` / `runOnce()` 专用；**开跑即关收**（第二次 `push` 抛 `closed`），
+   *   它的寿命在调用栈里，栈一退就没收件人了。
    */
   export type AgentLifetime = "resident" | "one-shot";
 

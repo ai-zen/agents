@@ -7,7 +7,8 @@ import { AgentNS } from "./AgentNS.js";
  *   - `message.usage`：本条消息自身那次 API 响应的用量（assistant 消息），
  *   - `message.subAgentUsage`：本条 tool 消息「内部委派」产生的累计用量（如 subagent）。
  *
- * 求和请一律用 `sumUsage()`：它同时累加两者，故不会漏算 subagent（含其孙级）的开销。
+ * 两者相加才是「这段会话花了多少」，所以求和走 `sumUsage()` —— 它把两者一起加，
+ * 故不会漏算 subagent（含其孙级）的开销。
  */
 
 export const ZERO_USAGE: AgentNS.Usage = {

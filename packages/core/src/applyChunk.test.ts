@@ -1,9 +1,8 @@
 /**
  * `applyChunk` —— 一片增量攒进消息的那些规则。
  *
- * 这些断言以前散在 `Agent` 的端到端用例里（只能通过「最终消息长什么样」间接看），
- * 抽取成独立函数之后直接对着它测：规则一旦漂，先在这里红，而不是等某个客户端攒出来的
- * 对象与服务端那份不一致。
+ * 直接对着这个函数测，而不是靠「最终消息长什么样」从端到端用例里间接看：规则一旦漂，
+ * 先在这里红，而不是等某个客户端攒出来的对象与服务端那份不一致。
  *
  * 入参就是**那一片增量本身**（core 的 `AgentNS.Delta`），不包任何外壳：事件载荷里是它，
  * 厂商 chunk 的 `choices[0].delta` 也是它。所以这里造片也只造这一个形状 —— 包一层
@@ -24,7 +23,7 @@ function delta(value: any = {}): AgentNS.Delta {
   return value as AgentNS.Delta;
 }
 
-/** 一条正在拼的 assistant 消息（`Agent.run` 内循环开头 append 的那种） */
+/** 一条正在拼的 assistant 消息（`Agent.innerLoops` 造占位那种） */
 function receiver() {
   return Message.Assistant();
 }
@@ -215,7 +214,7 @@ describe("applyChunk：旧的 function_call 形状", () => {
   it("名字与参数各续各的", () => {
     const message = receiver();
     // 首片只带名字（与 `tool_calls` 的 `startsWith` 分支不同，这里没有「整串重发」的判据，
-    // 所以首片若同时带 `arguments` 会被拼两遍 —— 同样是原样搬过来的既有行为）
+    // 所以首片若同时带 `arguments` 会被拼两遍）
     applyChunk(message, delta({ function_call: { name: "getTime" } }));
     applyChunk(message, delta({ function_call: { arguments: "{" } }));
     applyChunk(message, delta({ function_call: { arguments: "}" } }));

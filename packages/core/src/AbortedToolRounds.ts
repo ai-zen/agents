@@ -3,7 +3,7 @@ import { AgentNS } from "./AgentNS.js";
 /**
  * 「工具调用轮次不完整」的处理策略。
  *
- * - `drop`：整轮丢掉（assistant + 其全部工具结果都不进历史，**真删**，配 `messageRemoved`）
+ * - `drop`：整轮丢掉（assistant + 其全部工具结果都不进历史，**真删**，由调用方报 `messageRemoved`）
  * - `fill`：保留整轮（恢复 assistant，并给未完成的工具结果补上原因）
  */
 export type AbortedToolRoundStrategy = "drop" | "fill";
@@ -49,8 +49,8 @@ function keyOfResult(m: AgentNS.Message): string {
  *
  * 「全在」或「全不在」都视为一致（不处理），因此不会「复活」一个被完整中断的轮次。
  *
- * - `drop`：整轮**真删**（内存与库里都消失，随之补发 `messageRemoved`）
- * - `fill`：整轮入列（恢复 assistant 为 Completed；未完成的结果补原因并置 Completed）
+ * - `drop`：整轮**真删**（内存与库里都消失，被删的交给调用方去报 `messageRemoved`）
+ * - `fill`：整轮入列（恢复 assistant 为 `Completed`；其余结果置成 `Completed`，正文为空时补上原因）
  *
  * 幂等，可重复调用。
  *
@@ -84,7 +84,7 @@ export function reconcileAbortedToolRounds(
       ? toolCalls.map((tc) => ({ id: tc.id, name: tc.function?.name }))
       : [{ id: undefined, name: assistant.function_call?.name }];
 
-    // 结果按匹配键归位（同键取首个；core 保证每个调用都有对应结果）
+    // 结果按匹配键归位（同键取首个；`Agent.runTools` 给每个 function 类型的调用建一条结果消息）
     const resultByKey = new Map<string, AgentNS.Message>();
     for (const r of results) {
       const k = keyOfResult(r);
@@ -132,7 +132,7 @@ export function reconcileAbortedToolRounds(
   if (doomed.size === 0) return [];
 
   const removed = messages.filter((m) => doomed.has(m));
-  // 就地删（不换数组：`messages` 是唯一真相，交给别人之后只许就地改）
+  // 就地删（不换数组：`messages` 是唯一真相，换了数组别人手里的引用就旧了）
   for (let i = messages.length - 1; i >= 0; i--) {
     if (doomed.has(messages[i]!)) messages.splice(i, 1);
   }

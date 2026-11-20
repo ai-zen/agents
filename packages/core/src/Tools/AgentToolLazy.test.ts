@@ -167,7 +167,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const result = await tool.exec(buildCtx(host));
 
     expect(result).toBe("subagent结果");
-    // 初始消息保持 buildAgent 的决定（其后仅由 run 追加 Assistant 接收者）
+    // 初始消息保持 buildAgent 的决定（其后只由内循环追加 assistant 消息）
     expect(child.messages.slice(0, 2).map((m) => m.content)).toEqual(["动态提示", "动态任务"]);
   });
 
