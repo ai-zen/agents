@@ -34,6 +34,7 @@ import type {
   SessionGetResult,
   SessionListResult,
   SessionSendResult,
+  SessionStartResult,
   ModelListResult,
   NoticeListResult,
   QuestionAnswerResult,
@@ -312,6 +313,14 @@ describe("端到端集成：真进程 + 真连接", () => {
       `session=${sessionId} get 能拿到=${String(draftGotten.session.id === sessionId)} 列表 total=${listBeforeSend.total}`,
     );
 
+    // 复活（PLAN §5.1）：投递不叫人 —— 客户端按发送时先 `session.start`，再投。这里照它的
+    // 编排走。`session.start` 也调 `ensurePersisted`（谁先到谁写），所以它必须排在上面那两条
+    // 「草稿不落库」的断言之后。
+    const started = (await callThrough(client, "session.start", {
+      sessionId,
+    })) as SessionStartResult;
+    expect(started.started).toBe(true);
+
     // 发一条：首次 send 用同一个 id 落库（这里连不上假端点，那一轮会以失败结算，
     // 但「受理已落库」这件事与模型有没有答无关）
     const sent = (await callThrough(client, "session.send", {
@@ -470,7 +479,8 @@ describe("端到端集成：真进程 + 真连接", () => {
     })) as QuestionListResult;
     expect(listA.questions).toEqual([]);
     expect(listB.questions).toEqual([]);
-    // 没有题就不挡投递：这一句照常收下
+    // 没有题就不挡投递：这一句照常收下。重启之后这一段没有 agent，所以先复活再投（投递不叫人）
+    await callThrough(windowA, "session.start", { sessionId });
     const accepted = (await callThrough(windowA, "session.send", {
       sessionId,
       input: { content: "你好" },

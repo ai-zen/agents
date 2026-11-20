@@ -155,7 +155,8 @@ async function connect(port: number): Promise<TestClient> {
  *
  * 发过消息的那个进程正在干活（端点不存在，很快以失败收尾），`state` / `message.changed` /
  * `session.changed` 会与后面的回包交错到达；`TestClient.call` 按到达顺序取帧，在这段
- * 流程里不够用。
+ * 流程里不够用。`session.start` 本身就会推一条 `session.changed(created)`（它要落库），
+ * 那条推送先到还是后到没有保证，所以这一段的请求一律走这个口。
  */
 async function callSkippingEvents(
   client: TestClient,
@@ -339,9 +340,14 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/会话 → 
     const beforeSend = await client.call("session.list", {});
     expect((beforeSend.result as SessionListResult).total).toBe(0);
 
+    // 复活（PLAN §5.1）：投递不叫人，客户端按发送时先 start 再投 —— 这里照它的编排走。
+    // `session.start` 也落库（`ensurePersisted`，谁先到谁写），所以它必须排在上面那条
+    // 「草稿不落库」的断言之后；而落库会推一条 `session.changed(created)`，所以用跳推送的那个口。
+    await callSkippingEvents(client, "session.start", { sessionId });
+
     // 发一条：首次 send 用同一个 id 落库（端点不存在，那次回答会以失败收束，
     // 但「投递即落库」与模型答不答得上来无关）
-    await client.call("session.send", { sessionId, input: { content: "你好" } });
+    await callSkippingEvents(client, "session.send", { sessionId, input: { content: "你好" } });
 
     const sessions = await callSkippingEvents(client, "session.list", {});
     const listed = sessions as SessionListResult;
