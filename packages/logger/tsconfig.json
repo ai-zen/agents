@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // 与 sdk / host 一致：TS 7 不再自动从 node_modules/@types 收集全局类型
+    "types": ["node"]
+  },
+  "include": ["src"],
+  // 只被用例引用的东西不进产物（`files: ["dist"]` 会把它一起发出去）
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx", "src/test-support"]
+}
