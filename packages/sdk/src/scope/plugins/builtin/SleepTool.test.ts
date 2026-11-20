@@ -50,7 +50,7 @@ describe("SleepTool", () => {
     const result = await tool.call({ ms: -1 });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("positive integer");
+    expect(parsed.error).toContain("non-negative number");
   });
 
   it("非数字 ms 返回错误", async () => {

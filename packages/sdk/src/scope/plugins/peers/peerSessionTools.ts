@@ -232,7 +232,8 @@ const EXCERPT_HINT =
  * {@link NO_POLL_HINT} 那一句（“真要说话时会自己发过来”），它刚好把「别轮询」说清。
  */
 const SEND_ACCEPTED_HINT =
-  "Accepted: the message is in that session's queue now. This call does not come back. " +
+  "Accepted: the message is in that session's inbox now. That is all this call confirms — " +
+  "whether or when that session acts on it is not promised. This call does not come back. " +
   `${NO_POLL_HINT} ${LABEL_HINT}`;
 
 /**

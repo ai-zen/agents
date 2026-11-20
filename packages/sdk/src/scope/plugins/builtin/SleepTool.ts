@@ -32,7 +32,7 @@ export class SleepTool extends SdkCallbackTool {
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
       return JSON.stringify({
         success: false,
-        error: "ms must be a positive integer",
+        error: "ms must be a non-negative number",
       });
     }
 

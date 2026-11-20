@@ -219,7 +219,7 @@ export class ExecTool extends SdkCallbackTool {
     });
 
     const truncationNote = result.truncated
-      ? `Output reached the ${MAX_BUFFER}-byte in-memory cap: it was truncated there and the tail is lost (the process was killed by maxBuffer).`
+      ? `Output exceeded the ${MAX_BUFFER}-byte in-memory cap: the process was terminated and the output was truncated there, so the tail is lost.`
       : undefined;
 
     // 输出保护：stdout + stderr 合计超过 maxToolOutput 时，分文件落盘并返回警告 + 头尾预览
