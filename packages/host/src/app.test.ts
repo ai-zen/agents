@@ -1669,7 +1669,7 @@ describe("题与死会话", () => {
 // ---------------------------------------------------------------------------
 
 describe("日志", () => {
-  it("没注入 logger 时落 <dataRoot>/logs/host.log（路径这一单没动）", async () => {
+  it("没注入 logger 时落 <dataRoot>/logs/host/host.log（宿主那一格，不在 logs/ 顶层）", async () => {
     const fixture = await makeFixture();
     // 不传 logger：走 resolveLogger() 自己造的那一份（外部注入的那份不该被这里验）
     const app = await createHost({
@@ -1682,10 +1682,12 @@ describe("日志", () => {
     apps.push(app);
     await app.stop("requested");
 
-    const text = await fs.readFile(join(fixture.dataRoot.path, "logs", "host.log"), "utf8");
+    const text = await fs.readFile(join(fixture.dataRoot.path, "logs", "host", "host.log"), "utf8");
     expect(text).toContain("宿主开始监听");
     // 收尾那一行是 flush 的证明：close() 之前写的行必须已在盘上
     expect(text).toContain("宿主已收尾");
+    // 一格一个进程：`logs/` 顶层不许多出一个 host.log
+    expect(await fs.readdir(join(fixture.dataRoot.path, "logs"))).toEqual(["host"]);
   });
 
   it("SDK 侧那几句话进的是 `sdk` 那一格（宿主把自己那份注了进去，不是库自己另找出口）", async () => {
@@ -1707,7 +1709,7 @@ describe("日志", () => {
     apps.push(app);
     await app.stop("requested");
 
-    const text = await fs.readFile(join(fixture.dataRoot.path, "logs", "host.log"), "utf8");
+    const text = await fs.readFile(join(fixture.dataRoot.path, "logs", "host", "host.log"), "utf8");
     const line = text.split("\n").find((row) => row.includes("[ConfigManager]"));
     expect(line).toBeDefined();
     // 行格式：`<ISO> <级别定宽> <来源> <消息>`；来源那一列是 `sdk`，不是 `app`

@@ -35,8 +35,15 @@ export interface HostPaths {
   configFile: string;
   /** 宿主自己的设置文件：`<dataRoot>/host.json`（D25 的「配置文件」那一档，裁定 R67） */
   hostConfigFile: string;
-  /** 日志目录：`<dataRoot>/logs`（PRD F-J2：界面被占用时日志另有去处） */
+  /** 日志的父目录：`<dataRoot>/logs`（PRD F-J2：界面被占用时日志另有去处） */
   logsDir: string;
+  /**
+   * 宿主自己那一格日志目录：`<dataRoot>/logs/host`。
+   *
+   * 一个进程一格目录、一格只归一个进程写：`logs/` 只是各进程子目录的父层（CLI 写
+   * `logs/cli/`、将来的桌面端写 `logs/desktop/`），谁都不许往 `logs/` 顶层直接落文件。
+   */
+  hostLogsDir: string;
 }
 
 /** 数据根目录名（缺省落在用户目录下） */
@@ -63,8 +70,11 @@ const CONFIG_FILE_NAME = "config.json";
 /** 宿主设置文件名（`<dataRoot>/host.json`，裁定 R67） */
 const HOST_CONFIG_FILE_NAME = "host.json";
 
-/** 日志子目录名（PRD F-J2） */
+/** 日志的父目录名（PRD F-J2） */
 const LOGS_DIR_NAME = "logs";
+
+/** 宿主那一格日志的目录名（`<dataRoot>/logs/host`） */
+const HOST_LOGS_DIR_NAME = "host";
 
 /** 数据根环境变量（PRD F-J4：数据根可由它改，测试与多实例都靠它） */
 export const AI_ZEN_DIR_ENV = "AI_ZEN_DIR";
@@ -108,6 +118,7 @@ export function resolvePaths(aiZenDir?: string): HostPaths {
     configFile: join(dataRoot, CONFIG_FILE_NAME),
     hostConfigFile: join(dataRoot, HOST_CONFIG_FILE_NAME),
     logsDir: join(dataRoot, LOGS_DIR_NAME),
+    hostLogsDir: join(dataRoot, LOGS_DIR_NAME, HOST_LOGS_DIR_NAME),
   };
 }
 

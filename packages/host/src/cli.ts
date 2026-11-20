@@ -44,7 +44,7 @@ const USAGE = `用法：
       前台启动服务。缺省是本地实例（只监听 127.0.0.1，凭证自动生成并写在 <数据根>/run/token）。
       端口的三档来源：--port > <数据根>/host.json 的 port > 默认 8790。
       --port 0  让系统分配一个空闲端口（端口被占用时的退路，也是测试与冒烟用的写法）。
-      日志写在 <数据根>/logs/host.log（按大小轮转）。
+      日志写在 <数据根>/logs/host/host.log（按大小轮转）。
 
   agents-host token create [--note <备注>] [--ai-zen-dir <目录>]
       新建一串凭证。明文只显示这一次。
@@ -306,7 +306,7 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
   process.stdout.write(`宿主已启动：ws://${target.host}:${target.port}\n`);
   process.stdout.write(`版本：${app.version}（协议 ${PROTOCOL_VERSION}）\n`);
   process.stdout.write(`发现文件：${app.paths.hostFile}\n`);
-  process.stdout.write(`日志：${app.paths.logsDir}\n`);
+  process.stdout.write(`日志：${app.paths.hostLogsDir}\n`);
   if (app.local) {
     process.stdout.write(`本地凭证交付文件：${app.paths.tokenFile}\n`);
   } else {

@@ -120,7 +120,7 @@ import type { EventMap, EventName } from "./wire/events.js";
 /** 读不到包元数据时的版本号（服务照常能跑，只是升级判定拿不到真版本） */
 const FALLBACK_VERSION = "0.0.0";
 
-/** 宿主日志的文件名（`<dataRoot>/logs/host.log`：一个进程一格的目录布局是下一单的事） */
+/** 宿主日志的文件名（落在宿主那一格：`<dataRoot>/logs/host/host.log`） */
 const HOST_LOG_FILE_NAME = "host.log";
 
 /** 通知模块自己那一格日志的来源标签：只在这个来源上挂「不转通知」这条规则 */
@@ -214,7 +214,7 @@ export interface HostAppOptions {
   exit?: ExitHook;
   /** 连接未声明语言时的缺省语言（PRD D8）；不给时用配置里的 `language`，再缺省英文 */
   defaultLanguage?: Language;
-  /** 日志口（连接事件与内部错误）；缺省写到 `<dataRoot>/logs/host.log` 并按大小轮转 */
+  /** 日志口（连接事件与内部错误）；缺省写到 `<dataRoot>/logs/host/host.log` 并按大小轮转 */
   logger?: HubLogger;
   /** 读磁盘上的版本号（D4 / F-E3 的自检要比它）；缺省读本包 `package.json` */
   diskVersion?: () => string | null;
@@ -1654,9 +1654,10 @@ interface ResolvedLogging {
 }
 
 /**
- * 日志口子：注入了就用注入的，否则造一个写 `<dataRoot>/logs/host.log` 的文件日志（PRD F-J2）。
+ * 日志口子：注入了就用注入的，否则造一个写 `<dataRoot>/logs/host/host.log` 的文件日志（PRD F-J2）。
  *
- * 目录布局这一单不动（仍然 `<dataRoot>/logs/host.log`）：一个进程一格的迁移是下一单的事。
+ * 落点是**宿主那一格**（`paths.hostLogsDir`）而不是 `logs/`：`logs/` 只是各进程子目录的父层，
+ * 一格只归一个进程写（CLI 写 `logs/cli/`，将来的桌面端写 `logs/desktop/`）。
  */
 function resolveLogger(options: HostAppOptions, paths: HostPaths): ResolvedLogging {
   const records = new LogRecordRelay();
@@ -1676,7 +1677,7 @@ function resolveLogger(options: HostAppOptions, paths: HostPaths): ResolvedLoggi
     };
   }
   const fileLogger = new FileLogger({
-    file: join(paths.logsDir, HOST_LOG_FILE_NAME),
+    file: join(paths.hostLogsDir, HOST_LOG_FILE_NAME),
     onRecord: (record) => records.forward(record),
   });
   return { logger: fileLogger, fileLogger, records, sdkLogger: fileLogger.withSource(SDK_SOURCE) };

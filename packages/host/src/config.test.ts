@@ -53,6 +53,7 @@ describe("resolvePaths", () => {
       configFile: "/srv/ai-zen-data/config.json",
       hostConfigFile: "/srv/ai-zen-data/host.json",
       logsDir: "/srv/ai-zen-data/logs",
+      hostLogsDir: "/srv/ai-zen-data/logs/host",
     });
   });
 
@@ -95,8 +96,10 @@ describe("resolvePaths", () => {
     expect(paths.hostFile).toBe("/srv/data/run/host.json");
   });
 
-  it("日志目录在数据根下的 logs/（PRD F-J2）", () => {
-    expect(resolvePaths("/srv/data").logsDir).toBe("/srv/data/logs");
+  it("日志父目录在数据根下的 logs/，宿主那一格是 logs/host/（PRD F-J2 / 一格一个进程）", () => {
+    const paths = resolvePaths("/srv/data");
+    expect(paths.logsDir).toBe("/srv/data/logs");
+    expect(paths.hostLogsDir).toBe("/srv/data/logs/host");
   });
 });
 
