@@ -1408,7 +1408,7 @@ export class HostApp {
         persist: false,
       });
     } catch (error) {
-      // 通知发不出去本身也是「通知失败」：记在通知模块那一格里（不管静默吞）
+      // 通知发不出去本身也是「通知失败」：记在通知模块那一格里（不许静默吞）
       this.noticeLogger.error("日志转通知失败", {
         level: record.level,
         message: record.message,
