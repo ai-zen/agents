@@ -432,21 +432,8 @@ export interface ChatRunnerOptions {
 export const DEFAULT_STREAM_WRITE_INTERVAL_MS = 200;
 
 // ---------------------------------------------------------------------------
-// core 消息 ⇄ 存储行
+// core 消息 → 存储行
 // ---------------------------------------------------------------------------
-
-const ROLES: ReadonlySet<string> = new Set(Object.values(AgentNSValue.Role));
-const STATUSES: ReadonlySet<string> = new Set(Object.values(AgentNSValue.MessageStatus));
-
-function toRole(value: string): AgentNS.Role {
-  return ROLES.has(value) ? (value as AgentNS.Role) : AgentNSValue.Role.Unknown;
-}
-
-function toStatus(value: string): AgentNS.MessageStatus {
-  return STATUSES.has(value)
-    ? (value as AgentNS.MessageStatus)
-    : AgentNSValue.MessageStatus.Unknown;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -467,28 +454,16 @@ function toUnsubscribe(handle: unknown): (() => void) | undefined {
   return undefined;
 }
 
-/** 从 `data` 列里认出 core 的用量（三个数字都在才算） */
-function toUsage(value: unknown): AgentNS.Usage | undefined {
-  if (!isRecord(value)) return undefined;
-  const { prompt_tokens, completion_tokens, total_tokens } = value;
-  if (
-    typeof prompt_tokens !== "number" ||
-    typeof completion_tokens !== "number" ||
-    typeof total_tokens !== "number"
-  ) {
-    return undefined;
-  }
-  return { prompt_tokens, completion_tokens, total_tokens };
-}
-
 /**
  * 消息 → 一行库。
  *
- * `content` 走 JSON 列：存储层的 `content` 列就是 core 内容段的 JSON，两边的形状一致，
- * 只差存储层为了「不 import core」而声明的索引签名，故此处做一次显式转换。
+ * 消息原样进 `payload`（存储层 `JSON.stringify` 一条、读回来 `JSON.parse` 一条）：这里不拆
+ * 字段、不挑字段、不补空值 —— `content` / `tool_calls` / `usage` / `hidden` / `source` 都在
+ * 消息对象上，落库的就是它本人。
  *
- * `data.error` 是**回显用的失败事实**（`ProblemFact`：码 + 文案键 + 参数 + 一句现成的话）：
+ * `problem` 是本文件额外给的那一条事实（`ProblemFact`：码 + 文案键 + 参数 + 一句现成的话）：
  * 它跟着消息行落库，活得比进程长（PRD 4.15）；完整错误对象走 `error` 事件，两路不互相替代。
+ * 它在消息对象之外，所以单独传。
  *
  * 导出的理由：交接换记忆要把 SDK 算好的那几条消息写成行，那一处不能再造一份映射 ——
  * 两份映射就是「同一条消息存成两种行」的来源。
@@ -499,68 +474,13 @@ export function toRow(
   createdAt: number,
   extra: { problem?: ProblemFact } = {},
 ): MessageUpsertInput {
-  const data: Record<string, unknown> = {};
-  if (message.tool_calls) data.tool_calls = message.tool_calls;
-  if (message.function_call) data.function_call = message.function_call;
-  if (message.tool_call_id !== undefined) data.tool_call_id = message.tool_call_id;
-  if (message.name !== undefined) data.name = message.name;
-  if (message.reasoning_content !== undefined) data.reasoning_content = message.reasoning_content;
-  // 用量两格走同一条 `data` 通道：`usage` 是这条消息自己那次响应，`subAgentUsage` 是这次委派
-  // 花了多少。两者都是消息身上的事实，不另开列
-  if (message.usage) data.usage = message.usage;
-  if (message.subAgentUsage) data.subAgentUsage = message.subAgentUsage;
-  if (message.finish_reason !== undefined) data.finish_reason = message.finish_reason;
-  if (message.hidden !== undefined) data.hidden = message.hidden;
-  if (extra.problem !== undefined) data.error = extra.problem;
-
   return {
     id: message.id,
     sessionId,
-    role: message.role,
-    status: (message.status ?? AgentNSValue.MessageStatus.Unknown) as string,
-    omit: message.omit === true,
-    content: (message.content ?? null) as unknown as MessageUpsertInput["content"],
-    // 来源是 core 的判别结构：仓储那边序列化成 JSON 存在 `source` 列里
-    source: message.source ?? null,
-    data: Object.keys(data).length > 0 ? data : null,
     createdAt,
+    message,
+    problem: extra.problem ?? null,
   };
-}
-
-/** 存储行 → core 消息（缺的字段让它缺，不补空值：core 用 `undefined` 表示「没有」） */
-function fromRow(row: StoredMessage): AgentNS.Message {
-  const data = row.data ?? {};
-  const message: AgentNS.Message = {
-    id: row.id,
-    role: toRole(row.role),
-    status: toStatus(row.status),
-  };
-  if (row.content !== null) {
-    message.content = row.content as unknown as AgentNS.MessageContent;
-  }
-  if (Array.isArray(data.tool_calls)) {
-    message.tool_calls = data.tool_calls as AgentNS.ToolCall[];
-  }
-  if (isRecord(data.function_call)) {
-    message.function_call = data.function_call as AgentNS.FunctionCall;
-  }
-  if (typeof data.tool_call_id === "string") message.tool_call_id = data.tool_call_id;
-  if (typeof data.name === "string") message.name = data.name;
-  if (typeof data.reasoning_content === "string") {
-    message.reasoning_content = data.reasoning_content;
-  }
-  const usage = toUsage(data.usage);
-  if (usage) message.usage = usage;
-  const subAgentUsage = toUsage(data.subAgentUsage);
-  if (subAgentUsage) message.subAgentUsage = subAgentUsage;
-  if (typeof data.finish_reason === "string") {
-    message.finish_reason = data.finish_reason as AgentNS.FinishReason;
-  }
-  if (typeof data.hidden === "boolean") message.hidden = data.hidden;
-  // `source` 是判别结构（不是字符串）：仓储已经把那一列反序列化好了，这里原样搬
-  if (row.source) message.source = row.source;
-  message.omit = row.omit;
-  return message;
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,7 +1143,7 @@ class SessionBridge {
   /**
    * core 报了一条 `failed`：**两路各走各的**（PRD 4.15）。
    *
-   * - 回显用的失败事实（码 + 文案键 + 参数 + 一句现成的话）写进那一行的 `data.error`，活得比
+   * - 回显用的失败事实（码 + 文案键 + 参数 + 一句现成的话）跟着那一行的 `problem` 列落库，活得比
    *   进程长；
    * - 完整的错误对象（core 的 `AgentError`：码 + 原文）走 `error` 事件，只在线时存在。
    */
@@ -2230,7 +2150,10 @@ export class ChatRunner {
     const rows = await this.options.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
-    const messages = rows.map(fromRow);
+    // `row.message` 就是 `payload` 解析出来的那一条，修復会就地改它 —— 于是「改没改」得先把
+    // 原样照下来（整条序列化一份，不看具体哪几格），改完再对着它判要不要写回。
+    const before = rows.map((row) => JSON.stringify(row.message));
+    const messages = rows.map((row) => row.message);
 
     for (const message of messages) {
       if (
@@ -2248,7 +2171,7 @@ export class ChatRunner {
     messages.forEach((message, index) => {
       const row = rows[index];
       if (!row) return;
-      if (row.status === message.status && row.omit === (message.omit === true)) return;
+      if (JSON.stringify(message) === before[index]) return;
       changed.push(toRow(message, sessionId, row.createdAt));
     });
     if (changed.length > 0) await this.options.messages.upsertMany(changed);
@@ -2276,7 +2199,7 @@ export class ChatRunner {
           await this.options.messages.listBySession(sessionId, undefined, {
             includeHidden: true,
           })
-        ).map(fromRow);
+        ).map((row) => row.message);
     return await this.resolveHistory(sessionId, messages, session.modelId);
   }
 

@@ -113,18 +113,24 @@ beforeEach(async () => {
   await messages.upsert({
     id: "msg-1",
     sessionId: "c1",
-    role: "user",
-    status: "completed",
-    content: "今天天气不错，我们去看海吧",
     createdAt: 100,
+    message: {
+      id: "msg-1",
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: "今天天气不错，我们去看海吧",
+    },
   });
   await messages.upsert({
     id: "msg-2",
     sessionId: "c2",
-    role: "assistant",
-    status: "completed",
-    content: "第三个项目里提到了天气与海",
     createdAt: 200,
+    message: {
+      id: "msg-2",
+      role: AgentNS.Role.Assistant,
+      status: AgentNS.MessageStatus.Completed,
+      content: "第三个项目里提到了天气与海",
+    },
   });
 });
 

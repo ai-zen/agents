@@ -300,18 +300,24 @@ async function seedHarness(): Promise<Harness> {
     {
       id: "msg-user",
       sessionId,
-      role: AgentNS.Role.User as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      content: "帮我看看这个仓库的测试为什么慢",
       createdAt: 1_700_000_001_000,
+      message: {
+        id: "msg-user",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "帮我看看这个仓库的测试为什么慢",
+      },
     },
     {
       id: "msg-assistant",
       sessionId,
-      role: AgentNS.Role.Assistant as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      content: "慢在 storage 的每个用例都新开库。",
       createdAt: 1_700_000_002_000,
+      message: {
+        id: "msg-assistant",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "慢在 storage 的每个用例都新开库。",
+      },
     },
   ]);
 
@@ -722,10 +728,10 @@ describe("独立交接（一次性agent + 记忆副本）", () => {
       includeHidden: true,
     });
     expect(seeded).toHaveLength(2);
-    expect(seeded[0]?.role).toBe(AgentNS.Role.User);
-    expect(seeded[0]?.data).toMatchObject({ hidden: true });
-    expect(seeded[1]?.role).toBe(AgentNS.Role.System);
-    expect(seeded[1]?.data).toMatchObject({ hidden: true });
+    expect(seeded[0]?.message.role).toBe(AgentNS.Role.User);
+    expect(seeded[0]?.message.hidden).toBe(true);
+    expect(seeded[1]?.message.role).toBe(AgentNS.Role.System);
+    expect(seeded[1]?.message.hidden).toBe(true);
 
     // 开新会话这件事靠一条 `session.changed(created)` 告知界面
     expect(
@@ -780,9 +786,9 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
 
     // 形状由 SDK 定：`role: system` + `hidden` + 正文只有那份文档的路径
     const breakpointRow = left[0];
-    expect(breakpointRow?.role).toBe(AgentNS.Role.System);
-    expect(breakpointRow?.data).toMatchObject({ hidden: true });
-    const path = breakpointRow?.content as string;
+    expect(breakpointRow?.message.role).toBe(AgentNS.Role.System);
+    expect(breakpointRow?.message.hidden).toBe(true);
+    const path = breakpointRow?.message.content as string;
     expect(path.startsWith(handoffDirFor(harness.projectDir))).toBe(true);
     expect(path.endsWith(".md")).toBe(true);
     // 文档正文一个字都不进记忆：断点带的是路径，正文由需要细节的一方自己去读
@@ -836,7 +842,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
       includeHidden: true,
     });
     expect(rows.map((row) => row.id)).toEqual([breakpoint?.id]);
-    expect(rows[0]?.content).toBe(breakpoint?.content);
+    expect(rows[0]?.message.content).toBe(breakpoint?.content);
 
     // 换记忆不等于换人：闸只关过一次、开过一次，队列不重建；换完之后闸是开的
     expect(built.driverCalls).toEqual(["pauseOutput", "resumeOutput"]);
@@ -1036,8 +1042,8 @@ describe("自动交接：平级会话越线（插件那一路）", () => {
     });
     expect(left).toHaveLength(1);
     // 只有断点（交接后没有 cwd 消息）
-    expect(left[0]?.role).toBe(AgentNS.Role.System);
-    expect(left[0]?.data).toMatchObject({ hidden: true });
+    expect(left[0]?.message.role).toBe(AgentNS.Role.System);
+    expect(left[0]?.message.hidden).toBe(true);
     // 内存与库同一份
     expect(built.driver.messages.at(-1)?.id).toBe(left[0]?.id);
 
@@ -1095,7 +1101,7 @@ describe("自动交接：平级会话越线（插件那一路）", () => {
       includeHidden: true,
     });
     expect(left).toHaveLength(1);
-    const path = left[0]?.content as string;
+    const path = left[0]?.message.content as string;
     expect(await readFile(path, "utf-8")).toContain("## Handoff from the model");
     expect(await harness.sessions.list()).toHaveLength(2);
   });

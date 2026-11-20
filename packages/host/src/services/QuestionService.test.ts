@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { HandoffRefusalReason } from "../runtime/ChatRunner.js";
+import { AgentNS } from "@ai-zen/agents-core";
 import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
@@ -531,22 +532,28 @@ describe("硬线判定（createSessionGuardProbe）", () => {
     await messages.upsert({
       id: "msg-1",
       sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "答完了",
-      data: { usage: { prompt_tokens: 400, completion_tokens: 10, total_tokens: 410 } },
       createdAt: 10,
+      message: {
+        id: "msg-1",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "答完了",
+        usage: { prompt_tokens: 400, completion_tokens: 10, total_tokens: 410 },
+      },
     });
     expect(await probe.overGuard("c1")).toBe(false);
 
     await messages.upsert({
       id: "msg-2",
       sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "又答了一轮",
-      data: { usage: { prompt_tokens: 1200, completion_tokens: 20, total_tokens: 1220 } },
       createdAt: 11,
+      message: {
+        id: "msg-2",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "又答了一轮",
+        usage: { prompt_tokens: 1200, completion_tokens: 20, total_tokens: 1220 },
+      },
     });
     expect(await probe.overGuard("c1")).toBe(true);
 

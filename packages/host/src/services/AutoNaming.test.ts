@@ -118,18 +118,24 @@ async function seedFirstTurn(harness: Harness, sessionId = "c1"): Promise<void> 
     {
       id: `${sessionId}-u1`,
       sessionId,
-      role: AgentNS.Role.User as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      content: "登录页点提交没反应",
       createdAt: 2,
+      message: {
+        id: `${sessionId}-u1`,
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "登录页点提交没反应",
+      },
     },
     {
       id: `${sessionId}-a1`,
       sessionId,
-      role: AgentNS.Role.Assistant as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      content: "表单的 submit 事件没绑上，我加上了。",
       createdAt: 3,
+      message: {
+        id: `${sessionId}-a1`,
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "表单的 submit 事件没绑上，我加上了。",
+      },
     },
   ]);
 }
@@ -300,10 +306,13 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     await harness.messages.upsert({
       id: "c1-u2",
       sessionId: "c1",
-      role: AgentNS.Role.User as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      content: "再帮我看看样式",
       createdAt: 4,
+      message: {
+        id: "c1-u2",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "再帮我看看样式",
+      },
     });
 
     // 名字还是默认值 → 还是该起名。这一段已经有两句用户话了，但「几句」不是判据
@@ -329,19 +338,25 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
       {
         id: "c2-breakpoint",
         sessionId: "c2",
-        role: AgentNS.Role.System as string,
-        status: AgentNS.MessageStatus.Completed as string,
-        content: "/tmp/project/.ai-zen/handoffs/20260101-000000.md",
-        data: { hidden: true },
         createdAt: 2,
+        message: {
+          id: "c2-breakpoint",
+          role: AgentNS.Role.System,
+          status: AgentNS.MessageStatus.Completed,
+          content: "/tmp/project/.ai-zen/handoffs/20260101-000000.md",
+          hidden: true,
+        },
       },
       {
         id: "c2-u1",
         sessionId: "c2",
-        role: AgentNS.Role.User as string,
-        status: AgentNS.MessageStatus.Completed as string,
-        content: "接着上次的来",
         createdAt: 3,
+        message: {
+          id: "c2-u1",
+          role: AgentNS.Role.User,
+          status: AgentNS.MessageStatus.Completed,
+          content: "接着上次的来",
+        },
       },
     ]);
 

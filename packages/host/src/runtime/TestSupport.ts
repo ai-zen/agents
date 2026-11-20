@@ -183,8 +183,8 @@ export class RecordingMessageStore implements MessageStore {
       .filter((entry) => entry.row.sessionId === sessionId)
       .sort((a, b) => a.order - b.order)
       .map((entry) => entry.row)
-      // 与真仓储同一个口径：`data.hidden` 为真的消息默认不返回
-      .filter((row) => options.includeHidden === true || row.data?.hidden !== true);
+      // 与真仓储同一个口径：`hidden` 为真的消息默认不返回
+      .filter((row) => options.includeHidden === true || row.message.hidden !== true);
     const anchorIndex = after ? ordered.findIndex((row) => row.id === after) : -1;
     const visible = anchorIndex >= 0 ? ordered.slice(anchorIndex) : ordered;
     return visible.map((row, index) => toStored(row, index + 1));
@@ -210,8 +210,8 @@ export class RecordingMessageStore implements MessageStore {
 function cloneRow(row: MessageUpsertInput): MessageUpsertInput {
   return {
     ...row,
-    content: row.content === undefined ? undefined : structuredClone(row.content),
-    data: row.data === undefined ? undefined : structuredClone(row.data),
+    message: structuredClone(row.message),
+    problem: row.problem === undefined ? null : structuredClone(row.problem),
   };
 }
 
@@ -220,14 +220,10 @@ function toStored(row: MessageUpsertInput, seq: number): StoredMessage {
     id: row.id,
     sessionId: row.sessionId,
     seq,
-    role: row.role,
-    status: row.status,
-    omit: row.omit === true,
-    content: (row.content ?? null) as StoredMessage["content"],
-    source: row.source ?? null,
-    data: (row.data ?? null) as StoredMessage["data"],
     createdAt: row.createdAt,
-    updatedAt: row.createdAt,
+    // 逐条拷一份：真仓储每次读都是新的 `JSON.parse` 结果，改一条不该串到另一条上
+    message: structuredClone(row.message),
+    problem: row.problem === undefined ? null : structuredClone(row.problem),
   };
 }
 

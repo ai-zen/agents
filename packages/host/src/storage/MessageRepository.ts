@@ -3,9 +3,9 @@
  *
  * 几处与别处不同的地方：
  *
- * 1. **边流边写**：一次回答的生成过程中同一条助手消息会被反复写。`upsert` 按 id 覆盖正文 /
- *    状态 / omit，但 `seq` 与 `createdAt` 保留第一次写入时的值 —— 否则消息会在流式过程中
- *    不断「往后跳」。
+ * 1. **边流边写**：一次回答的生成过程中同一条助手消息会被反复写。`upsert` 按 id 整条覆盖
+ *    `payload` / `problem` / `searchText`，但 `seq` 与 `createdAt` 保留第一次写入时的值 ——
+ *    否则消息会在流式过程中不断「往后跳」。
  *
  * 2. **全文检索的分词现实**：FTS5 表用 `tokenize='trigram'`（见 migrations.ts），中文子串才
  *    搜得到；代价是查询词至少要 3 个字符，更短的（典型是两字中文）在 trigram 下必然搜不到，
@@ -14,14 +14,19 @@
  * 3. **表里只有主线消息**：subagent 的话不入库（`CORE.md` §17），所以「这段会话有多少条
  *    消息」只有一条取法 —— 表上也没有「这条消息挂在哪次工具调用上」那种归属列。
  *
- * 4. **`hidden` 的两条读数**：`hidden` 是 core 的 `Message.hidden`，落在 `data` 列的 JSON 里
- *    （没有单独的列）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）默认把它
- *    排除；要连它一起取的地方（模型的历史、排查问题）显式传 `includeHidden`。
+ * 4. **`payload` 就是整条消息**：这一列存 core 的 `AgentNS.Message` 原样一份 JSON，写进去
+ *    `JSON.stringify`、读出来 `JSON.parse`，中间没有逐字段映射 —— 写进去什么，读出来还是什么。
+ *    `hidden` 不是一列可以由 JS 维护的东西：它是 SQLite 的生成列，由库自己从 `payload` 里取
+ *    `$.hidden`（见 migrations.ts）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）
+ *    默认把它排除（`hidden IS NOT 1`，消息上没有这个键时生成列是 NULL）；要连它一起取的地方
+ *    （模型的历史、排查问题）显式传 `includeHidden`。
  *
- * 5. **`source` 是判别结构**：core 的 `AgentNS.MessageSource`（`{kind:"user"}` /
- *    `{kind:"agent",label}` / `{kind:"system",label}`）在本表是一列 `TEXT`，存它的 JSON。
- *    写入时序列化、读回来反序列化，两个方向同一个形状；NULL（= 不知道来源）的含义与
- *    反序列化规则见 {@link toSource}。
+ * 5. **`searchText` 是索引产物，不是第二份消息**：它从 `message.content` 的文本段派生，只喂
+ *    FTS（触发器只碰这一列）。从正文抽纯文本不改变消息的形状 —— 消息对象本身仍是 `payload`
+ *    里那一份，读的时候一个字都不重建。
+ *
+ * `problem` 是**回显用的失败事实**（`ProblemFact`），宿主附加在消息之外的一条事实：它活得比
+ * 进程长（PRD 4.15），所以单独一列存它的 JSON，没有时是 NULL。它不在消息对象里。
  *
  * FTS 索引的同步交给 `messages` 上的触发器（在 migrations.ts 里建），所以本文件写消息时只写
  * `messages` 表。
@@ -30,6 +35,7 @@
 import type { SQLInputValue } from "node:sqlite";
 import type { AgentNS } from "@ai-zen/agents-core";
 
+import type { ProblemFact } from "../wire/states.js";
 import type { Database, RunResult, TxClient, TxStatement } from "./Database.js";
 import type {
   MessageRow,
@@ -45,16 +51,15 @@ const TRIGRAM_MIN_LENGTH = 3;
 /** 搜索结果的片段长度上限 */
 const SNIPPET_LENGTH = 160;
 
-const COLUMNS =
-  "id, sessionId, seq, role, status, omit, content, data, searchText, source, createdAt, updatedAt";
+const COLUMNS = "id, sessionId, seq, createdAt, payload, problem, searchText";
 
 /**
- * 「这条消息给用户看」的条件：`data.hidden` 不为真。
+ * 「这条消息给用户看」的条件：`hidden` 生成列不为 1。
  *
- * `hidden` 在 `data` 这列 JSON 里，所以判断要读一次 JSON。`data` 为空或不是合法 JSON 时
- * 按「不是隐藏」算 —— 一条坏数据不该让整条消息在界面上凭空消失。
+ * 生成列从 `payload` 里取 `$.hidden`，消息上没有这个键时它是 NULL —— 所以写 `IS NOT 1`
+ * 而不是 `!= 1`（后者对 NULL 恒不成立，会把正常消息全滤掉）。
  */
-const VISIBLE_ONLY = `(CASE WHEN json_valid(data) THEN json_extract(data, '$.hidden') ELSE 0 END) IS NOT 1`;
+const VISIBLE_ONLY = `hidden IS NOT 1`;
 
 /** 读消息时的选项 */
 export interface MessageListOptions {
@@ -63,7 +68,8 @@ export interface MessageListOptions {
 }
 
 /**
- * 写语句：`seq` 取同会话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
+ * 写语句：`seq` 取同会话当前最大值 + 1；同一 id 再写时只整条覆盖 `payload` / `problem` /
+ * `searchText`。
  *
  * `MAX(seq)` 与插入在同一条语句里完成，worker 又是单线程串行执行，所以不会出现两条
  * 消息抢到同一个 seq（`UNIQUE (sessionId, seq)` 是最后一道防线）。
@@ -74,20 +80,15 @@ const UPSERT_SQL = `
     ?,
     ?,
     (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?),
-    ?, ?, ?, ?, ?, ?, ?,
-    ?, ?
+    ?,
+    ?,
+    ?,
+    ?
   )
   ON CONFLICT (id) DO UPDATE SET
-    role             = excluded.role,
-    status           = excluded.status,
-    omit             = excluded.omit,
-    content          = excluded.content,
-    data             = excluded.data,
-    searchText       = excluded.searchText,
-    -- 来源是**投递那一刻**的事实，之后的每一遍写（流式、收尾）都带着同一份；
-    -- 没带的那几遍（例如只改状态的写）不许把它抹成 NULL。
-    source           = COALESCE(excluded.source, messages.source),
-    updatedAt        = excluded.updatedAt
+    payload    = excluded.payload,
+    problem    = excluded.problem,
+    searchText = excluded.searchText
 `;
 
 /**
@@ -109,104 +110,52 @@ export function registerMessageUpsert(
  *
  * 只取文本段：JSON 结构（工具调用的参数、用量等）不进索引，否则搜 "id"、"type"
  * 这类词会把所有工具调用消息都捞出来，反而搜不准。
+ *
+ * 这是 FTS 的索引产物，不是消息形状的转换：抽出来的这一份只喂 `messages_fts`，消息对象
+ * 仍然是 `payload` 里那一份，读的时候不从它重建任何字段。
  */
-function extractSearchText(content: AgentNS.MessageContent | null): string {
-  if (content === null) return "";
+function extractSearchText(content: AgentNS.MessageContent | undefined): string {
+  if (content === undefined) return "";
   if (typeof content === "string") return content;
   const parts: string[] = [];
   for (const section of content) {
-    // 库里的内容是外部写入的 JSON，形状不保证合 core 的类型：非文本段不参与索引
     if (section.type === "text" && typeof section.text === "string") parts.push(section.text);
   }
   return parts.join("\n");
 }
 
-function toSearchText(content: AgentNS.MessageContent | null): string {
+function toSearchText(content: AgentNS.MessageContent | undefined): string {
   return extractSearchText(content).replace(/\s+/g, " ").trim();
 }
 
-function parseJson(value: string | null): unknown {
-  if (value === null) return null;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    // 库里出现坏 JSON 时不让整条记录读不出来，原样当字符串返回
-    return value;
-  }
-}
-
 /**
- * `content` 列的反序列化：core 的 `MessageContent` 就是「字符串，或内容段数组」。
+ * 一行库 → 一条消息。
  *
- * 两种形状原样返回（R30：不在仓储层重建内容段）；其它情况（空列、坏数据）归为「没有正文」。
+ * `payload` 是我们自己写进去的那一份，`JSON.parse` 之后就是 core 的 `AgentNS.Message`：
+ * 不补空值、不收紧取值、不认「坏值」。读不出来就让它抛 —— 那说明库里那行不是本仓库写的，
+ * 悄悄吞掉只会让一条坏数据变成界面上一条看着正常的消息。
  */
-function toContent(value: unknown): AgentNS.MessageContent | null {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value as AgentNS.MessageContentSection[];
-  return null;
-}
-
-/**
- * `source` 列的反序列化：core 的 `AgentNS.MessageSource` 是**判别结构**，库里存的是它的 JSON。
- *
- * 三种输入：
- *   1. 合法的判别结构（`{kind:"user"}` / `{kind:"agent",label}` / `{kind:"system",label}`）
- *      —— 原样返回；`label` 不是字符串的按空串算（宁可少一句话，不要让整行读不出来）；
- *   2. NULL → `null`，意思是「不知道来源」，**不默认成用户**（`CORE.md` §3：不做「没有
- *      source 就是用户」那种缺省）。新建会话的第一条 cwd 消息就是这种，历史行也靠它区分
- *      「那行的来源没人记过」；
- *   3. 其它（能解析成 JSON、但不是上面的判别结构）→ 同样 `null`：认不出来就当「不知道」，
- *      不猜它是用户还是系统。
- */
-function toSource(value: unknown): AgentNS.MessageSource | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as { kind?: unknown; label?: unknown };
-  if (record.kind === "user") return { kind: "user" };
-  if (record.kind === "agent" || record.kind === "system") {
-    return { kind: record.kind, label: typeof record.label === "string" ? record.label : "" };
-  }
-  return null;
-}
-
 function toStoredMessage(row: MessageRow): StoredMessage {
-  const data = parseJson(row.data);
   return {
     id: row.id,
     sessionId: row.sessionId,
     seq: row.seq,
-    role: row.role,
-    status: row.status,
-    omit: row.omit !== 0,
-    content: toContent(parseJson(row.content)),
-    source: toSource(parseJson(row.source)),
-    data:
-      typeof data === "object" && data !== null && !Array.isArray(data)
-        ? (data as Record<string, unknown>)
-        : null,
     createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    message: JSON.parse(row.payload) as AgentNS.Message,
+    problem: row.problem === null ? null : (JSON.parse(row.problem) as ProblemFact),
   };
 }
 
 /** 建 upsert 的绑定参数数组（顺序与 UPSERT_SQL 的占位符一一对应） */
 function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
-  const searchText = toSearchText(input.content ?? null);
-  const contentJson = JSON.stringify(input.content ?? null);
-  const dataJson =
-    input.data === undefined || input.data === null ? null : JSON.stringify(input.data);
   return [
     input.id,
     input.sessionId,
     input.sessionId,
-    input.role,
-    input.status,
-    input.omit ? 1 : 0,
-    contentJson,
-    dataJson,
-    searchText,
-    input.source === undefined || input.source === null ? null : JSON.stringify(input.source),
     input.createdAt,
-    input.createdAt,
+    JSON.stringify(input.message),
+    input.problem === undefined || input.problem === null ? null : JSON.stringify(input.problem),
+    toSearchText(input.message.content),
   ];
 }
 
@@ -230,7 +179,7 @@ export class MessageRepository {
   /**
    * 写入或覆盖一条消息。
    *
-   * 同一条消息（同 id）重复调用即「覆盖最新内容 + 状态」，`seq` / `createdAt` 不变。
+   * 同一条消息（同 id）重复调用即「整条覆盖最新内容」，`seq` / `createdAt` 不变。
    */
   async upsert(input: MessageUpsertInput): Promise<void> {
     await this.db.run(UPSERT_SQL, upsertParams(input));
@@ -298,6 +247,9 @@ export class MessageRepository {
   /**
    * 全文搜索（按聊天内容，可只搜一个 Workspace）。
    *
+   * 查的是 `id` / `createdAt` / `payload` 与命中片段：**不在 SQL 里 `json_extract` 消息字段**，
+   * 角色由调用方解析 `payload` 之后从消息对象上取。
+   *
    * @param scope 一段会话内 / 一个 Workspace 下 / `undefined`（不限；由调用方显式传入）
    * @param keyword 查询词：长度 >= 3 走 FTS5 trigram，< 3 走 LIKE 子串
    * @param limit 上限
@@ -341,7 +293,7 @@ export class MessageRepository {
 
     const sql = useFts
       ? `SELECT m.id, m.sessionId, c.name AS sessionName, c.workspaceId AS workspaceId,
-                m.role, m.createdAt, ${snippet}
+                m.createdAt, m.payload, ${snippet}
          FROM messages_fts
          JOIN messages m ON m.rowid = messages_fts.rowid
          JOIN sessions c ON c.id = m.sessionId
@@ -349,7 +301,7 @@ export class MessageRepository {
          ORDER BY m.createdAt DESC, m.seq DESC
          LIMIT ?`
       : `SELECT m.id, m.sessionId, c.name AS sessionName, c.workspaceId AS workspaceId,
-                m.role, m.createdAt, ${snippet}
+                m.createdAt, m.payload, ${snippet}
          FROM messages m
          JOIN sessions c ON c.id = m.sessionId
          WHERE ${conditions.join(" AND ")}

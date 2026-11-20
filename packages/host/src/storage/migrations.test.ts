@@ -115,19 +115,16 @@ const EXPECTED_COLUMNS: Record<string, ColumnShape[]> = {
     ["lineage", "TEXT", 0, null, 0],
     ["pendingHandoff", "TEXT", 0, null, 0],
   ],
+  // `messages` 只有这七列在这里：`hidden` 是**生成列**，`PRAGMA table_info` 不列它
+  // （它在 `table_xinfo` 里，flag = 2；单独那条用例盯它）
   messages: [
     ["id", "TEXT", 0, null, 1],
     ["sessionId", "TEXT", 1, null, 0],
     ["seq", "INTEGER", 1, null, 0],
-    ["role", "TEXT", 1, null, 0],
-    ["status", "TEXT", 1, null, 0],
-    ["omit", "INTEGER", 1, "0", 0],
-    ["content", "TEXT", 1, "''", 0],
-    ["data", "TEXT", 0, null, 0],
-    ["searchText", "TEXT", 1, "''", 0],
     ["createdAt", "INTEGER", 1, null, 0],
-    ["updatedAt", "INTEGER", 1, null, 0],
-    ["source", "TEXT", 0, null, 0],
+    ["payload", "TEXT", 1, null, 0],
+    ["problem", "TEXT", 0, null, 0],
+    ["searchText", "TEXT", 1, "''", 0],
   ],
   inbox: [
     ["messageId", "TEXT", 0, null, 1],
@@ -400,18 +397,45 @@ describe("migrate", () => {
     });
   });
 
-  it("messages 的来源列：存判别结构的 JSON，可空 = 不知道", async () => {
+  it("messages 表只有八列：整条消息一个 `payload`，`hidden` 是生成列", async () => {
     await migrate(db);
 
-    const column = (
-      await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
-        "PRAGMA table_info('messages')",
-      )
-    ).find((candidate) => candidate.name === "source");
-    // 可空：没记过来源的行读出来是 `source: null`（「不知道」，不是「用户说的」）
-    expect(column).toMatchObject({ notnull: 0, dflt_value: null });
+    type ColumnInfo = { name: string; notnull: number; dflt_value: string | null; hidden: number };
+    // 用 `table_xinfo` 而不是 `table_info`：生成列只在前者里出现
+    const columns = await db.all<ColumnInfo>("PRAGMA table_xinfo('messages')");
+    expect(columns.map((column) => column.name)).toEqual([
+      "id",
+      "sessionId",
+      "seq",
+      "createdAt",
+      "payload",
+      "problem",
+      "searchText",
+      "hidden",
+    ]);
 
-    // 落进去的是那段 JSON，读回来还是它（不是字符串 `"user"`）
+    // 把消息拆开存的那七列不该在：消息是整条存的，读写两侧都只有 stringify / parse
+    for (const name of ["role", "status", "omit", "content", "data", "source", "updatedAt"]) {
+      expect(columns.some((column) => column.name === name)).toBe(false);
+    }
+
+    // `payload` / `searchText` 必须有值；`problem` 可空（没有失败事实就是 NULL）
+    expect(columns.find((column) => column.name === "payload")).toMatchObject({ notnull: 1 });
+    expect(columns.find((column) => column.name === "searchText")).toMatchObject({
+      notnull: 1,
+      dflt_value: "''",
+    });
+    expect(columns.find((column) => column.name === "problem")).toMatchObject({
+      notnull: 0,
+      dflt_value: null,
+    });
+    // `seq` / `createdAt` 留着是为了 SQL 里排序与定位，不是消息对象的字段
+    expect(columns.find((column) => column.name === "seq")).toMatchObject({ notnull: 1 });
+    expect(columns.find((column) => column.name === "createdAt")).toMatchObject({ notnull: 1 });
+
+    // `hidden` 是 VIRTUAL 生成列（`table_info` 里 hidden = 2 就是动态生成），JS 侧不维护它
+    expect(columns.find((column) => column.name === "hidden")).toMatchObject({ hidden: 2 });
+
     await db.run(
       "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/s', 1)",
     );
@@ -419,18 +443,26 @@ describe("migrate", () => {
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '会话', 'a1', 'm1', 2, 2)`,
     );
+    // 写进去的就是整条消息；`hidden` 不用写，库自己从 `payload` 里取
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, content, source, createdAt, updatedAt)
-       VALUES ('m1', 'c1', 1, 'user', 'completed', '"你好"', '{"kind":"agent","label":"助手"}', 3, 3)`,
+      `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+       VALUES ('m1', 'c1', 1, 3, '{"id":"m1","role":"user","status":"completed","content":"你好","hidden":true}', '你好')`,
     );
+    // `payload` 里没有 `hidden` 时生成列是 NULL
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, content, createdAt, updatedAt)
-       VALUES ('m2', 'c1', 2, 'system', 'completed', '"cwd"', 4, 4)`,
+      `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+       VALUES ('m2', 'c1', 2, 4, '{"id":"m2","role":"system","status":"completed","content":"cwd"}', 'cwd')`,
     );
-    expect(await db.all("SELECT source FROM messages ORDER BY seq")).toEqual([
-      { source: '{"kind":"agent","label":"助手"}' },
-      { source: null },
+    expect(await db.all("SELECT id, hidden FROM messages ORDER BY seq")).toEqual([
+      { id: "m1", hidden: 1 },
+      { id: "m2", hidden: null },
     ]);
+    // 所以「给用户看」的条件是 `hidden IS NOT 1`：NULL 与 0 都算看得见
+    expect(await db.all("SELECT id FROM messages WHERE hidden IS NOT 1")).toEqual([{ id: "m2" }]);
+    // 整列读回来还是那一条：没被拆成列、也没被改写
+    expect(
+      (await db.get<{ payload: string }>("SELECT payload FROM messages WHERE id = 'm1'"))?.payload,
+    ).toBe('{"id":"m1","role":"user","status":"completed","content":"你好","hidden":true}');
   });
 
   it("库里不该有的东西：没有题表，也没有第二套取法的列与索引", async () => {
@@ -517,9 +549,16 @@ describe("外键与级联", () => {
       ["c1", "w1", "会话一", "a1", "m1", 2, 2],
     );
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-      ["msg1", "c1", 1, "user", "completed", '"你好"', "你好", 3, 3],
+      `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        "msg1",
+        "c1",
+        1,
+        3,
+        '{"id":"msg1","role":"user","status":"completed","content":"你好"}',
+        "你好",
+      ],
     );
     await db.run(
       `INSERT INTO assets (id, name, path, mime, bytes, sha256, createdAt)
@@ -599,8 +638,8 @@ describe("外键与级联", () => {
     await migrate(db);
     await expect(
       db.run(
-        `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-         VALUES ('x', 'does-not-exist', 1, 'user', 'completed', 0, '""', '', 1, 1)`,
+        `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+         VALUES ('x', 'does-not-exist', 1, 1, '{"id":"x","role":"user"}', '')`,
       ),
     ).rejects.toThrow(/FOREIGN KEY/i);
   });

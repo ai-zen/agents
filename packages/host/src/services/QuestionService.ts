@@ -626,7 +626,7 @@ export function createSessionGuardProbe(deps: {
       const rows = await deps.messages.listBySession(sessionId);
       for (let index = rows.length - 1; index >= 0; index -= 1) {
         const row = rows[index];
-        const usage = row ? readUsage(row.data) : null;
+        const usage = row ? readUsage(row.message) : null;
         if (usage) return usage.prompt_tokens >= guardThreshold;
       }
       return false;

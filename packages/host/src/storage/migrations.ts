@@ -93,28 +93,35 @@ export const MIGRATIONS: Migration[] = [
          ON sessions (workspaceId, pinned DESC, createdAt DESC)`,
 
       // messages：边流边写，同一条消息按 id 反复覆盖（PRD D15）。
-      // source 存「这条是谁说的」，是 core 的 `AgentNS.MessageSource` 判别结构的 **JSON**
-      // （`{kind:"user"}` / `{kind:"agent", label}` / `{kind:"system", label}`）——
-      // 用自由字符串就得把 `"user"` 当保留字，一个恰好叫 `user` 的 agent 就把它顶翻了
-      // （`CORE.md` §3）。可空 = 那一行**没记过**来源，读出来是 `source: null`
-      // （「不知道」，不是「用户说的」）：新建会话的第一条 cwd 消息就是这样。
+      //
+      // `payload` 是 core 的 `AgentNS.Message` **原样一份 JSON**：写进去什么、读出来还是什么
+      // （读写两侧都只有 `JSON.stringify` / `JSON.parse`）。不拆成 role / status / content /
+      // data 那些列 —— 拆了就得在两侧各维护一份字段清单，而那份清单的唯一作用是把同一条消息
+      // 在库里和内存里存成两个样子（`CORE.md` §3）。
+      //
+      // 列里另外三格**不是消息身上的字段**，是 SQL 里有真实用途的东西：
+      //   - `seq`：同会话内的顺序（按它排、`after` / `afterMessageId` 按它定位）；
+      //   - `createdAt`：侧栏「最后一条什么时候说的」与搜索的排序；
+      //   - `searchText`：FTS 的索引产物（正文纯文本，触发器只碰它）。
+      //
+      // `problem` 是**回显用的失败事实**（`ProblemFact`）：宿主附加的一条事实，活得比进程长
+      // （PRD 4.15），所以它不在消息对象的 JSON 里，单独一列（没有就是 NULL）。
+      //
+      // `hidden` 是生成列：SQLite 自己从 `payload` 里取 `$.hidden`，JS 侧不维护它。取值只有
+      // 1 / 0 / NULL（消息上没有这个键时是 NULL），所以「给用户看」的条件写 `hidden IS NOT 1`。
       //
       // 消息只有一套取法，会话里的每一条都在这张表里：subagent 的话从来不入库
       // （`CORE.md` §17），所以没有 `parentToolCallId` 那种「挂在哪次工具调用上」的列 ——
       // 它会永远 NULL，还顺手给出第二套「这段会话有多少条消息」的算法。
       `CREATE TABLE IF NOT EXISTS messages (
-         id          TEXT PRIMARY KEY,
-         sessionId   TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-         seq         INTEGER NOT NULL,
-         role        TEXT NOT NULL,
-         status      TEXT NOT NULL,
-         omit        INTEGER NOT NULL DEFAULT 0,
-         content     TEXT NOT NULL DEFAULT '',
-         data        TEXT,
-         searchText  TEXT NOT NULL DEFAULT '',
-         createdAt   INTEGER NOT NULL,
-         updatedAt   INTEGER NOT NULL,
-         source      TEXT,
+         id         TEXT PRIMARY KEY,
+         sessionId  TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+         seq        INTEGER NOT NULL,
+         createdAt  INTEGER NOT NULL,
+         payload    TEXT NOT NULL,
+         problem    TEXT,
+         searchText TEXT NOT NULL DEFAULT '',
+         hidden     INTEGER GENERATED ALWAYS AS (json_extract(payload, '$.hidden') = 1) VIRTUAL,
          UNIQUE (sessionId, seq)
        )`,
       // 按会话顺序读取，以及 `after=<消息 id>` 定位

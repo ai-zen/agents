@@ -186,8 +186,15 @@ interface Harness {
   waitIdle(): Promise<void>;
   /** 推出去的那些事件里指定名字的载荷 */
   eventsOf<E extends EventName>(name: E): Array<unknown>;
-  /** 库里这段会话的行（按写入顺序） */
-  rows(): Promise<Array<{ id: string; role: string; content: unknown; status: string }>>;
+  /** 库里这段会话的行（按写入顺序）；消息是整条那一个对象，这里只取要看的三格 */
+  rows(): Promise<
+    Array<{
+      id: string;
+      role: AgentNS.Role;
+      content: AgentNS.MessageContent | undefined;
+      status: AgentNS.MessageStatus | undefined;
+    }>
+  >;
 }
 
 function createHarness(
@@ -318,9 +325,9 @@ function createHarness(
       const rows = await store.listBySession(SESSION_ID);
       return rows.map((row) => ({
         id: row.id,
-        role: row.role,
-        content: row.content,
-        status: row.status,
+        role: row.message.role,
+        content: row.message.content,
+        status: row.message.status,
       }));
     },
   };
@@ -1282,14 +1289,16 @@ describe("ChatRunner：subagent 的消息不落库，只推事件", () => {
     await harness.waitIdle();
     await harness.settle();
 
-    const toolRow = harness.store.writes.filter((row) => row.role === "tool").at(-1);
-    expect(toolRow?.data?.subAgentUsage).toEqual({
+    const toolRow = harness.store.writes
+      .filter((row) => row.message.role === AgentNSValue.Role.Tool)
+      .at(-1);
+    expect(toolRow?.message.subAgentUsage).toEqual({
       prompt_tokens: 700,
       completion_tokens: 70,
       total_tokens: 770,
     });
     // 与它自身那次响应的 `usage` 互斥：这条 tool 消息没有 `usage`
-    expect(toolRow?.data?.usage).toBeUndefined();
+    expect(toolRow?.message.usage).toBeUndefined();
   });
 
   it("重开之后这个字段还在：从行里还原出来的消息带着它，一处求和即整棵树", async () => {
@@ -1297,24 +1306,28 @@ describe("ChatRunner：subagent 的消息不落库，只推事件", () => {
     harness.store.seed({
       id: "a-row",
       sessionId: SESSION_ID,
-      role: AgentNSValue.Role.Assistant as string,
-      status: AgentNSValue.MessageStatus.Completed as string,
-      content: "我派个人去查",
-      data: { usage: { prompt_tokens: 800, completion_tokens: 200, total_tokens: 1000 } },
       createdAt: 1,
+      message: {
+        id: "a-row",
+        role: AgentNSValue.Role.Assistant,
+        status: AgentNSValue.MessageStatus.Completed,
+        content: "我派个人去查",
+        usage: { prompt_tokens: 800, completion_tokens: 200, total_tokens: 1000 },
+      },
     });
     harness.store.seed({
       id: "t-row",
       sessionId: SESSION_ID,
-      role: AgentNSValue.Role.Tool as string,
-      status: AgentNSValue.MessageStatus.Completed as string,
-      content: "查完了",
-      data: {
+      createdAt: 2,
+      message: {
+        id: "t-row",
+        role: AgentNSValue.Role.Tool,
+        status: AgentNSValue.MessageStatus.Completed,
+        content: "查完了",
         tool_call_id: "t1",
         // subagent 自己那条 tool 消息上的孙级已经含在里面了
         subAgentUsage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
       },
-      createdAt: 2,
     });
 
     const messages = await harness.runner.reconcile(SESSION_ID);
@@ -1344,26 +1357,35 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     harness.store.seed({
       id: "m1",
       sessionId: SESSION_ID,
-      role: AgentNSValue.Role.User as string,
-      status: AgentNSValue.MessageStatus.Completed as string,
-      content: "说过的话",
       createdAt: 1,
+      message: {
+        id: "m1",
+        role: AgentNSValue.Role.User,
+        status: AgentNSValue.MessageStatus.Completed,
+        content: "说过的话",
+      },
     });
     harness.store.seed({
       id: "m2",
       sessionId: SESSION_ID,
-      role: AgentNSValue.Role.Assistant as string,
-      status: AgentNSValue.MessageStatus.Pending as string,
-      content: "说到一半",
       createdAt: 2,
+      message: {
+        id: "m2",
+        role: AgentNSValue.Role.Assistant,
+        status: AgentNSValue.MessageStatus.Pending,
+        content: "说到一半",
+      },
     });
     harness.store.seed({
       id: "m3",
       sessionId: SESSION_ID,
-      role: AgentNSValue.Role.Assistant as string,
-      status: AgentNSValue.MessageStatus.Writing as string,
-      content: null,
       createdAt: 3,
+      // 一个字都没输出的那条：正文为空
+      message: {
+        id: "m3",
+        role: AgentNSValue.Role.Assistant,
+        status: AgentNSValue.MessageStatus.Writing,
+      },
     });
 
     // 造这三行时的写不算：下面比的是「修复这一跳又写了哪几行」
@@ -1380,7 +1402,7 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     ]);
     // 只写真变了的那两行（m1 一个字不动）：返回值就是修完之后的消息，所以看仓储的记账
     expect(harness.store.writes.slice(written).map((row) => row.id)).toEqual(["m2", "m3"]);
-    expect(harness.store.peek("m3")?.status).toBe(AgentNSValue.MessageStatus.Aborted);
+    expect(harness.store.peek("m3")?.message.status).toBe(AgentNSValue.MessageStatus.Aborted);
   });
 });
 
@@ -1542,10 +1564,13 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     store.seed({
       id: "m-已经落地",
       sessionId: SESSION_ID,
-      role: AgentNSValue.Role.User as string,
-      status: AgentNSValue.MessageStatus.Completed as string,
-      content: "落地过的一句",
       createdAt: 1,
+      message: {
+        id: "m-已经落地",
+        role: AgentNSValue.Role.User,
+        status: AgentNSValue.MessageStatus.Completed,
+        content: "落地过的一句",
+      },
     });
     const inbox = new RecordingInboxStore();
     await inbox.insert({

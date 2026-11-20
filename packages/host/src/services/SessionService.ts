@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Message } from "@ai-zen/agents-core";
 import { AgentRepository, resolveModel } from "@ai-zen/agents-sdk";
 import type {
   AgentDefinition,
@@ -70,7 +70,6 @@ import type {
   ThinkingState,
 } from "../wire/index.js";
 import { assetIdsOf } from "./AssetService.js";
-import { toAgentMessage } from "./MessageService.js";
 import { toFolderFact } from "./WorkspaceService.js";
 
 /**
@@ -540,18 +539,21 @@ export class SessionService {
         detail: { reason: "workspace_missing", workspaceId: draft.workspaceId },
       });
     }
-    await this.messages.upsert({
-      id: randomUUID(),
-      sessionId: draft.id,
-      role: AgentNS.Role.User as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      omit: false,
+    // 造的就是 core 的那条消息，原样落库：`hidden` / `source` 都在它身上，不另拆列
+    const message = new Message({
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
       content: workspace.cwd,
+      hidden: true,
       // 宿主自己注入的那条消息，**宿主自己填 `source`**（`CORE.md` §3「一律带」/ §14
       // 「宿主注入的由宿主自己填」）：它不是用户说的话，所以不能落成 `{ kind: "user" }`。
       source: { kind: "system", label: "cwd" },
-      data: { hidden: true },
+    });
+    await this.messages.upsert({
+      id: message.id,
+      sessionId: draft.id,
       createdAt: this.now(),
+      message,
     });
   }
 
@@ -674,7 +676,7 @@ export class SessionService {
         detail: { messageId: anchorId, sessionId: row.id },
       });
     }
-    const anchor = toAgentMessage(anchorRow);
+    const anchor = anchorRow.message;
     if (anchor.role !== AgentNS.Role.User) {
       throw new HostError("invalid_params", {
         params: { field: "beforeMessageId" },
@@ -1285,7 +1287,7 @@ export class SessionService {
     const assets = await this.assets.listBySession(sessionId);
     if (assets.some((asset) => asset.mime.startsWith("image/"))) return true;
     const stored = await this.messages.listBySession(sessionId);
-    return stored.some((message) => contentHasImage(toAgentMessage(message).content));
+    return stored.some((message) => contentHasImage(message.message.content));
   }
 
   /** 一批消息引用过的素材 id（删消息之前读一次：关系行随消息级联消失） */

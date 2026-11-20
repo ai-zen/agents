@@ -17,6 +17,7 @@ import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { HostError } from "../wire/errors.js";
 import { MessageService } from "./MessageService.js";
+import type { MessageUpsertInput } from "../storage/types.js";
 
 let dir: string;
 let db: Database;
@@ -71,36 +72,45 @@ beforeEach(async () => {
     createdAt: 20,
   });
 
-  await messages.upsert({
-    id: "u1",
-    sessionId: "c1",
-    role: "user",
-    status: "completed",
-    content: "第一句",
-    createdAt: 100,
-  });
-  await messages.upsert({
-    id: "a1",
-    sessionId: "c1",
-    role: "assistant",
-    status: "completed",
-    content: "第一句的回复",
-    createdAt: 200,
-  });
-  await messages.upsert({
-    id: "u2",
-    sessionId: "c1",
-    role: "user",
-    status: "completed",
-    content: "第二句",
-    createdAt: 300,
-  });
+  await messages.upsert(row({ id: "u1", createdAt: 100, message: { content: "第一句" } }));
+  await messages.upsert(
+    row({
+      id: "a1",
+      createdAt: 200,
+      message: { role: AgentNS.Role.Assistant, content: "第一句的回复" },
+    }),
+  );
+  await messages.upsert(row({ id: "u2", createdAt: 300, message: { content: "第二句" } }));
 });
 
 afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });
+
+/**
+ * 造一条落行入参：消息本身是 core 的那一条，仓储把它原样存进 `payload`。
+ *
+ * 不给的字段就按「用户说的、已完成」算：这一大堆用例关心的都是取法，不是消息内容。
+ */
+function row(input: {
+  id: string;
+  sessionId?: string;
+  createdAt?: number;
+  message?: Partial<AgentNS.Message>;
+}): MessageUpsertInput {
+  return {
+    sessionId: "c1",
+    createdAt: 100,
+    ...input,
+    message: {
+      id: input.id,
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      ...input.message,
+    },
+  };
+}
 
 describe("MessageService.list 的取法（A12）", () => {
   it("不给 after 时返回整段历史，anchor 为空", async () => {
@@ -117,22 +127,28 @@ describe("MessageService.list 的取法（A12）", () => {
   });
 
   it("after 命中流式中那条时读到的是它最新的内容", async () => {
-    await messages.upsert({
-      id: "a2",
-      sessionId: "c1",
-      role: "assistant",
-      status: "writing",
-      content: "还没写完",
-      createdAt: 400,
-    });
-    await messages.upsert({
-      id: "a2",
-      sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "写完了",
-      createdAt: 400,
-    });
+    await messages.upsert(
+      row({
+        id: "a2",
+        createdAt: 400,
+        message: {
+          role: AgentNS.Role.Assistant,
+          status: AgentNS.MessageStatus.Writing,
+          content: "还没写完",
+        },
+      }),
+    );
+    await messages.upsert(
+      row({
+        id: "a2",
+        createdAt: 400,
+        message: {
+          role: AgentNS.Role.Assistant,
+          status: AgentNS.MessageStatus.Completed,
+          content: "写完了",
+        },
+      }),
+    );
 
     const result = await service.list({ sessionId: "c1", after: "a2" });
     expect(result.anchor).toBe("a2");
@@ -148,14 +164,9 @@ describe("MessageService.list 的取法（A12）", () => {
   });
 
   it("after 属于别的会话时也按「没命中」处理", async () => {
-    await messages.upsert({
-      id: "other",
-      sessionId: "c2",
-      role: "user",
-      status: "completed",
-      content: "别处的消息",
-      createdAt: 50,
-    });
+    await messages.upsert(
+      row({ id: "other", sessionId: "c2", createdAt: 50, message: { content: "别处的消息" } }),
+    );
 
     const result = await service.list({ sessionId: "c1", after: "other" });
     expect(result.anchor).toBeNull();
@@ -168,15 +179,17 @@ describe("MessageService.list 的取法（A12）", () => {
 
   it("toolCallId 要subagent 那一栏：库里没有第二份可读，于是给空页（F-I7 / CORE §17）", async () => {
     // 那次委派本身：assistant 发出工具调用，工具结果也挂着同一个工具调用 id
-    await messages.upsert({
-      id: "tool-1",
-      sessionId: "c1",
-      role: "tool",
-      status: "completed",
-      content: "subagent 的结果",
-      data: { tool_call_id: "call-1" },
-      createdAt: 500,
-    });
+    await messages.upsert(
+      row({
+        id: "tool-1",
+        createdAt: 500,
+        message: {
+          role: AgentNS.Role.Tool,
+          content: "subagent 的结果",
+          tool_call_id: "call-1",
+        },
+      }),
+    );
 
     // subagent 的话不入库（`CORE.md` §17）：这段没有 agent 时，那一栏就是空的 ——
     // 库里没有第二份（`parentToolCallId` 那一列已随 v5 删掉）
@@ -185,15 +198,9 @@ describe("MessageService.list 的取法（A12）", () => {
   });
 
   it("hidden 的消息默认不返回，includeHidden 才给（F-D9 的 cwd 消息）", async () => {
-    await messages.upsert({
-      id: "cwd",
-      sessionId: "c1",
-      role: "user",
-      status: "completed",
-      content: "/tmp/one",
-      data: { hidden: true },
-      createdAt: 5,
-    });
+    await messages.upsert(
+      row({ id: "cwd", createdAt: 5, message: { content: "/tmp/one", hidden: true } }),
+    );
 
     const page = await service.list({ sessionId: "c1" });
     expect(page.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
@@ -362,14 +369,17 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
       createdAt: 30,
     });
     for (let i = 1; i <= count; i += 1) {
-      await messages.upsert({
-        id: `m${i}`,
-        sessionId: "c-long",
-        role: i % 2 === 0 ? "assistant" : "user",
-        status: "completed",
-        content: `第 ${i} 条`,
-        createdAt: 1_000 + i,
-      });
+      await messages.upsert(
+        row({
+          id: `m${i}`,
+          sessionId: "c-long",
+          createdAt: 1_000 + i,
+          message: {
+            role: i % 2 === 0 ? AgentNS.Role.Assistant : AgentNS.Role.User,
+            content: `第 ${i} 条`,
+          },
+        }),
+      );
     }
   }
 
@@ -429,15 +439,9 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
   });
 
   it("hidden 的消息要不到就是空页，includeHidden 才定位得到它", async () => {
-    await messages.upsert({
-      id: "cwd",
-      sessionId: "c1",
-      role: "user",
-      status: "completed",
-      content: "/tmp/one",
-      data: { hidden: true },
-      createdAt: 5,
-    });
+    await messages.upsert(
+      row({ id: "cwd", createdAt: 5, message: { content: "/tmp/one", hidden: true } }),
+    );
 
     const hidden = await service.list({ sessionId: "c1", around: "cwd" });
     expect(hidden.anchor).toBeNull();
@@ -469,40 +473,12 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
   });
 });
 
-describe("消息还原成 core 的形状（R21 / R22）", () => {
-  it("内容段、工具调用、思考、用量、状态都按 core 的字段名还原", async () => {
-    await messages.upsert({
-      id: "rich",
-      sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: [
-        { type: "text", text: "看图" },
-        { type: "image_url", image_url: { url: "https://example.test/a.png" } },
-      ],
-      data: {
-        reasoning_content: "想了一下",
-        tool_calls: [
-          { id: "call-1", type: "function", function: { name: "read", arguments: "{}" } },
-        ],
-        finish_reason: "tool_calls",
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-        hidden: true,
-        omit: true,
-        // 认不出的字段不该被搬到消息上
-        未知字段: "x",
-      },
-      createdAt: 600,
-    });
-
-    // 这条带 `hidden`：默认读取不返回它，显式要才给（`hidden` = 这条不给人看）
-    const result = await service.list({ sessionId: "c1", after: "rich", includeHidden: true });
-    const message = result.messages[0];
-    expect(message).toEqual({
+describe("消息就是原样一条：没有「行 → 消息」的转换（R21 / R22 / R30）", () => {
+  it("整条消息原样回来：内容段、工具调用、思考、用量、omit、hidden 一个不差", async () => {
+    const message: AgentNS.Message = {
       id: "rich",
       role: AgentNS.Role.Assistant,
       status: AgentNS.MessageStatus.Completed,
-      omit: false,
       content: [
         { type: "text", text: "看图" },
         { type: "image_url", image_url: { url: "https://example.test/a.png" } },
@@ -512,34 +488,58 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
       finish_reason: AgentNS.FinishReason.ToolCalls,
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       hidden: true,
-    });
-    expect(Object.keys(message ?? {})).not.toContain("createdAt");
+      omit: true,
+    };
+    await messages.upsert({ id: "rich", sessionId: "c1", createdAt: 600, message });
+
+    // 这条带 `hidden`：默认读取不返回它，显式要才给（`hidden` = 这条不给人看）
+    const result = await service.list({ sessionId: "c1", after: "rich", includeHidden: true });
+    // 写进去什么、读出来还是什么：没有补空值、没有收紧取值、没有重建内容段
+    expect(result.messages[0]).toEqual(message);
+    // `createdAt` / `seq` 是 SQL 里的东西，不在消息对象上
+    expect(Object.keys(result.messages[0] ?? {})).not.toContain("createdAt");
   });
 
-  it("委派用量跟 `usage` 走同一条 `data` 通道：落库读回之后还在，求和算得出整棵树的累计", async () => {
-    await messages.upsert({
-      id: "a-usage",
-      sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "我派个人去查",
-      data: { usage: { prompt_tokens: 800, completion_tokens: 200, total_tokens: 1000 } },
-      createdAt: 650,
-    });
+  it("`payload` 一个键都不动：core 不认识的字段也一起往返", async () => {
+    const message = {
+      id: "raw",
+      role: AgentNS.Role.Assistant,
+      status: AgentNS.MessageStatus.Completed,
+      content: "整条存",
+      未来的字段: { 嵌套: [1, 2, 3] },
+    } as unknown as AgentNS.Message;
+    await messages.upsert({ id: "raw", sessionId: "c1", createdAt: 610, message });
+
+    const result = await service.list({ sessionId: "c1", after: "raw" });
+    expect(result.messages[0]).toEqual(message);
+  });
+
+  it("委派用量跟 `usage` 一起在消息上：落库读回之后还在，求和算得出整棵树的累计", async () => {
+    await messages.upsert(
+      row({
+        id: "a-usage",
+        createdAt: 650,
+        message: {
+          role: AgentNS.Role.Assistant,
+          content: "我派个人去查",
+          usage: { prompt_tokens: 800, completion_tokens: 200, total_tokens: 1000 },
+        },
+      }),
+    );
     // 一行 tool 消息：它自身没有 `usage`，带的是「这次委派花了多少」
-    await messages.upsert({
-      id: "tool-1",
-      sessionId: "c1",
-      role: "tool",
-      status: "completed",
-      content: "查完了",
-      data: {
-        tool_call_id: "call-1",
-        // subagent 自己那条 tool 消息上的孙级委派已经含在这里面（嵌套天然成立）
-        subAgentUsage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
-      },
-      createdAt: 700,
-    });
+    await messages.upsert(
+      row({
+        id: "tool-1",
+        createdAt: 700,
+        message: {
+          role: AgentNS.Role.Tool,
+          content: "查完了",
+          tool_call_id: "call-1",
+          // subagent 自己那条 tool 消息上的孙级委派已经含在这里面（嵌套天然成立）
+          subAgentUsage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
+        },
+      }),
+    );
 
     const page = await service.list({ sessionId: "c1" });
     const message = page.messages.find((candidate) => candidate.id === "tool-1");
@@ -568,45 +568,36 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
       },
       { index: 2, type: "file" as const, file_id: "file-1", filename: "a.pdf" },
     ];
-    await messages.upsert({
-      id: "sections",
-      sessionId: "c1",
-      role: "user",
-      status: "completed",
-      content,
-      createdAt: 800,
-    });
+    await messages.upsert(row({ id: "sections", createdAt: 800, message: { content } }));
 
     const result = await service.list({ sessionId: "c1", after: "sections" });
     // 逐段重建会把 `index`、`detail`、`filename` 这类字段丢掉，这里是原样那一份
     expect(result.messages[0]?.content).toEqual(content);
   });
 
-  it("没有正文的消息不带 content 键（core 的 content 是可选的）", async () => {
-    await messages.upsert({
-      id: "no-content",
-      sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      createdAt: 900,
-    });
+  it("没有正文的消息回来后也没有 content 键（core 的 content 是可选的）", async () => {
+    await messages.upsert(
+      row({
+        id: "no-content",
+        createdAt: 900,
+        message: { role: AgentNS.Role.Assistant, content: undefined },
+      }),
+    );
 
     const result = await service.list({ sessionId: "c1", after: "no-content" });
     expect(Object.keys(result.messages[0] ?? {})).not.toContain("content");
   });
 
-  it("认不出的角色与状态归 unknown，不猜", async () => {
-    await messages.upsert({
+  it("角色原样：payload 里写的是什么就读出什么（没有「认不出就 Unknown」那种分支）", async () => {
+    const message = {
       id: "weird",
-      sessionId: "c1",
       role: "外来角色",
       status: "外来状态",
       content: "x",
-      createdAt: 700,
-    });
+    } as unknown as AgentNS.Message;
+    await messages.upsert({ id: "weird", sessionId: "c1", createdAt: 700, message });
 
     const result = await service.list({ sessionId: "c1", after: "weird" });
-    expect(result.messages[0]?.role).toBe(AgentNS.Role.Unknown);
-    expect(result.messages[0]?.status).toBe(AgentNS.MessageStatus.Unknown);
+    expect(result.messages[0]).toEqual(message);
   });
 });

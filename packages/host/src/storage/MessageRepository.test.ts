@@ -1,16 +1,18 @@
 /**
- * `MessageRepository` 的验收：边流边写的 upsert、seq 单调、`after` 三种分支，以及全文检索在
- * 中文下的行为（>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
+ * `MessageRepository` 的验收：边流边写的 upsert、`payload` 原样往返、seq 单调、`after` 三种
+ * 分支，以及全文检索在中文下的行为（>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AgentNS } from "@ai-zen/agents-core";
 import { Database } from "./Database.js";
 import { migrate } from "./migrations.js";
 import { MessageRepository } from "./MessageRepository.js";
 import type { MessageUpsertInput } from "./types.js";
+import type { ProblemFact } from "../wire/states.js";
 
 let dir: string;
 let db: Database;
@@ -66,57 +68,109 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function message(overrides: Partial<MessageUpsertInput> & { id: string }): MessageUpsertInput {
+/**
+ * 造一条写入：`message` 就是 core 的那一条（`id` 与这一行的 `id` 是同一个），
+ * 仓储把它原样存进 `payload`。
+ */
+function message(input: {
+  id: string;
+  sessionId?: string;
+  createdAt?: number;
+  problem?: ProblemFact | null;
+  message?: Partial<AgentNS.Message>;
+}): MessageUpsertInput {
   return {
     sessionId: "c1",
-    role: "user",
-    status: "completed",
-    content: "",
     createdAt: 100,
-    ...overrides,
+    ...input,
+    message: {
+      id: input.id,
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: "",
+      ...input.message,
+    },
   };
 }
 
 describe("MessageRepository.upsert", () => {
-  it("写入后能原样读回正文、附加字段与 omit", async () => {
+  it("写入后能原样读回整条消息（正文、附加字段、omit 都在它身上）", async () => {
     await repo.upsert(
       message({
         id: "m1",
-        content: "你好，世界",
-        omit: true,
-        data: { name: "user", hidden: false },
+        message: { content: "你好，世界", omit: true, name: "user", hidden: false },
       }),
     );
 
     const stored = await repo.get("m1");
-    expect(stored?.content).toBe("你好，世界");
-    expect(stored?.omit).toBe(true);
-    expect(stored?.data).toEqual({ name: "user", hidden: false });
+    expect(stored?.message.content).toBe("你好，世界");
+    expect(stored?.message.omit).toBe(true);
+    expect(stored?.message.name).toBe("user");
+    expect(stored?.message.hidden).toBe(false);
     expect(stored?.seq).toBe(1);
+    expect(stored?.problem).toBeNull();
   });
 
-  it("同一条消息反复写：覆盖正文 / 状态 / omit，但 seq 与 createdAt 不变", async () => {
-    await repo.upsert(message({ id: "m1", status: "pending", content: "部分", createdAt: 100 }));
+  it("`payload` 一个键都不动：不认识的字段照样存、照样读回来", async () => {
+    // core 的 `Message` 上没这一格；能原样回来才说明「写进去什么、读出来还是什么」
+    const payload = {
+      id: "m-raw",
+      role: AgentNS.Role.Assistant,
+      status: AgentNS.MessageStatus.Completed,
+      content: "整条存",
+      subAgentUsage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      将来的字段: { 嵌套: true },
+    } as unknown as AgentNS.Message;
+
+    await repo.upsert({ id: "m-raw", sessionId: "c1", createdAt: 100, message: payload });
+
+    const stored = await repo.get("m-raw");
+    expect(stored?.message).toEqual(payload);
+  });
+
+  it("失败事实（`problem`）是消息之外的一列：给了就存、不给就是 null", async () => {
+    const problem: ProblemFact = {
+      code: "internal",
+      messageKey: "error.internal",
+      params: {},
+      message: "坏了",
+    };
+    await repo.upsert(message({ id: "m1", message: { content: "半截" }, problem }));
+    expect((await repo.get("m1"))?.problem).toEqual(problem);
+
+    await repo.upsert(message({ id: "m1", message: { content: "半截" } }));
+    expect((await repo.get("m1"))?.problem).toBeNull();
+  });
+
+  it("同一条消息反复写：整条覆盖，但 seq 与 createdAt 不变", async () => {
+    await repo.upsert(
+      message({
+        id: "m1",
+        createdAt: 100,
+        message: { status: AgentNS.MessageStatus.Pending, content: "部分" },
+      }),
+    );
     const first = await repo.get("m1");
 
     await repo.upsert(
       message({
         id: "m1",
-        status: "aborted",
-        content: "部分内容（已中止）",
-        omit: true,
         createdAt: 999,
+        message: {
+          status: AgentNS.MessageStatus.Aborted,
+          content: "部分内容（已中止）",
+          omit: true,
+        },
       }),
     );
     const second = await repo.get("m1");
 
-    expect(second?.content).toBe("部分内容（已中止）");
-    expect(second?.status).toBe("aborted");
-    expect(second?.omit).toBe(true);
+    expect(second?.message.content).toBe("部分内容（已中止）");
+    expect(second?.message.status).toBe(AgentNS.MessageStatus.Aborted);
+    expect(second?.message.omit).toBe(true);
     // 流式过程中不能越写越往后跳
     expect(second?.seq).toBe(first?.seq);
     expect(second?.createdAt).toBe(100);
-    expect(second?.updatedAt).toBe(999);
     // 覆盖不是新增
     expect(await repo.countBySession("c1")).toBe(1);
   });
@@ -154,9 +208,11 @@ describe("MessageRepository.upsert", () => {
 describe("一条取法：库里只有主线消息（CORE §17 / v5）", () => {
   it("list 与 count 数的是同一批行（没有第二套取法可对）", async () => {
     await repo.upsert(message({ id: "m1", createdAt: 100 }));
-    await repo.upsert(message({ id: "m2", role: "assistant", createdAt: 200 }));
-    // `hidden` 两边都不算：它在界面上从来没出现过
-    await repo.upsert(message({ id: "cwd", data: { hidden: true }, createdAt: 50 }));
+    await repo.upsert(
+      message({ id: "m2", createdAt: 200, message: { role: AgentNS.Role.Assistant } }),
+    );
+    // `hidden` 两边都不算：它在界面上从来没出现过。这一格由 SQLite 从 `payload` 取
+    await repo.upsert(message({ id: "cwd", createdAt: 50, message: { hidden: true } }));
 
     const listed = await repo.listBySession("c1");
     expect(listed.map((row) => row.id)).toEqual(["m1", "m2"]);
@@ -170,36 +226,32 @@ describe("MessageRepository.search", () => {
       message({
         id: "m1",
         sessionId: "c1",
-        role: "user",
-        content: "今天天气不错，我们去看海吧",
         createdAt: 100,
+        message: { role: AgentNS.Role.User, content: "今天天气不错，我们去看海吧" },
       }),
     );
     await repo.upsert(
       message({
         id: "m2",
         sessionId: "c1",
-        role: "assistant",
-        content: "好的，海边风景很好",
         createdAt: 200,
+        message: { role: AgentNS.Role.Assistant, content: "好的，海边风景很好" },
       }),
     );
     await repo.upsert(
       message({
         id: "m3",
         sessionId: "c2",
-        role: "user",
-        content: "另一段会话讲的是数据库索引",
         createdAt: 300,
+        message: { role: AgentNS.Role.User, content: "另一段会话讲的是数据库索引" },
       }),
     );
     await repo.upsert(
       message({
         id: "m4",
         sessionId: "c3",
-        role: "user",
-        content: "第三个项目里提到了天气与海",
         createdAt: 400,
+        message: { role: AgentNS.Role.User, content: "第三个项目里提到了天气与海" },
       }),
     );
   };
@@ -216,6 +268,24 @@ describe("MessageRepository.search", () => {
     // trigram 下 2 个字符必然搜不到，这条用例盯的就是仓储里的退化分支
     const hits = await repo.search(undefined, "天气", 10);
     expect(hits.map((hit) => hit.id).sort()).toEqual(["m1", "m4"]);
+  });
+
+  it("命中项把整条 `payload` 带回来：角色从消息上取，不由 SQL 拆", async () => {
+    await seed();
+    const hits = await repo.search({ sessionId: "c1" }, "海边风景", 10);
+    expect(hits.map((hit) => hit.id)).toEqual(["m2"]);
+    const message = JSON.parse(hits[0]!.payload) as AgentNS.Message;
+    expect(message.role).toBe(AgentNS.Role.Assistant);
+    expect(message.content).toBe("好的，海边风景很好");
+    expect(Object.keys(hits[0]!).sort()).toEqual([
+      "createdAt",
+      "id",
+      "payload",
+      "sessionId",
+      "sessionName",
+      "snippet",
+      "workspaceId",
+    ]);
   });
 
   it("3 字查询也能叠加范围过滤（FTS 分支带 join）", async () => {
@@ -240,7 +310,12 @@ describe("MessageRepository.search", () => {
   it("改过内容之后，旧词搜不到、新词搜得到（FTS 触发器跟着更新）", async () => {
     await seed();
     await repo.upsert(
-      message({ id: "m1", sessionId: "c1", content: "今天下雨，不去看海了", createdAt: 100 }),
+      message({
+        id: "m1",
+        sessionId: "c1",
+        createdAt: 100,
+        message: { content: "今天下雨，不去看海了" },
+      }),
     );
 
     expect(await repo.search(undefined, "天气不", 10)).toEqual([]);
@@ -253,8 +328,8 @@ describe("MessageRepository.search", () => {
       message({
         id: "m9",
         sessionId: "c1",
-        content: '他说 "完成度 100%" 就行了 AND OR NOT',
         createdAt: 500,
+        message: { content: '他说 "完成度 100%" 就行了 AND OR NOT' },
       }),
     );
 
@@ -266,10 +341,10 @@ describe("MessageRepository.search", () => {
 
 describe("MessageRepository.deleteAfter（撤回，PRD D24）", () => {
   const seed = async (): Promise<void> => {
-    await repo.upsert(message({ id: "m1", role: "user", createdAt: 100 }));
-    await repo.upsert(message({ id: "m2", role: "assistant", createdAt: 200 }));
-    await repo.upsert(message({ id: "m3", role: "user", createdAt: 300 }));
-    await repo.upsert(message({ id: "m4", role: "assistant", createdAt: 400 }));
+    await repo.upsert(message({ id: "m1", createdAt: 100 }));
+    await repo.upsert(message({ id: "m2", createdAt: 200 }));
+    await repo.upsert(message({ id: "m3", createdAt: 300 }));
+    await repo.upsert(message({ id: "m4", createdAt: 400 }));
   };
 
   it("默认删掉锚点之后的消息", async () => {

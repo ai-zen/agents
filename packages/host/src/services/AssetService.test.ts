@@ -102,8 +102,8 @@ beforeEach(async () => {
      VALUES ('c1', 'w1', '会话', 0, 'agent-1', 'm-1', 2, 2)`,
   );
   await db.run(
-    `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-     VALUES ('msg-1', 'c1', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
+    `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+     VALUES ('msg-1', 'c1', 1, 3, '{"id":"msg-1","role":"user","status":"completed","content":"hi"}', 'hi')`,
   );
 
   modelContext = { model: model(true), endpoint: endpoint(false) };
@@ -492,8 +492,8 @@ describe("按引用清理", () => {
        VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-       VALUES ('msg-2', 'c2', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
+      `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+       VALUES ('msg-2', 'c2', 1, 3, '{"id":"msg-2","role":"user","status":"completed","content":"hi"}', 'hi')`,
     );
     const ref = await uploadAsset(imageBytes(8));
     await linkToMessage(ref.assetId, { messageId: "msg-1" });
@@ -563,8 +563,8 @@ describe("全局去重", () => {
        VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-       VALUES ('msg-2', 'c2', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
+      `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+       VALUES ('msg-2', 'c2', 1, 3, '{"id":"msg-2","role":"user","status":"completed","content":"hi"}', 'hi')`,
     );
     const bytes = imageBytes(32);
     const first = await uploadAsset(bytes);

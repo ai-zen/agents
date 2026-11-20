@@ -826,12 +826,9 @@ export class HandoffDocumentService {
     await this.messages.upsert({
       id: message.id,
       sessionId: newSessionId,
-      role: AgentNS.Role.System as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      omit: false,
-      content,
-      data: { hidden: true },
       createdAt,
+      // 整条消息原样落库（含 `hidden`）：不拆字段，读回来就是这一个对象
+      message,
     });
 
     this.emit?.("session.changed", {

@@ -251,7 +251,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **`tx` 是声明式批次，不是「在事务里跑一段 JS」**：回调里的 `all` / `get` / `run` 只**登记**语句（拿到带下标的凭据），回调返回后整批一次性送进 worker：`BEGIN IMMEDIATE` → 按登记顺序逐条执行 → `COMMIT`，任一条失败整批 `ROLLBACK`，结果按凭据对回调用方。边界是**读到的值回不到 JS 里去决定下一条写什么**（要那样得让 worker 等主线程）；需要按读到的值分支的场合，把条件写进 SQL（PRD R19 / R31）。
 
-**表骨架**（`storage/migrations.ts`，眼下**只有一条 `v1`**）：**表名、列名、索引名一律按 `session` 写**（`sessions` / `session_assets` / `sessionId` / `idx_sessions_*`）；**没有兼容改名的版本，也没有 v2–v6 的分版历史** —— 库里没有旧版本，结构改一次就改在那一条建表语句上。十张表：`workspaces`（`cwd` 不可变且 `UNIQUE`，**没有** `updatedAt`）、`sessions`（`agentId` / `modelId` NOT NULL、`nameIsAuto`、`thinkingLevel` 可空、`compactedAt` / `compactionMode` 可空、`pendingHandoff` 可空，四列见下）、`messages`（`seq`、`status`、`omit`、`content`、`searchText`；**没有** `parentToolCallId`：subagent 的话不入库，`CORE.md` §17）、`inbox`（见下）、`assets`（`sha256` 全局 UNIQUE + 宽高，**不记归属**）、`session_assets`（关系行，`assetId` 为 `ON DELETE RESTRICT`）、`asset_vendor_files`（厂商 `file_id` 缓存）、`notices`（`code` + `params` + `durationMs` + `origin`）、`credentials`、`meta` + FTS5 虚表 `messages_fts`（`tokenize='trigram'`，三触发器同步）；8 条索引。**没有 `questions` 表**：题不落库（`PRD.md` 4.10）。
+**表骨架**（`storage/migrations.ts`，眼下**只有一条 `v1`**）：**表名、列名、索引名一律按 `session` 写**（`sessions` / `session_assets` / `sessionId` / `idx_sessions_*`）；**没有兼容改名的版本，也没有 v2–v6 的分版历史** —— 库里没有旧版本，结构改一次就改在那一条建表语句上。十张表：`workspaces`（`cwd` 不可变且 `UNIQUE`，**没有** `updatedAt`）、`sessions`（`agentId` / `modelId` NOT NULL、`nameIsAuto`、`thinkingLevel` 可空、`compactedAt` / `compactionMode` 可空、`pendingHandoff` 可空，四列见下）、`messages`（**七列 + 一个生成列**：`id` / `sessionId` / `seq` / `createdAt` / `payload` / `problem` / `searchText`，加 `hidden GENERATED ALWAYS AS (json_extract(payload, '$.hidden') = 1) VIRTUAL`；`payload` 就是 core 的 `AgentNS.Message` 原样一份 JSON，见下；**没有** `parentToolCallId`：subagent 的话不入库，`CORE.md` §17）、`inbox`（见下）、`assets`（`sha256` 全局 UNIQUE + 宽高，**不记归属**）、`session_assets`（关系行，`assetId` 为 `ON DELETE RESTRICT`）、`asset_vendor_files`（厂商 `file_id` 缓存）、`notices`（`code` + `params` + `durationMs` + `origin`）、`credentials`、`meta` + FTS5 虚表 `messages_fts`（`tokenize='trigram'`，三触发器同步）；8 条索引。**没有 `questions` 表**：题不落库（`PRD.md` 4.10）。
 
 **`inbox` 表**：`messageId`（主键，也是恢复时的去重键）/ `sessionId`（外键级联）/ `source` / `content` / `createdAt`（都按原样存）/ `seq`（`createdAt` 只到毫秒会撞，入队顺序单独记）；索引 `(sessionId, seq)`。
 
@@ -282,7 +282,11 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **全文检索**：`messages_fts` 是挂在 `messages` 上的外部内容表，只索引 `searchText`。两条实测约束：`unicode61` 下整段中文是一个 token（用错就搜不到）；`trigram` 的查询词至少 3 个字符，少于 3 个时 `MessageRepository.search` 走 `LIKE` 子串。
 
-**边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert，所以 `status` / `omit` 必须落盘。**崩溃恢复不归宿主**：装载时它只负责把库里的行读出来交给 agent，修不修、怎么修由 core 在进圈开头自己收拾（见 `CORE.md` §6）。**排队落地的用户消息是唯一例外**：落地那一刻就写第一笔（§5.4）。
+**消息只原样存一份，不拆列（2026-11-21）**：`messages.payload` 就是 core 的 `AgentNS.Message` 的本体 —— 写进去 `JSON.stringify`、读出来 `JSON.parse`，中间没有任何逐字段映射（没有 `role` / `status` / `omit` / `content` / `data` / `source` 那些列，`data` 里也没有「再摊开十个键」那回事）。**唯一不在消息对象里的两格单独存**：`problem`（回显用的失败事实，`ProblemFact`，活得比进程长）与 `searchText`（FTS 的索引产物，从正文文本段派生）。`hidden` 用 SQLite 生成列从 `payload` 里取，JS 不维护。
+
+**为什么曾经不是这样**：早先把一条消息拆成十二列 + `data` JSON，读回来时再逐个字段收窄，还养了三张枚举表给「认不出就 `Unknown`」的三条死分支站岗 —— 那三支只可能被「手改库」或「旧版本写的值」走到，两种处境这个项目都没有。拆开的代价是「一条消息两种形状」，以后 core 加一个字段就得回来改两处。
+
+**边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert（整条 `payload` 覆盖，`seq` / `createdAt` 保留第一次写的值）。**崩溃恢复不归宿主**：装载时它只负责把库里的行读出来交给 agent，修不修、怎么修由 core 在进圈开头自己收拾（见 `CORE.md` §6）。**排队落地的用户消息是唯一例外**：落地那一刻就写第一笔（§5.4）。
 
 **迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑；不识别任何旧数据（PRD L1）。眼下只有一条 `v1`：库里没有旧版本，结构裁定（R14 / R18 这类）直接就写在那一条建表语句里。以后每改一次结构就**新增一条**（`ADD COLUMN` / 新建表），旧条目一个字不改 —— 这套表结构还没随版本发出去。
 

@@ -218,14 +218,14 @@ async function uploadAsset(app: HostApp, sessionId: string): Promise<string> {
 /**
  * 直接读库里那一行（`message.list` 在会话活着时读的是内存，验「落库」要绕过它）。
  *
- * `content` 列存的是 JSON：解回来就是 core 的 `AgentNS.MessageContent`。
+ * `payload` 存的是整条消息的 JSON：解回来就是 core 的 `AgentNS.Message`，正文在 `.content` 上。
  */
 async function persistedContentOf(app: HostApp, messageId: string): Promise<unknown> {
-  const row = await app.db.get<{ content: string }>("SELECT content FROM messages WHERE id = ?", [
+  const row = await app.db.get<{ payload: string }>("SELECT payload FROM messages WHERE id = ?", [
     messageId,
   ]);
   if (row === undefined) throw new Error(`库里没有 ${messageId}`);
-  return JSON.parse(row.content) as unknown;
+  return (JSON.parse(row.payload) as { content?: unknown }).content;
 }
 
 /**

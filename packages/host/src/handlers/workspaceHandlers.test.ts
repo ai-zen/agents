@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createHost } from "../app.js";
+import { AgentNS } from "@ai-zen/agents-core";
 import type { HostApp } from "../app.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, type TempDir } from "../net/TestSupport.js";
@@ -236,10 +237,17 @@ async function seedAsset(app: HostApp, sessionId: string): Promise<string> {
   await app.messages.upsert({
     id: messageId,
     sessionId,
-    role: "user",
-    status: "completed",
-    content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId }),
     createdAt: Date.now(),
+    message: {
+      id: messageId,
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: localSections({
+        type: "image_url",
+        image_url: { url: "" },
+        __asset_id: ref.assetId,
+      }),
+    },
   });
   await app.assets.linkAsset({
     sessionId,

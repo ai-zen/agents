@@ -8,6 +8,8 @@
  *      {@link SessionSummarizer} 注入，服务之间不各自拼一份。
  */
 
+import type { AgentNS } from "@ai-zen/agents-core";
+
 import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { Session, MessageSearchHit, MessageSearchScope } from "../storage/types.js";
@@ -20,7 +22,6 @@ import type {
   SearchMessagesParams,
   SearchMessagesResult,
 } from "../wire/index.js";
-import { toCoreRole } from "./MessageService.js";
 
 /**
  * 把一批会话行拼成侧栏摘要；入参顺序即出参顺序。
@@ -144,12 +145,19 @@ export class SearchService {
     return undefined;
   }
 
+  /**
+   * 命中项的 `role` 从 `payload` 里那一份消息上取。
+   *
+   * 仓储只把 `payload` 整列带回来，不在 SQL 里对消息字段做 `json_extract` —— 消息是整条存的，
+   * 需要哪个字段就解析那一份去拿。
+   */
   private toMessageHit(hit: MessageSearchHit): MessageHit {
+    const message = JSON.parse(hit.payload) as AgentNS.Message;
     return {
       sessionId: hit.sessionId,
       sessionName: hit.sessionName,
       messageId: hit.id,
-      role: toCoreRole(hit.role),
+      role: message.role,
       snippet: hit.snippet,
       createdAt: iso(hit.createdAt),
     };

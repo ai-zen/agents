@@ -34,6 +34,7 @@ import {
 import { BRIDGED_METHODS } from "./handlers/index.js";
 import { createFakeScope, FakeAgent } from "./runtime/TestSupport.js";
 import { Scope } from "@ai-zen/agents-sdk";
+import { AgentNS } from "@ai-zen/agents-core";
 import { transientScopeKey } from "./runtime/TransientRunner.js";
 import { Database } from "./storage/index.js";
 import { METHOD_NAMES } from "./wire/index.js";
@@ -180,10 +181,13 @@ async function seedAssetMessage(
   await app.messages.upsert({
     id: messageId,
     sessionId,
-    role: "user",
-    status: "completed",
-    content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: assetId }),
     createdAt: Date.now(),
+    message: {
+      id: messageId,
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: assetId }),
+    },
   });
   await app.assets.linkAsset({ sessionId, messageId, assetId, createdAt: Date.now() });
   return messageId;
@@ -756,7 +760,7 @@ describe("草稿会话上的上传（R56 / F-H8）", () => {
     // 库里只有一条隐藏消息，正文就是这段会话的 cwd（不是一句渲染过的话）
     const hidden = await hiddenMessagesOf(app, sessionId);
     expect(hidden).toHaveLength(1);
-    expect(hidden[0]?.content).toBe(JSON.stringify(fixture.workspaceDir.path));
+    expect(hidden[0]?.content).toBe(fixture.workspaceDir.path);
 
     // 再落一次同一个草稿（例如第二张图、或者紧接着那次 send）：行与 cwd 消息都不该多出来
     await app.sessionService.ensurePersisted(sessionId);
@@ -787,16 +791,17 @@ describe("草稿会话上的上传（R56 / F-H8）", () => {
   });
 });
 
-/** 一段会话名下那条隐藏的 cwd 消息（`data.hidden` 为真的那些） */
-async function hiddenMessagesOf(
-  app: HostApp,
-  sessionId: string,
-): Promise<Array<{ content: string; data: string | null }>> {
-  const rows = await app.db.all<{ content: string; data: string | null }>(
-    "SELECT content, data FROM messages WHERE sessionId = ? ORDER BY seq",
+/**
+ * 一段会话名下那几条隐藏的消息（`hidden` 生成列为 1 的），消息原样返回。
+ *
+ * 读的是 `payload` 解析出来的那一条：正文就是 `message.content` 本人（不再是一列 JSON 文本）。
+ */
+async function hiddenMessagesOf(app: HostApp, sessionId: string): Promise<AgentNS.Message[]> {
+  const rows = await app.db.all<{ payload: string }>(
+    "SELECT payload FROM messages WHERE sessionId = ? AND hidden IS 1 ORDER BY seq",
     [sessionId],
   );
-  return rows.filter((row) => row.data !== null && row.data.includes('"hidden":true'));
+  return rows.map((row) => JSON.parse(row.payload) as AgentNS.Message);
 }
 
 /**

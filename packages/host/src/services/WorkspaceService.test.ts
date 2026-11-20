@@ -200,26 +200,35 @@ describe("WorkspaceService.remove", () => {
     await messages.upsert({
       id: "m1",
       sessionId: "c1",
-      role: "user",
-      status: "completed",
-      content: "一句话",
       createdAt: 2_100,
+      message: {
+        id: "m1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "一句话",
+      },
     });
     await messages.upsert({
       id: "m2",
       sessionId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "一句回复",
       createdAt: 2_200,
+      message: {
+        id: "m2",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "一句回复",
+      },
     });
     await messages.upsert({
       id: "m3",
       sessionId: "c2",
-      role: "user",
-      status: "completed",
-      content: "另一段的一句话",
       createdAt: 3_100,
+      message: {
+        id: "m3",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "另一段的一句话",
+      },
     });
     await assets.create({
       id: "as1",

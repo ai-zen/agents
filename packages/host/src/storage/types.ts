@@ -6,21 +6,15 @@
  *   读写两侧不用再维护一张映射表）。
  * - 所有时间戳都是 `Date.now()` 的毫秒数，列类型 INTEGER（见各表注释）。
  * - 带 `Row` 后缀的是**数据库原样行**（JSON 列还是字符串），不带后缀的是仓储解好的对象。
- * - 消息正文直接用 core 的 `AgentNS.MessageContent`（R21 / R30）：列里存的就是它的 JSON，
- *   仓储反序列化后就是同一个形状，服务层与运行时不必在两种形状之间翻译。
- * - `role` / `status` 仍以字符串存取（取值与 `AgentNS.Role` / `AgentNS.MessageStatus` 一致），
- *   收敛成 core 的枚举发生在服务层。
- * - `source` 是 core 的 `AgentNS.MessageSource`（**判别结构**，不是字符串）：库里存它的 JSON，
- *   读回来反序列化成同一个形状（读侧规则见 `MessageRepository.toSource`）。
+ * - 消息就是 core 的 `AgentNS.Message` **原样一条**（R21 / R22 / R30）：`payload` 列存它的
+ *   JSON，仓储只做 `JSON.stringify` / `JSON.parse`，不拆字段、不补字段，于是服务层与运行时
+ *   拿到的就是同一个形状，没有「行 → 消息」的转换可写。
  * - `SessionRow` 的逐列口径与「谁读谁写」见 PLAN §7，本文件只记形状。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { HandoffMode } from "../wire/methods.js";
-import type { CompactionMode } from "../wire/states.js";
-
-/** 消息状态，取值与 core 的 `AgentNS.MessageStatus` 对齐 */
-export type MessageStatus = "pending" | "writing" | "completed" | "error" | "aborted" | "unknown";
+import type { CompactionMode, ProblemFact } from "../wire/states.js";
 
 /* ------------------------------- workspaces ------------------------------- */
 
@@ -170,54 +164,44 @@ export interface MessageRow {
   sessionId: string;
   /** 同一会话内单调递增的序号，用于稳定排序与 `after` 游标 */
   seq: number;
-  role: string;
-  status: string;
-  /** 0 / 1：是否已被移出上下文（边流边写，所以这一格必须落盘） */
-  omit: number;
-  /** JSON：消息正文（core 内容形状的 JSON 文本） */
-  content: string;
-  /** JSON：其余字段（tool_calls / reasoning_content / usage / name / finish_reason …） */
-  data: string | null;
-  /** 供全文检索的纯文本（从 content 抽出来的正文，不含 JSON 键名） */
-  searchText: string;
-  /** JSON：这条 user 消息从哪儿来（core 的 `AgentNS.MessageSource`）；NULL = 不知道（非 user 消息，或写入时没给来源） */
-  source: string | null;
   createdAt: number;
-  updatedAt: number;
+  /** core 的 `AgentNS.Message` 原样一份 JSON（含 `hidden`），不拆不改不补 */
+  payload: string;
+  /** 回显用的失败事实（`ProblemFact`）的 JSON；NULL = 这条没有失败事实 */
+  problem: string | null;
+  /** 供全文检索的纯文本（从正文抽出来的那一段，不含 JSON 键名） */
+  searchText: string;
 }
 
+/**
+ * 一条读过库的消息：先是 core 的消息对象，不是拆开的列。
+ *
+ * 消费者一律拿 `.message`（正文、角色、状态、用量、`hidden` 全在它身上）。`problem` 是宿主
+ * 附加在消息之外的那一条失败事实，所以它在消息对象外面。
+ */
 export interface StoredMessage {
   id: string;
   sessionId: string;
   seq: number;
-  role: string;
-  status: string;
-  omit: boolean;
-  /** 已反序列化的正文：core 的内容形状；`null` 表示这条消息没有正文 */
-  content: AgentNS.MessageContent | null;
-  /** 这条消息的来源（core 的判别结构）；`null` = 不知道（非 user 消息，或写入时没给来源） */
-  source: AgentNS.MessageSource | null;
-  data: Record<string, unknown> | null;
   createdAt: number;
-  updatedAt: number;
+  /** 消息本身：`payload` 列 `JSON.parse` 出来的那一条，一个字都没动 */
+  message: AgentNS.Message;
+  /** 回显用的失败事实；`null` = 这条没有 */
+  problem: ProblemFact | null;
 }
 
 /**
- * 边流边写的入参：同一条消息按 id 反复 upsert，每次覆盖正文 / 状态 / omit，
+ * 边流边写的入参：同一条消息按 id 反复 upsert，每次整条覆盖，
  * 但 `seq` 与 `createdAt` 保持第一次写入时的值。
  */
 export interface MessageUpsertInput {
   id: string;
   sessionId: string;
-  role: string;
-  status: string;
-  /** core 的内容形状；不给表示这条消息没有正文 */
-  content?: AgentNS.MessageContent | null;
-  /** core 的来源形状（判别结构）；不给表示这条消息没有来源可记 */
-  source?: AgentNS.MessageSource | null;
-  data?: Record<string, unknown> | null;
-  omit?: boolean;
   createdAt: number;
+  /** 消息本身：原样落进 `payload`（`JSON.stringify`，不拆字段） */
+  message: AgentNS.Message;
+  /** 回显用的失败事实；不给 = 这条没有失败事实（列上留 NULL） */
+  problem?: ProblemFact | null;
 }
 
 /**
@@ -229,13 +213,19 @@ export interface MessageUpsertInput {
  */
 export type MessageSearchScope = { sessionId: string } | { workspaceId: string } | undefined;
 
-/** 全文搜索命中项：带上会话名与命中附近的片段，前端不用再查一遍 */
+/**
+ * 全文搜索命中项：带上会话名与命中附近的片段，前端不用再查一遍。
+ *
+ * `role` 不在 SQL 里取（不在 `payload` 上做 `json_extract`）：查询把 `payload` 整列带回来，
+ * 角色由调用方解析后从消息对象上取。
+ */
 export interface MessageSearchHit {
   id: string;
   sessionId: string;
   sessionName: string;
   workspaceId: string;
-  role: string;
+  /** 命中那条消息原样一份 JSON：角色从这里还原 */
+  payload: string;
   /** 命中位置前后截取的正文片段 */
   snippet: string;
   createdAt: number;

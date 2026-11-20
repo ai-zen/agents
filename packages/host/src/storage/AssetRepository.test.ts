@@ -49,12 +49,12 @@ beforeEach(async () => {
     );
   }
   await db.run(
-    `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-     VALUES ('m1', 'c1', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
+    `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+     VALUES ('m1', 'c1', 1, 3, '{"id":"m1","role":"user","status":"completed","content":"hi"}', 'hi')`,
   );
   await db.run(
-    `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-     VALUES ('m2', 'c2', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
+    `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+     VALUES ('m2', 'c2', 1, 3, '{"id":"m2","role":"user","status":"completed","content":"hi"}', 'hi')`,
   );
 });
 
@@ -111,8 +111,8 @@ describe("AssetRepository", () => {
   it("同一段会话里两条消息引用同一份素材：素材只出现一次", async () => {
     await seedAsset();
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
-       VALUES ('m3', 'c1', 2, 'user', 'completed', 0, '"again"', 'again', 4, 4)`,
+      `INSERT INTO messages (id, sessionId, seq, createdAt, payload, searchText)
+       VALUES ('m3', 'c1', 2, 4, '{"id":"m3","role":"user","status":"completed","content":"again"}', 'again')`,
     );
     await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
     await repo.linkAsset({ sessionId: "c1", messageId: "m3", assetId: "a1", createdAt: 21 });

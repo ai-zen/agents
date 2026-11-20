@@ -190,7 +190,7 @@ function makeHarness(rounds: FakeRound[]): Harness {
     },
     rows: async (sessionId) => {
       const stored = await store.listBySession(sessionId);
-      return stored.map((row) => ({ role: row.role, content: row.content }));
+      return stored.map((row) => ({ role: row.message.role, content: row.message.content }));
     },
     warmUp: async () => {
       rows.set("c-child-1", session("c-child-1"));

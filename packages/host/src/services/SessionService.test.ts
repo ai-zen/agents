@@ -510,10 +510,13 @@ describe("SessionService.get / rename / pin", () => {
     await harness.messages.upsert({
       id: "msg-1",
       sessionId: created.session.id,
-      role: "user",
-      status: "completed",
-      content: "你好",
       createdAt: 12_345,
+      message: {
+        id: "msg-1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "你好",
+      },
     });
 
     const { session } = await harness.service.get({ sessionId: created.session.id });
@@ -565,10 +568,13 @@ describe("SessionService.delete（D17）", () => {
     await harness.messages.upsert({
       id: "msg-1",
       sessionId: id,
-      role: "user",
-      status: "completed",
-      content: "一句话",
       createdAt: 2,
+      message: {
+        id: "msg-1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "一句话",
+      },
     });
     await harness.assets.create({
       id: "as1",
@@ -672,7 +678,7 @@ describe("R56：create 不落库，首次发消息才写行", () => {
       includeHidden: true,
     });
     expect(messages).toHaveLength(1);
-    expect(messages[0]?.data).toMatchObject({ hidden: true });
+    expect(messages[0]?.message.hidden).toBe(true);
   });
 
   it("草稿也能改名与置顶（只动内存），落库时带过去", async () => {
@@ -716,19 +722,25 @@ describe("多端在线同步（L5 / D22：session.changed）", () => {
     await harness.messages.upsert({
       id: "u1",
       sessionId: id,
-      role: "user",
-      status: "completed",
-      content: "第一句",
       createdAt: 10,
+      message: {
+        id: "u1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "第一句",
+      },
     });
     // 那一句引出的回答：撤回是「从锚点开始（含它）全删」，所以它也得在库里，两条各推一条 `message.removed`
     await harness.messages.upsert({
       id: "a1",
       sessionId: id,
-      role: "assistant",
-      status: "completed",
-      content: "第一句的回答",
       createdAt: 11,
+      message: {
+        id: "a1",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "第一句的回答",
+      },
     });
     harness.events.length = 0;
 
@@ -778,18 +790,21 @@ describe("SessionService.revert（D24）", () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
     for (const [messageId, role, content, createdAt] of [
-      ["u1", "user", "第一句", 1_000],
-      ["a1", "assistant", "第一句的回复", 1_100],
-      ["u2", "user", "第二句", 1_200],
-      ["a2", "assistant", "第二句的回复", 1_300],
+      ["u1", AgentNS.Role.User, "第一句", 1_000],
+      ["a1", AgentNS.Role.Assistant, "第一句的回复", 1_100],
+      ["u2", AgentNS.Role.User, "第二句", 1_200],
+      ["a2", AgentNS.Role.Assistant, "第二句的回复", 1_300],
     ] as const) {
       await harness.messages.upsert({
         id: messageId,
         sessionId: id,
-        role,
-        status: "completed",
-        content,
         createdAt,
+        message: {
+          id: messageId,
+          role,
+          status: AgentNS.MessageStatus.Completed,
+          content,
+        },
       });
     }
     await harness.assets.create({
@@ -820,7 +835,7 @@ describe("SessionService.revert（D24）", () => {
       includeHidden: true,
     });
     expect(leftAll).toHaveLength(3);
-    expect(leftAll[0]?.data).toMatchObject({ hidden: true });
+    expect(leftAll[0]?.message.hidden).toBe(true);
   });
 
   it("撤回点不是用户消息时报参数错", async () => {
@@ -829,10 +844,13 @@ describe("SessionService.revert（D24）", () => {
     await harness.messages.upsert({
       id: "a1",
       sessionId: id,
-      role: "assistant",
-      status: "completed",
-      content: "回复",
       createdAt: 1,
+      message: {
+        id: "a1",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "回复",
+      },
     });
 
     await expect(
@@ -854,14 +872,17 @@ describe("SessionService.revert（D24）", () => {
     await harness.messages.upsert({
       id: "u1",
       sessionId: id,
-      role: "user",
-      status: "completed",
-      content: [
-        { type: "text", text: "看这两张" },
-        { type: "image_url", image_url: { url: "https://example.test/a.png" } },
-        { type: "file", file_id: "file-1", filename: "a.pdf" },
-      ],
       createdAt: 10,
+      message: {
+        id: "u1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: [
+          { type: "text", text: "看这两张" },
+          { type: "image_url", image_url: { url: "https://example.test/a.png" } },
+          { type: "file", file_id: "file-1", filename: "a.pdf" },
+        ],
+      },
     });
     await harness.assets.create({
       id: "as1",
@@ -970,10 +991,13 @@ describe("SessionService.setModel（F-B4 / D20：会话级、落库）", () => {
     await harness.messages.upsert({
       id: "u1",
       sessionId: id,
-      role: "user",
-      status: "completed",
-      content: "看这张",
       createdAt: 2,
+      message: {
+        id: "u1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "看这张",
+      },
     });
     await harness.assets.create({
       id: "as1",
@@ -1317,10 +1341,13 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     await harness.messages.upsert({
       id: "u1",
       sessionId: id,
-      role: "user",
-      status: "completed",
-      content: "看看这个项目",
       createdAt: clock,
+      message: {
+        id: "u1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "看看这个项目",
+      },
     });
 
     const visible = await harness.messages.listBySession(id);
@@ -1329,12 +1356,12 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     const all = await harness.messages.listBySession(id, undefined, { includeHidden: true });
     expect(all.map((message) => message.id)).toHaveLength(2);
     const cwdMessage = all[0]!;
-    expect(cwdMessage.role).toBe(AgentNS.Role.User);
-    expect(cwdMessage.data).toMatchObject({ hidden: true });
+    expect(cwdMessage.message.role).toBe(AgentNS.Role.User);
+    expect(cwdMessage.message.hidden).toBe(true);
     // 宿主注入的不是用户说的话（CORE §3；自动命名的判据看的就是它）
-    expect(cwdMessage.source).toEqual({ kind: "system", label: "cwd" });
+    expect(cwdMessage.message.source).toEqual({ kind: "system", label: "cwd" });
     // **正文就是那个路径**：不是一句渲染过的话（这条消息隐藏、用户看不见，模型要的就是路径）
-    expect(cwdMessage.content).toBe(harness.projectDir);
+    expect(cwdMessage.message.content).toBe(harness.projectDir);
     expect(cwdMessage.seq).toBeLessThan(all[1]!.seq);
     expect(all[1]?.id).toBe("u1");
   });
@@ -1345,10 +1372,13 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     await harness.messages.upsert({
       id: "u1",
       sessionId: id,
-      role: "user",
-      status: "completed",
-      content: "一句话",
       createdAt: 2,
+      message: {
+        id: "u1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "一句话",
+      },
     });
 
     const { session } = await harness.service.get({ sessionId: id });
@@ -1369,7 +1399,7 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     const id = created.session.id;
     const readCwd = async (): Promise<string> => {
       const rows = await harness.messages.listBySession(id, undefined, { includeHidden: true });
-      const content = rows[0]?.content;
+      const content = rows[0]?.message.content;
       return typeof content === "string" ? content : JSON.stringify(content);
     };
     const before = await readCwd();

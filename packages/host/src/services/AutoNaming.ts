@@ -37,7 +37,6 @@ import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
 import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import { defaultSessionName } from "./SessionService.js";
-import { toAgentMessage } from "./MessageService.js";
 import type { NoticeService } from "./NoticeService.js";
 
 /** 起名时喂给模型的正文上限（够看出在聊什么，又不至于把整段历史发一遍） */
@@ -170,7 +169,7 @@ export class AutoNaming {
 
     // 正文只取这一段的两端（第一条用户消息 + 最后一条助手回复）：不数条数，也就不必筛条数
     const rows = await this.messages.listBySession(session.id);
-    const user = buildPrompt(rows.map((row) => toAgentMessage(row)));
+    const user = buildPrompt(rows.map((row) => row.message));
     if (user.length === 0) return;
 
     const title = await this.complete({ system: TITLE_INSTRUCTION, user, modelId: namingModel.id });
