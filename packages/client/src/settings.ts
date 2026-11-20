@@ -5,9 +5,8 @@
  *
  * CLI 与桌面端都要记住同一件事：用户选的是「本机」还是「某台远程」，选远程时地址、凭证是什么，
  * 以及上一回用的是哪种语言。这套东西每一行都是踩出来的：`0600`（文件里有凭证）、
- * `.tmp` → `rename`（进程被杀不留半个 JSON）、读不炸（坏文件不该让应用起不来）、`local` 模式必须
- * 吐 `undefined` 而不是空串。抄两份的下场是**其中一份先修**：一端手上是 `0600`、另一端是
- * `0644`，而症状要等到某天 `cat` 之后才知道。
+ * `.tmp` → `rename`（进程被杀不留半个 JSON）、读不炸（坏文件不该让应用起不来）。抄两份的下场是
+ * **其中一份先修**：一端手上是 `0600`、另一端是 `0644`，而症状要等到某天 `cat` 之后才知道。
  *
  * ## 两个前端不共用一份文件
  *
@@ -21,7 +20,7 @@
  * 把三种情形压成两格（没配过 / 配过本地 / 配过远程），于是「首次启动该进连接屏」这条判据做不
  * 出来 —— 首启会被当成「用户选过本地」，直接拉起一个宿主。
  *
- * 坏 JSON / 字段不合法同样返回 `null`（与「文件不在」同一类事实：这份配置不可用），**绝不抛错**。
+ * 坏 JSON / 字段不合法同样返回 `null`（与「文件不在」同一类事实：这份配置不可用）。
  */
 
 import { promises as fs } from "node:fs";
@@ -38,9 +37,9 @@ export type ConnectionClient = "cli" | "desktop";
 /**
  * 一份连接设置。
  *
- * `local` 模式下 `url` / `token` 必须是 `undefined` 而不是空串：连接层把空串当成「显式给了一个
- * 空值」，只有 `undefined` 才表示「走发现文件与本机 `run/token`」。这条口径由
- * {@link settingsToTarget} 保证。
+ * `local` 模式下 `url` / `token` 是 `undefined` 而不是空串：连接层把空串当成「显式给了一个
+ * 空值」，只有 `undefined` 才表示「走发现文件与本机 `run/token`」（由 {@link settingsToTarget}
+ * 保证）。
  */
 export interface ConnectionSettings {
   mode: ConnectionMode;
@@ -163,7 +162,7 @@ export function settingsToTarget(settings: ConnectionSettings): {
 }
 
 /**
- * 界面上那一行字（`本机宿主` / 那个地址）。**绝不包含凭证**：地址里的 userinfo 会被抹掉 ——
+ * 界面上那一行字（`本机宿主` / 那个地址）。不含凭证：地址里的 userinfo 会被抹掉 ——
  * 有人会把钥匙写进地址（`wss://token@host`），而这一行要上屏。
  */
 export function settingsLabel(settings: ConnectionSettings): string {
@@ -172,8 +171,7 @@ export function settingsLabel(settings: ConnectionSettings): string {
 }
 
 /**
- * 一份设置的一句话描述（**进日志**）：只印模式与地址，凭证是钥匙，不许出现在任何会被 `cat`
- * 出去的东西里。
+ * 一份设置的一句话描述（**进日志**）：只印模式与地址 —— 凭证是钥匙，不该跟着这句出去。
  */
 export function describeSettings(settings: ConnectionSettings): string {
   if (settings.mode !== "remote") return "本地（发现文件 + 本机凭证）";
@@ -195,8 +193,7 @@ export function redactToken(text: string, settings: ConnectionSettings): string 
  * 读回来那份的**宽松**归一化：认不出来就返回 `null`，任何情况下不抛。
  *
  * 与 {@link parseSettings} 的两处差别都是有意的：不认得 = `null`（读路径不能把一份手滑的文件
- * 变成一次启动失败）；`local` 模式下**不校验**残留的 `url`（它不会被使用 ——
- * {@link settingsToTarget} 对 local 一律吐 `undefined`）。
+ * 变成一次启动失败）；`local` 模式下**不校验**残留的 `url`（它不会被使用）。
  */
 function storedSettings(raw: unknown): ConnectionSettings | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;

@@ -39,9 +39,9 @@
  * subagent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：subagent 不入库，
  * 也就没有第二个地方可以补 —— 重连之后靠名册把栏铺回来，内容靠之后的事件继续长。
  *
- * 用量**不在这里**：每条消息自带 `usage`，要显示就把消息上的 `usage` 自己加起来（core 不管
- * 用量，没有求和函数）—— 客户端不为了用量再养一条事件与一份汇总，那两份东西与消息上的事实
- * 迟早对不上。
+ * 用量**不在这里**：每条消息自带 `usage`，要显示就把消息上的 `usage` 自己加起来（core 的
+ * `sumUsage` 就是干这个的）—— 客户端不为了用量再养一条事件与一份汇总，那两份东西与消息上的
+ * 事实迟早对不上。
  *
  * ## 就地改，不返回新对象
  *
@@ -63,12 +63,12 @@ import type {
  * 与镜像有关的一条事件（事件名 + 载荷，判别结构）。
  *
  * 另外三个事件与镜像无关：`notice` / `question` / `error` —— 它们说的不是「哪条消息怎么了」，
- * 也不是那四件事。`session.changed` **认领**，但只认其中三格：`agent_started` /
- * `agent_gone`（死活）与交接态那两格 `handoff_started` / `memory_replaced`
+ * 也不是那四件事。`session.changed` **认领**，但只认里面四条 change：`agent_started` /
+ * `agent_gone` 换死活那一格，`handoff_started` / `memory_replaced` 换交接态
  * （见 {@link SessionMirror} 的 `sessionChanged`）。
  *
  * 两道闸那四条事件**各自一格**（与宿主的事件名逐字相同）：名字自己就说清了「哪一道、开还是关」，
- * 所以镜像这一层不再多造一个中间形状。
+ * 所以镜像这一层不另造中间形状。
  */
 export type MirrorEvent =
   | { kind: "message.added"; payload: EventPayload<"message.added"> }
@@ -127,8 +127,7 @@ export interface SubAgentColumn {
 /**
  * 名册上的一行：哪一个 subagent、叫什么、跑到哪一格了（`session.state.subAgents` 原样）。
  *
- * 它只用来**铺栏**（重连之后一次问清有哪些栏），栏里的消息一律来自事件（`toolCallId`）——
- * subagent 的消息不入库，也就没有第二个地方可以补。
+ * 它只用来**铺栏**（重连之后一次问清有哪些栏），栏里的消息由事件按 `toolCallId` 长出来。
  */
 export interface SubAgentFact {
   toolCallId: string;
@@ -324,8 +323,7 @@ export class SessionMirror {
    * 之后的重拉）。
    *
    * subagent 那几栏**不动**：`message.list` 不带 `toolCallId` 时只回主线，把它们清掉等于把
-   * 手里已有的那几栏凭空丢掉；而 subagent 的消息不入库，**没有**「再拉一次某一栏」这回事
-   * （重连之后靠名册把栏铺回来，内容靠之后的事件继续长）。
+   * 手里已有的那几栏凭空丢掉；而 subagent 的消息不入库，重拉也拿不回来。
    */
   replaceAll(messages: readonly AgentNS.Message[]): void {
     this.main = [...messages];

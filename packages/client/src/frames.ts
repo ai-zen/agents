@@ -1,9 +1,9 @@
 /**
  * JSON-RPC 2.0 帧的**判别与构造**（形状来自宿主契约，这里只有运行期的分类）。
  *
- * 为什么本文件不 import 宿主的运行期导出（`parseFrame` / `okResponse` / `notification`）：
- * `@ai-zen/agents-host` 的包根会把整个宿主（单根、SQLite worker、SDK 装配）一起拉进产物。
- * 客户端只要类型，所以帧形状用 `import type` 拿，判别与拼装自己写这几十行。
+ * 为什么本文件不 import 宿主的运行期导出（`parseFrame` / `okResponse` / `notification`）：客户端
+ * 运行期不依赖那个包（理由见 `index.ts`）。客户端只要类型，所以帧形状用 `import type` 拿，
+ * 判别与拼装自己写这几十行。
  *
  * 入站只可能是两种东西：
  *   1. **通知**（有 `method`、没有 `id`）：宿主推的事件，`method` 就是事件名（`EventMap` 的键）；

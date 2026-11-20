@@ -38,7 +38,6 @@ const CLIENT_INFO: ClientInfo = { name: "test-client", version: "0.0.0-test" };
 
 /**
  * 拉起日志的落点由**调用方**给，所以用例自己定一个（CLI 那边给的是 `<数据根>/logs/cli/launch.log`）。
- * 本包不再有「按数据根推出来」的那个函数。
  */
 function launchLogOf(dataRoot: string): string {
   return join(dataRoot, "logs", "cli", "launch.log");

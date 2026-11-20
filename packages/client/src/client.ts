@@ -7,7 +7,8 @@
  *   · `connect` 里把**握手**一次做完（`host.hello`），拿到 `Client` 就能直接调方法；
  *   · `call` 的入参与出参由宿主的 `MethodMap` 推出来（`MethodParams` / `MethodResult`）；
  *   · `subscribe` 按 `EventMap` 收窄载荷（`message.added` / `message.delta` / `state` / … 十三条事件）；
- *   · `close` 之后不再可用，要恢复就 `reconnect()`。
+ *   · `close` 之后这条连接不再可用：在飞调用报 `closed`，`reconnect()` 也回 `closed` —— 要接
+ *     回去得重新 {@link Client.connect}。
  *
  * 另有一层不在 JSON-RPC 里的东西：{@link Client.open} 用的**镜像**（`mirror.ts` —— 按事件重建
  * `messages` 与那四件事），以及 {@link Client.sendBinary}（上传分片的二进制帧）。后者的帧格式收在
@@ -343,9 +344,8 @@ export class Client implements ContractCaller {
     this.socket = null;
     this.helloResult = null;
     this.failPending(this.lostError());
-    // `close()` 不抛：它只是把 readyState 推到 CLOSING（已经在关 / 从没连上都一样安静）。
-    // 以前这里套着一层 `catch {}`，`catch` 里写着「已经在关 / 从没连上」—— 那是给一个不存在
-    // 的失败编理由：真要有东西从这里抛出来，那就是我们自己写错了，该炸在这里。
+    // `close()` 不抛：它只是把 readyState 推到 CLOSING（已经在关 / 从没连上都一样安静），所以
+    // 这里不接失败 —— 真要有东西从这里抛出来，那是我们自己写错了，该炸在这里。
     if (previous) previous.close();
 
     await this.dial();
@@ -362,16 +362,13 @@ export class Client implements ContractCaller {
    * 这四步的先后不能换：
    *   1. **先订阅**：镜像先进 {@link Client.mirrors} 表，并给它开一个缓冲队列。从这一刻起，
    *      与镜像有关的事件一律先进队列 —— 拉取期间发生的事一条都不会丢。
-   *   2. **读四件事**（`session.state`）：先读它，是因为之后再到达的事件总比这个读数值新，
-   *      补在它后面不会把状态往回拨；反过来的话（先读消息、后读状态），补的那一批就会把新的
-   *      状态覆盖成旧的。
+   *   2. **读四件事**（`session.state`）：为什么它排在全量之前，见 {@link Client.loadSnapshot}。
    *   3. **拉全量**（`message.list`，不带 `after`）：整段主线消息。
    *   4. **补事件**：快照落地之后，把队列里的那一批按**到达顺序**折进镜像；属于快照已包含
    *      那些消息的增量不再折一遍（否则同一段字会写两遍，见 `mirror.ts`）。
    *
    * 2、3、4 合起来就是 {@link Client.loadSnapshot} 的那一次 `"replace"`（三处快照共用的一处）；
-   * 这个方法的其余内容只有「建镜像」与「拉不下来就把这半份撤掉」—— 后一件事是首载独有的，
-   * 另两处（重连补回、`memory_replaced` 的重拉）都留着手上那一份。
+   * 这个方法的其余内容只有「建镜像」。
    *
    * 已经在镜像表里的会话直接回那一个（同一段不并发拉两份快照）。拉取失败时**不留半份镜像**：
    * 一个只有事件、没有历史的镜像比没有更糟。
@@ -481,9 +478,8 @@ export class Client implements ContractCaller {
         socket.close();
       }
       // 原样往外抛，不改码：`handshake` 只会以 `ClientError` 拒绝（它自己就把别的收敛掉了），
-      // 所以走到这里的非 `ClientError` 只可能是**我们自己写错了**。以前这里把它翻成
-      // `connection_lost`，于是 core 外面那一层的 `isNotReady()` 把框架 bug 当成「宿主还没起来」、
-      // 轮询到超时才报 `host_unavailable` —— 错误被吞之后，上游只看到一个超时。
+      // 所以走到这里的非 `ClientError` 只可能是**我们自己写错了** —— 翻成 `connection_lost` 会让
+      // `connection.ts` 的 `isNotReady()` 把框架 bug 当成「宿主还没起来」，一直轮询到超时。
       throw error;
     }
   }
@@ -716,12 +712,12 @@ export class Client implements ContractCaller {
   /**
    * 一条事件 → 镜像：那段会话正在拉快照就先进队列，否则当场折进去。
    *
-   * 事件带 `sessionId` 是契约里每一条事件都有的定位信息；没有它的（将来的新事件）这里
-   * 就不认领 —— 与镜像无关的事件（`notice` / `question` / `error`）由 `toMirrorEvent` 回空。
+   * 认的是载荷**顶层**的 `sessionId`：它没有的事件（`notice` / `question` 把会话 id 放在载荷对象
+   * 里面，`error` 说的不是消息）这里就不认领 —— `toMirrorEvent` 对它们回空。
    *
-   * `session.changed` 在这里也过一道：镜像只认它里面与交接态有关的那两格
-   * （`handoff_started` / `memory_replaced`），其余 change 一格不动 —— 这条事件只改镜像那一格，
-   * **不**触发任何拉取（`memory_replaced` 的重拉在 {@link Client.reloadOnMemoryReplaced}，是另一件事）。
+   * `session.changed` 在这里也过一道：镜像只认它里面四条 change（`agent_started` / `agent_gone`
+   * 换死活，`handoff_started` / `memory_replaced` 换交接态），其余 change 一格不动 —— 这条路
+   * 只改镜像，**不**触发任何拉取（`memory_replaced` 的重拉在 {@link Client.reloadOnMemoryReplaced}，是另一件事）。
    */
   private routeToMirror(method: string, payload: unknown): void {
     const mirror = this.mirrors.size > 0 ? this.mirrorByPayload(payload) : undefined;
@@ -769,8 +765,8 @@ export class Client implements ContractCaller {
     const mirror = this.mirrors.get(sessionId);
     if (!mirror) return;
     // 拉失败**必须有人听见**：镜像留在上一份 = 界面继续显示库里已经不存在的那些消息，而这件事
-    // 没有第二次机会（再一条 `memory_replaced` 是下一次交接）。`onSync` 正是订阅方（cli / desktop）
-    // 拿来显示「补拉失败」的那一格，`resyncAll` 也走它 —— 于是两条补拉路径的失败落在同一个口上。
+    // 没有第二次机会（再一条 `memory_replaced` 是下一次交接）。`onSync` 就是订阅方显示「补拉
+    // 失败」的那一格，`resyncAll` 也走它 —— 两条补拉路径的失败落在同一个口上。
     void this.reloadMirror(sessionId, mirror).catch((error: unknown) => {
       this.notifySync({ ok: false, sessionId, error: toClientError(error) });
     });

@@ -4,8 +4,8 @@
  * ## 分工
  *
  * 「怎么重连」是客户端的事（`Client.reconnect()`：换一条 socket、重新握手、连上后补镜像），
- * 「要不要一直重试」是**调用方**的事 —— CLI 的 `--once` 与桌面端的面板对「试到什么时候」的
- * 答案不一样，包内不预设「失败三次就放弃」那种数（那是产品判断，不是传输事实）。
+ * 「要不要一直重试」是**调用方**的事 —— 不同前端对「试到什么时候」的答案不一样，包内不预设
+ * 「失败三次就放弃」那种数（那是产品判断，不是传输事实）。
  *
  * 所以这个文件的默认策略是「**一直重试**」（{@link DEFAULT_RECONNECT_POLICY}：
  * `maxAttempts: Infinity`），调用方要给上限就传一个有限的数字。
@@ -110,9 +110,10 @@ export function retryDelay(policy: ReconnectPolicy, attempt: number): number {
 }
 
 /**
- * 缺省的可重试判据：被宿主拒的、地址错的、本端已经关掉的，都不重试。
+ * 缺省的可重试判据：按码判（不解析错误文本）。
  *
- * 其余（连不上、断了、握手超时、拉起失败）都算「现在不行、等会儿可能行」。
+ * 被宿主拒的、地址错的、本端已经关掉的、找不到宿主入口的，都不重试；其余（连不上、断了、
+ * 握手超时、拉起失败）都算「现在不行、等会儿可能行」。
  */
 export function isRetryableByDefault(error: unknown): boolean {
   if (!(error instanceof ClientError)) return true;

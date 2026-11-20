@@ -15,8 +15,8 @@
  * ## 客户端自己造的错：只有宿主不在场时才有
  *
  * 连不上、握手超时、连接断了、拉起宿主失败 —— 这些处境宿主根本没法参与，没有 `data.message`
- * 可用，所以它们有自己的码与文案（{@link LocalErrorCode}）。这几句是全包里唯一由客户端产出的
- * 用户可见文本，收在一张表里，按语言取（缺省英文，与 D8 / R58 的口径一致）。
+ * 可用，所以它们有自己的码与文案（{@link LocalErrorCode}）。这几句收在一张表里，按语言取
+ * （缺省英文，与 D8 / R58 的口径一致）。
  */
 
 import type { BizCode } from "@ai-zen/agents-host";
@@ -41,7 +41,7 @@ export type LocalErrorCode =
   | "call_timeout"
   /** 客户端自己出了意外（不该发生的那一类；`detail.reason` 留着原始信息） */
   | "unexpected"
-  /** 连不上这台宿主（含「显式地址那条路绝不拉起」时的连接被拒） */
+  /** 连不上这台宿主（显式地址那条路上连不上的，或本机拉起之前那一段） */
   | "host_unavailable"
   /** 拉起了本地宿主，但到时限还没就绪 */
   | "host_did_not_start"
@@ -67,7 +67,7 @@ export type LocalErrorCode =
 /** 全部失败码：宿主的业务码，或客户端本地的码 */
 export type ClientErrorCode = BizCode | LocalErrorCode;
 
-/** 一份本地文案：`params` 里会被替换的只有 `{endpoint}` / `{dataRoot}` / `{log}` */
+/** 一份本地文案：模板里的 `{name}` 按 `params` 替换，缺参数时占位符原样留着 */
 const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
   bad_address: {
     zh: "不是合法的宿主地址：{endpoint}（要 ws:// 、wss:// 、http:// 或 https:// 开头的地址）",

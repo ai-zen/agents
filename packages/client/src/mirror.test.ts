@@ -1,5 +1,5 @@
 /**
- * 镜像的验收：四条规矩各钉一遍。
+ * 镜像的验收：五条规矩各钉一遍。
  *
  *   1. `message.added` 插入、`message.delta` 用 core 的 `applyChunk` 增量、`message.changed`
  *      整条替换、`message.removed` 删除；subagent 的消息按 `toolCallId` 归栏。

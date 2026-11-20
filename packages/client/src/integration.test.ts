@@ -214,8 +214,6 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
 
     // 草稿落库走 `session.start`：它先 `ensurePersisted` 再装配（PLAN §4），一句也不投 ——
     // 这一段的目的是「让会话在库里有一行、并且有一个 agent 能收件」，不是为了跑模型。
-    // 从前这里靠 `session.send` 顺带落库，正交之后投递不叫醒任何人（PLAN §5.1），所以叫醒
-    // 必须是显式的那一手。
     await client.call("session.start", { sessionId });
     return sessionId;
   }

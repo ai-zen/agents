@@ -6,7 +6,7 @@
  *
  * ## 两条路
  *
- * 1. **显式地址**（`settings.mode === "remote"`）：只连、**绝不拉起**。本地起的进程一定不在那个
+ * 1. **显式地址**（`settings.mode === "remote"`）：只连、不拉起。本地起的进程一定不在那个
  *    地址上，拉起只会白等到时限，然后报一个指向错误方向的超时 —— 而用户真正要知道的是「那台
  *    机器没应答」或「凭证没被接受」。
  * 2. **本机**：读 `<数据根>/run/host.json` 拿地址、`<数据根>/run/token` 拿凭证；探不到就
@@ -43,9 +43,8 @@
  *
  * ## 阶段（PRD D31）
  *
- * {@link HostLaunchStage} 是给**屏**用的：CLI 的下载屏
- * （`cli/src/tui/screens/host-download.tsx`）按它换那一行字。这里只报「走到哪一步了」，不报
- * 百分比 —— npm 的输出不是协议，不解析它（于是「下载」与「安装」合成一步）。
+ * {@link HostLaunchStage} 是给**屏**用的：调用方按它换那一行字。这里只报「走到哪一步了」，
+ * 不报百分比 —— npm 的输出不是协议，不解析它（于是「下载」与「安装」合成一步）。
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -112,9 +111,8 @@ export interface SpawnHostContext {
   /**
    * 拉起日志的**完整路径**：拉起时给子进程收 stdout/stderr 的那个文件（每次拉起重新写）。
    *
-   * 由**调用方**给，不由本包按数据根推 —— 日志落哪一格是各进程自己的事（一格只归一个进程写）：
-   * CLI 给 `<数据根>/logs/cli/launch.log`，桌面端将来给它自己那一格。本包替调用方决定落点，
-   * 就是把「谁的日志」重新焊回拉起这一层。
+   * 由**调用方**给，不由本包按数据根推 —— 日志落哪一格是各进程自己的事（一格只归一个进程写）。
+   * 本包替调用方决定落点，就是把「谁的日志」重新焊回拉起这一层。
    *
    * 功能用途：子进程拉不起来时，这个文件的**最后一行**就是上屏的那句原因。
    */
@@ -150,7 +148,7 @@ export interface EnsureHostOptions {
   dataRoot?: string;
   /**
    * 拉起日志的完整路径（每次拉起重新写）：只在「真要拉起一个」时才用得上，由调用方决定落哪一格
-   * （见 `SpawnHostContext.launchLog`）。显式地址那条路绝不拉起，给了也不会碰。
+   * （见 `SpawnHostContext.launchLog`）。显式地址那条路不拉起，给了也用不上。
    */
   launchLog: string;
   /** 客户端身份（握手带上，宿主用它做连接列表与日志） */
@@ -168,8 +166,7 @@ export interface EnsureHostOptions {
   /** npx 那条路要拉的版本范围（CLI 构建时从自己的 devDependencies 注入，PRD L14） */
   versionRange?: string;
   /**
-   * 阶段变化。消费者只有一处：CLI 的下载屏（`screens/host-download.tsx`）用它换那一行字。
-   * 只报「走到哪一步」，不报百分比 —— npm 的输出不是协议。
+   * 阶段变化：调用方拿它换屏上那一行字。只报「走到哪一步」，不报百分比 —— npm 的输出不是协议。
    */
   onStage?: (stage: HostLaunchStage) => void;
   /** 取消：中止正在拉起的那个子进程（CLI 的下载屏按 Esc / Ctrl+C 时 abort） */
@@ -195,7 +192,7 @@ export interface EnsureHostResult {
   target: HostTarget;
   /** 这次是不是本客户端拉起了宿主（`true` 说明之前没有活着的实例） */
   started: boolean;
-  /** 连的是不是显式地址（这条路上 `started` 恒为 `false`，因为它绝不拉起） */
+  /** 连的是不是显式地址（这条路上 `started` 恒为 `false`：不拉起） */
   explicit: boolean;
   dataRoot: string;
 }
@@ -215,7 +212,7 @@ export function resolveDataRoot(explicit?: string): string {
  * 路径与宿主 `config.ts` 的 `HOST_FILE_NAME` 是同一个事实，但这里**不能** import 它：
  * 宿主对本包只是 `devDependency`（本包对它的引用全是 `import type`，产物里不带宿主代码），
  * 引一个运行期常量就会让发布出去的包在别人的机器上 `ERR_MODULE_NOT_FOUND`。
- * 所以这条路径只能手写一份 —— 改名时宿主改这里也得改（字段名那一半已经用 `Pick` 消掉了，
+ * 所以这条路径在这里手写一份 —— 宿主改布局时这里跟着改（字段名那一半已经用 `Pick` 消掉了，
  * 见 `LocalHostFacts`）。
  */
 export function hostFilePath(dataRoot: string): string {
@@ -264,7 +261,7 @@ export async function readLocalToken(
 /**
  * 确保有一个能连的宿主，并把已经握过手的 `Client` 交出去。
  *
- * 失败一律是 `ClientError`：宿主说的话（例如 `unauthorized`）原样上抛，客户端自己造的
+ * 失败都是 `ClientError`：宿主说的话（例如 `unauthorized`）原样上抛，客户端自己造的
  * （连不上、拉起超时）用本地码。
  */
 export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHostResult> {
@@ -305,7 +302,7 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
     }
   };
 
-  // ---- 显式地址：只连、绝不拉起 -------------------------------------------------
+  // ---- 显式地址：只连、不拉起 ---------------------------------------------------
   const explicit = explicitTarget(settings);
   if (explicit) {
     const token = await explicitToken(explicit, settings, dataRoot, readText);
@@ -508,10 +505,9 @@ export function npxHostArgv(input: {
 /**
  * 宿主自己那份日志：`<数据根>/logs/host/host.log`。
  *
- * 这是全仓**唯一**一处不得不重复宿主路径的地方：`host_did_not_start` 要给用户指出「该去看哪个
- * 文件」，而这里不能 import 宿主（宿主对本包只是 `devDependency`，产物里不带它的代码，见
- * `hostFilePath` 同一段理由）。**与 host 包的 `HostPaths.hostLogsDir` + `HOST_LOG_FILE_NAME`
- * 同步**：宿主那边改布局，这里跟着改。
+ * `host_did_not_start` 要给用户指出「该去看哪个文件」，而这里不能 import 宿主（宿主对本包只是
+ * `devDependency`，产物里不带它的代码，见 `hostFilePath` 同一段理由），所以这条路径得再写一遍。
+ * **与 host 包的 `HostPaths.hostLogsDir` + `HOST_LOG_FILE_NAME` 同步**：宿主那边改布局，这里跟着改。
  *
  * 别和拉起日志（`SpawnHostContext.launchLog`）混起来：那一份是**客户端**给子进程收输出的文件，
  * 路径由调用方给；这一份是**宿主**自己写的日志。
@@ -521,8 +517,8 @@ const HOST_LOG_FILE = join("logs", "host", "host.log");
 /**
  * 宿主入口：**已装的那个私有包**的 `dist/cli.js`。
  *
- * 缺省的拉起方式已经不是它了（消费者机器上不会装这个包，见 {@link spawnHostViaNpx}）：它现在只
- * 服务「这台机器上确实装着宿主」的调用方 —— 仓库内的用例与诊断。
+ * 只服务「这台机器上确实装着宿主」的调用方（仓库内的用例与诊断）：缺省的拉起方式是让 npx
+ * 现下现起，见 {@link spawnHostViaNpx}。
  */
 export function resolveHostEntry(): string {
   try {
@@ -658,7 +654,6 @@ function lastMeaningfulLine(path: string): string {
   const lines = text.split(/\r?\n/);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     // npm 的进度行带颜色/光标控制：上屏之前抹掉，屏幕上不该出现裸的控制序列
-    // （`index` 由 `split` 产出，这一格一定存在；以前那个 `?? ""` 接的是一个不存在的洞）
     const line = lines[index]!.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
     if (line !== "") return line;
   }
@@ -713,8 +708,8 @@ async function explicitToken(
 /**
  * 这个失败是「现在不行」还是「这样不行」。
  *
- * 连不上 / 断了 / 握手超时都算「还没起来」，轮询继续；被宿主拒（`unauthorized`）、地址不合法
- * 之类继续等一万年也是同一个结果 —— 而把它吞掉只会得到一句「宿主起不来」，方向完全错。
+ * 连不上 / 断了 / 握手超时 / 调用超时都算「现在不行」，轮询继续；被宿主拒（`unauthorized`）、
+ * 地址不合法之类继续等一万年也是同一个结果 —— 而把它吞掉只会得到一句「宿主起不来」，方向完全错。
  */
 function isNotReady(error: unknown): boolean {
   if (!isClientError(error)) return false;

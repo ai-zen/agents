@@ -1,5 +1,5 @@
 /**
- * 取回一份素材的内容 —— `asset.get` 的客户端那一半（PRD F-H7 / F-H8）。
+ * 取回一份素材的内容 —— `asset.get` 的客户端那一半（PRD F-H8）。
  *
  * ## 为什么值得有一个入口
  *
@@ -11,7 +11,7 @@
  *
  * 只看**有没有 `__asset_id` 这个扩展字段**，不解析任何 url scheme：段上的 `image_url.url`
  * 是空的、是 `https://…`、还是别的东西，都不影响这个判断。判断本身在
- * {@link localAssetIdOf}，取字节在 {@link getSectionAsset}（缩略图与原图同一个入口）。
+ * {@link localAssetIdOf}，取字节在 {@link getSectionAsset}。
  *
  * ## 两档
  *
@@ -42,7 +42,7 @@ export interface GetAssetOptions {
 export interface AssetContent {
   /** 宿主那边这一行的引用（`mime` / `bytes` / 宽高都在里面） */
   asset: AssetRef;
-  /** 实际给出的档（`thumb` 目前等同原图） */
+  /** 实际给出的档 */
   variant: AssetVariant;
   /** 解好码的字节，长度应等于 `asset.bytes` */
   bytes: Uint8Array;
@@ -88,7 +88,7 @@ export function localAssetIdOf(section: AgentNS.MessageContentSection): string |
  * `null` 的意思是「这一段不用素材通道显示」—— 调用方按段上原有的字段显示（比如远端 url），
  * 不是「取失败」。取失败（id 认得、字节取不到）会抛错，让调用方决定怎么提示。
  *
- * 缩略图与原图同一个入口：`variant` 只是透传，宿主这一波两档给的是同一份字节。
+ * 缩略图与原图走同一个入口：`variant` 只是透传。
  */
 export async function getSectionAsset(
   client: ContractCaller,
