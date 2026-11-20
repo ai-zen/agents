@@ -91,6 +91,9 @@ importers:
       '@ai-zen/agents-core':
         specifier: workspace:^
         version: link:../core
+      '@ai-zen/agents-logger':
+        specifier: workspace:^
+        version: link:../logger
       '@ai-zen/agents-sdk':
         specifier: workspace:^
         version: link:../sdk

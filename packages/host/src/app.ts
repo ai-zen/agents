@@ -25,6 +25,8 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
+import { FileLogger } from "@ai-zen/agents-logger";
+import type { LogRecord } from "@ai-zen/agents-logger";
 import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
 import type {
   AppConfig,
@@ -93,7 +95,6 @@ import {
   createSdkHandoffService,
   HandoffDocumentService,
 } from "./services/HandoffDocumentService.js";
-import { Logger } from "./services/Logger.js";
 import { ModelService } from "./services/ModelService.js";
 import { NoticeService, createEventLocalizer } from "./services/NoticeService.js";
 import { PeerSessionService } from "./services/PeerSessionService.js";
@@ -118,6 +119,9 @@ import type { EventMap, EventName } from "./wire/events.js";
 
 /** 读不到包元数据时的版本号（服务照常能跑，只是升级判定拿不到真版本） */
 const FALLBACK_VERSION = "0.0.0";
+
+/** 宿主日志的文件名（`<dataRoot>/logs/host.log`：一个进程一格的目录布局是下一单的事） */
+const HOST_LOG_FILE_NAME = "host.log";
 
 /** 配置生效那条通知留几秒（F-F9：一次改动合成一条，一秒级的提示归 `info`） */
 const APPLIED_NOTICE_SECONDS = 3;
@@ -343,7 +347,11 @@ export class HostApp {
   private readonly clock: Clock;
   private readonly logger: HubLogger;
   /** 自己拥有的文件日志（注入了外部 logger 时为 `null`：那份不归本对象关） */
-  private readonly fileLogger: Logger | null;
+  private readonly fileLogger: FileLogger | null;
+  /** 日志记录往通知那一侧转发的位置（容器，通知服务造好之后才接上） */
+  private readonly logRecords: LogRecordRelay;
+  /** 正在发通知：这期间产生的 warn / error 只落文件（防回环） */
+  private notifying = false;
   private readonly exitHook: ExitHook;
   /** 磁盘版本的读法（D4 / F-E3 自检用；用例换成假实现） */
   private readonly readDiskVersion: () => string | null;
@@ -379,15 +387,16 @@ export class HostApp {
     db: Database,
     configManager: ConfigManager,
     configPort: number | undefined,
-    logger: HubLogger,
+    logging: ResolvedLogging,
   ) {
     this.options = options;
     this.paths = paths;
     this.db = db;
     this.configManager = configManager;
     this.clock = options.clock ?? systemClock;
-    this.logger = logger;
-    this.fileLogger = logger instanceof Logger ? logger : null;
+    this.logger = logging.logger;
+    this.fileLogger = logging.fileLogger;
+    this.logRecords = logging.records;
     this.exitHook = options.exit ?? defaultExit;
     this.version = options.version ?? resolveHostVersion();
     this.readDiskVersion = options.diskVersion ?? readDiskVersion;
@@ -553,11 +562,9 @@ export class HostApp {
       emit: (name, payload) => this.emitEvent(name, payload),
       now: () => this.clock.now(),
     });
-    // PRD F-J2：warn / error 也上通知（永久）。日志口子比通知服务先造出来（早造的服务也要能记），
-    // 所以在这里后接一次；回环由 Logger 自己的重入标记挡住。
-    this.fileLogger?.setNotifier(async (level, summary) => {
-      await this.noticeService.log(level, summary);
-    });
+    // PRD F-J2：warn / error 也上通知（永久）。日志比通知服务先造出来（早造的服务也要能记），
+    // 所以在这里接上；回环由重入标记挡住。
+    this.logRecords.attach((record) => this.raiseNoticeFromRecord(record));
     this.handoffService = new HandoffDocumentService({
       sessions: this.sessions,
       workspaces: this.workspaces,
@@ -768,11 +775,11 @@ export class HostApp {
     const logging = resolveLogger(options, paths);
     let app: HostApp;
     try {
-      app = new HostApp(options, paths, db, configManager, configPort, logging.logger);
+      app = new HostApp(options, paths, db, configManager, configPort, logging);
     } catch (error) {
       // 构造途中的抛出（端口不合法、接线造不出来）也要把库关掉：worker 线程不该被漏下
       await db.close();
-      await logging.own?.close();
+      await logging.fileLogger?.close();
       throw error;
     }
     // 通知服务就位了：装配期恢复过出厂的那几份配置各补一条 warning
@@ -1367,6 +1374,24 @@ export class HostApp {
   }
 
   /**
+   * 一条日志记录 → 一条通知（PRD F-J2）。
+   *
+   * 重入标记是防回环的那一处：发通知会写库、会推事件，那些动作里万一又冒出日志，
+   * 这条判断把它们挡在「只落文件」这一侧。通知本身失败只吞掉 —— 再记一条日志就是回环。
+   */
+  private raiseNoticeFromRecord(record: LogRecord): void {
+    if (record.level === "info" || this.notifying) return;
+    const level = record.level === "error" ? "error" : "warning";
+    this.notifying = true;
+    void Promise.resolve()
+      .then(() => this.noticeService.log(level, record.message))
+      .catch(() => undefined)
+      .finally(() => {
+        this.notifying = false;
+      });
+  }
+
+  /**
    * 记一条普通信息（生命周期事件这类）。
    *
    * 注入了外部 logger 时它就是 `HubLogger`（只有 warn / error），所以这条走文件日志那一侧；
@@ -1541,17 +1566,44 @@ const defaultExit: ExitHook = () => {
 };
 
 /**
+ * 日志记录的转发口（`onRecord` 的接线位置）。
+ *
+ * 文件日志比通知服务先造出来 —— 早造的那几个服务也要能记日志 —— 而「记录变成通知」要用到
+ * 通知服务，所以这里留一个可后接的位置：接上之前写出来的记录只落文件。
+ */
+class LogRecordRelay {
+  private target: ((record: LogRecord) => void) | null = null;
+
+  attach(target: ((record: LogRecord) => void) | null): void {
+    this.target = target;
+  }
+
+  forward(record: LogRecord): void {
+    this.target?.(record);
+  }
+}
+
+/** `resolveLogger()` 的三件产物：对外口子、本对象拥有的文件日志、记录的转发口 */
+interface ResolvedLogging {
+  logger: HubLogger;
+  /** 自己拥有的文件日志（注入了外部 logger 时为 `null`：那份不归本对象关） */
+  fileLogger: FileLogger | null;
+  records: LogRecordRelay;
+}
+
+/**
  * 日志口子：注入了就用注入的，否则造一个写 `<dataRoot>/logs/host.log` 的文件日志（PRD F-J2）。
  *
- * `own` 标的是「这份日志归本对象关」：注入进来的那份归注入方管，收尾时不能替它关。
+ * 目录布局这一单不动（仍然 `<dataRoot>/logs/host.log`）：一个进程一格的迁移是下一单的事。
  */
-function resolveLogger(
-  options: HostAppOptions,
-  paths: HostPaths,
-): { logger: HubLogger; own: Logger | null } {
-  if (options.logger !== undefined) return { logger: options.logger, own: null };
-  const logger = new Logger({ dir: paths.logsDir });
-  return { logger, own: logger };
+function resolveLogger(options: HostAppOptions, paths: HostPaths): ResolvedLogging {
+  const records = new LogRecordRelay();
+  if (options.logger !== undefined) return { logger: options.logger, fileLogger: null, records };
+  const fileLogger = new FileLogger({
+    file: join(paths.logsDir, HOST_LOG_FILE_NAME),
+    onRecord: (record) => records.forward(record),
+  });
+  return { logger: fileLogger, fileLogger, records };
 }
 
 // ---------------------------------------------------------------------------
