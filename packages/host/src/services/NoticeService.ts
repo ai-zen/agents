@@ -82,11 +82,6 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-/** 库里的语气档位：认不出来就按 `info` 摆（手改坏的数据不该让整条列表读不出来） */
-function toLevel(value: string): NoticeLevel {
-  return (NOTICE_LEVELS as readonly string[]).includes(value) ? (value as NoticeLevel) : "info";
-}
-
 /**
  * 秒 → 毫秒（R15 的唯一一处换算）。
  *
@@ -123,7 +118,9 @@ function toView(notice: Notice, language: Language): NoticeView {
   };
   return {
     id: notice.id,
-    level: toLevel(notice.level),
+    // 这一列只有 `create()` 写，而它在写之前已按 `NOTICE_LEVELS` 校过（不合法当场 `invalid_params`），
+    // 所以库里的值越不了档 —— 读的时候不再判一次，也不准备「认不出来」的降级
+    level: notice.level as NoticeLevel,
     duration: notice.durationMs === null ? null : notice.durationMs / 1000,
     text,
     sessionId: notice.sessionId,

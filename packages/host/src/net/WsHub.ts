@@ -808,9 +808,10 @@ function extractId(text: string): JsonRpcId | null {
     try {
       return asId(JSON.parse(raw));
     } catch {
-      // 上面那条正则只保证引号配对、转义闭合，不排除裸控制字符 —— 而这种字节只有手工拼的
-      // 坏帧才有，`JSON.stringify` 产不出来。回 `null` 不是吞错：协议允许错误帧带 `id: null`，
-      // 而抛出去会让这个坏帧连一个回包都收不到（它是在 `onFrame` 的 catch 里被调的）。
+      // 「搝得到就搝、搝不到就算了」是 `extractId()` 的契约：它的返回类型本来就是
+      // `JsonRpcId | null`，上一层的 `asId()` 也照样回 null。所以这里不是给不可能的状态兜底，
+      // 是这条路的正常答案（输入是客户端送进来的字节，本来就没保证）。抛出去反而会让这个
+      // 坏帧连一个回包都收不到 —— 这段代码是在 `onFrame` 的 catch 里被调的。
       return null;
     }
   }

@@ -276,22 +276,6 @@ describe("四档语气（PRD 4.9）", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
-
-  it("库里存的语气认不出来时按 info 摆（手改坏的数据不该让整条列表读不出来）", async () => {
-    // 绕过服务直接写一行认不出来的：仓里只有服务能建通知，所以这样造
-    await harness.notices.create({
-      id: "n-broken",
-      level: "fatal",
-      code: "notice.settingsApplied",
-      params: null,
-      durationMs: null,
-      sessionId: null,
-      createdAt: harness.clock.value,
-    });
-
-    const listed = await harness.service.list();
-    expect(listed.notices.map((notice) => notice.level)).toEqual(["info"]);
-  });
 });
 
 describe("按语言渲染（D8）", () => {
