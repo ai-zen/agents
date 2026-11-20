@@ -451,22 +451,24 @@ export class SessionService {
    * `not_found`、也免得那条隐藏的 cwd 消息被写两遍。
    *
    * 落行那一刻顺带写这段会话的第一条消息，见 {@link writeCwdMessage}。
+   *
+   * `sessionId` 的形状（非空字符串）不在这里判：`WsHub` 已经在分发前校过一次（入参 schema /
+   * 唯一的执行点），这里直接用 —— 形状不对的值根本走不到这一层。
    */
   async ensurePersisted(sessionId: string): Promise<Session> {
-    const id = requireId(sessionId, "sessionId");
-    const existing = await this.sessions.get(id);
+    const existing = await this.sessions.get(sessionId);
     if (existing) {
-      this.drafts.forget(id);
+      this.drafts.forget(sessionId);
       return existing;
     }
-    const running = this.persisting.get(id);
+    const running = this.persisting.get(sessionId);
     if (running) return await running;
-    const task = this.persistDraft(id);
-    this.persisting.set(id, task);
+    const task = this.persistDraft(sessionId);
+    this.persisting.set(sessionId, task);
     try {
       return await task;
     } finally {
-      this.persisting.delete(id);
+      this.persisting.delete(sessionId);
     }
   }
 

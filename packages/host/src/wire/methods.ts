@@ -4,8 +4,10 @@ import type {
   AgentNS,
 } from "@ai-zen/agents-core";
 import type { AgentDefinition, McpServerConfig, TokenThresholds } from "@ai-zen/agents-sdk";
+import type { z } from "zod";
 
 import type { Language } from "../i18n/index.js";
+import { agentDeleteParams, sessionPauseParams, sessionStartParams } from "./schema/index.js";
 import type {
   AssetRef,
   AttachmentOutcome,
@@ -524,10 +526,11 @@ export interface SessionSendResult {
  *
  * 「谁能复活谁」宿主不判（PRD 1.2「宿主不做任何限制」）：能不能复活看的是调用方手上有没有
  * 这个方法（agent 手上没有，见 PRD 4.6），不是宿主按参数猜来源。
+ *
+ * 形状与失败文案在 `schema/session.ts` 的 `sessionStartParams`：这一行只是它的推导结果，
+ * 校验由 `WsHub` 在分发前统一做一次（服务层相信入参）。
  */
-export interface SessionStartParams {
-  sessionId: string;
-}
+export type SessionStartParams = z.infer<typeof sessionStartParams>;
 
 /**
  * `session.start` 出参：这一次装了没有。
@@ -559,10 +562,10 @@ export interface SessionAbortResult {
  * 暂停是**输出闸**：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
  * 它**不掐在途** —— 要立刻停就用中断（`session.abort`：掐在途 + 关输出闸）。
  * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间闸归交接收口管。
+ *
+ * 形状与失败文案在 `schema/session.ts` 的 `sessionPauseParams`（理由同上）。
  */
-export interface SessionPauseParams {
-  sessionId: string;
-}
+export type SessionPauseParams = z.infer<typeof sessionPauseParams>;
 
 /** `session.pause` 出参：打完之后这段是不是暂停着 */
 export interface SessionPauseResult {
@@ -1470,11 +1473,11 @@ export interface AgentUpdateResult {
 
 /**
  * `agent.delete` 入参（PRD F-F5：删之前问「还有谁指它」；删默认助手时连带清默认）。
+ *
+ * 形状与失败文案在 `schema/session.ts` 的 `agentDeleteParams`（`agent.*` 铺开时随它搬到
+ * `schema/agent.ts`；理由同上）。
  */
-export interface AgentDeleteParams {
-  agentId: string;
-  dryRun?: boolean;
-}
+export type AgentDeleteParams = z.infer<typeof agentDeleteParams>;
 
 /** `agent.delete` 出参 */
 export interface AgentDeleteResult {

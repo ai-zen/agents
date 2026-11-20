@@ -20,6 +20,7 @@ import { render, type Language } from "../i18n/index.js";
 import { MAX_ASSET_BYTES, PROTOCOL_VERSION, HostError } from "../wire/index.js";
 import type {
   AssetRef,
+  SessionPauseResult,
   SessionSendResult,
   EventMap,
   EventName,
@@ -55,6 +56,8 @@ let clients: TestClient[];
 let finalized: UploadFinalizeRequest[];
 let logged: { level: "warn" | "error"; message: string; detail?: unknown }[];
 let hubReference: WsHub | null;
+/** `session.pause` 被调到过几次（入参校验要在 handler 之前拦下，靠它证） */
+let pausedCalls: string[];
 
 beforeEach(async () => {
   dir = await makeTempDir("ws-hub");
@@ -63,6 +66,7 @@ beforeEach(async () => {
   finalized = [];
   logged = [];
   hubReference = null;
+  pausedCalls = [];
 });
 
 afterEach(async () => {
@@ -122,6 +126,12 @@ function handlers(): HandlerTable {
     // 非业务错误：只许说 internal，细节进日志
     "message.list": () => {
       throw new Error("读 /home/secret/ai-zen.db 的时候炸了");
+    },
+
+    // 入参有 schema 的那一侧：形状不对根本走不到这里（`invoke` 在校验点就拒了）
+    "session.pause": (context): SessionPauseResult => {
+      pausedCalls.push(context.params.sessionId);
+      return { paused: true };
     },
   };
 }
@@ -371,6 +381,62 @@ describe("分发与错误（PLAN §6）", () => {
       reason: "batch_not_supported",
       count: 1,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 推送
+// ---------------------------------------------------------------------------
+
+describe("入参校验：分发之前那一处（全仓唯一的一处）", () => {
+  it("形状不对的入参在 handler 之前就被拒：invalid_params + field/reason", async () => {
+    await startHub();
+    const client = await connectAuthorized("zh");
+
+    client.request("session.pause", {});
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.error.data.code).toBe("invalid_params");
+    // 客户端按 field 找输入框、按 reason 分支（不是 Zod 的英文句子）
+    expect(frame.error.data.params).toEqual({ field: "sessionId" });
+    expect(frame.error.data.detail).toEqual({ field: "sessionId", reason: "empty" });
+    // 一个字节的业务代码都没跑
+    expect(pausedCalls).toEqual([]);
+  });
+
+  it("根上不是对象时字段名报 params（与 asRecord 同口径）", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    // 字符串 / 数组 / 数字都落在这一条上（`null` 不算：帧那一层已经把 `params: null` 当成缺省）
+    client.request("session.pause", "nope");
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.error.data.code).toBe("invalid_params");
+    expect(frame.error.data.detail).toEqual({ field: "params", reason: "not_an_object" });
+    expect(pausedCalls).toEqual([]);
+  });
+
+  it("形状对了就交给 handler，且拿到的是归一化过的入参", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    const { result } = await client.call("session.pause", { sessionId: "  s-1  " });
+    expect(result).toEqual({ paused: true });
+    // trim 在边界上做了一次，服务层不必再自己剥空白
+    expect(pausedCalls).toEqual(["s-1"]);
+  });
+
+  it("表里没有 schema 的方法原样透传（还没迁的 61 个继续按老样子走）", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    // `session.get` 没有 schema：空入参照样交给 handler，由它自己判（它抛 not_found，不是 invalid_params）
+    client.request("session.get", {});
+    const frame = await client.queue.next();
+    expect(isError(frame) && frame.error.data.code).toBe("not_found");
   });
 });
 

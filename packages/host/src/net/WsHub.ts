@@ -8,7 +8,8 @@
  *      断开即忘（PRD D8）。
  *   2. **分发**：`MethodMap` 里的方法交给注入的 handler 表；没注册的方法回 `unsupported`
  *      （接线层自己代管的只有 `host.hello` / `host.setLanguage` 与上传三段）。
- *      业务逻辑一律不在本文件里。
+ *      **入参形状也在这里校一次**（方法名确认之后、任何业务代码之前，表见 `wire/schema/`）——
+ *      服务层因此可以相信入参。业务逻辑一律不在本文件里。
  *   3. **推送**：JSON-RPC 通知（无 id），`params` 就是事件载荷。不重放、不需要 ack（PRD L5：
  *      断线重连由客户端自己拉）。受理即返回的方法（`session.send` 这类）会产生「事件早于回包」
  *      的顺序问题，所以按 `sessionId` 缓冲，回包写完再按序放行（R47，见 {@link dispatch}）。
@@ -54,6 +55,7 @@ import {
   type HostSetLanguageResult,
   type TransferLimits,
 } from "../wire/index.js";
+import { PARAM_SCHEMAS } from "../wire/schema/index.js";
 import type { TokenVerifier } from "./auth.js";
 import { decodeChunkFrame, type UploadReceiver } from "./UploadReceiver.js";
 
@@ -526,11 +528,14 @@ export class WsHub {
    *
    * 顺序是有意的：`hello` 永远放行（握手本身不需要先握手）；其余方法在未握手时一律
    * `unauthorized`（连方法名都不判断，免得「未授权的连接能探出宿主有哪些方法」）。
+   *
+   * 授权与方法名都确认之后是**入参的唯一校验点**（{@link parseParams}）：之后无论是接线层
+   * 自己代管的那四条（`host.hello` / `host.setLanguage` / `asset.begin` / `asset.end`）还是
+   * 注入的 handler，拿到的都是已经校验过的入参 —— 服务层不再自己 `typeof`。
    */
   private async invoke(state: ConnectionState, method: string, params: unknown): Promise<unknown> {
-    if (method === HELLO_METHOD) return await this.handleHello(state, params);
-
-    if (!state.authorized) {
+    // 未握手时只认 `hello`（不先判方法名：未授权的连接不该探出宿主有哪些方法）
+    if (!state.authorized && method !== HELLO_METHOD) {
       throw new HostError("unauthorized", { detail: { reason: "hello_required" } });
     }
 
@@ -541,20 +546,25 @@ export class WsHub {
       });
     }
 
+    // 入参校验就这一处：表里没有 schema 的方法原样透传（迁移是一域一域来的）
+    const input = this.parseParams(method, params);
+
+    if (method === HELLO_METHOD) return await this.handleHello(state, input);
+
     // 语言是连接状态，接线层自己管（业务层不该知道「这条连接说哪种语言」之外的任何事）
-    if (method === "host.setLanguage") return this.handleSetLanguage(state, params);
+    if (method === "host.setLanguage") return this.handleSetLanguage(state, input);
 
     if (this.options.uploads) {
       if (method === "asset.begin") {
         // 语言是连接状态：草稿会话落库时要靠它渲染那条隐藏的 cwd 消息（D8）
         return await this.options.uploads.begin(
           state.id,
-          params as AssetBeginParams,
+          input as AssetBeginParams,
           state.language,
         );
       }
       if (method === "asset.end") {
-        return await this.options.uploads.end(state.id, params as AssetEndParams);
+        return await this.options.uploads.end(state.id, input as AssetEndParams);
       }
     }
 
@@ -566,7 +576,35 @@ export class WsHub {
       });
     }
     const call = handler as AnyMethodHandler;
-    return await call({ method, params, connection: toConnectionInfo(state) });
+    return await call({ method, params: input, connection: toConnectionInfo(state) });
+  }
+
+  /**
+   * 入参校验：**全仓唯一的一处**（{@link PARAM_SCHEMAS}）。
+   *
+   * 表里没有这个方法的 schema 就原样透传 —— 还没迁的方法继续由服务层自己判，所以迁移可以
+   * 一域一域来。查到了就把入参换成 `parse` 出来的那一份（Zod 会顺手丢掉形状外的键，并做
+   * `.trim()` 这类归一化），服务层拿到的是「已经相信的入参」。
+   *
+   * 失败映射成既有的错误形状：`invalid_params` + `params.field` + `detail.{ field, reason }`，
+   * 与 `asRecord` / 各服务层原来手写的那一套逐字一致 —— 客户端按 `field` 找输入框、按
+   * `reason` 分支，换形状等于改契约。`reason` 就是 schema 上写的那个词（`empty` /
+   * `not_an_object` / …），不是 Zod 的英文句子。
+   */
+  private parseParams<M extends MethodName>(method: M, params: unknown): MethodParams<M> {
+    const schema = PARAM_SCHEMAS[method];
+    if (!schema) return params as MethodParams<M>;
+
+    const parsed = schema.safeParse(params);
+    if (parsed.success) return parsed.data as MethodParams<M>;
+
+    const issue = parsed.error.issues[0];
+    // 根对象本身不对时（`null` / 数组 / 字符串）路径是空的：字段名报 `params`，与 `asRecord` 同口径
+    const field = issue.path.length > 0 ? issue.path.join(".") : "params";
+    throw new HostError("invalid_params", {
+      params: { field },
+      detail: { field, reason: issue.message },
+    });
   }
 
   /**

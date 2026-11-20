@@ -450,9 +450,12 @@ export class AgentService {
    * 删的正好是默认助手时连带把默认清掉（`defaultsCleared`）。其它指向关系（别的助手在
    * 权限里点名它的 function）只报在 `references` 里 —— 那些是权限白名单里的一个名字，
    * 删掉定义之后那条名字什么都不指，不是「不能删」。
+   *
+   * `agentId` 的形状（非空、可做文件名）不在这里判：入参 schema 已经在 `WsHub` 那一处校过
+   * （`schema/session.ts` 的 `agentIdSchema`），这里只判「这个助手在不在」。
    */
   async delete(params: AgentDeleteParams): Promise<AgentDeleteResult> {
-    const id = requireId(params.agentId, "agentId");
+    const id = params.agentId;
     const found = await this.load(id);
     if (!found) {
       throw new HostError("not_found", { params: { entity: "agent" }, detail: { agentId: id } });
