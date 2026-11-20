@@ -469,6 +469,7 @@ pin 与退出信号必须分开，理由各一条：
 | **W11 素材引用去 base64** | 引用改成内容段上的本地扩展字段 `__asset_id`（不再往 `image_url.url` / `file.file_id` 里塞 `asset://`），素材全局去重、关系行随消息落库 | ✅ 完成 |
 | **W12 本轮重写** | 题进内存（v5 删表）、判断收一处（四个拒因）、交接期间不收件、`session.pause`/`resume`、记忆形状只在 SDK 一处算（400 字节 / 断点 / cwd 只在创建时）、inbox 三事件恢复、`applyChunk` 只吃 `AgentNS.Delta`、删 `seq` | ✅ 完成 |
 | **W13 远端升级**（PRD 3.8 / 4.12） | 宿主：`upgradeHost` 两条判据（磁盘就地换过 / registry 有这一版，后者用内置 `fetch`）+ 写 pin `<数据根>/run/next-version.json` + `ExitReason` 加 `upgrade` 与专属退出码；客户端：`/upgrade` 删本机 `npx` 预下与 `cli/host-version.json`，`connectHost` 改读 pin；启动方式：读 pin 重拉（我们自己给 `agents-host up`，还是只出文档 —— 待拍，见 §8 升级） | ⬜ 未开始 |
+| **W14 注释治理** | 逐包核实注释：假话按事实改、无法核实的删、规定性断言删、交叉叙述收成一处（判据与边界见 §14） | 🚧 进行中 |
 
 **并行规则**：同波次里两个 agent 的目录不重叠才能同时派；跨目录要改别人的文件先报。
 
@@ -503,6 +504,27 @@ pin 与退出信号必须分开，理由各一条：
 8. 按 `AGENTS.md` 第 7 条：**提交但不推送** —— 每完成一部分就提交（一个主题一个提交，中文 conventional commits，正文写「改前 / 改后 / 为什么」）；但不执行 `git push` / `rebase` / `commit --amend` / `push --force`，推不推只由用户说。
 9. **措辞禁用词**（注释、命名、文案、提交信息一律不许出现）：`consumption`、`gate`、`hold/release`、`suspend/resume`、`once` / `busy` 当状态值、`queued`、`run.state`、`usage`（快照）、`settle`、`回投`、`conversation` / 「对话」/「兄弟会话」/「驱动者」/「待办」/ `mayStart`；也不许把「一次运行 / 一次回答」说成「轮 / 段 / 圈」（工具轮次 `ToolRound` 除外）。
 10. **跨包改签名后重建 `dist`**，顺序 `core → sdk → testing → client → host`；`cli` 走 `link:` 消费这些 `dist`，不重建它手上就是老名字（表现为运行时炸掉或超时）。
+
+---
+
+## 14. 专项：注释治理（W14）
+
+**一句话**：注释里不许有假话，不许把同一件事讲两遍，不许立规矩。
+
+| # | 判据 | 处置 |
+|---|---|---|
+| 1 | 事实断言与代码 / 用例不符（路径、方法名、字段、行为、谁调谁、边界值） | 按事实改 |
+| 2 | 断言无法核实 | 删 |
+| 3 | 规定性断言（「永不…」「一律…」「只能…」「不支持…」） | 删 —— 规矩只能由真人写进 PRD / PLAN（`AGENTS.md`） |
+| 4 | 同一件事在好几个文件各讲一遍（交叉叙述） | 留离实现最近的那一处，其余删掉或缩成一句指路 |
+| 5 | 改前 / 改后、谁曾经怎么想、删了哪个旧设计 | 删（git 历史里有）；只有「读这段代码必须知道的那条约束」才留 |
+| 6 | 解释「为什么这么写」的短句、不明显的取舍、外部协议与厂商的怪癖 | 留 |
+
+**范围**：`packages/{core,sdk,host,client,testing,logger}/src` 下的 `.ts`（含用例里的注释）。一格一个执行者，包与目录不重叠。
+
+**不许碰**：任何代码行（`git diff` 里出现非注释行改动就是越界）、测试断言、`docs/`、README、`AGENTS.md`、`PRINCIPLES.md`。注释与代码打架时**报上来**，不擅自改代码。
+
+**验收**（每包都跑）：`tsc --noEmit -p tsconfig.test.json` 零错误、`vitest run` 全绿、`prettier --check` 通过。
 
 ---
 
