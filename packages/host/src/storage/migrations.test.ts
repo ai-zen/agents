@@ -167,6 +167,7 @@ const EXPECTED_COLUMNS: Record<string, ColumnShape[]> = {
     ["params", "TEXT", 0, null, 0],
     ["durationMs", "INTEGER", 0, null, 0],
     ["sessionId", "TEXT", 0, null, 0],
+    ["origin", "TEXT", 1, "'app'", 0],
     ["createdAt", "INTEGER", 1, null, 0],
   ],
   credentials: [

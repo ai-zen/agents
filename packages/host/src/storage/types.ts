@@ -322,6 +322,8 @@ export interface NoticeRow {
   durationMs: number | null;
   /** 这条通知与哪段会话有关；null 表示全局通知（会话删掉时随之级联删除） */
   sessionId: string | null;
+  /** 来源（`app` / `log`）：入库的那批总是 `app`，日志上浮的那批压根不落库 */
+  origin: string;
   createdAt: number;
 }
 
@@ -333,6 +335,7 @@ export interface Notice {
   durationMs: number | null;
   /** 这条通知与哪段会话有关；null 表示全局通知 */
   sessionId: string | null;
+  origin: string;
   createdAt: number;
 }
 
@@ -344,6 +347,8 @@ export interface NoticeCreateInput {
   durationMs?: number | null;
   /** 挂在哪段会话上；不给表示全局通知 */
   sessionId?: string | null;
+  /** 来源；不给就写列的缺省值 `app` */
+  origin?: string;
   createdAt: number;
 }
 

@@ -274,6 +274,15 @@ export type NoticeLevel = "info" | "success" | "warning" | "error";
 export const NOTICE_LEVELS: readonly NoticeLevel[] = ["info", "success", "warning", "error"];
 
 /**
+ * 通知的来源：`app` 是应用自己要说的（缺省），`log` 是日志记录上浮来的。
+ *
+ * 一条来源只决定一件事：**清除的时机**。`log` 那批不入库、不重放（只推给当时在线的连接），
+ * 所以客户端在用户发送那一刻就把屏上 `origin === "log"` 的几条清掉 —— 它们已经看过了，
+ * 留着只会挡事；`app` 那批是真要说的事，得等用户自己处理。
+ */
+export type NoticeOrigin = "log" | "app";
+
+/**
  * 一条通知。
  *
  * `duration` 是秒数：给了则到点自动消失，`null` 表示不自动消失、靠手动清除（PRD L3）。
@@ -288,6 +297,8 @@ export interface NoticeView {
   /** 与哪段会话有关；`null` 表示全局通知 */
   sessionId: string | null;
   createdAt: string;
+  /** 谁让它出现的（`app` / 日志上浮）；见 `NoticeOrigin` */
+  origin: NoticeOrigin;
 }
 
 // ---------------------------------------------------------------------------

@@ -400,6 +400,7 @@ describe("推送（PRD L5 / R47）", () => {
         },
         sessionId: null,
         createdAt: NOW,
+        origin: "app",
       },
       at: NOW,
     });
@@ -477,6 +478,7 @@ describe("推送（PRD L5 / R47）", () => {
         },
         sessionId: null,
         createdAt: NOW,
+        origin: "app",
       },
       at: NOW,
     });

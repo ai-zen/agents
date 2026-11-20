@@ -15,6 +15,7 @@ import { migrate } from "../storage/migrations.js";
 import type { NoticeRow } from "../storage/types.js";
 import { EventMap, EventName } from "../wire/events.js";
 import { NoticeService, createEventLocalizer } from "./NoticeService.js";
+import { QUIET_LOG, recordingLog } from "./TestSupport.js";
 
 interface Harness {
   dir: string;
@@ -35,6 +36,7 @@ function buildHarness(dir: string, db: Database, notices: NoticeRepository): Har
   const service = new NoticeService({
     notices,
     now: () => clock.value,
+    logger: QUIET_LOG,
     emit: (name, payload) => {
       events.push({ name, payload });
     },
@@ -143,7 +145,10 @@ describe("通知持久化（L3：重启不丢）", () => {
     const first = new Database(ownFile);
     try {
       await migrate(first);
-      const service = new NoticeService({ notices: new NoticeRepository(first) });
+      const service = new NoticeService({
+        notices: new NoticeRepository(first),
+        logger: QUIET_LOG,
+      });
       const created = await service.create({
         level: "error",
         code: "notice.logError",
@@ -153,7 +158,7 @@ describe("通知持久化（L3：重启不丢）", () => {
       await first.close();
       db2 = new Database(ownFile);
       await migrate(db2);
-      const reopened = new NoticeService({ notices: new NoticeRepository(db2) });
+      const reopened = new NoticeService({ notices: new NoticeRepository(db2), logger: QUIET_LOG });
 
       const listed = await reopened.list();
       expect(listed.notices.map((notice) => notice.id)).toEqual([created.id]);
@@ -177,6 +182,7 @@ describe("通知持久化（L3：重启不丢）", () => {
       const service = new NoticeService({
         notices: new NoticeRepository(first),
         now: () => clock.value,
+        logger: QUIET_LOG,
       });
       const created = await service.create({
         level: "info",
@@ -190,6 +196,7 @@ describe("通知持久化（L3：重启不丢）", () => {
       const reopened = new NoticeService({
         notices: new NoticeRepository(db2),
         now: () => clock.value,
+        logger: QUIET_LOG,
       });
 
       clock.value += 30_000;
@@ -428,15 +435,66 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
   });
 });
 
-describe("日志上浮（F-J2）", () => {
-  it("warn / error 各给一条永久通知", async () => {
-    await harness.service.log("warning", "MCP 服务器断了");
-    harness.clock.value += 1;
-    await harness.service.log("error", "写库失败", "zh");
+describe("来源与持久化（D1 / D2）", () => {
+  it("persist: false 不入库、列不出来，但照样推 notice 事件（当时在线的连接看得到）", async () => {
+    const created = await harness.service.create({
+      level: "warning",
+      code: "notice.logWarning",
+      params: { summary: "MCP 服务器断了" },
+      duration: null,
+      origin: "log",
+      persist: false,
+    });
 
-    const listed = await harness.service.list({}, "zh");
-    expect(listed.notices.map((notice) => notice.level)).toEqual(["warning", "error"]);
-    expect(listed.notices[0]?.duration).toBeNull();
-    expect(listed.notices[1]?.text.message).toContain("写库失败");
+    expect(created.origin).toBe("log");
+    expect(await harness.db.all<NoticeRow>("SELECT id FROM notices")).toEqual([]);
+    expect((await harness.service.list()).notices).toEqual([]);
+    expect(harness.events.map((event) => event.name)).toEqual(["notice"]);
+  });
+
+  it("不给 origin 就是 app，且入库的那一行读得出来", async () => {
+    const created = await harness.service.create({
+      level: "info",
+      code: "notice.settingsApplied",
+      duration: 5,
+    });
+
+    expect(created.origin).toBe("app");
+    expect(await harness.db.all<NoticeRow>("SELECT origin FROM notices")).toEqual([
+      { origin: "app" },
+    ]);
+  });
+
+  it("非持久的那条不在库里，dismiss 自然回「没改动」（不给它加特判）", async () => {
+    const created = await harness.service.create({
+      level: "error",
+      code: "notice.logError",
+      params: { summary: "写库失败" },
+      origin: "log",
+      persist: false,
+    });
+
+    expect(await harness.service.dismiss({ noticeId: created.id })).toEqual({ dismissed: false });
+    // 推给在线连接那一步不受影响：屏上还在，只是库里没有
+    expect(harness.events.map((event) => event.name)).toEqual(["notice"]);
+  });
+
+  it("库里的码在文案字典里查不到时记一句（兜底文案不是静默降级）", async () => {
+    await harness.db.run(
+      `INSERT INTO notices (id, level, code, durationMs, sessionId, origin, createdAt)
+       VALUES ('n-old', 'warning', 'notice.someDeletedKey', NULL, NULL, 'app', 1)`,
+    );
+    const { logger, records } = recordingLog();
+    const service = new NoticeService({
+      notices: harness.notices,
+      now: () => harness.clock.value,
+      logger,
+    });
+
+    const listed = await service.list();
+    expect(listed.notices.map((notice) => notice.id)).toEqual(["n-old"]);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.level).toBe("warn");
+    expect(records[0]?.detail).toEqual({ noticeId: "n-old", code: "notice.someDeletedKey" });
   });
 });

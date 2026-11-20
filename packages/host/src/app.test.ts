@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createHost, resolveHostVersion } from "./app.js";
+import { createHost, resolveHostVersion, shouldNotifyFromLog } from "./app.js";
 import type { ExitFacts, HostApp, HostAppOptions } from "./app.js";
 import { resolvePaths } from "./config.js";
 import { DEFAULT_PORT, resolveListenTarget } from "./config.js";
@@ -1661,5 +1661,47 @@ describe("题与死会话", () => {
     expect(started).not.toHaveBeenCalled();
     // 原样留着：不是清掉、也不是重写别的 mode
     expect(await app.questionService.readPendingHandoff(session.id)).toBe("self");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 日志（F-J2 / D1）
+// ---------------------------------------------------------------------------
+
+describe("日志", () => {
+  it("没注入 logger 时落 <dataRoot>/logs/host.log（路径这一单没动）", async () => {
+    const fixture = await makeFixture();
+    // 不传 logger：走 resolveLogger() 自己造的那一份（外部注入的那份不该被这里验）
+    const app = await createHost({
+      aiZenDir: fixture.dataRoot.path,
+      port: 0,
+      local: true,
+      exit: () => undefined,
+    });
+    await app.start();
+    apps.push(app);
+    await app.stop("requested");
+
+    const text = await fs.readFile(join(fixture.dataRoot.path, "logs", "host.log"), "utf8");
+    expect(text).toContain("宿主开始监听");
+    // 收尾那一行是 flush 的证明：close() 之前写的行必须已在盘上
+    expect(text).toContain("宿主已收尾");
+  });
+
+  it("判据：warn / error 一律转通知，info 不转", () => {
+    const at = "2026-01-01T00:00:00.000Z";
+    expect(shouldNotifyFromLog({ level: "warn", source: "host", message: "m", at })).toBe(true);
+    expect(shouldNotifyFromLog({ level: "error", source: "ws", message: "m", at })).toBe(true);
+    expect(shouldNotifyFromLog({ level: "info", source: "host", message: "m", at })).toBe(false);
+  });
+
+  it("判据：通知模块自己那一格（source: notice）不转 —— 环在第一跳就断", () => {
+    const at = "2026-01-01T00:00:00.000Z";
+    expect(
+      shouldNotifyFromLog({ level: "error", source: "notice", message: "通知没发出去", at }),
+    ).toBe(false);
+    expect(shouldNotifyFromLog({ level: "warn", source: "notice", message: "同样不转", at })).toBe(
+      false,
+    );
   });
 });

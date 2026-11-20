@@ -13,13 +13,16 @@
  *
  * 语气四档 `info | success | warning | error`（PRD 4.9）：信息 / 成功 / 警告 / 错误，
  * 「已保存」这种一秒提示归 `success` 并配一个很短的 duration；`warning` / `error` 同时是
- * 宿主日志上浮的通道（PRD F-J2）。
+ * 宿主日志上浮的通道（PRD F-J2）—— 但那一条链路在本文件之外：日志只出记录，
+ * 「要不要变成通知」由接线处判（`app.ts` 的 `shouldNotifyFromLog`），本模块不认识日志。
  *
  * 语气取值只认 `NOTICE_LEVELS` 这一份（`wire/states.ts`）：写入时校验、读出时折叠非法值，
  * 都用它，不在这里另写一份白名单。
  */
 
 import { randomUUID } from "node:crypto";
+
+import type { LogSink } from "@ai-zen/agents-logger";
 
 import { DEFAULT_LANGUAGE, hasMessage, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
@@ -36,6 +39,7 @@ import type {
   NoticeLevel,
   NoticeListParams,
   NoticeListResult,
+  NoticeOrigin,
   NoticeView,
 } from "../wire/index.js";
 import type { EventMap, EventName } from "../wire/events.js";
@@ -65,12 +69,28 @@ export interface NoticeCreateInput {
   duration?: number | null;
   /** 与哪段会话有关；不给表示全局通知 */
   sessionId?: string | null;
+  /** 谁让它出现的；缺省 `app` */
+  origin?: NoticeOrigin;
+  /**
+   * 要不要落库；缺省 `true`。
+   *
+   * `false` 只推给**当时在线**的连接：不入库、不重放，`notice.list` 里也看不到它。
+   * 日志上浮的那批就是这种（一条日志不值得占一行库记录，更不该重启之后又弹一次）。
+   */
+  persist?: boolean;
 }
 
 export interface NoticeServiceDeps {
   notices: NoticeRepository;
   /** 推 `notice` 事件；不注入就不推（用例、或不需要在线推送的场合） */
   emit?: ChatEventEmitter;
+  /**
+   * 本模块自己那一格日志（接线处给的是 `withSource("notice")` 的那份）。
+   *
+   * 带给它是有原因的：这个来源写出去的东西**不转通知**，于是「通知失败 → 日志 → 通知」
+   * 那个环绕不过来（判据在 `app.ts` 的 `shouldNotifyFromLog`）。
+   */
+  logger: LogSink;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
   /** 通知 id 的分配口，测试注入用；缺省 `crypto.randomUUID` */
@@ -125,6 +145,8 @@ function toView(notice: Notice, language: Language): NoticeView {
     text,
     sessionId: notice.sessionId,
     createdAt: iso(notice.createdAt),
+    // 同理：只写 `log` / `app` 两档（`NoticeOrigin`），库里不会有第三种
+    origin: notice.origin as NoticeOrigin,
   };
 }
 
@@ -186,12 +208,14 @@ export function createEventLocalizer(): EventLocalizer {
 export class NoticeService {
   private readonly notices: NoticeRepository;
   private readonly emit?: ChatEventEmitter;
+  private readonly logger: LogSink;
   private readonly now: () => number;
   private readonly newId: () => string;
 
   constructor(deps: NoticeServiceDeps) {
     this.notices = deps.notices;
     this.emit = deps.emit;
+    this.logger = deps.logger;
     this.now = deps.now ?? Date.now;
     this.newId = deps.newId ?? randomUUID;
   }
@@ -201,6 +225,10 @@ export class NoticeService {
    *
    * 落库 → 推 `notice` 事件 → 返回渲染好的视图。落库在推送之前：推送只对在线连接有意义
    * （D5：断线即作废），而库里的那条是重连之后还能看到的真相（L3）。
+   *
+   * `persist: false` 那一档（日志上浮来的）跳过落库：它只属于**当时在线**的那些连接，
+   * 不入库、不重放，`notice.list` 里也看不到 —— 为一条日志占一行库记录，代价是重启之后
+   * 它又弹一次。
    */
   async create(
     input: NoticeCreateInput,
@@ -231,35 +259,14 @@ export class NoticeService {
       params: Object.keys(params).length > 0 ? params : null,
       durationMs,
       sessionId: input.sessionId ?? null,
+      origin: input.origin ?? "app",
       createdAt,
     };
-    await this.notices.create(row);
+    if (input.persist ?? true) await this.notices.create(row);
 
     const notification = toView(row, language);
     this.emit?.("notice", { notice: notification, at: iso(createdAt) });
     return notification;
-  }
-
-  /**
-   * 日志上浮（PRD F-J2：warn / error 也要上通知栏）。
-   *
-   * 没有持续时间 = 永久：界面上的一闪而过不适合承载「宿主出了什么事」，
-   * 这类通知要留到用户看过并手动清掉。
-   */
-  async log(
-    level: Extract<NoticeLevel, "warning" | "error">,
-    summary: string,
-    language: Language = DEFAULT_LANGUAGE,
-  ): Promise<NoticeView> {
-    return await this.create(
-      {
-        level,
-        code: level === "warning" ? "notice.logWarning" : "notice.logError",
-        params: { summary },
-        duration: null,
-      },
-      language,
-    );
   }
 
   /**
@@ -281,7 +288,18 @@ export class NoticeService {
     const active = await this.notices.listActive(now);
 
     const views = active
-      .map((notice) => toView(notice, language))
+      .map((notice) => {
+        // 库里那条码在文案字典里查不到：`toView` 会换成兜底那句，但那是屏上的一副面孔，
+        // 查库的人得知道「这里有一条认不出的码」。这个来源（`notice`）写出去的记录不转通知，
+        // 所以这一句不会把环绕回来。
+        if (!hasMessage(notice.code)) {
+          this.logger.warn("通知的文案码在字典里查不到，按兜底文案显示", {
+            noticeId: notice.id,
+            code: notice.code,
+          });
+        }
+        return toView(notice, language);
+      })
       .filter((view) => (params.level === undefined ? true : view.level === params.level))
       .filter((view) =>
         params.sessionId === undefined

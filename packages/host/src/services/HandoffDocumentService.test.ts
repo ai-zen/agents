@@ -55,6 +55,7 @@ import type {
   HandoffRunnerPort,
 } from "./HandoffDocumentService.js";
 import { NoticeService } from "./NoticeService.js";
+import { QUIET_LOG } from "./TestSupport.js";
 
 /** 摘要模式用的假客户端：把「指令 + 正文」回声出来，于是一眼能看出模板来自哪一份 */
 type SummaryClient = Parameters<typeof completeOnce>[0]["client"];
@@ -520,7 +521,10 @@ describe("自交接：同一个agent写（PRD 4.5）", () => {
   });
 
   it("「写完了」看那次写工具的结果：工具结果到了 + 盘上够长 → 当场提交", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({ notices });
     const toolFinished: string[] = [];
     built.driver.on("toolFinished", (payload) => {
@@ -564,7 +568,10 @@ describe("自交接：同一个agent写（PRD 4.5）", () => {
   });
 
   it("自交接没写出来（模型压根没调写工具）→ 单向降级到独立摘要，并说清楚退了哪一档（F-D7）", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     // 脚本里没有那次写：第一批只有一句话。工具集里仍然有 `write`（自交接的前提成立），
     // 但这一趟一次都没调它 —— 判据落在「这一批收口了还没见到那次写」上。
     const driver = new RecordingAgent(
@@ -609,7 +616,10 @@ describe("自交接：同一个agent写（PRD 4.5）", () => {
   });
 
   it("中断（用户按了中断＝放弃交接）→ 回到交接前，并说不交接了", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     // 这一趟的第一片永远不来：于是「掐在途」必然落在正在跑的那一批上。
     // 第二段只为让这个 agent 手里有 `write` 工具（自交接的前提），它走不到
     const driver = new RecordingAgent([
@@ -638,7 +648,10 @@ describe("自交接：同一个agent写（PRD 4.5）", () => {
 
 describe("独立交接（一次性agent + 记忆副本）", () => {
   it("文档真的落在 <cwd>/.ai-zen/handoffs/ 下，大小从磁盘取，写完落一条通知", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({ notices });
     await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
@@ -890,7 +903,10 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
   });
 
   it("agent在这期间没了：按失败收尾，不留存档会话", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     // 入口判据那一次还看得见它，后台那一趟开始时它已经不在了（会话被删 / 被硬杀）
     const driver = new RecordingAgent();
     let lookups = 0;
@@ -1087,7 +1103,10 @@ describe("自动交接：平级会话越线（插件那一路）", () => {
 
 describe("取消与失败（F-D7）", () => {
   it("用户取消：说不交接了，不留文档、不开新会话", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({
       notices,
       execute: async () => {
@@ -1108,7 +1127,10 @@ describe("取消与失败（F-D7）", () => {
   });
 
   it("写文档失败后闸是开的（收口失败也开闸，否则这一段再也收不到件）", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({
       notices,
       // 这一趟按 SDK 的做法在批头关闸，然后写文档失败（没有文档、也没有提交）
@@ -1130,7 +1152,10 @@ describe("取消与失败（F-D7）", () => {
   });
 
   it("执行者没把记忆交回来（一次都没叫落库接缝）→ 按失败收尾，不换记忆", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({
       notices,
       // 既不抛、也不叫 `commitMemory`：文档没交回来，这一趟不能算成
@@ -1152,7 +1177,10 @@ describe("取消与失败（F-D7）", () => {
   });
 
   it("换记忆那一拍没成（文档不在盘上）→ 按失败收尾，报的是那个错，不留存档会话", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({
       notices,
       // 执行者说「写好了」，但那个路径上什么也没有：提交点的盘上校验不成立
@@ -1176,7 +1204,10 @@ describe("取消与失败（F-D7）", () => {
   });
 
   it("真失败：说清楚没走通，并回到交接前", async () => {
-    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    const notices = new NoticeService({
+      notices: new NoticeRepository(harness.db),
+      logger: QUIET_LOG,
+    });
     const built = harness.build({
       notices,
       execute: async () => {

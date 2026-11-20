@@ -17,6 +17,7 @@ import type { MethodCallContext } from "../net/WsHub.js";
 import { isMethodName } from "../wire/index.js";
 import type { EventMap, MethodName, MethodParams } from "../wire/index.js";
 import { NoticeService } from "../services/NoticeService.js";
+import { QUIET_LOG } from "../services/TestSupport.js";
 import { createNoticeHandlers } from "./noticeHandlers.js";
 
 /** 一次调用的现场（连接 id + 连接语言；其余字段本域用不到） */
@@ -48,6 +49,7 @@ async function setup(): Promise<Harness> {
   const notices = new NoticeService({
     notices: new NoticeRepository(db),
     now: () => clock.value,
+    logger: QUIET_LOG,
   });
   return { dir, db, notices, clock };
 }

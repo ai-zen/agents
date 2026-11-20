@@ -194,6 +194,7 @@ describe("帧构造", () => {
         },
         sessionId: null,
         createdAt: "2026-01-01T00:00:00.000Z",
+        origin: "app" as const,
       },
       at: "2026-01-01T00:00:00.000Z",
     };

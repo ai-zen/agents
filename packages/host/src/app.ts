@@ -26,7 +26,7 @@ import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
 import { FileLogger } from "@ai-zen/agents-logger";
-import type { LogRecord } from "@ai-zen/agents-logger";
+import type { LogRecord, LogSink } from "@ai-zen/agents-logger";
 import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
 import type {
   AppConfig,
@@ -122,6 +122,9 @@ const FALLBACK_VERSION = "0.0.0";
 
 /** 宿主日志的文件名（`<dataRoot>/logs/host.log`：一个进程一格的目录布局是下一单的事） */
 const HOST_LOG_FILE_NAME = "host.log";
+
+/** 通知模块自己那一格日志的来源标签：只在这个来源上挂「不转通知」这条规则 */
+const NOTICE_SOURCE = "notice";
 
 /** 配置生效那条通知留几秒（F-F9：一次改动合成一条，一秒级的提示归 `info`） */
 const APPLIED_NOTICE_SECONDS = 3;
@@ -348,10 +351,10 @@ export class HostApp {
   private readonly logger: HubLogger;
   /** 自己拥有的文件日志（注入了外部 logger 时为 `null`：那份不归本对象关） */
   private readonly fileLogger: FileLogger | null;
+  /** 通知模块自己那一格日志（`source: "notice"`）：它写出去的东西不再转通知 */
+  private readonly noticeLogger: LogSink;
   /** 日志记录往通知那一侧转发的位置（容器，通知服务造好之后才接上） */
   private readonly logRecords: LogRecordRelay;
-  /** 正在发通知：这期间产生的 warn / error 只落文件（防回环） */
-  private notifying = false;
   private readonly exitHook: ExitHook;
   /** 磁盘版本的读法（D4 / F-E3 自检用；用例换成假实现） */
   private readonly readDiskVersion: () => string | null;
@@ -397,6 +400,12 @@ export class HostApp {
     this.logger = logging.logger;
     this.fileLogger = logging.fileLogger;
     this.logRecords = logging.records;
+    this.noticeLogger = logging.fileLogger?.withSource(NOTICE_SOURCE) ?? {
+      // 注入了外部 logger 时那份只有 warn / error（`HubLogger`）：缺的 info 补一个空实现
+      info: () => undefined,
+      warn: (message, detail) => this.logger.warn(message, detail),
+      error: (message, detail) => this.logger.error(message, detail),
+    };
     this.exitHook = options.exit ?? defaultExit;
     this.version = options.version ?? resolveHostVersion();
     this.readDiskVersion = options.diskVersion ?? readDiskVersion;
@@ -561,10 +570,12 @@ export class HostApp {
       notices: this.notices,
       emit: (name, payload) => this.emitEvent(name, payload),
       now: () => this.clock.now(),
+      // 通知模块自己的失败记在 `source: "notice"` 那一格：那个来源不转通知，环就断在这儿
+      logger: this.noticeLogger,
     });
-    // PRD F-J2：warn / error 也上通知（永久）。日志比通知服务先造出来（早造的服务也要能记），
-    // 所以在这里接上；回环由重入标记挡住。
-    this.logRecords.attach((record) => this.raiseNoticeFromRecord(record));
+    // PRD F-J2：warn / error 也上通知。日志比通知服务先造出来（早造的服务也要能记），
+    // 所以在这里接上；判据与环的断法都在 `shouldNotifyFromLog` 那一条里。
+    this.logRecords.attach((record) => this.forwardLogRecord(record));
     this.handoffService = new HandoffDocumentService({
       sessions: this.sessions,
       workspaces: this.workspaces,
@@ -1316,7 +1327,8 @@ export class HostApp {
         duration: null,
       });
     } catch (error) {
-      this.logger.warn("推交接插件缺失的警告失败", { error: describeError(error) });
+      // 通知推不出去是通知模块自己的事：落它那一格（那个来源不转通知，不会再弹一次）
+      this.noticeLogger.warn("推交接插件缺失的警告失败", { error: describeError(error) });
     }
   }
 
@@ -1374,21 +1386,35 @@ export class HostApp {
   }
 
   /**
-   * 一条日志记录 → 一条通知（PRD F-J2）。
+   * 一条日志记录 → 一条通知（PRD F-J2 / D1）。
    *
-   * 重入标记是防回环的那一处：发通知会写库、会推事件，那些动作里万一又冒出日志，
-   * 这条判断把它们挡在「只落文件」这一侧。通知本身失败只吞掉 —— 再记一条日志就是回环。
+   * 转发来的那条**不入库、不重放**（`origin: "log"` + `persist: false`）：只推给当时在线的
+   * 连接，所以 `notice.list` 里永远看不到它。发不出去也得有人知道：落一句到通知模块那一格，
+   * 那一句带着 `source: "notice"`，被判据挡住 —— 环在第一跳就断。
    */
-  private raiseNoticeFromRecord(record: LogRecord): void {
-    if (record.level === "info" || this.notifying) return;
-    const level = record.level === "error" ? "error" : "warning";
-    this.notifying = true;
-    void Promise.resolve()
-      .then(() => this.noticeService.log(level, record.message))
-      .catch(() => undefined)
-      .finally(() => {
-        this.notifying = false;
+  private forwardLogRecord(record: LogRecord): void {
+    if (!shouldNotifyFromLog(record)) return;
+    void this.createNoticeFromRecord(record);
+  }
+
+  private async createNoticeFromRecord(record: LogRecord): Promise<void> {
+    try {
+      await this.noticeService.create({
+        level: record.level === "warn" ? "warning" : "error",
+        code: record.level === "warn" ? "notice.logWarning" : "notice.logError",
+        params: { summary: record.message },
+        duration: null,
+        origin: "log",
+        persist: false,
       });
+    } catch (error) {
+      // 通知发不出去本身也是「通知失败」：记在通知模块那一格里（不管静默吞）
+      this.noticeLogger.error("日志转通知失败", {
+        level: record.level,
+        message: record.message,
+        error: describeError(error),
+      });
+    }
   }
 
   /**
@@ -1609,6 +1635,21 @@ function resolveLogger(options: HostAppOptions, paths: HostPaths): ResolvedLoggi
 // ---------------------------------------------------------------------------
 // 纯函数
 // ---------------------------------------------------------------------------
+
+/**
+ * 「这条日志记录要不要转成一条通知」—— 全仓唯一的一条判据（D1）。
+ *
+ * 判据只有一条：`warn` / `error` 一律转通知；唯一例外是通知模块自己打的日志 —— 它带着
+ * `source: "notice"`，转发它就会「通知失败 → 日志 → 通知」绕成环。
+ *
+ * 为什么不用一个「正在发通知」的布尔位：来源字段是**可检查**的。`host.log` 里那条
+ * `source=notice` 的 ERROR 本身就是「这条为什么没上通知」的答案，而一个正在被置位的布尔量
+ * 下完就还原了，事后什么也读不出来。
+ */
+export function shouldNotifyFromLog(record: LogRecord): boolean {
+  if (record.level === "info") return false;
+  return record.source !== NOTICE_SOURCE;
+}
 
 /**
  * 这段会话现在那个 agent 身上，最后一条**带用量的助手消息**的 `prompt_tokens`。

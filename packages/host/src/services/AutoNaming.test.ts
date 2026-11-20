@@ -26,6 +26,7 @@ import { AutoNaming } from "./AutoNaming.js";
 import type { TitleCompleter } from "./AutoNaming.js";
 import { defaultSessionName } from "./SessionService.js";
 import { NoticeService } from "./NoticeService.js";
+import { QUIET_LOG } from "./TestSupport.js";
 
 /** 夹具里那段会话的原名：创建时间默认值（起名的判据就是「名字还是不是它」） */
 const DEFAULT_NAME = defaultSessionName(1);
@@ -91,7 +92,11 @@ function buildHarness(configPath: string): Harness {
     return await behaviour.reply();
   };
 
-  const noticeService = new NoticeService({ notices, now: () => 1_700_000_100_000 });
+  const noticeService = new NoticeService({
+    notices,
+    now: () => 1_700_000_100_000,
+    logger: QUIET_LOG,
+  });
   const service = new AutoNaming({
     sessions,
     messages,
@@ -438,7 +443,11 @@ describe("起名之后的副作用", () => {
     expect(harness.events[0]?.name).toBe("session.changed");
     expect(harness.events[0]?.payload).toMatchObject({ sessionId: "c1", change: "renamed" });
 
-    const notices = new NoticeService({ notices: harness.notices, now: () => 1_700_000_100_000 });
+    const notices = new NoticeService({
+      notices: harness.notices,
+      now: () => 1_700_000_100_000,
+      logger: QUIET_LOG,
+    });
     const listed = await notices.list({}, "zh");
     expect(listed.notices).toHaveLength(1);
     expect(listed.notices[0]?.text.messageKey).toBe("notice.autoNamed");

@@ -219,6 +219,9 @@ export const MIGRATIONS: Migration[] = [
       // notices：持久化，durationMs 为 null 表示永久（PRD L3）。
       // sessionId 是「这条通知与哪段会话有关」的真值（可空 = 全局通知）：按会话过滤、
       // 按会话清都走这一列；会话没了它也就没有意义，所以跟着级联删除。
+      // origin 是「谁让它出现的」（`app` / `log`）：日志上浮的那批压根不落库（只推给当时
+      // 在线的连接），所以入库的行里它总是 `app`；这一列留着是为了从库里读出一个来源，
+      // 而不是读出时才按 `code` 反推。
       `CREATE TABLE IF NOT EXISTS notices (
          id             TEXT PRIMARY KEY,
          level          TEXT NOT NULL,
@@ -226,6 +229,7 @@ export const MIGRATIONS: Migration[] = [
          params         TEXT,
          durationMs     INTEGER,
          sessionId      TEXT REFERENCES sessions (id) ON DELETE CASCADE,
+         origin         TEXT NOT NULL DEFAULT 'app',
          createdAt      INTEGER NOT NULL
        )`,
       `CREATE INDEX IF NOT EXISTS idx_notices_createdAt ON notices (createdAt)`,

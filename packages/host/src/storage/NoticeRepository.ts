@@ -13,7 +13,7 @@
 import type { Database } from "./Database.js";
 import type { Notice, NoticeCreateInput, NoticeRow } from "./types.js";
 
-const COLUMNS = "id, level, code, params, durationMs, sessionId, createdAt";
+const COLUMNS = "id, level, code, params, durationMs, sessionId, origin, createdAt";
 
 /** `params` 列只有 `create()` 写：`JSON.stringify(参数对象)` 或 `NULL`。这里照着那两种形状读回来 */
 function parseParams(value: string | null): Record<string, unknown> | null {
@@ -28,6 +28,7 @@ function toNotice(row: NoticeRow): Notice {
     params: parseParams(row.params),
     durationMs: row.durationMs,
     sessionId: row.sessionId,
+    origin: row.origin,
     createdAt: row.createdAt,
   };
 }
@@ -40,13 +41,14 @@ export class NoticeRepository {
   }
 
   async create(input: NoticeCreateInput): Promise<void> {
-    await this.db.run(`INSERT INTO notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+    await this.db.run(`INSERT INTO notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
       input.id,
       input.level,
       input.code,
       input.params === undefined || input.params === null ? null : JSON.stringify(input.params),
       input.durationMs ?? null,
       input.sessionId ?? null,
+      input.origin ?? "app",
       input.createdAt,
     ]);
   }

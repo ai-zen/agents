@@ -164,6 +164,7 @@ describe("事件表", () => {
         text: localized("question.handoff.prompt"),
         sessionId: "c-1",
         createdAt: NOW,
+        origin: "app",
       },
       at: NOW,
     };
