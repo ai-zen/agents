@@ -1,0 +1,91 @@
+import type { DatabaseSync } from "node:sqlite";
+
+import type { AgentNS } from "@ai-zen/agents-core";
+
+/**
+ * 消息表。`payload` 就是 core 的一条 `AgentNS.Message`，写进去什么样读出来什么样。
+ *
+ * 同一个 id 会被反复写：流式响应边生成边落库，每次整条覆盖。第二次写入只换 `payload`，
+ * `seq` 与 `createdAt` 保持第一次的值 —— 让 `seq` 跟着改会把「按 `seq` 升序」的顺序在流式
+ * 追加过程中一直重排。
+ *
+ * `seq` 与 `createdAt` 是 `payload` 之外仅有的两个真列：`seq` 是并发写入的单调量，算式推不出来；
+ * `createdAt` 由宿主在第一次落库那一刻给（core 的 `Message` 上没有这个字段），所以也取不出来。
+ */
+export function messageTable(db: DatabaseSync) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id        TEXT PRIMARY KEY,
+      payload   TEXT NOT NULL,
+      sessionId TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+      seq       INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL,
+      UNIQUE (sessionId, seq)
+    );
+    CREATE INDEX IF NOT EXISTS messages_session_seq ON messages (sessionId, seq);
+  `);
+
+  const upsertSql = `INSERT INTO messages (id, payload, sessionId, seq, createdAt)
+    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?), ?)
+    ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`;
+
+  function upsert(sessionId: string, message: AgentNS.Message): void {
+    db.prepare(upsertSql).run(
+      message.id,
+      JSON.stringify(message),
+      sessionId,
+      sessionId,
+      Date.now(),
+    );
+  }
+
+  return {
+    upsert,
+
+    upsertMany(sessionId: string, list: AgentNS.Message[]): void {
+      for (const message of list) upsert(sessionId, message);
+    },
+
+    get(id: string): AgentNS.Message | undefined {
+      const row = db.prepare("SELECT payload FROM messages WHERE id = ?").get(id);
+      return row === undefined ? undefined : (JSON.parse(String(row.payload)) as AgentNS.Message);
+    },
+
+    /**
+     * `after` 那条在库里找不到时 `COALESCE` 给 0，退回整段历史；没给 `after` 走的是同一条路，
+     * 所以这里不分两支。
+     */
+    listBySession(sessionId: string, options: { after?: string } = {}): AgentNS.Message[] {
+      return db
+        .prepare(
+          `SELECT payload FROM messages
+            WHERE sessionId = ?
+              AND seq >= COALESCE((SELECT seq FROM messages WHERE id = ? AND sessionId = ?), 0)
+            ORDER BY seq`,
+        )
+        .all(sessionId, options.after ?? "", sessionId)
+        .map((row) => JSON.parse(String(row.payload)) as AgentNS.Message);
+    },
+
+    /** 侧栏要的「最后一条什么时候说的」：一个聚合，不读任何 `payload` */
+    lastAt(sessionId: string): number | null {
+      const row = db
+        .prepare("SELECT MAX(createdAt) AS at FROM messages WHERE sessionId = ?")
+        .get(sessionId);
+      return row?.at === null || row?.at === undefined ? null : Number(row.at);
+    },
+
+    delete(id: string): void {
+      db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+    },
+
+    /** `messageId` 在库里找不到时子查询给 NULL，比较不成立，一行都不删 */
+    deleteAfter(sessionId: string, messageId: string): void {
+      db.prepare(
+        `DELETE FROM messages
+          WHERE sessionId = ?
+            AND seq > (SELECT seq FROM messages WHERE id = ? AND sessionId = ?)`,
+      ).run(sessionId, messageId, sessionId);
+    },
+  };
+}

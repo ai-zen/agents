@@ -8,11 +8,11 @@
 
 | # | 做什么 | 过关标准 |
 |---|---|---|
-| 1 | `infra/`（db / json-table / bus / errors / files）+ `session/`（行与消息，不含自动命名） | 只有一个 `Session` 类型；加一个业务字段不改表也不改类型；用例不超过两条 |
-| 2 | `config/`（general、models、agents、mcp、discovery）+ `workspace/` + `scope/` + `session/auto-name.ts` | 配置改动只从一个口广播，消费方自己订阅；能力容器按目录存活 |
-| 3 | `agent/`（assembly、subscription、delivery、service、transient） | 一段会话一个执行体、跨投递复用；投递不唤醒；中断不销毁 |
-| 4 | `connection/` + tRPC router + 事件流 | 起宿主、连 WS、发一句话、收到流——一条跨进程用例 |
-| 5 | `asset/`、`credential/`、`question/`、`handoff/`、`search/`、`notice/` | 每域 0~2 条用例；第 3 条要说出它证明的是哪个人会犯的错 |
+| 1 | `infra/`（db / json-table / bus / errors / files）+ `modules/i18n/` + `modules/session/`（行与消息） | 只有一个 `Session` 类型；加一个业务字段不改表也不改类型 |
+| 2 | `modules/config/`（general、models、agents、mcp、discovery）+ `modules/workspace/` + `modules/scope/` + `modules/session/auto-name.ts` | 配置改动只从一个口广播，消费方自己订阅；能力容器按目录存活 |
+| 3 | `modules/agent/`（assembly、subscription、delivery、service、transient） | 一段会话一个执行体、跨投递复用；投递不唤醒；中断不销毁 |
+| 4 | `modules/connection/` + tRPC router + 事件流 | 起宿主、连 WS、发一句话、收到流——一条跨进程用例 |
+| 5 | `modules/asset/`、`credential/`、`question/`、`handoff/`、`search/`、`notice/` | 每域 0~2 条用例；多余的每一条要说出它证明的是哪个人会犯的错 |
 
 ## 门禁
 

@@ -13,6 +13,8 @@
 
 > 判据：加一个业务字段，要改几处？超过两处就是有第二份。
 
+「读不到」只有一种表示：`infra` 层回 `undefined`，由知道实体类型的域决定要不要折成 `not_found`。
+
 ## 二、契约声明一次，声明在实现旁边
 
 一个方法的入参与出参写在它自己的 procedure 上。全仓没有第二张方法清单。
@@ -42,10 +44,10 @@
 
 ## 六、一行一个 JSON
 
-每张表只有 `id` + `payload`；排序与过滤用生成列，JS 从不写它们。
+每张表只有 `id` + `payload`。排序、过滤、唯一性要用到的字段，能由库从 `payload` 里算出来的一律写成生成列，JS 从不写它们。
 
-两处例外，且只有两处：`messages.seq`（并发写入的单调量，算式推不出来）、
-`messages.searchText`（FTS 的索引产物，触发器只碰它）。
+只有**从 `payload` 取不出来**的才做真列，而且每一列要答得出「为什么取不出来」：
+`messages.seq`（并发写入的单调量，不是消息身上的东西）、`messages.createdAt`（由宿主在第一次落库那一刻给，core 的 `Message` 上没有这个字段）、`messages.searchText`（FTS 的索引产物）。
 
 ## 七、活物有唯一所有者
 
@@ -68,6 +70,7 @@ src/
   infra/      不懂业务：db、json-table、bus、errors、files
   modules/
     events.ts         事件判别联合（唯一的业务事件形状）
+    i18n/             文案：键是那句中文原文，英文表按它索引
     config/           磁盘上的配置：general · models · agents · mcp · discovery
     workspace/        项目行（cwd）
     scope/            能力容器（活，按目录，无表）

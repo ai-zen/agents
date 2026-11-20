@@ -97,12 +97,25 @@
 **文案在产生处本地化**：字符串字面量外面包一次 `this.t(...)`，之后一路是 `string`。不做出口渲染，更不做“递归遍历对象把码换成句子”那一层。
 
 ```ts
-throw new HostError("not_found", this.t("找不到 id 为 {sessionId} 的会话", { sessionId }));
+type Translator = (text: string, params?: Record<string, string | number>) => string;
+
+throw new HostError("not_found", t("找不到 id 为 {sessionId} 的会话", { sessionId }));
 ```
 
-- `HostError(code, message, details?)`：`code` 给客户端做条件判断、给日志分类；`message` 是成品句子；`details` 只在客户端确实要据此分支时才有，**不为拼句子存在的字段不进协议**。
-- 日志不记用户那句，只记 `code` + `details`。
-- 找不到译文时回落成原文，并记一条 `i18n.missing`，不抛。
+- **键就是那句中文原文**，不另维护键清单（多一份清单就多一份会对不上的账）。缺译文时回落成原文，并在日志里记一条 `i18n.missing`，不抛。
+- 语言在调用那一刻从 `config.general.language` 现读；`t` 是闭包，不是字段。
+
+## 七、失败
+
+**跨 wire 的失败**（会回给客户端）→ `HostError(code, message, details?)`：
+
+- `code` 给客户端做条件判断、给日志分类，不用于匹配文案；
+- `message` 是按当前语言渲染好的成品句子；
+- `details` 只在客户端确实要据此分支时才有，**不为拼句子存在的字段不进协议**。
+
+**宿主自己的运行事故**（启动、文件、磁盘）→ 英文 `Error` + `cause`，只进日志。这类失败不跨 wire，硬包成 `HostError` 只能丢句子或安错码。
+
+日志不记用户那句，只记 `code` + `details`。
 
 英文文本的措辞：
 
@@ -111,4 +124,4 @@ throw new HostError("not_found", this.t("找不到 id 为 {sessionId} 的会话"
 - 不写零信息量的词（`failed`、`error`、`boom`、`down`）；
 - 不拟人、不比喻、不用感叹号、不写 `please`；
 - 值用双引号，路径原样；保留 `cause`，不吞原始错误；
-- 宿主自己抛的错一律是 `HostError`，裸 `Error` 只可能来自运行时或第三方，捕获时必须转换并带上 `cause`。
+- 宿主自己抛的错：跨 wire 的一律是 `HostError`，不跨 wire 的一律是英文 `Error` + `cause`。裸 `Error` 只可能来自运行时或第三方，捕获时要么转换、要么带上 `cause` 往上抛。
