@@ -429,14 +429,15 @@ describe("入参校验：分发之前那一处（全仓唯一的一处）", () =
     expect(pausedCalls).toEqual(["s-1"]);
   });
 
-  it("表里没有 schema 的方法原样透传（还没迁的 61 个继续按老样子走）", async () => {
+  it("每个方法都有 schema：空入参在边界上就被拦下，不会落到 handler", async () => {
     await startHub();
     const client = await connectAuthorized();
 
-    // `session.get` 没有 schema：空入参照样交给 handler，由它自己判（它抛 not_found，不是 invalid_params）
+    // `session.get` 要一个非空的 `sessionId`：空对象过不了边界，报的是 `invalid_params`，
+    // 而不是交给 handler 之后才报 `not_found`（那意味着边界放水了）
     client.request("session.get", {});
     const frame = await client.queue.next();
-    expect(isError(frame) && frame.error.data.code).toBe("not_found");
+    expect(isError(frame) && frame.error.data.code).toBe("invalid_params");
   });
 });
 
