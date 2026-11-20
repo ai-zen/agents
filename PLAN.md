@@ -475,8 +475,34 @@ pin 与退出信号必须分开，理由各一条：
 | **W13 远端升级**（PRD 3.8 / 4.12） | 宿主：`upgradeHost` 两条判据（磁盘就地换过 / registry 有这一版，后者用内置 `fetch`）+ 写 pin `<数据根>/run/next-version.json` + `ExitReason` 加 `upgrade` 与专属退出码；客户端：`/upgrade` 删本机 `npx` 预下与 `cli/host-version.json`，`connectHost` 改读 pin；启动方式：读 pin 重拉（我们自己给 `agents-host up`，还是只出文档 —— 待拍，见 §8 升级） | ⬜ 未开始 |
 | **W14 注释治理** | 六个包逐包核实注释：假话按事实改、无法核实的删、规定性断言删、交叉叙述收成一处（判据见 §14） | ✅ 完成（`0511118`–`c9f7f22`：168 个文件，`core 153` / `sdk 742` / `host 890` / `client 141` / `logger 16` / `testing 7` + host e2e 9 全绿，diff 只有注释行） |
 | **W15 冗余转换治理** | 扫「同一份数据两个形状 + 手写字段清单在搬运」：消息已改成 `payload` 原样（`190a4a5`）；其余逐处核过（判据见 §15） | ✅ 审核完成 —— **一处不改**：显式白名单 / 形状冻结 / 回写安全 / 配置缺省策略都有设计目的，清单留档 `.ai-zen/reports/20261121-冗余转换审计.md` |
+| **W16 入参校验** | 68 个方法的入参形状改用 Zod（`wire/schema/` 一域一文件），边界收在 `WsHub.parseParams` 一处；`methods.ts` 的 68 份入参类型改成 `z.infer`；服务层纯形状检查全删（语义留下）。判据与行为变化见 §16 | ✅ 完成（`f8348a2` / `3bad5da` / `1583b7d` / `c7df6be`：host 905 用例 + e2e 9 全绿，净 −238 行） |
 
 **并行规则**：同波次里两个 agent 的目录不重叠才能同时派；跨目录要改别人的文件先报。
+
+---
+
+## 16. 专项：入参校验（W16）
+
+**一句话**：JSON-RPC 的入参形状用 Zod 描述，**边界只有一处**，服务层相信入参。
+
+**为什么会立这一项**：以前每个服务各自手写 `typeof` / `trim` / 枚举白名单来判同一个形状（`invalid_params` 全仓 70 处，约 21 处是纯形状）。参数校验是标准问题，造轮子是纯损失。
+
+| 事 | 定论 |
+|---|---|
+| **真相只有一份** | `wire/schema/<域>.ts` 的 Zod schema；`wire/methods.ts` 的 68 份 `XxxParams` 全部是 `z.infer<typeof xxxParams>`，不手写第二遍 |
+| **执行点只有一处** | `WsHub.invoke` 的 `parseParams`：方法名确认之后、任何业务代码之前；失败映射成 `invalid_params` + `params.field` + `detail.{field, reason}` |
+| **文案不出网英文** | reason 用既有那套词（`empty` / `not_an_object` / `not_a_file_name` / `not_positive_integer` / `not_boolean` / `bad_value` / `not_a_language` …）；Zod 的英文句子一句都不出网（句子归 i18n，PRD D8） |
+| **没有入参也是形状** | `NoParams` 那 5 个方法也给 `z.object({})`：`params: 42` 以前被静默当「没给」，现在边界就拒 |
+| **服务层不再自判形状** | 纯形状 / trim / 枚举白名单全部删；**语义一律留在服务层**：实体在不在、状态允不允许、跨字段关系（`handoff < guard`）、取值校验（`mime` 的 `type/subtype`、`baseUrl` 是 http、`cwd` 是绝对路径）、长度上限、去重、分片顺序、有业务含义的归一化（`modelId: ""` = 清绑定） |
+| **棘轮** | `schema.test.ts`：`METHOD_NAMES` 的 68 个方法一个都不能缺 schema；新加方法忘了写，这里当场红 |
+
+**依赖**：`zod`（v4，零依赖），只进 `packages/host` —— `client` 的运行期零依赖（PLAN §9）不受影响。
+
+**行为变化（都是收紧；客户端若按 `detail.reason` 分支要知道）**：`session.pause` 缺 `sessionId` 从 `{paused:false}` 变成 `invalid_params`；`agent.delete.dryRun` 非布尔从「静默当 false」变成拒；`asset.begin` 缺 `sessionId` 的 reason 从 `session_required` 变 `empty`、字节数从 `not_a_positive_integer` 变 `not_positive_integer`；`host.hello.language: 42` 从「当没给」变成拒。仓内 cli / desktop 的**生产代码**不按 `detail.reason` 分支（已核）。
+
+---
+
+
 
 ---
 
