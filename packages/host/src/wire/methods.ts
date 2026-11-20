@@ -1430,11 +1430,6 @@ export interface AgentInput {
 }
 
 /** `agent.list` 入参 */
-export interface AgentListParams {
-  /** 给了就把「在这个项目里能不能用」一起算进去 */
-  workspaceId?: string;
-}
-
 /** `agent.list` 出参（PRD F-B2 / F-B3 / F-B5） */
 export interface AgentListResult {
   agents: AgentView[];
@@ -2111,7 +2106,7 @@ export interface MethodMap {
 
   // ---- agent.*：助手与 subagent 定义（F-B1…F-B7 / F-F5 / F-G3）----
   /** F-B2 / F-B3 / F-B5：助手清单，不可用的也列出并说明原因。 */
-  "agent.list": { params: AgentListParams; result: AgentListResult };
+  "agent.list": { params: NoParams; result: AgentListResult };
   /** F-B2：按 id 取一个助手。 */
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   /** F-B2 / F-G3：新建助手定义（一实体一文件）。 */

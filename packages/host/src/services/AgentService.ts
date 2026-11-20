@@ -43,7 +43,6 @@ import type {
   AgentDeleteResult,
   AgentGetParams,
   AgentGetResult,
-  AgentListParams,
   AgentListResult,
   AgentRestoreFactoryParams,
   AgentRestoreFactoryResult,
@@ -322,7 +321,7 @@ export class AgentService {
    * `workspaceId` 现在没用上：助手定义的可用性（模型、端点、密钥）是全局配置的事实，与项目
    * 无关；「这个项目里能不能用」要等可用的 Skill / MCP 清单定下来才有答案。
    */
-  async list(_params: AgentListParams = {}): Promise<AgentListResult> {
+  async list(): Promise<AgentListResult> {
     const config = await this.configManager.read();
     const presets = await this.configManager.readReasoningPresets();
     const loaded = await this.loadAll();

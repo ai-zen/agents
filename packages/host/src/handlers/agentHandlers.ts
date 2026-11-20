@@ -32,7 +32,7 @@ export interface AgentHandlerDeps {
 export function createAgentHandlers(deps: AgentHandlerDeps): AgentHandlers {
   return {
     "agent.list": async (context) =>
-      localizeLocalizedTexts(await deps.agents.list(context.params), context.connection.language),
+      localizeLocalizedTexts(await deps.agents.list(), context.connection.language),
     "agent.get": async (context) =>
       localizeLocalizedTexts(await deps.agents.get(context.params), context.connection.language),
     "agent.create": async (context) =>
