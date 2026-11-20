@@ -234,39 +234,6 @@ function textOnlyContent(content: AgentNS.MessageContent | undefined): AgentNS.M
   return sections.length === 0 ? "" : sections;
 }
 
-/** 必填的 id / 名字类参数：空串按「参数不对」处理，不拿它去查库 */
-function requireId(value: string, field: string): string {
-  const text = typeof value === "string" ? value.trim() : "";
-  if (text.length === 0) {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "empty" },
-    });
-  }
-  return text;
-}
-
-/**
- * 两条阈值的取值校验（PRD 1.4 / 4.7）：省略（`undefined`）= 不动、`null` = 回到跟模型走、
- * 其余必须是**正整数**。
- *
- * `0` 不接受：阈值量的是「请求前的输入用量」的绝对 token 数，0 是个没有意义的线 —— 要「这条线
- * 不设」请给 `null`（它说的是「跟模型走」，不是「关掉」）。负数、小数、`NaN` / `Infinity` 同理。
- */
-function requireThreshold(
-  value: number | null | undefined,
-  field: string,
-): number | null | undefined {
-  if (value === undefined || value === null) return value;
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "not_positive_integer", value },
-    });
-  }
-  return value;
-}
-
 /** 结构相等：思考档位的补丁与助手定义上的参数要能对得上 */
 function deepEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true;
@@ -366,14 +333,12 @@ export class SessionService {
    * 由 {@link ensurePersisted} 用同一个 id 落库（PLAN §4）。
    */
   async create(params: SessionCreateParams & SessionOriginInput): Promise<SessionCreateResult> {
-    const workspace = await this.requireWorkspace(requireId(params.workspaceId, "workspaceId"));
+    const workspace = await this.requireWorkspace(params.workspaceId);
     const config = await this.readConfig();
-    const agent = await this.readAgent(requireId(params.agentId, "agentId"));
+    const agent = await this.readAgent(params.agentId);
 
-    const sessionModelId =
-      params.modelId == null ? undefined : requireId(params.modelId, "modelId");
     const resolved = resolveModel({
-      sessionModelId,
+      sessionModelId: params.modelId,
       agentModelId: agent.modelId,
       defaultModel: config.defaultModel,
     });
@@ -569,14 +534,13 @@ export class SessionService {
   /** 改名（PRD D1）：只换名字，id、身份与排序都不动；名字从此归用户 */
   async rename(params: SessionRenameParams): Promise<SessionRenameResult> {
     const session = await this.requireSession(params.sessionId);
-    const name = requireId(params.name, "name");
     const updatedAt = this.now();
 
     const draft = this.drafts.get(session.id);
     if (draft) {
-      this.drafts.put({ ...draft, name, nameIsAuto: false, updatedAt });
+      this.drafts.put({ ...draft, name: params.name, nameIsAuto: false, updatedAt });
     } else {
-      await this.sessions.renameByUser(session.id, name, updatedAt);
+      await this.sessions.renameByUser(session.id, params.name, updatedAt);
     }
 
     const view = await this.reloadView(session.id);
@@ -587,12 +551,6 @@ export class SessionService {
   /** 手动置顶：只动 `pinned`，不碰创建时间 */
   async pin(params: SessionPinParams): Promise<SessionPinResult> {
     const session = await this.requireSession(params.sessionId);
-    if (typeof params.pinned !== "boolean") {
-      throw new HostError("invalid_params", {
-        params: { field: "pinned" },
-        detail: { field: "pinned", reason: "not_boolean" },
-      });
-    }
     const updatedAt = this.now();
 
     const draft = this.drafts.get(session.id);
@@ -666,7 +624,7 @@ export class SessionService {
    */
   async revert(params: SessionRevertParams): Promise<SessionRevertResult> {
     const row = await this.requireSession(params.sessionId);
-    const anchorId = requireId(params.beforeMessageId, "beforeMessageId");
+    const anchorId = params.beforeMessageId;
     if (this.runtime.presence(row.id).status === "working") {
       throw new HostError("busy", { detail: { sessionId: row.id, action: "revert" } });
     }
@@ -737,9 +695,7 @@ export class SessionService {
     const config = await this.readConfig();
 
     const modelId =
-      params.modelId == null
-        ? await this.agentModelIdOf(row.agentId, config)
-        : requireId(params.modelId, "modelId");
+      params.modelId === null ? await this.agentModelIdOf(row.agentId, config) : params.modelId;
     const model = config.models.find((item) => item.id === modelId);
     if (!model) {
       throw new HostError("not_found", {
@@ -798,7 +754,7 @@ export class SessionService {
         detail: { modelId: model.id, preset: model.reasoningPreset ?? null },
       });
     }
-    const level = params.level == null ? null : requireId(params.level, "level");
+    const { level } = params;
     if (level !== null && !Object.prototype.hasOwnProperty.call(preset.levels, level)) {
       throw new HostError("invalid_params", {
         params: { field: "level" },
@@ -826,13 +782,13 @@ export class SessionService {
    * 不碰 Scope、不重建任何东西** —— 与 `setModel` / `setThinking` 正好相反，那两个改的是装配
    * 事实，改完下一次装配要照新事实重造 agent。
    *
-   * 校验与建模型那一条同口径：给了就必须是正整数（`0` / 负数 / 小数都不收），两个都给且都不是
-   * `null` 时要满足 `handoff < guard`（硬线得给软线留出余量）。
+   * 取值（正整数、`0` / 负数 / 小数都不收）由边界 schema 校（`session.setThresholds` 的两格是
+   * `.nullish()` 的正整数），这里只剩那一条**跨字段**的：两个都给且都不是 `null` 时要满足
+   * `handoff < guard`（硬线得给软线留出余量）。
    */
   async setThresholds(params: SessionSetThresholdsParams): Promise<SessionSetThresholdsResult> {
     const row = await this.requireSession(params.sessionId);
-    const handoffThreshold = requireThreshold(params.handoffThreshold, "handoffThreshold");
-    const guardThreshold = requireThreshold(params.guardThreshold, "guardThreshold");
+    const { handoffThreshold, guardThreshold } = params;
 
     // 只在两个都给（且都不是 `null`）时比大小：只给一条时另一条可能是 `null`（跟模型走），
     // 与它比大小没有意义 —— 那条线的数字此刻不在会话行上
@@ -1036,10 +992,9 @@ export class SessionService {
    * 于是视图拼装、换模型、写档位这些路径对草稿一字不改。
    */
   private async requireSession(sessionId: string): Promise<Session> {
-    const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.sessions.get(id);
+    const row = await this.sessions.get(sessionId);
     if (row) return row;
-    const draft = id.length === 0 ? undefined : this.drafts.get(id);
+    const draft = this.drafts.get(sessionId);
     if (draft) return draft;
     throw new HostError("not_found", {
       params: { entity: "session" },
@@ -1068,8 +1023,7 @@ export class SessionService {
   }
 
   private async requireWorkspace(workspaceId: string): Promise<WorkspaceRow> {
-    const id = typeof workspaceId === "string" ? workspaceId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.workspaces.get(id);
+    const row = await this.workspaces.get(workspaceId);
     if (!row) {
       throw new HostError("not_found", {
         params: { entity: "workspace" },

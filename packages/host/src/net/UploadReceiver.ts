@@ -136,14 +136,14 @@ const HEADER_LENGTH_BYTES = 4;
 /** 头部 JSON 的长度上限（防一个坏帧声称自己有 4GB 的头） */
 const HEADER_LIMIT_BYTES = 4096;
 
-/** 目前只有「消息里的图片」这一种用途（PRD D5）；别的值按参数不对处理 */
-const PURPOSES: readonly AssetPurpose[] = ["message_image"];
-
 /**
- * MIME 的粗校验：`type/subtype`，两边都是 token 字符。
+ * MIME 的格式校验：`type/subtype`，两边都是 token 字符。
  *
  * 不做白名单：允许上传什么类型是「客户端让用户选什么」的事，宿主只保证这个值能被安全地
  * 用于落盘命名与内容段（真正的类型判断在 `fileToContentSection` 那一层）。
+ *
+ * 这是**取值**校验，不是形状：「非空字符串」那一格由 `asset.begin` 的 schema 保证（唯一执行点
+ * 是 `WsHub.parseParams`），格式这一条没有第二个判据，留在这里。
  */
 const MIME_PATTERN = /^[\w.+-]+\/[\w.+-]+$/;
 
@@ -171,7 +171,8 @@ export class UploadReceiver {
    * `asset.begin`：校验声明、让归属的会话落库、问去重、开临时文件、发一个上传句柄。
    *
    * 声明里只有「总长」能验，字节本身还没到；所以这里的拒绝都是**声明层面**的
-   * （超限、类型不合法、缺会话归属、会话不存在）。
+   * （超限、`mime` 格式不合法、会话不存在）。形状（用途枚举、非空字符串、正整数、64 位十六进制
+   * 摘要）不在这里判：`asset.begin` 的 schema 已经在 `WsHub` 那一处校过，走到这里的就是校过的值。
    *
    * 顺序是「先落库 → 再问去重 → 最后开临时文件」：去重按内容摘要做、不区分会话，命中并不证明
    * 这段会话存在；而会话不存在时这一趟一个字节都不该落盘，也不该占住一个 `uploadId`。
@@ -184,11 +185,12 @@ export class UploadReceiver {
     params: AssetBeginParams,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<AssetBeginResult> {
-    const purpose = requirePurpose(params.purpose);
     const mime = requireMime(params.mime);
-    const declaredBytes = requireDeclaredBytes(params.bytes, this.maxAssetBytes);
-    const sessionId = requireSessionId(params.sessionId);
-    const name = normalizeName(params.name);
+    requireWithinLimit(params.bytes, this.maxAssetBytes);
+    const declaredBytes = params.bytes;
+    const sessionId = params.sessionId;
+    // 空白名字与没给名字是同一件事（两侧空白已由 schema 剥掉）
+    const name = params.name === undefined || params.name === "" ? null : params.name;
     const sha256 = params.sha256 === undefined ? null : normalizeDigest(params.sha256);
 
     // 草稿会话在库里还没有行（R56），而「这段会话存在」是上传的前提：先落库再收字节
@@ -216,7 +218,7 @@ export class UploadReceiver {
     const session: UploadSession = {
       uploadId,
       connectionId,
-      purpose,
+      purpose: params.purpose,
       mime,
       name,
       sessionId,
@@ -263,7 +265,8 @@ export class UploadReceiver {
    * 留着半个文件只会变成没人认领的垃圾。
    */
   async end(connectionId: string, params: AssetEndParams): Promise<AssetEndResult> {
-    const uploadId = requireUploadId(params.uploadId);
+    // 句柄的形状（非空字符串）由 `asset.end` 的 schema 保证；这里只判「这趟上传在不在」
+    const uploadId = params.uploadId;
     const session = this.sessions.get(connectionId)?.get(uploadId);
     if (!session) {
       throw new HostError("not_found", {
@@ -535,79 +538,37 @@ export function decodeChunkFrame(frame: Uint8Array): { uploadId: string; chunk: 
 // 参数校验与格式化
 // ---------------------------------------------------------------------------
 
-function requirePurpose(value: unknown): AssetPurpose {
-  if (typeof value === "string" && (PURPOSES as readonly string[]).includes(value)) {
-    return value as AssetPurpose;
-  }
-  throw new HostError("invalid_params", {
-    params: { field: "purpose" },
-    detail: { field: "purpose", got: value ?? null, allowed: PURPOSES },
-  });
-}
-
-function requireMime(value: unknown): string {
-  if (typeof value === "string" && MIME_PATTERN.test(value.trim())) {
-    return value.trim().toLowerCase();
-  }
+function requireMime(value: string): string {
+  if (MIME_PATTERN.test(value)) return value.toLowerCase();
   throw new HostError("invalid_params", {
     params: { field: "mime" },
-    detail: { field: "mime", got: value ?? null },
+    detail: { field: "mime", got: value },
   });
-}
-
-function requireDeclaredBytes(value: unknown, limit: number): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw new HostError("invalid_params", {
-      params: { field: "bytes" },
-      detail: { field: "bytes", got: value ?? null, reason: "not_a_positive_integer" },
-    });
-  }
-  if (value > limit) {
-    throw new HostError("payload_too_large", {
-      params: { size: formatBytes(value), limit: formatBytes(limit) },
-      detail: { reason: "over_asset_limit", bytes: value, limit },
-    });
-  }
-  return value;
 }
 
 /**
- * 上传必须归属一段会话。
+ * 声明总长的上限（PRD D5：20MB/张）。
  *
- * `asset.begin` 要这段会话在库里存在（草稿先落库），因为素材的引用关系（`session_assets`）
- * 与「图片按引用清理」都按会话走；没有归属的上传只能留下一个没人认领的文件。所以这里直接拒
- * （而不是先收完再失败）。
+ * 「正整数」那一格由 `asset.begin` 的 schema 保证（`declaredBytesSchema`）；上限要读配置
+ * （`maxAssetBytes`）才知道这一档是多少 —— 那是取值，不是形状，留在这里。
  */
-function requireSessionId(value: unknown): string {
-  if (typeof value === "string" && value.trim() !== "") return value.trim();
-  throw new HostError("invalid_params", {
-    params: { field: "sessionId" },
-    detail: { field: "sessionId", reason: "session_required" },
-  });
-}
-
-function requireUploadId(value: unknown): string {
-  if (typeof value === "string" && value.trim() !== "") return value.trim();
-  throw new HostError("invalid_params", {
-    params: { field: "uploadId" },
-    detail: { field: "uploadId", reason: "missing_upload_id" },
-  });
-}
-
-function normalizeName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const name = value.trim();
-  return name === "" ? null : name;
-}
-
-function normalizeDigest(value: unknown): string {
-  if (typeof value !== "string" || !/^[0-9a-fA-F]{64}$/.test(value.trim())) {
-    throw new HostError("invalid_params", {
-      params: { field: "sha256" },
-      detail: { field: "sha256", reason: "not_a_sha256_digest" },
+function requireWithinLimit(bytes: number, limit: number): void {
+  if (bytes > limit) {
+    throw new HostError("payload_too_large", {
+      params: { size: formatBytes(bytes), limit: formatBytes(limit) },
+      detail: { reason: "over_asset_limit", bytes, limit },
     });
   }
-  return value.trim().toLowerCase();
+}
+
+/**
+ * 摘要的小写归一化（写库与比对都用小写十六进制）。
+ *
+ * 「64 位十六进制」这一格由 `asset.begin` / `asset.end` 的 schema 保证（`sha256Schema`，两侧空白
+ * 也在那儿剥掉），这里只做归一化，不再判一次。
+ */
+function normalizeDigest(value: string): string {
+  return value.toLowerCase();
 }
 
 /**

@@ -7,7 +7,76 @@ import type { AgentDefinition, McpServerConfig, TokenThresholds } from "@ai-zen/
 import type { z } from "zod";
 
 import type { Language } from "../i18n/index.js";
-import { agentDeleteParams, sessionPauseParams, sessionStartParams } from "./schema/index.js";
+import {
+  agentCreateParams,
+  agentDeleteParams,
+  agentGetParams,
+  agentListParams,
+  agentRestoreFactoryParams,
+  agentSetModelParams,
+  agentSetThinkingParams,
+  agentUpdateParams,
+  assetBeginParams,
+  assetEndParams,
+  assetGetParams,
+  completionFilesParams,
+  configDeleteEndpointParams,
+  configDeleteMcpParams,
+  configGetDiscoveryParams,
+  configGetParams,
+  configPatchParams,
+  configSaveEndpointParams,
+  configSaveMcpParams,
+  configSetDefaultsParams,
+  handoffListDocumentsParams,
+  handoffStartParams,
+  hostHelloParams,
+  hostReloadParams,
+  hostSetLanguageParams,
+  hostShutdownParams,
+  hostUpgradeParams,
+  hostVersionParams,
+  messageListParams,
+  modelCreateParams,
+  modelDeleteImageParams,
+  modelDeleteParams,
+  modelListImagesParams,
+  modelListParams,
+  modelRestoreFactoryParams,
+  modelSaveImageParams,
+  modelUpdateParams,
+  noticeClearParams,
+  noticeDismissParams,
+  noticeListParams,
+  questionAnswerParams,
+  questionListParams,
+  searchMessagesParams,
+  searchSessionsParams,
+  sessionAbortParams,
+  sessionClearInboxParams,
+  sessionCreateParams,
+  sessionDeleteParams,
+  sessionGetParams,
+  sessionKillParams,
+  sessionListParams,
+  sessionPauseParams,
+  sessionPinParams,
+  sessionRenameParams,
+  sessionResumeParams,
+  sessionRevertParams,
+  sessionSendParams,
+  sessionSetModelParams,
+  sessionSetThinkingParams,
+  sessionSetThresholdsParams,
+  sessionStartParams,
+  sessionStateParams,
+  sessionTransientParams,
+  workspaceCreateParams,
+  workspaceGetParams,
+  workspaceListParams,
+  workspaceRemoveParams,
+  workspaceRenameParams,
+} from "./schema/index.js";
 import type {
   AssetRef,
   AttachmentOutcome,
@@ -88,13 +157,10 @@ export interface ReferenceList {
  * `hello` 入参（PLAN §6：首帧 `hello`，凭证不放 URL 查询串）。
  *
  * `language` 挂在连接上、断开即忘（PRD D8）；缺省用配置里的默认语言。
+ *
+ * 可选语言，认不出来回落默认语言（`normalizeLanguage`）
  */
-export interface HostHelloParams {
-  token: string;
-  /** 可选语言，认不出来回落默认语言（`normalizeLanguage`） */
-  language?: string;
-  clientInfo: ClientInfo;
-}
+export type HostHelloParams = z.infer<typeof hostHelloParams>;
 
 /**
  * `hello` 出参。
@@ -123,6 +189,9 @@ export interface TransferLimits {
   maxAssetsPerMessage: number;
 }
 
+/** `version` 入参：没有入参（空对象也是形状） */
+export type HostVersionParams = z.infer<typeof hostVersionParams>;
+
 /** `version` 出参：版本与运行事实（升级判定要用磁盘版本对比，PRD D4 / F-E3） */
 export interface HostVersionResult {
   version: string;
@@ -138,9 +207,7 @@ export interface HostVersionResult {
  * `targetVersion` 不传表示「升到磁盘上装好的那个版本」：宿主只读到磁盘版本变了就重启，
  * 不自己装包（PRD D4 / F-E3）。
  */
-export interface HostUpgradeParams {
-  targetVersion?: string;
-}
+export type HostUpgradeParams = z.infer<typeof hostUpgradeParams>;
 
 /** `upgrade` 的三种结论：已经最新 / 已安排重启 / 没有可升的东西 */
 export type HostUpgradeState = "already_latest" | "restart_scheduled" | "not_available";
@@ -157,14 +224,15 @@ export interface HostUpgradeResult {
 }
 
 /** `shutdown` 入参（PRD F-E1 里的「退出」能力） */
-export interface HostShutdownParams {
-  reason?: string;
-}
+export type HostShutdownParams = z.infer<typeof hostShutdownParams>;
 
 /** `shutdown` 出参：已受理（进程随后按 L4 的条件收尾） */
 export interface HostShutdownResult {
   accepted: boolean;
 }
+
+/** `host.reload` 入参：没有入参（空对象也是形状） */
+export type HostReloadParams = z.infer<typeof hostReloadParams>;
 
 /**
  * `host.reload` 出参：与 `config.patch` 同一份形状（`config` + `applied`）。
@@ -182,9 +250,7 @@ export interface HostReloadResult {
  *
  * 语言挂在连接上，所以这是「这条连接以后说哪种语言」，不是账号偏好。
  */
-export interface HostSetLanguageParams {
-  language: string;
-}
+export type HostSetLanguageParams = z.infer<typeof hostSetLanguageParams>;
 
 /** `setLanguage` 出参 */
 export interface HostSetLanguageResult {
@@ -209,11 +275,12 @@ export interface WorkspaceView {
   sessionCount: number;
 }
 
-/** `workspace.list` 入参 */
-export interface WorkspaceListParams {
-  /** 是否连目录已不存在的也列出来（默认列，PRD D12：照常可看） */
-  includeMissingFolders?: boolean;
-}
+/**
+ * `workspace.list` 入参
+ *
+ * 是否连目录已不存在的也列出来（默认列，PRD D12：照常可看）
+ */
+export type WorkspaceListParams = z.infer<typeof workspaceListParams>;
 
 /** `workspace.list` 出参（PRD D9 / D12） */
 export interface WorkspaceListResult {
@@ -226,10 +293,7 @@ export interface WorkspaceListResult {
  * `cwd` 可以是未登记的目录 —— 普通会话遇到未登记 cwd 时问一次要不要登记（D10），
  * 用户答「是」就走这个方法；`name` 不传则由目录名起一个可改的名字。
  */
-export interface WorkspaceCreateParams {
-  cwd: string;
-  name?: string;
-}
+export type WorkspaceCreateParams = z.infer<typeof workspaceCreateParams>;
 
 /** `workspace.create` 出参 */
 export interface WorkspaceCreateResult {
@@ -237,9 +301,7 @@ export interface WorkspaceCreateResult {
 }
 
 /** `workspace.get` 入参 */
-export interface WorkspaceGetParams {
-  workspaceId: string;
-}
+export type WorkspaceGetParams = z.infer<typeof workspaceGetParams>;
 
 /** `workspace.get` 出参 */
 export interface WorkspaceGetResult {
@@ -247,10 +309,7 @@ export interface WorkspaceGetResult {
 }
 
 /** `workspace.rename` 入参（名字可改，id 与 cwd 不变，PRD D9） */
-export interface WorkspaceRenameParams {
-  workspaceId: string;
-  name: string;
-}
+export type WorkspaceRenameParams = z.infer<typeof workspaceRenameParams>;
 
 /** `workspace.rename` 出参 */
 export interface WorkspaceRenameResult {
@@ -262,10 +321,7 @@ export interface WorkspaceRenameResult {
  *
  * `dryRun: true` 只算代价不动手，供客户端做二次确认；目录本身宿主不碰（D11）。
  */
-export interface WorkspaceRemoveParams {
-  workspaceId: string;
-  dryRun?: boolean;
-}
+export type WorkspaceRemoveParams = z.infer<typeof workspaceRemoveParams>;
 
 /** `workspace.remove` 出参 */
 export interface WorkspaceRemoveResult {
@@ -370,14 +426,12 @@ export interface SessionView extends SessionSummary {
   folder: FolderFact;
 }
 
-/** `session.list` 入参（PRD F-C5 / D13：按 Workspace 列表、按置顶筛） */
-export interface SessionListParams {
-  workspaceId?: string;
-  /** true 只看置顶，false 只看未置顶，不传全要 */
-  pinned?: boolean;
-  limit?: number;
-  offset?: number;
-}
+/**
+ * `session.list` 入参（PRD F-C5 / D13：按 Workspace 列表、按置顶筛）
+ *
+ * true 只看置顶，false 只看未置顶，不传全要
+ */
+export type SessionListParams = z.infer<typeof sessionListParams>;
 
 /** `session.list` 出参：按侧栏顺序排好的结果 + 总数 */
 export interface SessionListResult {
@@ -393,14 +447,12 @@ export interface SessionListResult {
  *
  * 只收已经登记的项目 id：cwd 那条路是客户端先问用户、再调 `workspace.create` 登记，
  * 建会话这一步不替它做那件事。
+ *
+ * 已经登记的项目 id
+ *
+ * 缺省用助手绑定的模型（PRD F-B1：模型真相在助手定义上）
  */
-export interface SessionCreateParams {
-  /** 已经登记的项目 id */
-  workspaceId: string;
-  agentId: string;
-  /** 缺省用助手绑定的模型（PRD F-B1：模型真相在助手定义上） */
-  modelId?: string;
-}
+export type SessionCreateParams = z.infer<typeof sessionCreateParams>;
 
 /**
  * `session.create` 出参。
@@ -412,9 +464,7 @@ export interface SessionCreateResult {
 }
 
 /** `session.get` 入参（PRD F-A6：宿主只提供「按 id 打开」） */
-export interface SessionGetParams {
-  sessionId: string;
-}
+export type SessionGetParams = z.infer<typeof sessionGetParams>;
 
 /** `session.get` 出参 */
 export interface SessionGetResult {
@@ -422,9 +472,7 @@ export interface SessionGetResult {
 }
 
 /** `session.state` 入参（PRD L5：重连先拉读数） */
-export interface SessionStateParams {
-  sessionId: string;
-}
+export type SessionStateParams = z.infer<typeof sessionStateParams>;
 
 /** `session.state` 出参：一段会话此刻的读数（四件事 + inbox + 名册 + 交接态） */
 export interface SessionStateResult {
@@ -432,10 +480,7 @@ export interface SessionStateResult {
 }
 
 /** `session.rename` 入参（PRD D1 / F-C3：改名不改身份、不改排序） */
-export interface SessionRenameParams {
-  sessionId: string;
-  name: string;
-}
+export type SessionRenameParams = z.infer<typeof sessionRenameParams>;
 
 /** `session.rename` 出参 */
 export interface SessionRenameResult {
@@ -443,10 +488,7 @@ export interface SessionRenameResult {
 }
 
 /** `session.pin` 入参（PRD F-C5 / D13：手动置顶） */
-export interface SessionPinParams {
-  sessionId: string;
-  pinned: boolean;
-}
+export type SessionPinParams = z.infer<typeof sessionPinParams>;
 
 /** `session.pin` 出参 */
 export interface SessionPinResult {
@@ -458,10 +500,7 @@ export interface SessionPinResult {
  *
  * 硬删，图片按引用清理；`dryRun: true` 先算代价，供「删除前警告」使用。
  */
-export interface SessionDeleteParams {
-  sessionId: string;
-  dryRun?: boolean;
-}
+export type SessionDeleteParams = z.infer<typeof sessionDeleteParams>;
 
 /** `session.delete` 出参 */
 export interface SessionDeleteResult {
@@ -488,10 +527,7 @@ export interface SessionDeleteResult {
  * **没有「正在交接」这个拒因**：交接期间只关输出闸、不关输入闸，话照收、排在 inbox 里，
  * 只是这一任不取；交接完成即开闸，压着的按原顺序接着跑（PRD 4.5 / PLAN §5.3）。
  */
-export interface SessionSendParams {
-  sessionId: string;
-  input: MessageInput;
-}
+export type SessionSendParams = z.infer<typeof sessionSendParams>;
 
 /**
  * `session.send` 出参：收下了（PLAN §5.1 的「回执只有收下 / 被拒」）。
@@ -546,10 +582,7 @@ export interface SessionStartResult {
 /**
  * `session.abort` 入参（PRD D14：中止是用户的显式动作，不排队、不自动打断）。
  */
-export interface SessionAbortParams {
-  sessionId: string;
-  reason?: string;
-}
+export type SessionAbortParams = z.infer<typeof sessionAbortParams>;
 
 /** `session.abort` 出参：打到了没有（`signalled: false` = 那个对象本来就不在，无从下手） */
 export interface SessionAbortResult {
@@ -578,9 +611,7 @@ export interface SessionPauseResult {
  *
  * **只开闸，不投任何东西**：inbox 里压着的条目按原顺序接着跑。
  */
-export interface SessionResumeParams {
-  sessionId: string;
-}
+export type SessionResumeParams = z.infer<typeof sessionResumeParams>;
 
 /** `session.resume` 出参：打完之后这段的输出闸是不是关着（同 `session.pause` 那一格） */
 export interface SessionResumeResult {
@@ -597,9 +628,7 @@ export interface SessionResumeResult {
  * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给
  * （PRD 4.5，与 `session.pause` / `session.resume` 同一个口径）。
  */
-export interface SessionKillParams {
-  sessionId: string;
-}
+export type SessionKillParams = z.infer<typeof sessionKillParams>;
 
 /**
  * `session.kill` 出参。
@@ -619,9 +648,7 @@ export interface SessionKillResult {
  * 有几条，它从 `session.state.inbox` 就看得到；要清空就调这个方法，不必自己一条一条
  * 算帐。宿主这一侧只是把它交到 core（`agent.clearInbox()`）。
  */
-export interface SessionClearInboxParams {
-  sessionId: string;
-}
+export type SessionClearInboxParams = z.infer<typeof sessionClearInboxParams>;
 
 /** `session.clearInbox` 出参：清掉了几条（`0` = 本来就没东西，不是错误） */
 export interface SessionClearInboxResult {
@@ -633,12 +660,10 @@ export interface SessionClearInboxResult {
  *
  * 撤回：从这条用户消息开始（含它）往后硬删，那条用户消息的内容回填输入框（回填内容由宿主给
  * 事实）。
+ *
+ * 撤回点：这条用户消息及其之后的内容都会被删（所以它必须是 user 消息）
  */
-export interface SessionRevertParams {
-  sessionId: string;
-  /** 撤回点：这条用户消息及其之后的内容都会被删（所以它必须是 user 消息） */
-  beforeMessageId: string;
-}
+export type SessionRevertParams = z.infer<typeof sessionRevertParams>;
 
 /** `session.revert` 出参 */
 export interface SessionRevertResult {
@@ -654,12 +679,10 @@ export interface SessionRevertResult {
  * 换的是**这段会话**的模型：写完就落库，重开、重启都还是它；换模型同时把这段会话的
  * 思考档位清成「跟随助手默认」（档位属于模型）。历史里有图而新模型读不了图时拒绝
  * （业务码 `model_unsupported`）。改助手默认模型是另一个动作，见 `agent.setModel`。
+ *
+ * `null` 表示回到助手定义上那个模型
  */
-export interface SessionSetModelParams {
-  sessionId: string;
-  /** `null` 表示回到助手定义上那个模型 */
-  modelId: string | null;
-}
+export type SessionSetModelParams = z.infer<typeof sessionSetModelParams>;
 
 /**
  * `session.setModel` 出参。
@@ -677,12 +700,10 @@ export interface SessionSetModelResult {
  *
  * 改的是**这段会话**的思考档位：档位名落库，装配 agent 时按当前模型的思考策略表展开成
  * 参数补丁。与 `agent.setThinking`（改助手的默认）分开。
+ *
+ * 档位名（来自 `ThinkingState.levels`）；`null` = 回到跟随助手默认
  */
-export interface SessionSetThinkingParams {
-  sessionId: string;
-  /** 档位名（来自 `ThinkingState.levels`）；`null` = 回到跟随助手默认 */
-  level: string | null;
-}
+export type SessionSetThinkingParams = z.infer<typeof sessionSetThinkingParams>;
 
 /** `session.setThinking` 出参：展开后的参数与来源（PRD F-B7） */
 export interface SessionSetThinkingResult {
@@ -701,14 +722,12 @@ export interface SessionSetThinkingResult {
  *
  * 它们**不进 agent 的出厂配置**（出厂配置 = 模型 + 它的参数），由宿主现读，所以改完不用
  * 重建 agent —— 那是 `setModel` / `setThinking` 才要付的代价。
+ *
+ * 交接阈值（软线）；省略 = 不动，`null` = 跟模型走
+ *
+ * 防护阈值（硬线）；省略 = 不动，`null` = 跟模型走
  */
-export interface SessionSetThresholdsParams {
-  sessionId: string;
-  /** 交接阈值（软线）；省略 = 不动，`null` = 跟模型走 */
-  handoffThreshold?: number | null;
-  /** 防护阈值（硬线）；省略 = 不动，`null` = 跟模型走 */
-  guardThreshold?: number | null;
-}
+export type SessionSetThresholdsParams = z.infer<typeof sessionSetThresholdsParams>;
 
 /**
  * `session.setThresholds` 出参。
@@ -725,14 +744,10 @@ export interface SessionSetThresholdsResult {
  *
  * 跑到头就散：结果回来之后内存清空，无 id、不可 attach、不入库、不进列表；只借 Scope，
  * 与 Workspace 无关，所以这里要显式的 `cwd` 而不是 `workspaceId`。
+ *
+ * 在哪个目录里跑（相对路径的解析基准）
  */
-export interface SessionTransientParams {
-  /** 在哪个目录里跑（相对路径的解析基准） */
-  cwd: string;
-  input: MessageInput;
-  agentId?: string;
-  modelId?: string;
-}
+export type SessionTransientParams = z.infer<typeof sessionTransientParams>;
 
 /**
  * `session.transient` 出参：那条助手消息（不产生任何可回看的 id）。
@@ -772,32 +787,26 @@ export interface SessionTransientResult {
  *
  * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认**不返回**：core 的 `hidden` 就是
  * 「这条不给人看」。要它们就显式要（`includeHidden: true`）。
+ *
+ * 定位取窗（PRD F-C6）：以这条消息为中心取一窗，供客户端把搜索命中的那条摆到眼前。
+ *
+ * **消费者是桌面端的搜索命中跳转（PLAN W4）**：`search.messages` 给了一条命中，桌面端拿着它的
+ * `messageId` 调 `message.list({ around })` 就能直接渲染命中那条附近的一段会话。
+ *
+ * 只在一种情形下有一种解释：
+ *   - 命中（这条在这段会话里、且在本次可见集里）：返回以它为中心的一窗（默认 40 条，
+ *     见 `MessageService` 的 `AROUND_WINDOW`；前后尽量均分，命中那条一定在里面），
+ *     `anchor` 报成它；
+ *   - 没命中（已撤回 / 换过库 / 是 `hidden` 而这次没要 `includeHidden`）：**空页**
+ *     （`messages: []`、`anchor: null`），**不报错** —— 消息可能刚被撤回，那不是一次失败的请求；
+ *   - 与 `after` 同时给：**`around` 优先，`after` 被忽略**。两者是两种取法（一个「从这里往下」、
+ *     一个「围绕这里」），混在一起没有唯一答案，所以只认 `around`；
+ *   - 与 `toolCallId` 同时给：`toolCallId` 决定读哪一段消息（subagent 自己那一段），`around`
+ *     只在这一段里定位 —— 与 `after` 无关。
+ *
+ * 连 `hidden` 的消息一起返回（默认 false）
  */
-export interface MessageListParams {
-  sessionId: string;
-  after?: string;
-  toolCallId?: string;
-  /**
-   * 定位取窗（PRD F-C6）：以这条消息为中心取一窗，供客户端把搜索命中的那条摆到眼前。
-   *
-   * **消费者是桌面端的搜索命中跳转（PLAN W4）**：`search.messages` 给了一条命中，桌面端拿着它的
-   * `messageId` 调 `message.list({ around })` 就能直接渲染命中那条附近的一段会话。
-   *
-   * 只在一种情形下有一种解释：
-   *   - 命中（这条在这段会话里、且在本次可见集里）：返回以它为中心的一窗（默认 40 条，
-   *     见 `MessageService` 的 `AROUND_WINDOW`；前后尽量均分，命中那条一定在里面），
-   *     `anchor` 报成它；
-   *   - 没命中（已撤回 / 换过库 / 是 `hidden` 而这次没要 `includeHidden`）：**空页**
-   *     （`messages: []`、`anchor: null`），**不报错** —— 消息可能刚被撤回，那不是一次失败的请求；
-   *   - 与 `after` 同时给：**`around` 优先，`after` 被忽略**。两者是两种取法（一个「从这里往下」、
-   *     一个「围绕这里」），混在一起没有唯一答案，所以只认 `around`；
-   *   - 与 `toolCallId` 同时给：`toolCallId` 决定读哪一段消息（subagent 自己那一段），`around`
-   *     只在这一段里定位 —— 与 `after` 无关。
-   */
-  around?: string;
-  /** 连 `hidden` 的消息一起返回（默认 false） */
-  includeHidden?: boolean;
-}
+export type MessageListParams = z.infer<typeof messageListParams>;
 
 /**
  * `message.list` 出参：消息本体就是 core 的 `AgentNS.Message`，这里只包一层定位外壳。
@@ -827,9 +836,7 @@ export interface MessageListResult {
  * 是持久化时代的形状（要给重启后重开看，才需要一个跨会话的入口），现在没有那个消费者。
  * 也没有 `state` 过滤：两个状态（`pending` / `answered`）一起给，客户端自己看那一格。
  */
-export interface QuestionListParams {
-  sessionId: string;
-}
+export type QuestionListParams = z.infer<typeof questionListParams>;
 
 /** `question.list` 出参 */
 export interface QuestionListResult {
@@ -858,12 +865,12 @@ export interface QuestionEffects {
   handoffDeferredReason: HandoffRefusalReason | null;
 }
 
-/** `question.answer` 入参（PRD D22 / F-I9：问题能被回答） */
-export interface QuestionAnswerParams {
-  questionId: string;
-  /** 候选里的值（`QuestionView.options[].value`） */
-  value: string;
-}
+/**
+ * `question.answer` 入参（PRD D22 / F-I9：问题能被回答）
+ *
+ * 候选里的值（`QuestionView.options[].value`）
+ */
+export type QuestionAnswerParams = z.infer<typeof questionAnswerParams>;
 
 /** `question.answer` 出参 */
 export interface QuestionAnswerResult {
@@ -876,10 +883,7 @@ export interface QuestionAnswerResult {
 // ---------------------------------------------------------------------------
 
 /** `notice.list` 入参（PRD L3 / F-I8：通知是独立通道，持久化、可手动清） */
-export interface NoticeListParams {
-  sessionId?: string;
-  level?: NoticeLevel;
-}
+export type NoticeListParams = z.infer<typeof noticeListParams>;
 
 /** `notice.list` 出参 */
 export interface NoticeListResult {
@@ -887,9 +891,7 @@ export interface NoticeListResult {
 }
 
 /** `notice.dismiss` 入参：清掉一条 */
-export interface NoticeDismissParams {
-  noticeId: string;
-}
+export type NoticeDismissParams = z.infer<typeof noticeDismissParams>;
 
 /** `notice.dismiss` 出参 */
 export interface NoticeDismissResult {
@@ -897,9 +899,7 @@ export interface NoticeDismissResult {
 }
 
 /** `notice.clear` 入参：清掉一批（不给 `sessionId` 就清全部） */
-export interface NoticeClearParams {
-  sessionId?: string;
-}
+export type NoticeClearParams = z.infer<typeof noticeClearParams>;
 
 /** `notice.clear` 出参 */
 export interface NoticeClearResult {
@@ -1078,7 +1078,7 @@ export interface ConfigIssue {
 }
 
 /** `config.get` 入参 */
-export type ConfigGetParams = NoParams;
+export type ConfigGetParams = z.infer<typeof configGetParams>;
 
 /** `config.get` 出参（PRD F-F1 / D21：配置的读写都走宿主 API） */
 export interface ConfigGetResult {
@@ -1127,9 +1127,7 @@ export interface ConfigApplyReport {
 }
 
 /** `config.patch` 入参 */
-export interface ConfigPatchParams {
-  patch: ConfigPatch;
-}
+export type ConfigPatchParams = z.infer<typeof configPatchParams>;
 
 /** `config.patch` 出参 */
 export interface ConfigPatchResult {
@@ -1138,9 +1136,7 @@ export interface ConfigPatchResult {
 }
 
 /** `config.setDefaults` 入参（PRD F-F7 / D2 / D6） */
-export interface ConfigSetDefaultsParams {
-  defaults: Partial<DefaultSelection>;
-}
+export type ConfigSetDefaultsParams = z.infer<typeof configSetDefaultsParams>;
 
 /** `config.setDefaults` 出参 */
 export interface ConfigSetDefaultsResult {
@@ -1153,9 +1149,7 @@ export interface ConfigSetDefaultsResult {
  *
  * 同一个方法兼创建与修改：`id` 已存在则改，不存在则建。密钥省略表示保留原值。
  */
-export interface ConfigSaveEndpointParams {
-  endpoint: EndpointInput;
-}
+export type ConfigSaveEndpointParams = z.infer<typeof configSaveEndpointParams>;
 
 /** `config.saveEndpoint` 出参 */
 export interface ConfigSaveEndpointResult {
@@ -1169,10 +1163,7 @@ export interface ConfigSaveEndpointResult {
  * 被模型引用时以 `config_invalid` 拒绝，`detail.references` 里列出「还有谁指它」+
  * 「我该先做什么」。
  */
-export interface ConfigDeleteEndpointParams {
-  endpointId: string;
-  dryRun?: boolean;
-}
+export type ConfigDeleteEndpointParams = z.infer<typeof configDeleteEndpointParams>;
 
 /** `config.deleteEndpoint` 出参 */
 export interface ConfigDeleteEndpointResult {
@@ -1296,11 +1287,12 @@ export interface DiscoveryView {
   subagents: DiscoveryLayerView[];
 }
 
-/** `config.getDiscovery` 入参 */
-export interface ConfigGetDiscoveryParams {
-  /** 给了就带上这一层的 Workspace 侧来源 */
-  workspaceId?: string;
-}
+/**
+ * `config.getDiscovery` 入参
+ *
+ * 给了就带上这一层的 Workspace 侧来源
+ */
+export type ConfigGetDiscoveryParams = z.infer<typeof configGetDiscoveryParams>;
 
 /** `config.getDiscovery` 出参 */
 export interface ConfigGetDiscoveryResult {
@@ -1332,13 +1324,10 @@ export type McpServerEntryInput = McpServerConfig & {
  *
  * 形状与 `config.saveEndpoint` 对齐：`entry.id` 已在这一层里就改那一条，没有就建。
  * 一次只动一条 —— 客户端因此不必先读整层再拼回去，也不会因为有一条读不全就把别的条目覆盖掉。
+ *
+ * `scope === "workspace"` 时必填
  */
-export interface ConfigSaveMcpParams {
-  scope: McpEditableScope;
-  /** `scope === "workspace"` 时必填 */
-  workspaceId?: string;
-  entry: McpServerEntryInput;
-}
+export type ConfigSaveMcpParams = z.infer<typeof configSaveMcpParams>;
 
 /** `config.saveMcp` 出参：写回后的那一层（含坏文件状态是否已修好） */
 export interface ConfigSaveMcpResult {
@@ -1351,13 +1340,10 @@ export interface ConfigSaveMcpResult {
  *
  * `id` 本来就不在这一层里时不算失败：`removed: false` 如实回答「本来就没有」，
  * 与 `config.deleteEndpoint` 的 `removed` 同口径（「本来就没有」不是错误）。
+ *
+ * `scope === "workspace"` 时必填
  */
-export interface ConfigDeleteMcpParams {
-  scope: McpEditableScope;
-  /** `scope === "workspace"` 时必填 */
-  workspaceId?: string;
-  id: string;
-}
+export type ConfigDeleteMcpParams = z.infer<typeof configDeleteMcpParams>;
 
 /** `config.deleteMcp` 出参：删完之后的那一层 + 到底删掉了没有 */
 export interface ConfigDeleteMcpResult {
@@ -1433,6 +1419,8 @@ export interface AgentInput {
 }
 
 /** `agent.list` 入参 */
+export type AgentListParams = z.infer<typeof agentListParams>;
+
 /** `agent.list` 出参（PRD F-B2 / F-B3 / F-B5） */
 export interface AgentListResult {
   agents: AgentView[];
@@ -1441,9 +1429,7 @@ export interface AgentListResult {
 }
 
 /** `agent.get` 入参 */
-export interface AgentGetParams {
-  agentId: string;
-}
+export type AgentGetParams = z.infer<typeof agentGetParams>;
 
 /** `agent.get` 出参 */
 export interface AgentGetResult {
@@ -1451,9 +1437,7 @@ export interface AgentGetResult {
 }
 
 /** `agent.create` 入参 */
-export interface AgentCreateParams {
-  agent: AgentInput;
-}
+export type AgentCreateParams = z.infer<typeof agentCreateParams>;
 
 /** `agent.create` 出参 */
 export interface AgentCreateResult {
@@ -1461,10 +1445,7 @@ export interface AgentCreateResult {
 }
 
 /** `agent.update` 入参（局部更新） */
-export interface AgentUpdateParams {
-  agentId: string;
-  patch: Partial<AgentInput>;
-}
+export type AgentUpdateParams = z.infer<typeof agentUpdateParams>;
 
 /** `agent.update` 出参 */
 export interface AgentUpdateResult {
@@ -1492,10 +1473,7 @@ export interface AgentDeleteResult {
  *
  * 与 `session.setModel`（改这一段会话的模型、存会话行）是两个动作、两个入口。
  */
-export interface AgentSetModelParams {
-  agentId: string;
-  modelId: string;
-}
+export type AgentSetModelParams = z.infer<typeof agentSetModelParams>;
 
 /** `agent.setModel` 出参 */
 export interface AgentSetModelResult {
@@ -1511,12 +1489,10 @@ export interface AgentSetModelResult {
  *
  * 与会话那一侧的 `session.setThinking(null)` 是两件事：那边改的是会话行上的档位名
  * （这段会话回到跟随助手定义），这边改的是**助手的定义文件**（以后的会话都跟着变）。
+ *
+ * 档位名（来自 `ThinkingState.levels`）；`null` = 删掉定义上的思考参数
  */
-export interface AgentSetThinkingParams {
-  agentId: string;
-  /** 档位名（来自 `ThinkingState.levels`）；`null` = 删掉定义上的思考参数 */
-  level: string | null;
-}
+export type AgentSetThinkingParams = z.infer<typeof agentSetThinkingParams>;
 
 /** `agent.setThinking` 出参 */
 export interface AgentSetThinkingResult {
@@ -1531,12 +1507,10 @@ export interface AgentSetThinkingResult {
  *
  * 只有出厂清单里的助手（SDK 的出厂定义）才有「出厂版本」可恢复；恢复是整条替换，
  * 引用关系不动（这里不删任何东西）。
+ *
+ * 只算「恢复之后会是什么样」，不落盘
  */
-export interface AgentRestoreFactoryParams {
-  agentId: string;
-  /** 只算「恢复之后会是什么样」，不落盘 */
-  dryRun?: boolean;
-}
+export type AgentRestoreFactoryParams = z.infer<typeof agentRestoreFactoryParams>;
 
 /**
  * `agent.restoreFactory` 出参。
@@ -1552,16 +1526,20 @@ export interface AgentRestoreFactoryResult {
 // model.*
 // ---------------------------------------------------------------------------
 
-/** `model.list` 入参 */
-export interface ModelListParams {
-  /** 连不可用的也列（默认列，PRD F-B5 的口径） */
-  includeUnavailable?: boolean;
-}
+/**
+ * `model.list` 入参
+ *
+ * 连不可用的也列（默认列，PRD F-B5 的口径）
+ */
+export type ModelListParams = z.infer<typeof modelListParams>;
 
 /** `model.list` 出参（PRD F-F3：出厂托管 vs 自定义、思考策略、两条阈值、视觉、描述） */
 export interface ModelListResult {
   models: ModelView[];
 }
+
+/** `model.listImages` 入参：没有入参（空对象也是形状） */
+export type ModelListImagesParams = z.infer<typeof modelListImagesParams>;
 
 /** `model.listImages` 出参（PRD F-F4 / D6：图片模型与默认图片模型） */
 export interface ModelListImagesResult {
@@ -1570,9 +1548,7 @@ export interface ModelListImagesResult {
 }
 
 /** `model.create` 入参（建出来就是自定义，PRD F-F3）；`tokenThresholds` 省略时套出厂默认 */
-export interface ModelCreateParams {
-  model: ModelInput;
-}
+export type ModelCreateParams = z.infer<typeof modelCreateParams>;
 
 /** `model.create` 出参 */
 export interface ModelCreateResult {
@@ -1580,10 +1556,7 @@ export interface ModelCreateResult {
 }
 
 /** `model.update` 入参（编辑即转自定义，PRD F-F3） */
-export interface ModelUpdateParams {
-  modelId: string;
-  patch: Partial<Omit<ModelInput, "id">>;
-}
+export type ModelUpdateParams = z.infer<typeof modelUpdateParams>;
 
 /** `model.update` 出参 */
 export interface ModelUpdateResult {
@@ -1591,10 +1564,7 @@ export interface ModelUpdateResult {
 }
 
 /** `model.delete` 入参（被助手引用时禁删并列出引用者，PRD F-F2 / F-F7） */
-export interface ModelDeleteParams {
-  modelId: string;
-  dryRun?: boolean;
-}
+export type ModelDeleteParams = z.infer<typeof modelDeleteParams>;
 
 /** `model.delete` 出参 */
 export interface ModelDeleteResult {
@@ -1603,9 +1573,7 @@ export interface ModelDeleteResult {
 }
 
 /** `model.restoreFactory` 入参（PRD F-F3：恢复出厂是整条替换） */
-export interface ModelRestoreFactoryParams {
-  modelId: string;
-}
+export type ModelRestoreFactoryParams = z.infer<typeof modelRestoreFactoryParams>;
 
 /** `model.restoreFactory` 出参 */
 export interface ModelRestoreFactoryResult {
@@ -1613,9 +1581,7 @@ export interface ModelRestoreFactoryResult {
 }
 
 /** `model.saveImage` 入参（PRD F-F4：图片模型的创建与修改） */
-export interface ModelSaveImageParams {
-  imageModel: ImageModelInput;
-}
+export type ModelSaveImageParams = z.infer<typeof modelSaveImageParams>;
 
 /** `model.saveImage` 出参 */
 export interface ModelSaveImageResult {
@@ -1623,10 +1589,7 @@ export interface ModelSaveImageResult {
 }
 
 /** `model.deleteImage` 入参（被默认项引用时禁删，PRD F-F7 / F-F4） */
-export interface ModelDeleteImageParams {
-  imageModelId: string;
-  dryRun?: boolean;
-}
+export type ModelDeleteImageParams = z.infer<typeof modelDeleteImageParams>;
 
 /** `model.deleteImage` 出参 */
 export interface ModelDeleteImageResult {
@@ -1695,31 +1658,25 @@ export type AssetPurpose = "message_image";
  * `asset.begin` 入参（PLAN A11 三段式的第一段 / PRD F-H8）。
  *
  * 声明总长、用途、类型与归属的会话。超限在这里就拒（PRD D5：20MB/张，不接收完再说不行）。
+ *
+ * MIME 类型，如 `image/png`
+ *
+ * 总字节数
+ *
+ * 原始文件名（可缺）
+ *
+ * 内容的 sha256（客户端本来就算过一次，传上来即可）。
+ *
+ * 带上它之后，库里已经有同一份字节时 `begin` 就短路（`deduped: true`）：客户端不必再发
+ * 二进制帧、也不必调 `asset.end`。去重按摘要做、不分会话。不带就按一次全新上传处理。
+ *
+ * 这段素材归属哪段会话（必填）。
+ *
+ * 素材行在库里按 `sessionId` 挂外键，落定那一刻这段会话必须已经存在；草稿会话
+ * （`session.create` 之后还没发过消息，R56）在 `asset.begin` 这一步落库，
+ * 与「第一次 `session.send`」同义。
  */
-export interface AssetBeginParams {
-  purpose: AssetPurpose;
-  /** MIME 类型，如 `image/png` */
-  mime: string;
-  /** 总字节数 */
-  bytes: number;
-  /** 原始文件名（可缺） */
-  name?: string;
-  /**
-   * 内容的 sha256（客户端本来就算过一次，传上来即可）。
-   *
-   * 带上它之后，库里已经有同一份字节时 `begin` 就短路（`deduped: true`）：客户端不必再发
-   * 二进制帧、也不必调 `asset.end`。去重按摘要做、不分会话。不带就按一次全新上传处理。
-   */
-  sha256?: string;
-  /**
-   * 这段素材归属哪段会话（必填）。
-   *
-   * 素材行在库里按 `sessionId` 挂外键，落定那一刻这段会话必须已经存在；草稿会话
-   * （`session.create` 之后还没发过消息，R56）在 `asset.begin` 这一步落库，
-   * 与「第一次 `session.send`」同义。
-   */
-  sessionId: string;
-}
+export type AssetBeginParams = z.infer<typeof assetBeginParams>;
 
 /**
  * `asset.begin` 出参：上传句柄与这次的上限（或「已经有了，不用传」）。
@@ -1746,12 +1703,10 @@ export interface AssetBeginResult {
  * `asset.end` 入参（三段式的第三段 / PRD F-H8）。
  *
  * 中间的字节走同一条 WS 上的二进制帧，不攒进内存（A11）。
+ *
+ * 客户端算的摘要；宿主校验长度与摘要后才改名为正式引用
  */
-export interface AssetEndParams {
-  uploadId: string;
-  /** 客户端算的摘要；宿主校验长度与摘要后才改名为正式引用 */
-  sha256: string;
-}
+export type AssetEndParams = z.infer<typeof assetEndParams>;
 
 /** `asset.end` 出参：可放进消息的引用 */
 export interface AssetEndResult {
@@ -1766,17 +1721,13 @@ export type AssetVariant = "original" | "thumb";
  *
  * `assets` 是资源的唯一真相，所以宿主重启、换模型、换设备之后，任何一段历史里的图都能靠
  * 段上的 `__asset_id`（本地扩展字段）重新取回来。
+ *
+ * 取哪一档；缺省 `original`。
+ *
+ * `thumb` 目前**等同原图**：宿主这一波不引入原生图像库，缩略图只是「原图直出 + 宽高」，
+ * 客户端需要小图时自己按 `width` / `height` 缩放（宽高未知时为 `null`）。
  */
-export interface AssetGetParams {
-  assetId: string;
-  /**
-   * 取哪一档；缺省 `original`。
-   *
-   * `thumb` 目前**等同原图**：宿主这一波不引入原生图像库，缩略图只是「原图直出 + 宽高」，
-   * 客户端需要小图时自己按 `width` / `height` 缩放（宽高未知时为 `null`）。
-   */
-  variant?: AssetVariant;
-}
+export type AssetGetParams = z.infer<typeof assetGetParams>;
 
 /**
  * `asset.get` 出参：内容本体 + 它的类型与尺寸。
@@ -1815,13 +1766,10 @@ export type CompletionState = "ready" | "scanning" | "unavailable";
  *
  * 按需扫描：git `ls-files` 优先，非 git 用 glob 并排除 `node_modules/.git/dist`；
  * 20000 条上限、5s 超时、15s 缓存 —— 这些是宿主的实现事实，客户端只需要知道「现在能不能用」。
+ *
+ * 已输入的前缀（可能是路径形式，如 `src/co`）
  */
-export interface CompletionFilesParams {
-  workspaceId: string;
-  /** 已输入的前缀（可能是路径形式，如 `src/co`） */
-  prefix: string;
-  limit?: number;
-}
+export type CompletionFilesParams = z.infer<typeof completionFilesParams>;
 
 /** `completion.files` 出参：条目 + 现在这个清单处在什么状态 */
 export interface CompletionFilesResult {
@@ -1874,14 +1822,12 @@ export interface HandoffDocumentInfo {
  * 没有 `questionId` 这一格：题的状态只由 `QuestionService.answer` 一处写（它先标已答、再
  * 判能不能交接），所以「直接用 `handoff.start` 交接一次」与某道题无关 —— 第二个人写题的状态
  * 就是第二份事实。
+ *
+ * 执行者（PRD F-D2 的「自交接」= self，「独立摘要」= summary）
+ *
+ * 后面接什么（PRD F-D4：只产文档；F-D5：一步完成交接 + 开新会话）
  */
-export interface HandoffStartParams {
-  sessionId: string;
-  /** 执行者（PRD F-D2 的「自交接」= self，「独立摘要」= summary） */
-  mode: HandoffMode;
-  /** 后面接什么（PRD F-D4：只产文档；F-D5：一步完成交接 + 开新会话） */
-  then: HandoffThen;
-}
+export type HandoffStartParams = z.infer<typeof handoffStartParams>;
 
 /**
  * `handoff.start` 出参：**已经开始了**。
@@ -1903,9 +1849,7 @@ export interface HandoffStartResult {
 }
 
 /** `handoff.listDocuments` 入参（PRD F-D6：文档写进项目，可反复打磨同一份） */
-export interface HandoffListDocumentsParams {
-  workspaceId: string;
-}
+export type HandoffListDocumentsParams = z.infer<typeof handoffListDocumentsParams>;
 
 /** `handoff.listDocuments` 出参 */
 export interface HandoffListDocumentsResult {
@@ -1917,11 +1861,7 @@ export interface HandoffListDocumentsResult {
 // ---------------------------------------------------------------------------
 
 /** `search.sessions` 入参（PRD F-C6 / D16：按名称搜 + Workspace 过滤） */
-export interface SearchSessionsParams {
-  query: string;
-  workspaceId?: string;
-  limit?: number;
-}
+export type SearchSessionsParams = z.infer<typeof searchSessionsParams>;
 
 /** 按名搜到的一段会话 */
 export interface SessionHit {
@@ -1940,13 +1880,7 @@ export interface SearchSessionsResult {
  *
  * 少于 3 字符的短查询会退化到 `LIKE`（FTS5 trigram 的下限），这个取舍由宿主承担。
  */
-export interface SearchMessagesParams {
-  query: string;
-  workspaceId?: string;
-  sessionId?: string;
-  limit?: number;
-  offset?: number;
-}
+export type SearchMessagesParams = z.infer<typeof searchMessagesParams>;
 
 /** 一条消息命中 */
 export interface MessageHit {
@@ -1984,7 +1918,7 @@ export interface MethodMap {
    */
   "host.hello": { params: HostHelloParams; result: HostHelloResult };
   /** F-E3 / D4：升级要能确认「磁盘上的版本已更新」，所以先得能报版本。 */
-  "host.version": { params: NoParams; result: HostVersionResult };
+  "host.version": { params: HostVersionParams; result: HostVersionResult };
   /** F-E3 / D4：检测版本号 → 确认升级完成 → 立即重启，不等在跑的请求。 */
   "host.upgrade": { params: HostUpgradeParams; result: HostUpgradeResult };
   /** F-E1：命令清单里的「退出」在宿主这一侧的动作。 */
@@ -1995,7 +1929,7 @@ export interface MethodMap {
    * 改完配置本来就会自动生效（F-E2）；这一条是给人一个「我现在就说一遍」的入口 ——
    * 手改了磁盘上的助手定义 / 技能目录 / MCP 文件之后不必重启。
    */
-  "host.reload": { params: NoParams; result: HostReloadResult };
+  "host.reload": { params: HostReloadParams; result: HostReloadResult };
   /** D8 / F-E4：`/lang` 是连接级动作，语言挂在连接上、断开即忘。 */
   "host.setLanguage": { params: HostSetLanguageParams; result: HostSetLanguageResult };
 
@@ -2109,7 +2043,7 @@ export interface MethodMap {
 
   // ---- agent.*：助手与 subagent 定义（F-B1…F-B7 / F-F5 / F-G3）----
   /** F-B2 / F-B3 / F-B5：助手清单，不可用的也列出并说明原因。 */
-  "agent.list": { params: NoParams; result: AgentListResult };
+  "agent.list": { params: AgentListParams; result: AgentListResult };
   /** F-B2：按 id 取一个助手。 */
   "agent.get": { params: AgentGetParams; result: AgentGetResult };
   /** F-B2 / F-G3：新建助手定义（一实体一文件）。 */
@@ -2132,7 +2066,7 @@ export interface MethodMap {
   /** F-F3 / F-B7：模型清单（出厂托管 vs 自定义、两条阈值、思考档位、可用性）。 */
   "model.list": { params: ModelListParams; result: ModelListResult };
   /** F-F4 / D6：图片模型与默认图片模型。 */
-  "model.listImages": { params: NoParams; result: ModelListImagesResult };
+  "model.listImages": { params: ModelListImagesParams; result: ModelListImagesResult };
   /** F-F3：新建模型（建出来即自定义；不传阈值就用出厂默认那一档）。 */
   "model.create": { params: ModelCreateParams; result: ModelCreateResult };
   /** F-F3：编辑模型（编辑即转自定义；没给的字段不动，阈值省略也不清空）。 */

@@ -312,17 +312,13 @@ export class NoticeService {
   /**
    * 清掉一条（PRD L3：永久通知唯一能消失的方式）。
    *
+   * `noticeId` 非空这一条由 `noticeDismissParams` 在 `WsHub` 那一处校过（reason 就是它报的
+   * `empty`），这里只拿它清库。
+   *
    * 已经不存在时回 `dismissed: false`（这次有没有真的改动库），与 `notice.clear` 的口径一致。
    */
   async dismiss(params: NoticeDismissParams): Promise<NoticeDismissResult> {
-    const id = typeof params.noticeId === "string" ? params.noticeId.trim() : "";
-    if (id.length === 0) {
-      throw new HostError("invalid_params", {
-        params: { field: "noticeId" },
-        detail: { field: "noticeId", reason: "empty" },
-      });
-    }
-    const changes = await this.notices.clear(id);
+    const changes = await this.notices.clear(params.noticeId);
     return { dismissed: changes > 0 };
   }
 

@@ -270,15 +270,13 @@ describe("AgentService.create / update", () => {
     expect(inSubAgents.function?.name).toBe("sub_two_fn");
   });
 
-  it("id 重复、id 不像文件名、没有 system、模型不存在都拒", async () => {
+  // `id` 是不是空 / 能不能做文件名不在这里断言：那是 `agentInputSchema.id`（`agentIdSchema`）在
+  // `WsHub` 那一处的判据（见 `wire/schema/schema.test.ts`），服务层拿到的是已经校过的入参。
+  it("id 重复、没有 system、模型不存在都拒", async () => {
     const runs: (() => Promise<unknown>)[] = [
       () =>
         service.create({
           agent: { id: "default", name: "dup", messages: SYSTEM as AgentDefinition["messages"] },
-        }),
-      () =>
-        service.create({
-          agent: { id: "../escape", name: "bad", messages: SYSTEM as AgentDefinition["messages"] },
         }),
       () => service.create({ agent: { id: "empty", name: "e", messages: [] } }),
       () =>

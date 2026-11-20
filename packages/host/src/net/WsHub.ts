@@ -52,6 +52,7 @@ import {
   type MethodResult,
   type HostHelloParams,
   type HostHelloResult,
+  type HostSetLanguageParams,
   type HostSetLanguageResult,
   type TransferLimits,
 } from "../wire/index.js";
@@ -549,10 +550,12 @@ export class WsHub {
     // 入参校验就这一处：表里没有 schema 的方法原样透传（迁移是一域一域来的）
     const input = this.parseParams(method, params);
 
-    if (method === HELLO_METHOD) return await this.handleHello(state, input);
+    if (method === HELLO_METHOD) return await this.handleHello(state, input as HostHelloParams);
 
     // 语言是连接状态，接线层自己管（业务层不该知道「这条连接说哪种语言」之外的任何事）
-    if (method === "host.setLanguage") return this.handleSetLanguage(state, input);
+    if (method === "host.setLanguage") {
+      return this.handleSetLanguage(state, input as HostSetLanguageParams);
+    }
 
     if (this.options.uploads) {
       if (method === "asset.begin") {
@@ -587,7 +590,7 @@ export class WsHub {
    * `.trim()` 这类归一化），服务层拿到的是「已经相信的入参」。
    *
    * 失败映射成既有的错误形状：`invalid_params` + `params.field` + `detail.{ field, reason }`，
-   * 与 `asRecord` / 各服务层原来手写的那一套逐字一致 —— 客户端按 `field` 找输入框、按
+   * 与各服务层原来手写的那一套逐字一致 —— 客户端按 `field` 找输入框、按
    * `reason` 分支，换形状等于改契约。`reason` 就是 schema 上写的那个词（`empty` /
    * `not_an_object` / …），不是 Zod 的英文句子。
    */
@@ -599,7 +602,7 @@ export class WsHub {
     if (parsed.success) return parsed.data as MethodParams<M>;
 
     const issue = parsed.error.issues[0];
-    // 根对象本身不对时（`null` / 数组 / 字符串）路径是空的：字段名报 `params`，与 `asRecord` 同口径
+    // 根对象本身不对时（`null` / 数组 / 字符串）路径是空的：字段名报 `params`
     const field = issue.path.length > 0 ? issue.path.join(".") : "params";
     throw new HostError("invalid_params", {
       params: { field },
@@ -610,11 +613,18 @@ export class WsHub {
   /**
    * 握手。
    *
-   * `language` 认不出来时回落英文（PRD D8）；不传就用配置的默认语言。
+   * 入参的形状（`token` / `clientInfo` 必填、可选的 `language`）不在这里判：`hostHelloParams`
+   * 已经在 {@link parseParams} 那一处校过（`missing_token` / `missing_name` / `missing_version`
+   * 就是它报出来的）。
+   *
+   * `language` 认不出来时回落英文（PRD D8）；不传（或给了空白串）就用配置的默认语言 ——
+   * 那是语义而不是形状（schema 蓄意不 trim 也不 min）。
    * 失败不改变这条连接已经有的授权状态（重复握手是客户端自己的选择，失败不该把现有连接打回未授权）。
    */
-  private async handleHello(state: ConnectionState, params: unknown): Promise<HostHelloResult> {
-    const hello = asHelloParams(params);
+  private async handleHello(
+    state: ConnectionState,
+    hello: HostHelloParams,
+  ): Promise<HostHelloResult> {
     const verified = await this.options.verifyToken.verify(hello.token);
     if (verified === null) {
       throw new HostError("unauthorized", { detail: { reason: "token_rejected" } });
@@ -624,7 +634,7 @@ export class WsHub {
     state.credentialId = verified.id;
     state.clientInfo = hello.clientInfo;
     state.language =
-      typeof hello.language === "string" && hello.language.trim() !== ""
+      hello.language !== undefined && hello.language.trim() !== ""
         ? normalizeLanguage(hello.language)
         : await this.resolveDefaultLanguage();
 
@@ -660,17 +670,17 @@ export class WsHub {
     return typeof source === "string" ? source : "en";
   }
 
-  /** `host.setLanguage`：改这条连接的语言，断开即忘（PRD D8 / F-E4） */
-  private handleSetLanguage(state: ConnectionState, params: unknown): HostSetLanguageResult {
-    const record = asRecord(params, "params");
-    const language = record.language;
-    if (typeof language !== "string" || language.trim() === "") {
-      throw new HostError("invalid_params", {
-        params: { field: "language" },
-        detail: { field: "language", reason: "missing_language" },
-      });
-    }
-    state.language = normalizeLanguage(language);
+  /**
+   * `host.setLanguage`：改这条连接的语言，断开即忘（PRD D8 / F-E4）。
+   *
+   * `language` 非空这一条由 `hostSetLanguageParams` 在 {@link parseParams} 那一处校过
+   * （reason 就是它报的 `missing_language`）；这里只做归一化。
+   */
+  private handleSetLanguage(
+    state: ConnectionState,
+    params: HostSetLanguageParams,
+  ): HostSetLanguageResult {
+    state.language = normalizeLanguage(params.language);
     return { language: state.language };
   }
 
@@ -895,60 +905,4 @@ function sessionKeyOf<E extends EventName>(event: E, payload: EventMap[E]): stri
 
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
-}
-
-function asRecord(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "not_an_object" },
-    });
-  }
-  return value as Record<string, unknown>;
-}
-
-/**
- * `hello` 入参的校验。
- *
- * 只校验「少了就完全没法握手」的两样：`token` 与 `clientInfo`（客户端自报身份，用于连接列表与
- * 日志）。`language` 不是字符串就当没给。
- */
-function asHelloParams(value: unknown): HostHelloParams {
-  const record = asRecord(value, "params");
-  const token = record.token;
-  if (typeof token !== "string" || token.trim() === "") {
-    throw new HostError("invalid_params", {
-      params: { field: "token" },
-      detail: { field: "token", reason: "missing_token" },
-    });
-  }
-  return {
-    token: token.trim(),
-    language: typeof record.language === "string" ? record.language : undefined,
-    clientInfo: asClientInfo(record.clientInfo),
-  };
-}
-
-function asClientInfo(value: unknown): ClientInfo {
-  const record = asRecord(value, "clientInfo");
-  const name = record.name;
-  const version = record.version;
-  if (typeof name !== "string" || name.trim() === "") {
-    throw new HostError("invalid_params", {
-      params: { field: "clientInfo.name" },
-      detail: { field: "clientInfo.name", reason: "missing_name" },
-    });
-  }
-  if (typeof version !== "string" || version.trim() === "") {
-    throw new HostError("invalid_params", {
-      params: { field: "clientInfo.version" },
-      detail: { field: "clientInfo.version", reason: "missing_version" },
-    });
-  }
-  const platform = record.platform;
-  return {
-    name: name.trim(),
-    version: version.trim(),
-    platform: typeof platform === "string" && platform.trim() !== "" ? platform.trim() : undefined,
-  };
 }

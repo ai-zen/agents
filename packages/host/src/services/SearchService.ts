@@ -79,7 +79,8 @@ export class SearchService {
    * 结果（用户还没输入完），不当作错误。
    */
   async sessions(params: SearchSessionsParams): Promise<SearchSessionsResult> {
-    const query = typeof params.query === "string" ? params.query.trim() : "";
+    // 类型由 `searchSessionsParams` 在边界上校过；`trim` 是本层的归一化（schema 不抢这一份活）
+    const query = params.query.trim();
     if (query.length === 0) return { hits: [] };
 
     const rows = await this.sessionRepo.searchByName(
@@ -116,7 +117,7 @@ export class SearchService {
    * （仓储没有单独的数数入口）。
    */
   async messages(params: SearchMessagesParams): Promise<SearchMessagesResult> {
-    const query = typeof params.query === "string" ? params.query.trim() : "";
+    const query = params.query.trim();
     if (query.length === 0) return { hits: [], total: 0 };
 
     const limit = clampLimit(params.limit);

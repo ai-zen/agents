@@ -64,9 +64,14 @@ export interface LiveMessageLookup {
   messagesOf(sessionId: string, options?: { toolCallId?: string }): AgentNS.Message[] | null;
 }
 
-/** 可选的消息 id 参数：没给 / 空串一律当「没给」 */
-function idParam(value: unknown): string | undefined {
-  const id = typeof value === "string" ? value.trim() : "";
+/**
+ * 可选的消息 id 参数：空白一律当「没给」。
+ *
+ * 这是**取法规矩**不是形状（形状由边界 schema 校：`after` / `around` / `toolCallId` 只校类型、
+ * 不设非空下限）：`after: ""` 与不传是同一个意思 —— 返回全部。
+ */
+function idParam(value: string | undefined): string | undefined {
+  const id = value?.trim() ?? "";
   return id.length > 0 ? id : undefined;
 }
 
@@ -260,10 +265,9 @@ export class MessageService {
    * 客户端刚 `create` 完就会拉一次消息与现场。
    */
   private async requireSession(sessionId: string) {
-    const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.sessions.get(id);
+    const row = await this.sessions.get(sessionId);
     if (row) return row;
-    const draft = id.length === 0 ? undefined : this.drafts?.get(id);
+    const draft = this.drafts?.get(sessionId);
     if (draft) return draft;
     throw new HostError("not_found", {
       params: { entity: "session" },

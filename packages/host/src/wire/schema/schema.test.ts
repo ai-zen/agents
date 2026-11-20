@@ -17,7 +17,17 @@
 import { describe, expect, it } from "vitest";
 
 import { METHOD_NAMES } from "../methods.js";
-import { agentDeleteParams, agentListParams, PARAM_SCHEMAS, sessionStartParams } from "./index.js";
+import {
+  agentDeleteParams,
+  agentListParams,
+  configSetDefaultsParams,
+  PARAM_SCHEMAS,
+  sessionPinParams,
+  sessionRenameParams,
+  sessionSetThresholdsParams,
+  sessionStartParams,
+  workspaceRenameParams,
+} from "./index.js";
 
 /** 已经挂上 schema 的方法名（`PARAM_SCHEMAS` 的键） */
 const MIGRATED: readonly string[] = Object.keys(PARAM_SCHEMAS);
@@ -75,5 +85,64 @@ describe("形状与文案（reason 是既有的词，不是 Zod 的英文句子�
     expect(agentListParams.safeParse({}).success).toBe(true);
     expect(agentListParams.safeParse(undefined).error?.issues[0]?.message).toBe("not_an_object");
     expect(agentListParams.safeParse(42).error?.issues[0]?.message).toBe("not_an_object");
+  });
+
+  /**
+   * 下面这几条：原来都是服务层自己判的，第三波删了它们之后，同一个事实必须在这里有断言
+   * —— 否则就变成「只有 schema 定义、没有用例」。
+   */
+  it("`config.setDefaults` 的 language 只认支持的那两门", () => {
+    expect(configSetDefaultsParams.safeParse({ defaults: { language: "zh" } }).success).toBe(true);
+    // 写 null = 清掉这一项
+    expect(configSetDefaultsParams.safeParse({ defaults: { language: null } }).success).toBe(true);
+
+    const bad = configSetDefaultsParams.safeParse({ defaults: { language: "fr" } });
+    expect(bad.error?.issues[0]?.message).toBe("not_a_language");
+    expect(bad.error?.issues[0]?.path).toEqual(["defaults", "language"]);
+  });
+
+  it("`session.setThresholds` 的阈值是正整数，省略与 null 是两件事", () => {
+    expect(
+      sessionSetThresholdsParams.safeParse({ sessionId: "s-1", handoffThreshold: 1000 }).success,
+    ).toBe(true);
+    expect(
+      sessionSetThresholdsParams.safeParse({ sessionId: "s-1", handoffThreshold: null }).success,
+    ).toBe(true);
+    expect(sessionSetThresholdsParams.safeParse({ sessionId: "s-1" }).success).toBe(true);
+
+    for (const bad of [0, -1, 1.5]) {
+      expect(
+        sessionSetThresholdsParams.safeParse({ sessionId: "s-1", handoffThreshold: bad }).error
+          ?.issues[0]?.message,
+      ).toBe("not_positive_integer");
+    }
+  });
+
+  it("`session.pin` 的 pinned 必填且只认布尔；`session.rename` 的名字剥空白后不许空", () => {
+    expect(sessionPinParams.safeParse({ sessionId: "s-1", pinned: true }).success).toBe(true);
+    expect(
+      sessionPinParams.safeParse({ sessionId: "s-1", pinned: "yes" }).error?.issues[0]?.message,
+    ).toBe("not_boolean");
+    expect(sessionPinParams.safeParse({ sessionId: "s-1" }).error?.issues[0]?.message).toBe(
+      "not_boolean",
+    );
+
+    expect(sessionRenameParams.parse({ sessionId: "s-1", name: "  我的会话  " })).toEqual({
+      sessionId: "s-1",
+      name: "我的会话",
+    });
+    expect(
+      sessionRenameParams.safeParse({ sessionId: "s-1", name: "   " }).error?.issues[0]?.message,
+    ).toBe("empty");
+  });
+
+  it("`workspace.rename` 的名字不许空（剥完空白之后）", () => {
+    expect(workspaceRenameParams.safeParse({ workspaceId: "w-1", name: "  项目  " }).success).toBe(
+      true,
+    );
+    expect(
+      workspaceRenameParams.safeParse({ workspaceId: "w-1", name: "   " }).error?.issues[0]
+        ?.message,
+    ).toBe("empty");
   });
 });

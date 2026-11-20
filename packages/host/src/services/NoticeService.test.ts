@@ -429,9 +429,9 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
 
   it("清一条不存在的通知回 dismissed:false（这次有没有真改动库）", async () => {
     expect(await harness.service.dismiss({ noticeId: "没有这条" })).toEqual({ dismissed: false });
-    await expect(harness.service.dismiss({ noticeId: "  " })).rejects.toMatchObject({
-      code: "invalid_params",
-    });
+    // 空白 id 的形状由 `noticeDismissParams` 在 `WsHub` 那一处拒（`empty`）：走到服务层就是一个
+    // 谁也匹配不上的 id，于是同样回 `dismissed: false`
+    expect(await harness.service.dismiss({ noticeId: "  " })).toEqual({ dismissed: false });
   });
 });
 

@@ -158,9 +158,12 @@ export class CompletionService {
    *   - 有现成清单 → `ready`（可能带「不完整 / 被截断」的说明）；
    *   - 正在扫 → `scanning`（客户端继续打字时会再来问一次）；
    *   - 扫不出来 → `unavailable` + 原因。
+   *
+   * `workspaceId` 的形状（非空）不在这里判：`completionFilesParams` 已经在 `WsHub` 那一处校过，
+   * 这里只判「这个项目在不在」（`resolveCwd` 的 `not_found`）。
    */
   async files(params: CompletionFilesParams): Promise<CompletionFilesResult> {
-    const workspaceId = requireWorkspaceId(params.workspaceId);
+    const workspaceId = params.workspaceId;
     const cwd = await this.resolveCwd(workspaceId);
     const state = this.stateOf(workspaceId);
 
@@ -443,18 +446,6 @@ export const defaultGitLister: GitLister = async (cwd, timeoutMs) => {
 // ---------------------------------------------------------------------------
 // 纯函数
 // ---------------------------------------------------------------------------
-
-/** 入参的 workspaceId：空串按「参数不对」处理 */
-function requireWorkspaceId(value: unknown): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "") {
-    throw new HostError("invalid_params", {
-      params: { field: "workspaceId" },
-      detail: { field: "workspaceId", reason: "empty" },
-    });
-  }
-  return raw;
-}
 
 /** 路径分隔符统一成 `/`，去掉开头的 `./` */
 function normalizePath(path: string): string {

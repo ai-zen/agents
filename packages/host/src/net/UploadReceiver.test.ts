@@ -13,12 +13,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { HostError } from "../wire/errors.js";
-import {
-  MAX_ASSET_BYTES,
-  type AssetBeginParams,
-  type AssetBeginResult,
-  type AssetRef,
-} from "../wire/index.js";
+import { MAX_ASSET_BYTES, type AssetBeginResult, type AssetRef } from "../wire/index.js";
 import {
   decodeChunkFrame,
   encodeChunkFrame,
@@ -200,21 +195,6 @@ describe("拒绝与清理", () => {
     // 什么都没建出来
     expect(await listDir(assetsDir)).toEqual([]);
     expect(receiver.pendingCount()).toBe(0);
-  });
-
-  it("缺会话归属时拒（库里的素材行要挂在一段会话上）", async () => {
-    // 入参是网络上来的 JSON：类型上是必填字段，运行时仍然可能没带（契约不替客户端把关）
-    const withoutSession = {
-      purpose: "message_image",
-      mime: "image/png",
-      bytes: 10,
-    } as unknown as AssetBeginParams;
-    const error = await receiver
-      .begin(CONNECTION, withoutSession)
-      .catch((caught: unknown) => caught);
-
-    expect((error as HostError).code).toBe("invalid_params");
-    expect((error as HostError).detail).toMatchObject({ field: "sessionId" });
   });
 
   it("总长不符：删临时文件并报错", async () => {
@@ -623,25 +603,6 @@ describe("全局去重（begin 命中即结束）", () => {
     });
     expect(noDigest.deduped).toBe(false);
     expect(deduping.pendingCount(CONNECTION)).toBe(2);
-    await deduping.dispose();
-  });
-
-  it("sha256 格式不对：按参数错拒（不是静默当成没带）", async () => {
-    const deduping = new UploadReceiver({
-      assetsDir,
-      finalize: fakeFinalize,
-      findExisting: async () => EXISTING,
-    });
-
-    await expect(
-      deduping.begin(CONNECTION, {
-        purpose: "message_image",
-        mime: "image/png",
-        bytes: 4,
-        sha256: "not-a-digest",
-        sessionId: "c1",
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
     await deduping.dispose();
   });
 

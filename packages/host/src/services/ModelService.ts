@@ -157,7 +157,13 @@ export function thinkingLevelsOf(model: Model | undefined, presets: ReasoningPre
   return preset ? Object.keys(preset.levels) : [];
 }
 
-/** 两条阈值的合法性：都是正数，且硬线要留出交接的余量（handoff < guard） */
+/**
+ * 两条阈值的合法性：都是正数，且硬线要留出交接的余量（`handoff < guard`）。
+ *
+ * 为什么不去掉「正数」那一半：`tokenThresholdsSchema` 只保**入参**那两格是正整数，而这里校的是
+ * **合成之后**的那一条（`update` 不给阈值时，两格来自磁盘上的 `config.json`，那份文件是手改得了
+ * 的）。`handoff < guard` 同理 —— 它跨两格，本来就不在形状那一层。
+ */
 function assertThresholds(thresholds: { handoff: number; guard: number }): void {
   const { handoff, guard } = thresholds;
   if (!Number.isFinite(handoff) || !Number.isFinite(guard) || handoff <= 0 || guard <= 0) {
@@ -172,18 +178,6 @@ function assertThresholds(thresholds: { handoff: number; guard: number }): void 
       detail: { field: "tokenThresholds", reason: "handoff_not_below_guard", thresholds },
     });
   }
-}
-
-/** 必填的字符串参数：空串按「参数不对」处理，不拿它去查配置 */
-function requireText(value: unknown, field: string): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "") {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "empty" },
-    });
-  }
-  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +233,9 @@ export class ModelService {
   async create(params: ModelCreateParams): Promise<ModelCreateResult> {
     const input = params.model;
     const config = await this.readConfig();
-    const id = requireText(input?.id, "model.id");
+    // 入参的形状（`id` / `name` / `endpointId` 非空、`tokenThresholds` 是正整数对、`vision` 是布尔）
+    // 不在这一层判：`modelInputSchema` 已经在 `WsHub` 那一处校过。这里只判磁盘事实。
+    const id = input.id;
     if (findModel(config, id)) {
       throw new HostError("invalid_params", {
         params: { field: "model.id" },
@@ -257,7 +253,7 @@ export class ModelService {
   /** 编辑模型（编辑即转自定义，F-F3 —— 否则下次初始化会被出厂定义冲回去） */
   async update(params: ModelUpdateParams): Promise<ModelUpdateResult> {
     const config = await this.readConfig();
-    const modelId = requireText(params.modelId, "modelId");
+    const modelId = params.modelId;
     const existing = findModel(config, modelId);
     if (!existing) {
       throw new HostError("not_found", {
@@ -300,7 +296,7 @@ export class ModelService {
    */
   async delete(params: ModelDeleteParams): Promise<ModelDeleteResult> {
     const config = await this.readConfig();
-    const modelId = requireText(params.modelId, "modelId");
+    const modelId = params.modelId;
     if (!findModel(config, modelId)) {
       throw new HostError("not_found", { params: { entity: "model" }, detail: { modelId } });
     }
@@ -336,7 +332,7 @@ export class ModelService {
    */
   async restoreFactory(params: ModelRestoreFactoryParams): Promise<ModelRestoreFactoryResult> {
     const config = await this.readConfig();
-    const modelId = requireText(params.modelId, "modelId");
+    const modelId = params.modelId;
     if (!findModel(config, modelId)) {
       throw new HostError("not_found", { params: { entity: "model" }, detail: { modelId } });
     }
@@ -367,10 +363,12 @@ export class ModelService {
   async saveImage(params: ModelSaveImageParams): Promise<ModelSaveImageResult> {
     const input = params.imageModel;
     const config = await this.readConfig();
-    const id = requireText(input?.id, "imageModel.id");
-    const name = requireText(input?.name, "imageModel.name");
-    const modelName = requireText(input?.modelName, "imageModel.modelName");
-    const endpointId = requireText(input?.endpointId, "imageModel.endpointId");
+    // 四格必填（`id` / `name` / `endpointId` / `modelName`）是 `imageModelInputSchema` 保证的，
+    // 这一层只判「端点存不存在」
+    const id = input.id;
+    const name = input.name;
+    const modelName = input.modelName;
+    const endpointId = input.endpointId;
     if (!findEndpoint(config, endpointId)) {
       throw new HostError("invalid_params", {
         params: { field: "imageModel.endpointId" },
@@ -406,7 +404,7 @@ export class ModelService {
   /** 删除图片模型；它正被「默认图片模型」指着时拒删（F-F4 / F-F7） */
   async deleteImage(params: ModelDeleteImageParams): Promise<ModelDeleteImageResult> {
     const config = await this.readConfig();
-    const imageModelId = requireText(params.imageModelId, "imageModelId");
+    const imageModelId = params.imageModelId;
     const imageModels = config.imageModels ?? [];
     if (!imageModels.some((model) => model.id === imageModelId)) {
       throw new HostError("not_found", {
@@ -483,8 +481,8 @@ export class ModelService {
   ): Model {
     const model: Model = {
       id,
-      name: requireText(input?.name, "model.name"),
-      endpointId: requireText(input?.endpointId, "model.endpointId"),
+      name: input.name,
+      endpointId: input.endpointId,
       ...definedOnly({
         modelName: input.modelName,
         tokenThresholds: input.tokenThresholds,
@@ -531,9 +529,13 @@ function definedOnly<T extends Record<string, unknown>>(input: T): Partial<T> {
   return result;
 }
 
-/** 一条模型定义的形状校验：端点要在、阈值要合法、引用的思考策略要在表里 */
+/**
+ * 一条模型定义的形状校验：端点要在、阈值要合法、引用的思考策略要在表里。
+ *
+ * 「`name` 不能是空串」不在这里判：`modelInputSchema` / `modelPatchSchema` 的 `name` 已经在
+ * `WsHub` 那一处校过（非空字符串，两侧空白不算内容）。
+ */
 function validateModelShape(config: AppConfig, presets: ReasoningPresets, model: Model): void {
-  requireText(model.name, "model.name");
   if (!findEndpoint(config, model.endpointId)) {
     throw new HostError("invalid_params", {
       params: { field: "model.endpointId" },

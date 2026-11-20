@@ -322,16 +322,6 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-/** 请求的执行者是 SDK 认的那两档之一吗 */
-function isHandoffMode(value: string): value is HandoffMode {
-  return value === "self" || value === "summary";
-}
-
-/** 交接之后做什么：只产文档 / 顺带开一段新会话 */
-function isHandoffThen(value: string): value is HandoffThen {
-  return value === "document_only" || value === "new_session";
-}
-
 /**
  * 「agent 没了」这一个失败事实（会话被删 / 被硬杀）。
  *
@@ -433,23 +423,9 @@ export class HandoffDocumentService {
     params: HandoffStartParams,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<HandoffStartResult> {
+    // `mode` / `then` 的取值（两档枚举）不在这里判：`handoffStartParams` 已经在 `WsHub` 那一处
+    // 校过（认不出的取值报 `invalid_params` + `field` + `reason: "bad_value"`）
     const session = await this.requireSession(params.sessionId);
-    if (!isHandoffMode(params.mode)) {
-      throw new HostError("invalid_params", {
-        params: { field: "mode" },
-        detail: { field: "mode", value: params.mode, allowed: ["self", "summary"] },
-      });
-    }
-    if (!isHandoffThen(params.then)) {
-      throw new HostError("invalid_params", {
-        params: { field: "then" },
-        detail: {
-          field: "then",
-          value: params.then,
-          allowed: ["document_only", "new_session"],
-        },
-      });
-    }
 
     // 同一段不并排放两趟（见 {@link inFlight}）
     if (this.inFlight.has(session.id)) {
@@ -886,9 +862,14 @@ export class HandoffDocumentService {
     return { documents };
   }
 
+  /**
+   * 这段会话在库里吗（不在就是 `not_found`）。
+   *
+   * `sessionId` 的形状（非空）不在这里判：`handoffStartParams` 已经在 `WsHub` 那一处校过，
+   * 这里只判「这段在不在」—— 那是一条要查库的事实。
+   */
   private async requireSession(sessionId: string): Promise<Session> {
-    const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.sessions.get(id);
+    const row = await this.sessions.get(sessionId);
     if (!row) {
       throw new HostError("not_found", {
         params: { entity: "session" },
@@ -898,9 +879,11 @@ export class HandoffDocumentService {
     return row;
   }
 
+  /**
+   * 这个项目在库里吗（不在就是 `not_found`）；形状同上，不在这里判。
+   */
   private async requireWorkspace(workspaceId: string): Promise<WorkspaceRow> {
-    const id = typeof workspaceId === "string" ? workspaceId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.workspaces.get(id);
+    const row = await this.workspaces.get(workspaceId);
     if (!row) {
       throw new HostError("not_found", {
         params: { entity: "workspace" },

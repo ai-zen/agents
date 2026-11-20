@@ -1252,12 +1252,6 @@ describe("缺省语言（D8 / 裁定 R58）", () => {
     // 写 `null` 就是清掉这一项：缺省语言回到英文
     await callMethod(app, "config.setDefaults", { defaults: { language: null } });
     expect((await handshake(app)).language).toBe("en");
-
-    // 认不出来的语言直接驳回，不悄悄换成英文
-    const bad = { defaults: { language: "fr" } } as unknown as MethodParams<"config.setDefaults">;
-    await expect(callMethod(app, "config.setDefaults", bad)).rejects.toMatchObject({
-      code: "invalid_params",
-    });
   });
 });
 

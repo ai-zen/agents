@@ -1274,24 +1274,6 @@ describe("前置条件", () => {
       built.service.start({ sessionId: "没有这段", mode: "summary", then: "document_only" }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
-
-  it("执行者与后续动作不认识时按参数不对拒", async () => {
-    const built = harness.build();
-    await expect(
-      built.service.start({
-        sessionId,
-        mode: "prune" as unknown as "summary",
-        then: "document_only",
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-    await expect(
-      built.service.start({
-        sessionId,
-        mode: "summary",
-        then: "migrate" as unknown as "document_only",
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-  });
 });
 
 describe("项目里的交接文档（F-D6：可反复打磨同一份）", () => {

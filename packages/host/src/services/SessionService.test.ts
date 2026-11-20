@@ -529,7 +529,7 @@ describe("SessionService.get / rename / pin", () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const renamed = await harness.service.rename({
       sessionId: created.session.id,
-      name: "  我的会话  ",
+      name: "我的会话",
     });
     expect(renamed.session.name).toBe("我的会话");
     expect(renamed.session.nameIsAuto).toBe(false);
@@ -1263,26 +1263,12 @@ describe("SessionService.setThresholds（PRD 1.4 / 4.7：会话行上的覆盖�
     expect(harness.events.length).toBe(events);
   });
 
-  it("非法值一律 invalid_params：0 / 负数 / 小数 / 硬线不大于软线", async () => {
+  // 取值本身（`0` / 负数 / 小数都不收）由边界 schema 校，不是这一层的事实（`wire/schema` 的
+  // `session.setThresholds` 两格是 `.nullish()` 的正整数）；这里只剩那一条跨字段的
+  it("硬线不大于软线时报 invalid_params（跨字段关系在这一层判）", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
 
-    // `0` 不收：阈值是绝对 token 数，要「不设这条线」请给 `null`
-    await expect(
-      harness.service.setThresholds({ sessionId: id, handoffThreshold: 0 }),
-    ).rejects.toMatchObject({
-      code: "invalid_params",
-      detail: { field: "handoffThreshold", reason: "not_positive_integer" },
-    });
-    await expect(
-      harness.service.setThresholds({ sessionId: id, guardThreshold: -1 }),
-    ).rejects.toMatchObject({
-      code: "invalid_params",
-      detail: { field: "guardThreshold", reason: "not_positive_integer" },
-    });
-    await expect(
-      harness.service.setThresholds({ sessionId: id, guardThreshold: 1500.5 }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
     // 硬线必须给软线留出余量（与建模型那条同口径：handoff < guard）
     await expect(
       harness.service.setThresholds({

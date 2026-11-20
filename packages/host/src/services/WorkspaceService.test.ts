@@ -168,13 +168,6 @@ describe("WorkspaceService.rename / get", () => {
     expect(renamed.workspace.folder.cwd).toBe(projectDir);
   });
 
-  it("名字为空串报参数错", async () => {
-    const created = await service.create({ cwd: projectDir });
-    await expect(
-      service.rename({ workspaceId: created.workspace.id, name: "   " }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-  });
-
   it("不存在的项目报 not_found", async () => {
     await expect(service.get({ workspaceId: "没有这个项目" })).rejects.toBeInstanceOf(HostError);
   });

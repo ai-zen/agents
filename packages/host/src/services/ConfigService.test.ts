@@ -16,7 +16,6 @@ import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MAX_ASSETS_PER_MESSAGE, MAX_ASSET_BYTES } from "../wire/index.js";
-import type { ConfigBehavior } from "../wire/index.js";
 import {
   ConfigService,
   type ConfigApplyChange,
@@ -310,18 +309,6 @@ describe("ConfigService.patch / setDefaults", () => {
     expect(applyPort.changes[0]?.sections).toEqual([]);
   });
 
-  it("上限不是正整数、行为开关取值不认识都拒", async () => {
-    await expect(service.patch({ patch: { limits: { maxToolOutput: 0 } } })).rejects.toMatchObject({
-      code: "invalid_params",
-    });
-    // 客户端可能传一个不认识的值进来：类型上拦不住，宿主要担
-    await expect(
-      service.patch({
-        patch: { behavior: { autoRefreshTools: "always" as ConfigBehavior["autoRefreshTools"] } },
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-  });
-
   it("默认项要落到实处：模型、图片模型、助手都要在（F-F7）", async () => {
     await expect(
       service.setDefaults({ defaults: { defaultModel: "m-gone" } }),
@@ -383,11 +370,6 @@ describe("ConfigService.patch / setDefaults", () => {
     const { config } = await service.setDefaults({ defaults: { language: null } });
     expect(config.defaults.language).toBeNull();
     expect((await readConfig()).language).toBeUndefined();
-
-    // 认不出来的语言直接驳，不悄悄换成英文
-    await expect(
-      service.setDefaults({ defaults: { language: "fr" as unknown as "zh" } }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
   });
 });
 

@@ -86,39 +86,23 @@ export async function toFolderFact(cwd: string): Promise<FolderFact> {
   return { cwd, exists: cwd.length > 0 && (await pathExists(cwd)) };
 }
 
-/** 名字不能是空白串；`field` 用于把「哪个字段不对」结构化地告诉客户端 */
-function requireName(value: string, field: string): string {
-  const name = typeof value === "string" ? value.trim() : "";
-  if (name.length === 0) {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "empty" },
-    });
-  }
-  return name;
-}
-
 /**
  * cwd 归一化成绝对路径。
  *
  * 相对路径按宿主进程的工作目录解析会得到「随启动方式漂移」的路径（D9 的 cwd 一旦
  * 定死就不再变），所以这里要求调用方给绝对路径，再由 `resolve` 把 `..`、尾斜杠归一。
+ *
+ * 「这一格非空」不在这里判：`workspaceCreateParams` 的 `cwd` 已经在 `WsHub` 那一处校过（非空、
+ * 两侧空白不算内容），从边界下来就是干净的那一串。
  */
 function normalizeCwd(value: string): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw.length === 0) {
-    throw new HostError("invalid_params", {
-      params: { field: "cwd" },
-      detail: { field: "cwd", reason: "empty" },
-    });
-  }
-  if (!isAbsolute(raw)) {
+  if (!isAbsolute(value)) {
     throw new HostError("invalid_params", {
       params: { field: "cwd" },
       detail: { field: "cwd", reason: "not_absolute", cwd: value },
     });
   }
-  return resolve(raw);
+  return resolve(value);
 }
 
 export class WorkspaceService {
@@ -194,10 +178,10 @@ export class WorkspaceService {
     return { workspace: await this.toView(await this.requireRow(params.workspaceId)) };
   }
 
-  /** 改名：id 与 cwd 不动（PRD D9），只换显示名 */
+  /** 改名：id 与 cwd 不动（PRD D9），只换显示名（形状由 `workspaceNameSchema` 校过：非空、已 trim） */
   async rename(params: WorkspaceRenameParams): Promise<WorkspaceRenameResult> {
     const row = await this.requireRow(params.workspaceId);
-    const name = requireName(params.name, "name");
+    const name = params.name;
     await this.workspaces.rename(row.id, name);
     return { workspace: await this.toView({ ...row, name }) };
   }
@@ -243,11 +227,14 @@ export class WorkspaceService {
     return { removed: changes > 0, consequences, assetIds: [...assetIds] };
   }
 
+  /**
+   * 取一行项目（不在就 `not_found`）。
+   *
+   * `workspaceId` 的形状（非空字符串）不在这里判：`workspaceIdSchema` 已经在 `WsHub` 那一处校过，
+   * 查不到就是「没这个项目」—— 那本来就是 `not_found` 这一件事。
+   */
   private async requireRow(workspaceId: string): Promise<WorkspaceRow> {
-    const row =
-      typeof workspaceId === "string" && workspaceId.length > 0
-        ? await this.workspaces.get(workspaceId)
-        : undefined;
+    const row = await this.workspaces.get(workspaceId);
     if (!row) {
       throw new HostError("not_found", {
         params: { entity: "workspace" },

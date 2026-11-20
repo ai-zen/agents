@@ -398,13 +398,9 @@ export class QuestionService {
   ): Promise<QuestionAnswerResult> {
     const language = context.language ?? DEFAULT_LANGUAGE;
     const question = this.requireQuestion(params.questionId);
-    const value = typeof params.value === "string" ? params.value.trim() : "";
-    if (value.length === 0) {
-      throw new HostError("invalid_params", {
-        params: { field: "value" },
-        detail: { field: "value", reason: "empty" },
-      });
-    }
+    // `value` 的形状（非空字符串）由 `questionAnswerParams` 在 `WsHub` 那一处校过；
+    // 「这个值在不在那道题的候选里」是现场事实（要读那道题），仍是下面这一步
+    const value = params.value;
 
     if (question.state !== "pending") {
       // 已经在别处答过：不报错、不重复触发副作用，回当前状态
@@ -570,10 +566,14 @@ export class QuestionService {
     return found;
   }
 
-  /** 按 id 找题（不存在就是 `not_found`） */
+  /**
+   * 按 id 找题（不存在就是 `not_found`）。
+   *
+   * `questionId` 的形状（非空）不在这里判：`questionAnswerParams` 已经在 `WsHub` 那一处校过，
+   * 这里只判「这道题在不在」（题只活在内存里，库也问不出来）。
+   */
   private requireQuestion(questionId: string): QuestionRecord {
-    const id = typeof questionId === "string" ? questionId.trim() : "";
-    const question = id.length === 0 ? undefined : this.questions.get(id);
+    const question = this.questions.get(questionId);
     if (!question) {
       throw new HostError("not_found", {
         params: { entity: "question" },

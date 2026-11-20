@@ -439,6 +439,69 @@ describe("入参校验：分发之前那一处（全仓唯一的一处）", () =
     const frame = await client.queue.next();
     expect(isError(frame) && frame.error.data.code).toBe("invalid_params");
   });
+
+  it("`asset.begin` / `asset.end` 的形状在这一处就拒（上传接收器只判取值与状态）", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    const badBegins: [Record<string, unknown>, string][] = [
+      // 缺会话归属：素材行要挂在一段会话上，形状上就不许缺
+      [{ purpose: "message_image", mime: "image/png", bytes: 4 }, "sessionId"],
+      // 用途是闭环枚举
+      [{ purpose: "avatar", mime: "image/png", bytes: 4, sessionId: "c-1" }, "purpose"],
+      // 声明的总长是正整数
+      [{ purpose: "message_image", mime: "image/png", bytes: 0, sessionId: "c-1" }, "bytes"],
+      // 摘要是 64 位十六进制
+      [
+        {
+          purpose: "message_image",
+          mime: "image/png",
+          bytes: 4,
+          sha256: "not-a-digest",
+          sessionId: "c-1",
+        },
+        "sha256",
+      ],
+    ];
+    for (const [params, field] of badBegins) {
+      client.request("asset.begin", params);
+      const frame = await client.queue.next();
+      expect(isError(frame), JSON.stringify(params)).toBe(true);
+      if (!isError(frame)) return;
+      expect(frame.error.data.code).toBe("invalid_params");
+      expect(frame.error.data.params).toEqual({ field });
+    }
+
+    // 句柄非空同上（`asset.end` 只判「这趟上传在不在」）
+    client.request("asset.end", { uploadId: "  ", sha256: "a".repeat(64) });
+    const last = await client.queue.next();
+    expect(isError(last) && last.error.data.code).toBe("invalid_params");
+    expect(isError(last) && last.error.data.params).toEqual({ field: "uploadId" });
+
+    // 一条都没进上传接收器：没有临时文件，也没有挂着的上传
+    expect(await listDir(assetsDir)).toEqual([]);
+  });
+
+  it("`handoff.start` 的 `mode` / `then` 是闭环枚举：认不出的取值在边界上就拒", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    // 这一域没注册 handler：拒的是边界而不是「方法没注册」，说明校验点在分发之前
+    client.request("handoff.start", { sessionId: "c-1", mode: "prune", then: "document_only" });
+    const badMode = await client.queue.next();
+    expect(isError(badMode) && badMode.error.data.code).toBe("invalid_params");
+    expect(isError(badMode) && badMode.error.data.detail).toEqual({
+      field: "mode",
+      reason: "bad_value",
+    });
+
+    client.request("handoff.start", { sessionId: "c-1", mode: "summary", then: "migrate" });
+    const badThen = await client.queue.next();
+    expect(isError(badThen) && badThen.error.data.detail).toEqual({
+      field: "then",
+      reason: "bad_value",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

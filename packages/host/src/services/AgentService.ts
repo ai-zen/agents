@@ -144,7 +144,13 @@ function text(messageKey: MessageKey, params: Record<string, unknown> = {}): Pro
 // 纯函数
 // ---------------------------------------------------------------------------
 
-/** 必填的标识：只允许字母数字与 `-` `_` `.`，它同时是文件名（F-G3） */
+/**
+ * 必填的标识：只允许字母数字与 `-` `_` `.`，它同时是文件名（F-G3）。
+ *
+ * `agentId` 的形状不靠它：那条（非空 + 可做文件名）由 `agentIdSchema` 在 `WsHub` 那一处校过。
+ * 留下来的三个调用点都是**边界管不到的**：`describe` 走内部调用（不是入参）、`modelId` 与
+ * `level` 在 schema 里只钉了「非空文本」（字符集是取值的事，见 `schema/agent.ts` 那两处注释）。
+ */
 function requireId(value: unknown, field: string): string {
   const raw = typeof value === "string" ? value.trim() : "";
   if (raw === "") {
@@ -157,18 +163,6 @@ function requireId(value: unknown, field: string): string {
     throw new HostError("invalid_params", {
       params: { field },
       detail: { field, reason: "not_a_file_name", value: raw },
-    });
-  }
-  return raw;
-}
-
-/** 必填的显示名 */
-function requireName(value: unknown): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "") {
-    throw new HostError("invalid_params", {
-      params: { field: "agent.name" },
-      detail: { field: "agent.name", reason: "empty" },
     });
   }
   return raw;
@@ -234,23 +228,28 @@ function definedOnly<T extends Record<string, unknown>>(input: T): Partial<T> {
   return result;
 }
 
-/** 预设消息的校验：至少要有一条（没有 system 的助手定义跑起来没有行为约束） */
-function requireMessages(value: unknown): AgentNS.Message[] {
-  if (!Array.isArray(value) || value.length === 0) {
+/**
+ * 预设消息的校验：「至少要有一条」与「至少要有一条 system 消息」（没有 system 的助手定义跑起来
+ * 没有行为约束）。
+ *
+ * 「它是不是一组消息」不在这里判：`agentMessagesSchema` 已经在 `WsHub` 那一处校过（非数组根本
+ * 到不了这一层）。剩下这两条是**内容**约束不是形状，所以还在。
+ */
+function requireMessages(value: AgentNS.Message[]): AgentNS.Message[] {
+  if (value.length === 0) {
     throw new HostError("invalid_params", {
       params: { field: "agent.messages" },
       detail: { field: "agent.messages", reason: "empty" },
     });
   }
-  const messages = value as AgentNS.Message[];
-  const hasSystem = messages.some((message) => message.role === AgentNS.Role.System);
+  const hasSystem = value.some((message) => message.role === AgentNS.Role.System);
   if (!hasSystem) {
     throw new HostError("invalid_params", {
       params: { field: "agent.messages" },
       detail: { field: "agent.messages", reason: "no_system_message" },
     });
   }
-  return messages;
+  return value;
 }
 
 /**
@@ -330,9 +329,14 @@ export class AgentService {
     return { agents, defaultAgentId: this.resolveDefaultAgentId(config, loaded) };
   }
 
-  /** 按 id 取一个助手 */
+  /**
+   * 按 id 取一个助手。
+   *
+   * `agentId` 的形状（非空、可做文件名）不在这里判：`agentIdSchema` 已经在 `WsHub` 那一处校过，
+   * 这里只判「这个助手在不在」。
+   */
   async get(params: AgentGetParams): Promise<AgentGetResult> {
-    const id = requireId(params.agentId, "agentId");
+    const id = params.agentId;
     const found = await this.load(id);
     if (!found) {
       throw new HostError("not_found", { params: { entity: "agent" }, detail: { agentId: id } });
@@ -365,10 +369,10 @@ export class AgentService {
   // 写
   // -------------------------------------------------------------------------
 
-  /** 新建助手定义（一实体一文件，F-G3） */
+  /** 新建助手定义（一实体一文件，F-G3；`id` / `name` / `messages` 的形状由 `agentInputSchema` 校过） */
   async create(params: AgentCreateParams): Promise<AgentCreateResult> {
     const input = params.agent;
-    const id = requireId(input?.id, "agent.id");
+    const id = input.id;
     const existing = await this.load(id);
     if (existing) {
       throw new HostError("invalid_params", {
@@ -383,7 +387,7 @@ export class AgentService {
     const timestamp = new Date(this.now()).toISOString();
     const definition: AgentDefinition = {
       id,
-      name: requireName(input.name),
+      name: input.name,
       ...definedOnly({
         description: input.description,
         modelId: input.modelId,
@@ -406,7 +410,7 @@ export class AgentService {
 
   /** 编辑助手定义（局部更新；`modelId: ""` 表示把绑定清掉，交给配置里的兜底模型） */
   async update(params: AgentUpdateParams): Promise<AgentUpdateResult> {
-    const id = requireId(params.agentId, "agentId");
+    const id = params.agentId;
     const found = await this.requireEditable(id);
     const patch = params.patch ?? {};
     const config = await this.configManager.read();
@@ -416,7 +420,7 @@ export class AgentService {
     const merged: AgentDefinition = {
       ...base,
       ...definedOnly({
-        name: patch.name === undefined ? undefined : requireName(patch.name),
+        name: patch.name,
         description: patch.description,
         modelParams: patch.modelParams,
         permissions: patch.permissions,
@@ -487,8 +491,10 @@ export class AgentService {
    * 定义上与其无关的参数（`temperature` 之类）不动。
    */
   async setModel(params: AgentSetModelParams): Promise<AgentSetModelResult> {
-    const id = requireId(params.agentId, "agentId");
+    const id = params.agentId;
     const found = await this.requireEditable(id);
+    // `modelId` 只剩「非空文本」是边界保证的（`agentSetModelParams`）；「能不能做文件名」这条字符集
+    // 不在 schema 里（那是取值的事，见 `schema/agent.ts`），所以还由 `requireId` 判
     const modelId = requireId(params.modelId, "modelId");
     const config = await this.configManager.read();
     if (!findModel(config, modelId)) {
@@ -539,7 +545,7 @@ export class AgentService {
    * 与会话那一侧的 `session.setThinking(null)`（改成会话行上的档位名）是两件事。
    */
   async setThinking(params: AgentSetThinkingParams): Promise<AgentSetThinkingResult> {
-    const id = requireId(params.agentId, "agentId");
+    const id = params.agentId;
     const found = await this.requireEditable(id);
     const config = await this.configManager.read();
     const presets = await this.configManager.readReasoningPresets();
@@ -560,6 +566,8 @@ export class AgentService {
         detail: { modelId: model.id, preset: model.reasoningPreset ?? null },
       });
     }
+    // `level` 只被边界保证「非空文本」（`agentSetThinkingParams`）；档位名不该带路径字符那一条仍在
+    // `requireId` 里（schema 没接：那是取值的事），表里有没有这一档下面再判
     const level = params.level === null ? null : requireId(params.level, "level");
     if (level !== null && !Object.prototype.hasOwnProperty.call(preset.levels, level)) {
       throw new HostError("invalid_params", {
@@ -604,7 +612,7 @@ export class AgentService {
    * （没有可恢复的改动，不是失败）。
    */
   async restoreFactory(params: AgentRestoreFactoryParams): Promise<AgentRestoreFactoryResult> {
-    const id = requireId(params.agentId, "agentId");
+    const id = params.agentId;
     const found = await this.requireEditable(id);
     const factory = FACTORY_AGENTS.find((item) => item.id === id);
     if (!factory) {

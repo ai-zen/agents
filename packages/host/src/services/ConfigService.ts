@@ -20,7 +20,6 @@ import type { AppConfig, ConfigManager, Endpoint } from "@ai-zen/agents-sdk";
 
 import {
   DEFAULT_LANGUAGE,
-  LANGUAGES,
   normalizeLanguage,
   render,
   type Language,
@@ -116,11 +115,6 @@ export interface ConfigServiceOptions {
   now?: () => number;
 }
 
-/** 可以写的三档行为开关取值（与 SDK `AppConfig` 的取值一致） */
-const ABORTED_MESSAGE_STRATEGIES = ["keep", "drop"] as const;
-const ABORTED_TOOL_ROUND_STRATEGIES = ["fill", "drop"] as const;
-const AUTO_REFRESH_TOOLS = ["off", "outer-loop-start", "inner-loop-start"] as const;
-
 /** `maxToolOutput` 读不到时的兜底值（与出厂配置一致） */
 const FALLBACK_MAX_TOOL_OUTPUT = 32_768;
 
@@ -138,28 +132,20 @@ function text(messageKey: MessageKey, params: Record<string, unknown> = {}): Con
   };
 }
 
-/** 必填的文本参数 */
-function requireText(value: unknown, field: string): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "") {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "empty" },
-    });
-  }
-  return raw;
-}
-
-/** 端点的地址至少要像个 http(s) 地址：拼错的地址会在第一次发请求时才炸出来 */
-function requireBaseUrl(value: unknown): string {
-  const raw = requireText(value, "endpoint.baseUrl");
-  if (!/^https?:\/\//i.test(raw)) {
+/**
+ * 端点的地址至少要像个 http(s) 地址：拼错的地址会在第一次发请求时才炸出来。
+ *
+ * 「这一格是不是非空字符串」不在这里判（`endpointInputSchema` 的 `baseUrl` 已经在 `WsHub` 那一
+ * 处校过，从边界下来就是非空、已 trim 的一串）：这里只回答「这个取值像不像 http(s)」。
+ */
+function requireBaseUrl(value: string): string {
+  if (!/^https?:\/\//i.test(value)) {
     throw new HostError("invalid_params", {
       params: { field: "endpoint.baseUrl" },
-      detail: { field: "endpoint.baseUrl", reason: "not_http_url", value: raw },
+      detail: { field: "endpoint.baseUrl", reason: "not_http_url", value },
     });
   }
-  return raw.replace(/\/+$/, "");
+  return value.replace(/\/+$/, "");
 }
 
 /** 只保留「入参真的给了」的字段（`undefined` 表示这次不改它） */
@@ -318,8 +304,10 @@ export class ConfigService {
    *   - 空串 → 把密钥清掉（这是唯一能清掉它的写法）。
    */
   async saveEndpoint(params: ConfigSaveEndpointParams): Promise<ConfigSaveEndpointResult> {
+    // 入参的形状（`endpoint.id` / `name` / `baseUrl` 非空、`capabilities.filesApi` 是布尔）不在
+    // 这里判：`endpointInputSchema` 已经在 `WsHub` 那一处校过。这里只判取值与磁盘事实。
     const input: EndpointInput = params.endpoint;
-    const id = requireText(input?.id, "endpoint.id");
+    const id = input.id;
     const config = await this.readConfig();
     const existing = config.endpoints.find((endpoint) => endpoint.id === id);
 
@@ -327,7 +315,7 @@ export class ConfigService {
     const saved: Endpoint = {
       ...(existing ?? { id, name: "", baseUrl: "", apiKey: "" }),
       id,
-      name: requireText(input.name, "endpoint.name"),
+      name: input.name,
       baseUrl: requireBaseUrl(input.baseUrl),
       apiKey,
       ...definedOnly({
@@ -354,7 +342,7 @@ export class ConfigService {
    * `dryRun` 只算引用：客户端先拿这份清单去问用户（F-F9 的二次确认）。
    */
   async deleteEndpoint(params: ConfigDeleteEndpointParams): Promise<ConfigDeleteEndpointResult> {
-    const endpointId = requireText(params.endpointId, "endpointId");
+    const endpointId = params.endpointId;
     const config = await this.readConfig();
     if (!config.endpoints.some((endpoint) => endpoint.id === endpointId)) {
       throw new HostError("not_found", { params: { entity: "endpoint" }, detail: { endpointId } });
@@ -540,7 +528,7 @@ export class ConfigService {
     const imageModelIds = new Set((config.imageModels ?? []).map((model) => model.id));
 
     if (input.defaultAgent !== undefined && input.defaultAgent !== null) {
-      const agentId = requireText(input.defaultAgent, "defaults.defaultAgent");
+      const agentId = input.defaultAgent;
       const state = await this.agentReadState(agentId);
       // 文件在、但读不出来：不是「没有这个助手」，是那份定义坏了 —— 按真实原因报
       if (state.state === "broken") throw brokenAgent(agentId, state.reason);
@@ -554,11 +542,10 @@ export class ConfigService {
 
     const requireModel = (value: string | null | undefined, field: string): void => {
       if (value === undefined || value === null) return;
-      const modelId = requireText(value, field);
-      if (!modelIds.has(modelId)) {
+      if (!modelIds.has(value)) {
         throw new HostError("invalid_params", {
           params: { field },
-          detail: { field, reason: "model_not_found", modelId },
+          detail: { field, reason: "model_not_found", modelId: value },
         });
       }
     };
@@ -567,7 +554,7 @@ export class ConfigService {
     requireModel(input.namingModel, "defaults.namingModel");
 
     if (input.defaultImageModel !== undefined && input.defaultImageModel !== null) {
-      const imageModelId = requireText(input.defaultImageModel, "defaults.defaultImageModel");
+      const imageModelId = input.defaultImageModel;
       if (!imageModelIds.has(imageModelId)) {
         throw new HostError("invalid_params", {
           params: { field: "defaults.defaultImageModel" },
@@ -588,7 +575,7 @@ export class ConfigService {
       defaultImageModel: pickDefault(config.defaultImageModel, input.defaultImageModel),
       namingModel: pickDefault(config.namingModel, input.namingModel),
       autoTitle: input.autoTitle === undefined ? config.autoTitle : input.autoTitle,
-      language: pickLanguage(config.language, input.language, "defaults.language"),
+      language: pickLanguage(config.language, input.language),
     };
   }
 
@@ -597,15 +584,10 @@ export class ConfigService {
     config: AppConfig,
     input: Partial<Pick<ConfigLimits, "maxToolOutput">>,
   ): Pick<AppConfig, "maxToolOutput"> {
-    if (input.maxToolOutput === undefined) return { maxToolOutput: config.maxToolOutput };
-    const value = input.maxToolOutput;
-    if (!Number.isInteger(value) || value <= 0) {
-      throw new HostError("invalid_params", {
-        params: { field: "limits.maxToolOutput" },
-        detail: { field: "limits.maxToolOutput", reason: "not_positive_integer", value },
-      });
-    }
-    return { maxToolOutput: value };
+    // 「是不是正整数」不在这里判：`configLimitsPatchSchema.maxToolOutput` 已经在 `WsHub` 那一处校过
+    return {
+      maxToolOutput: input.maxToolOutput === undefined ? config.maxToolOutput : input.maxToolOutput,
+    };
   }
 
   /** 行为开关合并（D15 的中断修复口径 + F-E2 的工具刷新时机） */
@@ -613,23 +595,8 @@ export class ConfigService {
     config: AppConfig,
     input: Partial<ConfigBehavior>,
   ): Pick<AppConfig, "abortedMessageStrategy" | "abortedToolRoundStrategy" | "autoRefreshTools"> {
-    if (input.abortedMessageStrategy !== undefined) {
-      requireChoice(
-        input.abortedMessageStrategy,
-        "behavior.abortedMessageStrategy",
-        ABORTED_MESSAGE_STRATEGIES,
-      );
-    }
-    if (input.abortedToolRoundStrategy !== undefined) {
-      requireChoice(
-        input.abortedToolRoundStrategy,
-        "behavior.abortedToolRoundStrategy",
-        ABORTED_TOOL_ROUND_STRATEGIES,
-      );
-    }
-    if (input.autoRefreshTools !== undefined) {
-      requireChoice(input.autoRefreshTools, "behavior.autoRefreshTools", AUTO_REFRESH_TOOLS);
-    }
+    // 三档取值都在不在集合里不在这里判：`configBehaviorPatchSchema` 的三个 `z.enum` 已经在
+    // `WsHub` 那一处校过（那三个集合是闭合的，所以形状与取值是同一件事）
     return {
       abortedMessageStrategy: input.abortedMessageStrategy ?? config.abortedMessageStrategy,
       abortedToolRoundStrategy: input.abortedToolRoundStrategy ?? config.abortedToolRoundStrategy,
@@ -637,15 +604,26 @@ export class ConfigService {
     };
   }
 
-  /** workspace 作用域的 MCP 要写到项目里，所以必须能拿到 cwd */
+  /**
+   * workspace 作用域的 MCP 要写到项目里，所以必须能拿到 cwd。
+   *
+   * 「`scope === "workspace"` 时 `workspaceId` 必填」这条**条件必填**留在这里：它跨两个字段，
+   * schema 只保形状（`workspaceId` 是可省略的字符串，空串也是字符串）。空串与没给是同一件事 ——
+   * 都拿不到该写哪个项目。
+   */
   private async requireWorkspaceCwd(workspaceId: string | undefined): Promise<string> {
-    const id = requireText(workspaceId, "workspaceId");
-    const workspace = this.findWorkspace ? await this.findWorkspace(id) : undefined;
+    if (workspaceId === undefined || workspaceId === "") {
+      throw new HostError("invalid_params", {
+        params: { field: "workspaceId" },
+        detail: { field: "workspaceId", reason: "empty" },
+      });
+    }
+    const workspace = this.findWorkspace ? await this.findWorkspace(workspaceId) : undefined;
     if (!workspace) {
       throw new HostError("not_found", {
         params: { entity: "workspace" },
         detail: {
-          workspaceId: id,
+          workspaceId,
           reason: this.findWorkspace ? "workspace_not_found" : "workspace_lookup_not_configured",
         },
       });
@@ -890,38 +868,19 @@ function pickDefault(
 }
 
 /**
- * 缺省语言（裁定 R58）：`undefined` 不改，`null` 清掉（回落英文），其余必须是受支持的语言。
+ * 缺省语言（裁定 R58）：`undefined` 不改，`null` 清掉（回落英文），其余用它。
  *
- * 不认的值直接驳回而不是悄悄换成英文：界面语言被悄悄改掉，用户会以为自己点错了。
+ * 「认不认识这个语言」不在这里判：`defaultSelectionPatchSchema.language` 是
+ * `z.enum(["en", "zh"], "not_a_language")`，已在 `WsHub` 那一处校过 —— 不认的值根本到不了这层，
+ * 界面语言也就不可能被悄悄换成英文。
  */
 function pickLanguage(
   current: Language | undefined,
   incoming: Language | null | undefined,
-  field: string,
 ): Language | undefined {
   if (incoming === undefined) return current;
   if (incoming === null) return undefined;
-  if (typeof incoming !== "string" || !(LANGUAGES as readonly string[]).includes(incoming)) {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "not_a_language", value: incoming, allowed: [...LANGUAGES] },
-    });
-  }
   return normalizeLanguage(incoming);
-}
-
-/** 枚举型字段的取值校验 */
-function requireChoice<T extends string>(
-  value: string,
-  field: string,
-  allowed: readonly T[],
-): void {
-  if (!(allowed as readonly string[]).includes(value)) {
-    throw new HostError("invalid_params", {
-      params: { field },
-      detail: { field, reason: "not_allowed", value, allowed },
-    });
-  }
 }
 
 /** 一个助手定义读得怎么样：「读出来了」 / 「没有这个文件」 / 「文件在但读不出来（带原因）」 */
