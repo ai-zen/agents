@@ -8,8 +8,8 @@
 
 | # | 做什么 | 过关标准 |
 |---|---|---|
-| 1 | `infra/`（db、json-table、bus、errors、files）+ `session/`（行、消息、自动命名） | 只有一个 `Session` 类型；加一个业务字段不改表也不改类型；用例不超过两条 |
-| 2 | `config/`（general、models、agents、mcp、discovery）+ `workspace/` + `scope/` | 配置改动只从一个口广播，消费方自己订阅；能力容器按目录存活 |
+| 1 | `infra/`（db / json-table / bus / errors / files）+ `session/`（行与消息，不含自动命名） | 只有一个 `Session` 类型；加一个业务字段不改表也不改类型；用例不超过两条 |
+| 2 | `config/`（general、models、agents、mcp、discovery）+ `workspace/` + `scope/` + `session/auto-name.ts` | 配置改动只从一个口广播，消费方自己订阅；能力容器按目录存活 |
 | 3 | `agent/`（assembly、subscription、delivery、service、transient） | 一段会话一个执行体、跨投递复用；投递不唤醒；中断不销毁 |
 | 4 | `connection/` + tRPC router + 事件流 | 起宿主、连 WS、发一句话、收到流——一条跨进程用例 |
 | 5 | `asset/`、`credential/`、`question/`、`handoff/`、`search/`、`notice/` | 每域 0~2 条用例；第 3 条要说出它证明的是哪个人会犯的错 |
@@ -19,6 +19,10 @@
 - `tsc --noEmit` 通过；
 - `npm test` 通过——用例是行为的证明，不是结构的证明；
 - 提交信息一行标题说清改了什么，正文写「改前 / 改后 / 为什么」。
+
+## 并行时的边界
+
+同一波次的目录不重叠；跨域共用的单文件（`src/index.ts`、`app.ts`、`modules/events.ts`）由主 Agent 统一改。
 
 ## 不再维护
 
