@@ -26,9 +26,9 @@ import type { Clock } from "./ScopeRegistry.js";
 /**
  * 手动推进的时钟：`advance(ms)` 依次执行到点的定时器。
  *
- * 时间可注入之后，「等十分钟」「等节流点」这些事在用例里都是一句 `advance(...)`。
- * 注意：Scope 的回收**不再**用它（空闲计时已撤），但写库节流、消息落库时间与若干用例自己的
- * 计时期待仍然要一份可控时间（`ChatRunner` 的桥是常驻的，它的节流计时全靠这一份）。
+ * 时间可注入之后，「等十分钟」「等节流点」这些事在用例里都是一句 `advance(...)`。消费者是写库
+ * 节流、消息落库时间与若干用例自己的计时期待（`ChatRunner` 的桥是常驻的，它的节流计时全靠这
+ * 一份）；Scope 的回收不看它。
  */
 export class ManualClock implements Clock {
   private current: number;
@@ -79,7 +79,7 @@ export function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-/** 一个可从外部结算的 Promise */
+/** 一个可从外部 resolve / reject 的 Promise */
 export interface Deferred<T> {
   promise: Promise<T>;
   resolve(value: T): void;
@@ -383,11 +383,8 @@ class FakeSubAgent extends Agent {
  *
  * ## 为什么必须是真 `Agent`
  *
- * 从前这里是一份宿主自己写的窄接口假件：它自己实现了一遍 `send()` / 收尾取件 / 事件广播。
- * 后果是「假件与真件的形状不一致」—— 宿主对着假件的形状写对了，真 core 上却是另一回事，
- * 而类型检查根本不看 core（`ChatAgent` 那层挡板）。现在假件直接 `extends Agent`，走 core 真的
- * 循环、真的 `push` 取件、真的 `messageAdded` / `delta` / `state` 事件。宿主的接线于是验的是
- * **真语义**。
+ * 假件就是真 core 的 `Agent`（`extends Agent`）：跑 core 真的循环、真的 `push` 取件、真的事件广播。
+ * 宿主验的是**真语义**，而不是我们自己写在假件里的顺序。
  *
  * ## 脚本能控什么
  *
@@ -441,7 +438,7 @@ export class FakeAgent extends Agent {
     });
   }
 
-  /** 与 core 同一口径地数一次「停」（用例断言「结算之后过期句柄按不到 agent」靠它） */
+  /** 与 core 同一口径地数一次「停」（用例断言「退役 / 丢引用时不 abort」靠它） */
   override abort(): void {
     this.abortCalls += 1;
     super.abort();
@@ -526,5 +523,5 @@ function toolsOf(rounds: FakeRound[]): Tool[] {
   return tools;
 }
 
-/** subagent 的名字：宿主的 `subAgentName` 读的就是它（真 core 的 `Agent` 上没有这一格） */
+/** subagent 的名字：core 名册上的 `name` 就是它（`Agent` 本身没有 `definition` 这一格） */
 export type { FakeSubAgent };

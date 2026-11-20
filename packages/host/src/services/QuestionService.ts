@@ -1,5 +1,5 @@
 /**
- * 问题服务：把「要不要交接 / 确认一下」变成**进程内对象**（PRD 4.10 / D22 / F-I9）。
+ * 问题服务：把「要不要交接 / 确认一下」变成**进程内对象**（PRD 4.10）。
  *
  * **题不落库。** 题的生命 = 这一段会话活着的这段时间，它的去处只有两个：**被答了**、
  * **这段会话没了（含意外死）**。没有「关掉」这个动作，没有「过期 / 被取消」两格 —— 所以这里
@@ -12,7 +12,7 @@
  * 1. **存码不存句子**（D8）：题里存的是文案键 + 参数 + 候选项的值，出口处按连接语言渲染。
  *    一条题存死一种语言，换个连接就错了。因为对象只活在内存里，这条路也不再需要「从库里读出来
  *    可能被改坏」的防御层 —— 写进对象的就是调用方给的那几个闭集类型。
- * 2. **答完之后接着往下走**（D22）：`answer` 的副作用是宿主自己做掉的。顺序见
+ * 2. **答完之后接着往下走**：`answer` 的副作用是宿主自己做掉的。顺序见
  *    {@link QuestionService.answer}：**先答完，再判能不能立刻交接**。
  * 3. **答题不被「忙」拦住**（PRD 4.10）：忙不是答题的拒因 —— 那段正忙着就把「待交接」写在会话行
  *    上（`pendingHandoff`），等它闲下来再做。所以这里没有「非 idle 就 busy」那道前置检查。
@@ -115,7 +115,7 @@ export interface QuestionHandoffAvailabilityPort {
   canHandoffNow(sessionId: string): { ok: true } | { ok: false; reason: HandoffRefusalReason };
 }
 
-/** 硬线判定口：这段会话现在是不是已经过了硬线（PRD F-D1 / D23） */
+/** 硬线判定口：这段会话现在是不是已经过了硬线 */
 export interface QuestionGuardProbe {
   overGuard(sessionId: string): Promise<boolean>;
 }
@@ -130,15 +130,15 @@ export interface QuestionServiceDeps {
   availability?: QuestionHandoffAvailabilityPort;
   /** 硬线判定；不注入时按「没过线」处理 */
   guard?: QuestionGuardProbe;
-  /** 交接入口（答完接着交接，D22）；不注入时答完只改状态、不触发交接 */
+  /** 交接入口（答完接着交接）；不注入时答完只改状态、不触发交接 */
   handoff?: QuestionHandoffPort;
-  /** 推 `question` 事件（多端看到同一个，D22）；推 `session.changed` 用同一个出口 */
+  /** 推 `question` 事件（多端看到同一个）；推 `session.changed` 用同一个出口 */
   emit?: ChatEventEmitter;
   now?: () => number;
   newId?: () => string;
 }
 
-/** 交接问题的三个候选值（F-D2：自交接 / 独立摘要 / 不交接） */
+/** 交接问题的三个候选值：自交接 / 独立摘要 / 不交接 */
 export const HANDOFF_OPTION_SELF = "self";
 export const HANDOFF_OPTION_SUMMARY = "summary";
 export const HANDOFF_OPTION_DECLINE = "decline";
@@ -285,7 +285,7 @@ export class QuestionService {
   }
 
   /**
-   * 到交接线时问「自交接 / 独立摘要 / 不交接」（PRD F-D2 / D22）。
+   * 到交接线时问「自交接 / 独立摘要 / 不交接」。
    *
    * 触发点在**会话停下之后**：这里只负责把问题摆出来，不参与任何流式过程。
    * `percent` 是给人看的那个数（用量 / 交接线）。
@@ -362,7 +362,7 @@ export class QuestionService {
   }
 
   /**
-   * 有挡着的问题就拒绝（PRD D23 / F-D10 的「宿主也拒绝」）。
+   * 有挡着的问题就拒绝（宿主也拒绝）。
    *
    * 只在真有 `blocking` 的问题时抛 `question_pending`，并把那条问题的提问当参数带上：
    * 用户看到的是「哪个问题在挡着」，不是一句抽象的「还有问题没答」。
@@ -378,13 +378,13 @@ export class QuestionService {
   }
 
   /**
-   * 回答一个问题（PRD 4.10 / F-I9）。
+   * 回答一个问题（PRD 4.10）。
    *
    * 顺序是刻意的，别调换：
    *
    *   1. 题不存在 → `not_found`；值不在候选里 → `invalid_params`；已经答过 → 回当前状态、
    *      **不重复副作用**（多端同时点，后到的那一端看到的是「已经答了」）；
-   *   2. 越过硬线却选了「就在这段里继续」→ `context_guard`，**题仍挂着**（D23）；
+   *   2. 越过硬线却选了「就在这段里继续」→ `context_guard`，**题仍挂着**；
    *   3. **先把题标成已答并推事件** —— 答题本身不被「忙」拦住（PRD 4.10）；
    *   4. 再看答完之后该发生什么（{@link applyEffects}）：能立刻交接就当场交接，不能就在会话行上
    *      留一条待交接，等下一次变闲再做。
@@ -424,7 +424,7 @@ export class QuestionService {
 
     const sessionId = question.sessionId;
     const handoffMode = handoffModeOf(question.kind, value);
-    // 越线之后仍然选「就在这段里继续」：宿主也拒（D23），题继续挂着等人处理
+    // 越线之后仍然选「就在这段里继续」：宿主也拒，题继续挂着等人处理
     if (question.kind === "handoff" && handoffMode === null && this.guard) {
       if (await this.guard.overGuard(sessionId)) {
         throw new HostError("context_guard", {
@@ -548,8 +548,8 @@ export class QuestionService {
   /**
    * 会话行上的待交接 mode（`null` = 没有待交接）。
    *
-   * 它是「答完之后这段不闲」留下的那一笔：读它的是变闲那一拍（`app.ts` 的 `onIdle`），
-   * 兑现或判不能兑现之后由它清掉。
+   * 它是「答完之后这段不闲」留下的那一笔：读它的是 `app.ts` 的 `runPendingHandoff`（变闲那一拍），
+   * 交接真的开始之后由那里清掉；接不了就原样留着，下一次变闲再看。
    */
   async readPendingHandoff(sessionId: string): Promise<HandoffMode | null> {
     const session = await this.sessions.get(sessionId);
@@ -605,9 +605,9 @@ function handoffModeOf(kind: QuestionKind, value: string): HandoffMode | null {
 /**
  * 按配置与历史算「这段会话是不是已经过了硬线」。
  *
- * 硬线先看**会话行上的覆盖值**（`guardThreshold`），没有就看模型（`tokenThresholds.guard`，D27）；
- * 口径与 `app.ts` 那条变闲时的判断一致：都看最近一条带用量的消息的 `usage.prompt_tokens`。
- * 两处都是现读会话行：那一列改了不必重建 agent（PRD 1.4）。
+ * 硬线先看**会话行上的覆盖值**（`guardThreshold`），没有就看模型（`tokenThresholds.guard`）；
+ * 与 `app.ts` 变闲那一拍取的是同一条事实（最后一条带用量的消息的 `prompt_tokens`），只是那边
+ * 读内存、这里读库。两处都是现读会话行：那一列改了不必重建 agent（PRD 1.4）。
  */
 export function createSessionGuardProbe(deps: {
   sessions: SessionRepository;

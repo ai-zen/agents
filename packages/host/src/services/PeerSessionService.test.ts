@@ -98,7 +98,7 @@ class FakeCreator implements PeerSessionSessionCreator {
     if (this.failWith !== undefined) throw this.failWith;
     this.seq += 1;
     const id = `c-child-${this.seq}`;
-    // 血缘与开关在创建那一刻就落到「库里那一行」（v4：它们不再只活在进程内）
+    // 血缘与开关在创建那一刻就落到「库里那一行」
     this.rows.set(
       id,
       session(id, {

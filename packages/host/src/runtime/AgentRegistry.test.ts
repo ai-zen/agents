@@ -2,7 +2,7 @@
  * `AgentRegistry` 的用例：agent 存活管理的唯一拥有者。
  *
  * 五条判据各有一组（`acquire` 的复用/重建、`complete` 的陈旧兑现、`invalidate` 的两种结局、
- * `discard` 只丢引用、`disposeAll` 收尾），外加**生命周期事件**那一组 —— 它是「这段会话为什么
+ * `kill` 的硬着陆、`disposeAll` 收尾），外加**生命周期事件**那一组 —— 它是「这段会话为什么
  * 没有 agent」的唯一答案，所以每条路径报出的 `action` + `reason` 都钉住。换模型 / 换思考档位
  * 那一手（`invalidateSession`）单独一组：它同样是一对分支（空闲当场退役 / 在跑只打标记），
  * 只是范围到一段会话。
@@ -538,7 +538,7 @@ describe("AgentRegistry：complete 兑现陈旧标记", () => {
     harness.agents.complete(SESSION_ID);
 
     expect(harness.agents.get(SESSION_ID)).toBe(agent);
-    // 没发生任何生灭决定：结算不陈旧时什么也不报
+    // 没发生任何生灭决定：不陈旧时什么也不报
     expect(harness.trace()).toEqual(["built:never-built"]);
   });
 

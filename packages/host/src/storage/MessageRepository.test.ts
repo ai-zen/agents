@@ -1,7 +1,6 @@
 /**
- * `MessageRepository` 的验收：边流边写的 upsert、seq 单调、`after` 三种分支、
- * subagent 消息按父工具调用取回（R37）与「subagent 那一半」的整段取回，以及全文检索在中文下的行为
- * （>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
+ * `MessageRepository` 的验收：边流边写的 upsert、seq 单调、`after` 三种分支，以及全文检索在
+ * 中文下的行为（>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

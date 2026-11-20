@@ -9,8 +9,6 @@
  *
  * 加两条结构性的：桥的生灭（agent 退役 / 被删 → 桥灭）与「变闲那一刻」（`onIdle`）。
  *
- * 这里**不断言「轮」**（没有 `done`、没有产出清单、没有结算态），因为那些东西不存在。
- *
  * ## 为什么用真 core `Agent`
  *
  * 事件顺序全在 core 的循环里（`state:working` 先于落地、取件点在内循环末、`messageChanged` 才是
@@ -170,7 +168,7 @@ interface Harness {
   builds: string[];
   /** `ensurePersisted` 被叫过的 id（草稿落库就靠它看） */
   persisted: string[];
-  /** 复活（`ChatRunner.start`）：段会话没有 agent 时装上，活着就是幂等 no-op */
+  /** 复活（`ChatRunner.start`）：这一段没有 agent 时装上，活着就是幂等 no-op */
   start(): Promise<boolean>;
   /** 投递（不给 `source` 就按用户本人说） */
   deliver(input: DeliveryInput): Promise<{ userMessageId: string }>;
@@ -1380,8 +1378,7 @@ describe("ChatRunner.reconcile：装载即修复", () => {
       // 一个字都没输出的那条没有信息量，留在 aborted
       AgentNSValue.MessageStatus.Aborted,
     ]);
-    // 只写真变了的那两行（m1 一个字不动）：返回值就是修完之后的消息（「写了哪几行」不在里面了，
-    // 所以看仓储的记账）
+    // 只写真变了的那两行（m1 一个字不动）：返回值就是修完之后的消息，所以看仓储的记账
     expect(harness.store.writes.slice(written).map((row) => row.id)).toEqual(["m2", "m3"]);
     expect(harness.store.peek("m3")?.status).toBe(AgentNSValue.MessageStatus.Aborted);
   });

@@ -14,7 +14,7 @@ import { zh } from "./zh.js";
 /** 文案键：集合以 `en.ts` 为准 */
 export type MessageKey = keyof typeof en;
 
-/** 支持的语言；增删语言只改这两处（`Language` 与 `DICTIONARIES`） */
+/** 支持的语言；增删语言要同步 `Language`、`LANGUAGES`、`DICTIONARIES` 与词典文件 */
 export type Language = "en" | "zh";
 
 /** 默认语言（PRD D8：缺省英文） */
@@ -49,9 +49,7 @@ export function hasMessage(key: string): key is MessageKey {
 }
 
 /**
- * 取原始模板；键不存在时返回 undefined。
- *
- * 供「按码取模板」的场合使用（例如把库里的旧码渲染出来），找不到时由调用方决定说什么。
+ * 取原始模板；键不存在时返回 undefined（要不要回一句话、说什么，由调用方定）。
  */
 export function template(language: Language, key: MessageKey): string | undefined {
   return DICTIONARIES[language][key];

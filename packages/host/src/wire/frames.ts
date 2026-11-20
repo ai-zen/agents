@@ -12,8 +12,8 @@ import type { EventName, EventPayload } from "./events.js";
  *   - 强制错误码空间：数字码只做粗分类，真伪看 `error.data.code`（见 `errors.ts`）；
  *   - 「通知必须无 id」：标准里带 id 的帧就是请求，而我们出网的通知不带 id（客户端也不需要回什么）。
  *
- * 入站只可能收到 request / notification；response 两种在客户端侧解析时用得着，
- * 所以守卫函数也一并给全，客户端可以直接复用这一份代码。
+ * 宿主入站只用到 request 与 notification；response 两种是客户端解析回包时用的，守卫与解析
+ * 一并在这一份里给全，客户端直接复用（不另拄一份）。
  */
 
 /** 请求 id：字符串或数字（宿主分配或回显客户端给的；`null` 只出现在错误响应里） */
@@ -61,8 +61,8 @@ export type JsonRpcResponseFrame = JsonRpcSuccessFrame | JsonRpcErrorFrame;
 /**
  * 解析后的帧：分好类、参数已挑出来。
  *
- * 分四类而不是三类，是因为「客户端发来的错误响应」在宿主看来是一种不该来的东西，
- * 与「客户端发来的成功响应」需要分别处置；两者都保留形状，方便客户端复用本模块。
+ * 分四类而不是三类：`response`（成功）与 `error`（错误响应）是客户端解析回包时要分别处置的
+ * 两种，形状都保留。
  */
 export type Frame =
   | { kind: "request"; id: JsonRpcId; method: string; params: unknown }

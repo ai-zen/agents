@@ -27,8 +27,8 @@ import type {
 /**
  * 方法表：方法名 → 入参 / 出参。
  *
- * 命名按 `<域>.<动作>`（PLAN §6）。每一段前的注释写清它服务 PRD §4 的哪条能力
- * 编号，以及那条能力的落点为什么在宿主 —— 这是接线与前端对齐时唯一的索引。
+ * 命名按 `<域>.<动作>`（PLAN §6）。每一段前的注释写清它服务 PRD §4 的哪条能力编号，
+ * 以及那条能力的落点为什么在宿主 —— 接线与前端对齐时靠它对照。
  *
  * 两条贯穿全表的口径：
  *   1. 出参只给**结构化事实**，需要句子时给 `LocalizedText`；不把句子当数据结构（PRD §3 尺子 ④⑤）。
@@ -98,11 +98,9 @@ export interface HostHelloParams {
  * `hello` 出参。
  *
  * 除了握手成功本身，还把「这条连接以后说哪种语言」「宿主是什么版本」「附件上限是多少」
- * 一次给全：客户端连上就能把界面语言定下来（D8），也能在发图之前就知道上限（PRD D5）。
+ * 一次给全：客户端连上就能把界面语言定下来，也能在发图之前就知道上限。
  *
- * 这里**不列能力**。曾经有过一份 `capabilities`，唯一的读者是 TUI 的 `/help`，而 `/help`
- * 本来就有一份本地命令表 —— 两份清单必然漂（宿主说「项目」、CLI 说「工作区」）。客户端
- * 需要什么事实就单独问，握手不背整张表。
+ * 这里不列能力清单：客户端需要什么事实就单独问，握手不背整张表。
  */
 export interface HostHelloResult {
   /** 这条连接协商出的语言；后续这条连接上的文案都按它渲染 */
@@ -336,28 +334,26 @@ export interface SessionSummary extends SessionPresence {
   /**
    * 这段会话最近一次压缩的时刻（ISO 8601）；省略 = 从来没压过。
    *
-   * 压缩的唯一痕迹从前只是消息上的 `omit` 位 + 一条交接断点消息 —— 那是「压过」的结果，
-   * 说不出「谁促成的」。与 `compactionMode` 合起来才答得出：什么时候、自动还是手动。
+   * 与 `compactionMode` 成对，才答得出「什么时候压的、自动还是手动」—— 消息上的 `omit` 位
+   * 与一条交接断点只说明「压过」。
    */
   compactedAt?: string;
   /** 那次压缩是怎么来的（与 `compactedAt` 成对出现，取值见 `CompactionMode`） */
   compactionMode?: CompactionMode;
 }
 
-/**
- * 一段会话的当前模型事实（PRD F-B4 / F-B8）。
+/** 一段会话的当前模型事实（PRD F-B4 / F-B8）。
  *
  * `source` 说这个模型是谁定的：`agent` = 助手定义上那个（这段会话没换过）；
  * `session` = 这段会话自己定的（创建时点名或 `session.setModel` 改过）。
  */
 export type SessionModelState = ModelState;
 
-/** 一段会话的完整样子 */
 /**
  * 这段会话的助手事实（PRD F-I6 的助手块要的就是这三格）。
  *
  * `agentId` 是这段会话的身份（创建时定死，L7）；`name` 与 `available` 现读助手定义得出
- * （`AgentService.describe`）。定义已经没了（助手被删，L7 允许会话留着旧 id）或文件读不出来时
+ * （`AgentService.describe`）。定义已经没了（助手被删，会话留着旧 id）或文件读不出来时
  * 这两项都是 `null` —— 说「不知道」而不是编一个看起来像真的名字。
  */
 export interface SessionAgentState {
@@ -366,6 +362,7 @@ export interface SessionAgentState {
   available: boolean | null;
 }
 
+/** 一段会话的完整样子 */
 export interface SessionView extends SessionSummary {
   agent: SessionAgentState;
   model: SessionModelState;
@@ -390,13 +387,13 @@ export interface SessionListResult {
 }
 
 /**
- * `session.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / D10 / L7）。
+ * `session.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / L7）。
  *
  * 项目与助手在创建时定死（PRD L7）；模型先取助手定义上那个（也可在这里点名），之后归这段会话
  * —— 换它走 `session.setModel`，改「以后的会话」用哪个模型走 `agent.setModel`。
  *
- * 定位项目两条路（D10）：`workspaceId` 是「已经登记过的项目」；`cwd` 是从目录出发
- * —— 那个目录还没登记成项目时，宿主不建会话，而是问一次要不要登记（见出参）。
+ * 只收已经登记的项目 id：cwd 那条路是客户端先问用户、再调 `workspace.create` 登记，
+ * 建会话这一步不替它做那件事。
  */
 export interface SessionCreateParams {
   /** 已经登记的项目 id */
@@ -482,10 +479,12 @@ export interface SessionDeleteResult {
  *
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
  *
- * 两种拒因，各说一件事：
- *   - 有问题在挡着这段会话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
- *   - 目标是死的（宿主那边没有 agent 对象）时是 `session_dead`：**不管来源是谁**。要复活就
- *     先调 `session.start`（那是另一件事），再回来投 —— 投递本身不叫醒任何人。
+ * 三种拒因，各说一件事：
+ *   - 有尚在挡着这段会话的问题（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
+ *   - 目标是死的（宿主那边没有 agent 对象）时是 `session_dead`，**不管来源是谁**；
+ *   - 目标会话本身不存在时是 `not_found`。
+ *
+ * 要复活就先调 `session.start`（那是另一件事），再回来投。
  *
  * **没有「正在交接」这个拒因**：交接期间只关输出闸、不关输入闸，话照收、排在 inbox 里，
  * 只是这一任不取；交接完成即开闸，压着的按原顺序接着跑（PRD 4.5 / PLAN §5.3）。
@@ -632,11 +631,12 @@ export interface SessionClearInboxResult {
 /**
  * `session.revert` 入参（PRD F-C8 / D24）。
  *
- * 撤回到某条用户消息**之前**：其后消息硬删，被撤回的内容回填输入框（回填内容由宿主给事实）。
+ * 撤回：从这条用户消息开始（含它）往后硬删，那条用户消息的内容回填输入框（回填内容由宿主给
+ * 事实）。
  */
 export interface SessionRevertParams {
   sessionId: string;
-  /** 撤回点：这条用户消息及其之后的内容都会被删 */
+  /** 撤回点：这条用户消息及其之后的内容都会被删（所以它必须是 user 消息） */
   beforeMessageId: string;
 }
 
@@ -664,8 +664,8 @@ export interface SessionSetModelParams {
 /**
  * `session.setModel` 出参。
  *
- * 上下文占用不在这里给：它由客户端按消息上的 `usage` 自己算（宿主不算、不存、不报），
- * 阈值也不需要随这一次写入带过去。
+ * 上下文占用不在出参里：它由客户端按消息上的 `usage` 自己算，阈值也不需要随这一次写入
+ * 带过去（它们就在 `SessionSummary` 上）。
  */
 export interface SessionSetModelResult {
   session: SessionView;
@@ -714,7 +714,7 @@ export interface SessionSetThresholdsParams {
  * `session.setThresholds` 出参。
  *
  * 给的是改完之后的完整视图：那两格就在 `SessionSummary` 上，客户端不必再为「改成了多少」
- * 单独拉一次。上下文占用同样不在这里给（它由客户端按消息上的 `usage` 自己算）。
+ * 单独拉一次。
  */
 export interface SessionSetThresholdsResult {
   session: SessionView;
@@ -738,7 +738,7 @@ export interface SessionTransientParams {
  * `session.transient` 出参：那条助手消息（不产生任何可回看的 id）。
  *
  * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「一共花了多少」，
- * 就把消息上的 `usage` 拿出来自己加（core 不算、不存、不报用量）。
+ * 就把消息上的 `usage` 拿出来自己加。
  *
  * subagent 不另给快照：它们说过的话在消息里，真要翻就按那个委派的工具调用 id 取（F-I7）。
  */
@@ -1260,7 +1260,7 @@ export interface DiscoveryEntryView {
 /**
  * 一层发现来源（PRD F-G1 / F-G2 / F-F6）。
  *
- * `state` 把「文件不存在」与「文件坏了」分开（PRD F-F6：以前都当空配置，一保存就覆盖）；
+ * `state` 把「文件不存在」与「文件坏了」分开（把坏文件当空配置读，一保存就会把它覆盖掉）；
  * `editable` 说明这一层能不能写 —— MCP 是 5 层链但只有 2 个作用域可编辑（PRD F-G1）。
  */
 export interface DiscoveryLayerView {
@@ -1712,8 +1712,8 @@ export interface AssetBeginParams {
   /**
    * 内容的 sha256（客户端本来就算过一次，传上来即可）。
    *
-   * 带上它之后，同一段会话里同一张图第二次上传会在 `begin` 就短路（`deduped: true`）：
-   * 客户端不必再发二进制帧、也不必调 `asset.end`。不带就按一次全新上传处理。
+   * 带上它之后，库里已经有同一份字节时 `begin` 就短路（`deduped: true`）：客户端不必再发
+   * 二进制帧、也不必调 `asset.end`。去重按摘要做、不分会话。不带就按一次全新上传处理。
    */
   sha256?: string;
   /**
@@ -1731,11 +1731,11 @@ export interface AssetBeginParams {
  *
  * 两种形态：
  *   - 新上传：`deduped: false`，`uploadId` 是一个句柄，`asset` 为 `null`；
- *   - 命中「同一段会话里同一个 sha256」：`deduped: true`，`uploadId` 为 `null`，`asset` 是既有
- *     素材的引用（客户端直接拿它放进消息，既不发二进制帧也不调 `asset.end`）。
+ *   - 命中库里已有的同一份字节（摘要相同，不分会话）：`deduped: true`，`uploadId` 为 `null`，
+ *     `asset` 是既有素材的引用（客户端直接拿它放进消息，既不发二进制帧也不调 `asset.end`）。
  */
 export interface AssetBeginResult {
-  /** 是否命中了会话内的去重（命中时客户端跳过 `chunk` 与 `asset.end`） */
+  /** 是否命中了按摘要的去重（命中时客户端跳过 `chunk` 与 `asset.end`） */
   deduped: boolean;
   /** 上传句柄；`deduped: true` 时为 `null` */
   uploadId: string | null;
@@ -1790,7 +1790,7 @@ export interface AssetGetParams {
  *   - 上传的二进制帧是「按 `uploadId` 认路的、没有回执的流」，下行复用它得再定一套
  *     「这条帧对应哪个请求」的关联规则；JSON 响应的 id 天然就是那个关联；
  *   - 请求/响应天然是原子的（不会与别的请求的下行数据交错），客户端也不用维护下行状态机。
- * 代价是 base64 多出三分之一体积，单张上限仍是 20MB（PRD D5），一次一张。
+ * 代价是 base64 多出三分之一体积，单张上限仍是 20MB，一次一张。
  */
 export interface AssetGetResult {
   asset: AssetRef;
@@ -1978,8 +1978,8 @@ export interface SearchMessagesResult {
 /**
  * 方法名 → `{ params, result }`。
  *
- * 这是宿主与客户端之间唯一的方法清单：接线层按它分发（PLAN §6），
- * 客户端按它接线。（帮助与指令菜单归客户端自己，理由见 `HostHelloResult` 的注释。）
+ * 这是宿主与客户端之间唯一的方法清单：接线层按它分发（PLAN §6），客户端按它接线。
+ *（帮助与指令菜单归客户端自己，宿主不列表。）
  */
 export interface MethodMap {
   // ---- host.*：进程、握手、语言、升级、退出 ----
@@ -2169,8 +2169,8 @@ export interface MethodMap {
    *
    * **只有能立刻接手时才能发起**：判断收在 `ChatRunner.canHandoffNow` 那一处，四个拒因分别是
    * `no_agent` / `working` / `output_paused` / `handoff_in_progress`（一律 `busy`）。调用方等它
-   * 闲了再调一次。于是交接全程不按暂停、也不替谁放行 —— 投一条指令进去，它自己
-   * 变忙、自己写完，宿主按工具结果判「写完了没有」。
+   * 闲了再调一次。于是交接不额外按暂停、也不替谁放行 —— 投一条指令进去，它自己变忙、自己
+   * 写完，宿主按工具结果判「写完了没有」。
    */
   "handoff.start": { params: HandoffStartParams; result: HandoffStartResult };
   /** F-D6 / D19：项目里的交接文档清单（可反复打磨同一份）。 */

@@ -1,8 +1,9 @@
 /**
- * 存储层出口：`Database`（worker 里的 node:sqlite）+ 迁移 + 一表一仓储。
+ * 存储层出口：`Database`（worker 里的 node:sqlite）+ 迁移 + 各仓储。
  *
  * 这里不导出任何单例：`Database` 由单根（`app.ts`）创建后注入给各仓储与服务，
- * 谁创建谁负责 `close()`。这样做的好处是测试与多实例可以各开各的库，互不影响。
+ * 谁创建谁负责 `close()`。因此测试与多实例可以各开各的库，互不影响。
+ *（`InboxRepository` 不在下面这条清单里：它由 `app.ts` 直接按文件 import。）
  */
 
 export { Database } from "./Database.js";

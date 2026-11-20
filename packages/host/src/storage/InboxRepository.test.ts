@@ -98,7 +98,7 @@ describe("InboxRepository", () => {
   });
 
   it("内容按原样：多模态段与 `__asset_id` 逐字往返（库里存的就是那一份 JSON）", async () => {
-    // 带本地素材标记 + 厂商产物的那一种内容（用户贴了一张图）：一个字都不许清理
+    // 带本地素材标记 + 厂商产物的那一种内容（用户贴了一张图）：一个字都没被动
     const content: AgentNS.MessageContent = [
       { type: "text", text: "这张图里是什么？" },
       {

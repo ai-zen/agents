@@ -1,5 +1,5 @@
 /**
- * 图片的像素尺寸：从文件头解出 `width` / `height`（PRD F-H8 / 裁定 R76）。
+ * 图片的像素尺寸：从文件头解出 `width` / `height`。
  *
  * 客户端拿到这两个数就能先摆好占位框，不必等字节下载完再量，图片加载时界面不会跳。
  *
@@ -11,7 +11,7 @@
  * 其它容器（以及截断、认不出的字节）回 `null`，尺寸这一栏就留空。
  *
  * {@link readImageSize} 是纯函数（Buffer 进、尺寸出），{@link readImageSizeFromFile} 负责把
- * 文件头读进来再交给它 —— 原图可能有 20MB（D5），这里只读开头一小段。
+ * 文件头读进来再交给它 —— 原图可能有 20MB，这里只读开头一小段。
  */
 
 import { promises as fs } from "node:fs";
@@ -40,7 +40,7 @@ export const IMAGE_HEAD_BYTES = 64 * 1024;
 /**
  * 从文件头（前若干字节）解出像素尺寸；解不出来回 `null`。
  *
- * 入参可以是文件开头的一段，不要求是整份文件：两份解码都只往后读固定的几处字节，
+ * 入参可以是文件开头的一段，不要求是整份文件：两份解码都只在给出的这段字节里走，
  * 不够长（截断）时按「解不出来」处理。
  */
 export function readImageSize(header: Buffer): ImageSize | null {

@@ -1,6 +1,6 @@
 /**
  * 搜索服务的验收：按名称搜会话（含高亮片段与摘要顺序）、按内容全文搜消息
- * （中文子串、范围过滤、分页与总数），D16 / F-C6。
+ * （中文子串、范围过滤、分页与总数）。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -42,7 +42,7 @@ function fakeSummarizer(): SessionSummarizer & { calls: string[][] } {
       pinned: row.pinned,
       agentId: row.agentId ?? "",
       modelId: row.modelId ?? "",
-      // 搜索不关心 v4 那四列，但要跟会话行走（照拄一遍）
+      // 搜索不关心 v4 那四列，但要跟会话行走（照抄一遍）
       handoffThreshold: row.handoffThreshold ?? null,
       guardThreshold: row.guardThreshold ?? null,
       autoHandoff: row.autoHandoff ?? false,

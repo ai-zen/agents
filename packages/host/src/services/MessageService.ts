@@ -7,20 +7,17 @@
  * id 取，不另拼一份快照）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
  * R21 / R22（消息原样用 core 的 `AgentNS.Message`，不额外挂时间戳这类外壳字段）。
  *
- * ## 列表读取只有一个来源：活着读内存，死了读库（PLAN §7）
+ * ## 列表读取：活着读内存，死了读库（PLAN §7）
  *
- * 有 agent 就从它的 `messages` 现读（那才是真身，库里那份可能滞后几百毫秒、也可能压根没有 ——
- * 比如交接正在写的那几条），没有 agent 才读数据库（那时库就是它的全部）。**没有「正在交接
- * 所以改读库」这种例外**：交接期间的草稿照样看得见，那正是「在做什么要正常回显」。
- *
- * `after` / `around` / `includeHidden` 这三种取法因此要在**两个来源上算同一套语义**：
- * 主线的取法在 `StoredMessage[]` 与 `AgentNS.Message[]` 上各算一次（`windowAround` 与
- * {@link MemoryView}），subagent 那一栏同理 —— 但它的内存来源是「父的名册 → 那个 subagent」。
+ * 有 agent 就从它的 `messages` 现读（那才是真身，库里那份可能滞后几百毫秒），没有 agent 才读
+ * 数据库。`after` / `around` / `includeHidden` 在两个来源上算同一套语义：行的那一侧走
+ * `respond` / `windowAround`，内存那一侧走 {@link MemoryView} / `fromMemory`；subagent 那一栏
+ * 同理，只是它的内存来源是「父的名册 → 那个 subagent」。细节见 PLAN §7。
  *
  * **读路径上什么都不写**：不补、不删、不修 —— 修复只在装配那一刻（`ChatRunner.reconcile`）做。
  *
- * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：会话服务算用量、判断
- * 历史里有没有图也要走它，免得同一行在两处被读出两个样子。
+ * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：会话服务拼侧栏摘要、
+ * 判断历史里有没有图，自动命名与搜索命中也要走它，免得同一行在两处被读出两个样子。
  *
  * 正文不做转换（R30）：仓储反序列化出来的就是 core 的 `AgentNS.MessageContent`，这里原样
  * 搬上消息。剩下要做的是把「列里的字符串」收敛成 core 的取值（角色 / 状态 / 结束原因）
@@ -54,7 +51,7 @@ export interface MessageServiceDeps {
   /**
    * 「这段会话此刻在内存里长什么样」的口（`ChatRunner.messagesOf`，结构上满足）。
    *
-   * 不注入 = 一律读库（用例里的窄替身）。生产一定注入：一段会话活着的时候，库里的那份是
+   * 不注入 = 读库（用例里的窄替身）。生产组装注入了它：一段会话活着的时候，库里的那份是
    * 滞后的一份，内存里那份才是真身。
    */
   live?: LiveMessageLookup;
@@ -227,7 +224,7 @@ export function readUsage(data: Record<string, unknown> | null | undefined): Age
  * `around` 取的窗口条数（PRD F-C6 的定位）。
  *
  * `message.list` 没有 `limit`：它一直是「一段会话全给」，`around` 只是把这一段收成一窗，
- * 40 条足够看够上下文而不会把屏刷满。消费者是桌面端的搜索命中跳转（PLAN W4）。
+ * 40 条足够看够上下文而不会把屏刷满。
  */
 const AROUND_WINDOW = 40;
 

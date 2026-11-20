@@ -65,9 +65,9 @@ export const en = {
   // ---- 消息与状态的事实叙述（配结构化字段一起给出）----
   "message.imageAsText": "{model} can't look at images, so {name} was described in text instead.",
 
-  // ---- 用量（PRD F-I5）：三个数字分开给，句子只是给人看的拼装 ----
+  // ---- 用量与状态栏的块名没有词条：宿主不推用量快照、也不给块名（PLAN §5.4）----
 
-  // ---- 状态栏各块的标签（PRD F-I6：宿主给块名，客户端排版）----
+  // ---- 那两块由客户端按到达的事件自己拼 ----
 
   // ---- `@` 补全（PRD F-H5 / D7）----
   "completion.scanning":

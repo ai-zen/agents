@@ -1,8 +1,8 @@
 /**
  * `workspaces` 表仓储：只做 SQL，不含业务判断。
  *
- * 一个 Workspace 对应一个工作目录，`cwd` 创建后不可变（PRD D9：搬家＝新 Workspace），
- * 所以这里没有改 cwd 的方法 —— 想改只能建新的。
+ * 一个 Workspace 对应一个工作目录，`cwd` 创建后不可变（搬家＝新 Workspace），所以这里没有
+ * 改 cwd 的方法。
  */
 
 import type { Database } from "./Database.js";
@@ -31,7 +31,7 @@ export class WorkspaceRepository {
     return this.db.get<WorkspaceRow>(`SELECT ${COLUMNS} FROM workspaces WHERE id = ?`, [id]);
   }
 
-  /** 按 cwd 找登记过的 Workspace（PRD D10：普通会话遇到未登记的 cwd 时问一次） */
+  /** 按 cwd 找登记过的 Workspace（普通会话遇到未登记的 cwd 时问一次的那条路） */
   async getByCwd(cwd: string): Promise<WorkspaceRow | undefined> {
     return this.db.get<WorkspaceRow>(`SELECT ${COLUMNS} FROM workspaces WHERE cwd = ?`, [cwd]);
   }
@@ -50,8 +50,8 @@ export class WorkspaceRepository {
 
   /**
    * 删 Workspace：它名下的 sessions / messages / inbox / session_assets / notices 靠外键级联
-   * 清掉（PRD D11：删项目连带删它名下的会话）。素材行不跟着走 —— 字节是全局的，删不删由
-   * 「还有几张会话引用」决定。目录本身不在存储层职能范围内。
+   * 清掉。素材行不跟着走 —— 字节是全局的，删不删由「还有几张会话引用」决定。目录本身不在
+   * 存储层职能范围内。
    */
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM workspaces WHERE id = ?", [id]);

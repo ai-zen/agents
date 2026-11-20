@@ -1,8 +1,6 @@
 /**
  * 搜索服务：按名称找会话、按聊天内容全文找消息，都能按 Workspace 过滤。
  *
- * 对应能力编号：F-C6 / D16（名称搜索 + 全文搜索 + 项目过滤；中文分词成本接受）。
- *
  * 两条实现上的边界：
  *   1. 全文检索走 `MessageRepository.search`（FTS5 trigram，短查询它自己退化到 `LIKE`），
  *      服务层不写 SQL、也不自己分词 —— 分词口径随库一起改。
@@ -74,7 +72,7 @@ export class SearchService {
   }
 
   /**
-   * 按名字搜会话（PRD F-C6 / D16）。
+   * 按名字搜会话。
    *
    * 名字搜索走子串匹配而不是全文索引：名字短，还要能搜到一两个字的查询。空查询直接回空
    * 结果（用户还没输入完），不当作错误。
@@ -107,14 +105,14 @@ export class SearchService {
   }
 
   /**
-   * 按聊天内容全文搜消息（PRD F-C6 / D16）。
+   * 按聊天内容全文搜消息。
    *
    * 过滤范围：给了 `sessionId` 就搜这一段会话，否则给了 `workspaceId` 就搜这个项目下
    * 的全部会话，都没给就是不限范围。
    *
    * `offset` 由服务层切片：仓储的搜索按相关度/时间排好序后一次取 `offset + limit` 条，
-   * 这里再切掉前 `offset` 条。于是 `total` 在不超过「取数上限」时是准确的条数，超过时是
-   * 一个下界（仓储没有单独的数数入口，见 `PRD.md` R36）。
+   * 这里再切掉前 `offset` 条。于是 `total` 在不超过「取数上限」时是准确的条数，超过时是一个下界
+   * （仓储没有单独的数数入口）。
    */
   async messages(params: SearchMessagesParams): Promise<SearchMessagesResult> {
     const query = typeof params.query === "string" ? params.query.trim() : "";

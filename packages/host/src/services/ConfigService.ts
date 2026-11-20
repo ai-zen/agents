@@ -201,7 +201,7 @@ export class ConfigService {
     this.now = options.now ?? Date.now;
   }
 
-  /** 能力发现服务（组装层要 `scopeAbilityPaths` / `mcpPaths` 时从这里拿同一份） */
+  /** 能力发现服务（`config.getDiscovery` / `config.saveMcp` / `config.deleteMcp` 都转给它） */
   get discovery(): DiscoveryService {
     return this.discoveryService;
   }
@@ -492,9 +492,8 @@ export class ConfigService {
   /**
    * 一个助手定义读得怎么样。
    *
-   * 三件事分开：「读出来了」 / 「没有这个文件」 / 「文件在但读不出来（带原因）」—— 后两者
-   * 从前被折叠成同一个 `null`，于是坏文件被说成「没有这个助手」。没注入仓储时一律算读得出来
-   * （这个服务被单独用的时候不看助手定义）。
+   * 三件事分开：「读出来了」 / 「没有这个文件」 / 「文件在但读不出来（带原因）」。没注入仓储时
+   * 一律算读得出来（这个服务被单独用的时候不看助手定义）。
    */
   private async agentReadState(agentId: string): Promise<AgentReadState> {
     if (!this.agents) return { state: "ok" };
@@ -852,13 +851,10 @@ function referencesToEndpoint(config: AppConfig, endpointId: string): ReferenceL
   return { referenced: items.length > 0, items };
 }
 
-/** 这次要求重载的范围里，哪几类东西要重新装配（不给范围 = 全部） */
 /**
  * 重载报告：五类全都是 `true`。
  *
- * 从前这里能按 `scope` 只报一类，但那一档**没有任何入口**（客户端只会全量 `/reload`，
- * 契约里也没人传 `scope`），五个取值 + 校验 + 映射都是空转。参数已删：重载就是「全部
- * 重读一遍」。真要「只重载 MCP」时再加，那时它会有一条真实的命令入口。
+ * 重载就是「全部重读一遍」：没有按类别只报一类的入口，`host.reload` 也不收范围参数。
  */
 function reloadedOf(): ConfigApplyReport["reloaded"] {
   return { config: true, tools: true, skills: true, agents: true, mcp: true };

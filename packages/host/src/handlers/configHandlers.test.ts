@@ -2,7 +2,7 @@
  * `config.*` 接线壳的验收。
  *
  * 接线壳自己的两件事：把入参交给服务、把出参里的句子按**这条连接**的语言重渲染（D8）。
- * 另外确认七个方法都注册上了（漏一个客户端就会拿到 `unsupported`）。
+ * 另外确认八个方法都注册上了（漏一个客户端就会拿到 `unsupported`）。
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

@@ -1,22 +1,21 @@
 /**
  * `HostApp` —— 单根对象：把零件接成一台真能跑、能被连的服务（PLAN §3 / §4）。
  *
- * 这个文件的边界是三件事：
+ * 这个文件的边界是两件事：
  *
- *   1. **组装**：按对象图的顺序 `new` 出依赖（库 → 仓储 → 配置 → 运行时 → 服务 → 接线），
- *      每一层都靠构造参数注入；没有模块级单例、没有反射扫描、不读进程工作目录。
+ *   1. **组装**：按对象图的顺序 `new` 出依赖（仓储 → 运行时 → 服务 → 投递 → 接线），每一层都
+ *      靠构造参数注入；不读进程工作目录。
  *   2. **启停**：`start()` 决定监听在哪、把**实际**地址写进发现文件；`stop()` 对称地拆回去
- *      （摘发现文件、断连接、关上传、销毁 Scope、关库）。
- *   3. **判据**：什么时候「什么都不欠了」可以退出（PRD L4 / 裁定 R53），以及启动时
+ *      （摘发现文件 → 销毁 Scope → 断连接 → 清上传 → 关库 → 关日志，PLAN §4）。启动时还要判
  *      「这台机器上是不是已经有人在服务」（单实例，PLAN §8）。
  *
  * 方法实现不在这里：每个域的 handler 在 `handlers/`，由 {@link createHandlers} 拼成一张表交给
  * `WsHub`。本文件只给它们提供持有者（服务、运行时、配置、时钟）与几个只有它才接得起来的钩子：
  *   - **配置生效**（`ConfigApplyPort`）：改完配置要刷新受影响的 Scope（F-E2）并发一条通知（F-F9）；
  *   - **Scope 装配**（`ScopeRegistry` 的工厂）：能力目录由 `DiscoveryService` 按 cwd 算好（R54/L9）；
- *   - **变闲那一拍**（`ChatRunner.onIdle`）：读一次当下事实，到交接线就问、第一次说话之后就起名。
+ *   - **变闲那一拍**（`ChatRunner.onIdle`）：兑现待交接、判交接线、起名（PLAN §5.2）。
  *
- * 这里**没有退出判据**：宿主不因为没人连着而收尾（PRD 4.12：关掉宿主是用户的显式动作，
+ * 这里没有退出判据：宿主不因为没人连着而收尾（PRD 4.12：关掉宿主是用户的显式动作，
  * 就是 `host.shutdown` 那条路）。收尾本身在 {@link HostApp.doStop}，它只由显式请求触发。
  */
 
@@ -127,10 +126,8 @@ const HOST_LOG_FILE_NAME = "host.log";
 const NOTICE_SOURCE = "notice";
 
 /**
- * SDK 那一格日志的来源标签。
- *
- * 「SDK 库里面的事」（发现、配置降级、MCP 连接、交接）落在宿主日志里，但行上的来源说「谁写的」，
- * 于是 grep `sdk` 一列就能把库那一半单独看。与 `ws` / `notice` 同一种用法。
+ * SDK 那一格日志的来源标签（行上的来源说「谁写的」）：grep `sdk` 就能把「库里面的事」
+ * （发现、配置降级、MCP 连接、交接）从宿主自己的流水里摘出来。与 `ws` / `notice` 同一种用法。
  */
 const SDK_SOURCE = "sdk";
 
@@ -157,8 +154,7 @@ const startRepeatTimer: RepeatTimer = (task, everyMs) => {
 /**
  * 进程为什么收尾。
  *
- * 只有一种：用户（或升级自检、信号处理器）显式要求。从前还有一档「没人连着、也没活欠着
- * 就自己退」—— 那一条随退出判据一起删了（PRD 4.12：关掉宿主是显式动作）。
+ * 只有一种：用户（或 `host.upgrade` / 版本自检、信号处理器）显式要求。
  */
 export type ExitReason = "requested";
 
@@ -167,11 +163,7 @@ export interface ExitFacts {
   reason: ExitReason;
   /** 那一刻还有几条连接 */
   connections: number;
-  /**
-   * 收尾那一刻还持有几个 Workspace Scope（接下来 `disposeAll` 会把它们全部销毁）。
-   *
-   * 它**不是**判据：手里还剩 Scope 不代表还欠活。
-   */
+  /** 收尾那一刻还持有几个 Workspace Scope（接下来 `disposeAll` 会把它们全部销毁）—— 只是记账 */
   scopes: number;
 }
 
@@ -179,7 +171,7 @@ export interface ExitFacts {
  * 「真的退出」这个动作。
  *
  * 进程退不退是不可逆的事，所以做成注入点：生产缺省 `process.exit(0)`，
- * 用例注入一个记账函数，从而能验证「判据在什么时刻成立」而不把测试进程送走。
+ * 用例注入一个记账函数，从而能验证收尾事实与交棒次数而不把测试进程送走。
  */
 export type ExitHook = (facts: ExitFacts) => void | Promise<void>;
 
@@ -206,7 +198,10 @@ export interface HostAppOptions {
   createAgent?: AgentFactory;
   /** 造 Scope 的工厂；缺省按 SDK 口径装配（用例可以给不带能力的空 Scope） */
   createScope?: ScopeFactory;
-  /** 交接服务（SDK 口径，装交接线插件用）；未注入时不装插件并推一条警告通知（裁定 R50） */
+  /**
+   * 交接服务（SDK 口径，装交接线插件用）。缺省按这次装配的 cwd 造一个真的；它拿不到时才不装
+   * 插件，并推一条警告通知（R50）。
+   */
   handoff?: (context: AgentBuildContext) => HandoffService | undefined;
   /** 时钟（收尾事实里的时刻、版本自检与用例里的时间推进） */
   clock?: Clock;
@@ -308,7 +303,8 @@ export class HostApp {
   /** agent 的持有者（`AgentRegistry`）：`scope.dispose` 撞上还活着的 agent 就是问它 */
   readonly agentRegistry: AgentRegistry;
   /**
-   * 服务层要的那两件运行时事实：这一刻落在哪一格、删掉之后丢现场。
+   * 服务层要的运行时窄接口（`SessionRuntimePort`）：忙闲与两道闸现读、删掉之后丢现场，以及换模型 /
+   * 换思考档位那一手要的「手上有没有活」与「让空闲的 agent 退役」。
    *
    * 模型与思考档位不在这里 —— 它们在会话行上。
    */
@@ -390,7 +386,7 @@ export class HostApp {
   private presets: ReasoningPresets | null = null;
   /** 推送入口（造好之前为 `null`：这时没有任何连接可推） */
   private hubForPush: WsHub | null = null;
-  /** 交接服务（SDK 口径）：给了就装交接线插件（R59） */
+  /** 交接服务的来源（注入优先，缺省 `defaultHandoffProvider`）：有它才装交接线插件（R59） */
   private readonly handoffProvider: HandoffProvider;
   /** R50 的那条警告只说一次（描述的是装配能力，不是某一次发送的错） */
   private handoffWarningSent = false;
@@ -465,7 +461,7 @@ export class HostApp {
     });
     this.sessionRuntime = this.createSessionRuntime();
     this.sessionDrafts = new SessionDrafts();
-    // 交接服务：入参优先，缺省按 cwd 造一个真的（R59：不再因为「没注入」就不装交接插件）
+    // 交接服务：注入优先，缺省按 cwd 造一个真的（R59）
     this.handoffProvider = options.handoff ?? this.defaultHandoffProvider();
 
     // ---- 3. 素材（上传落定、厂商 file_id 缓存、「素材 id → 内容段」、`__asset_id` 两端的解析） ----
@@ -554,7 +550,7 @@ export class HostApp {
     });
     this.completionService = new CompletionService({ findWorkspace });
 
-    // ---- 6. 通知、问题、交接、自动命名（它们互相引用，都靠注入） ----
+    // ---- 6. 平级会话、agent 持有者、通知、问题、交接、自动命名（它们互相引用，都靠注入） ----
     // 平级会话：建会话归 `SessionService`（与 `session.create` 同一条路），第一句与之后
     // 每一句都走 `ChatRunner.deliver`（一个入口）。后者在 §7 才造出来，所以这里只闭包住 `this`：
     // 两个口都是「调用那一刻才去拿」（与 `createSessionRuntime` 里 `forget` 的晚绑定同一个理由）。
@@ -573,17 +569,15 @@ export class HostApp {
         messagesOf: (sessionId) => this.chatRunner.messagesOf(sessionId),
       },
     });
-    // agent 工厂只造一次：普通会话与压缩那几条路用它装配（常驻的 agent 装配一次跨多次投递复用，
-    // 一次性的用完即弃）
+    // agent 工厂只造一次：常驻会话（装配一次跨多次投递复用）与一次性会话（用完即弃）都用它
     const createAgent = options.createAgent ?? this.defaultAgentFactory();
     // agent 的持有者：「agent 从哪来」唯一的入口。它内部先要 Scope（幂等），
     // 于是 Scope → Agent 的依赖顺序写在代码里，而不是靠调用方记得先要 Scope
     this.agentRegistry = new AgentRegistry({
       scopes: this.scopeRegistry,
       createAgent,
-      // 每做一次生灭决定就记一笔：「这段会话的 agent 为什么不在」从前没人答得上来，
-      // 现在理由就从唯一拥有者所在的那个文件里报出来（`reason` 是闭集，见
-      // `AgentLifecycleReason`）。落到文件日志的信息级：是诊断用的流水，不是给用户看的事件。
+      // 每做一次生灭决定就记一笔（`reason` 是闭集，见 `AgentLifecycleReason`）：落到文件日志的
+      // 信息级 —— 是诊断用的流水，不是给用户看的事件。
       onLifecycle: (event) => {
         this.logInfo("agent 生灭", event);
       },
@@ -686,8 +680,7 @@ export class HostApp {
       // 表，装配出新 agent 之后按顺序读回来放回队列（PRD 1.2 / 4.12：关掉再打开，那几句还在）
       inbox: this.inbox,
       // 变闲那一拍：读一次当下事实 —— 上一次答完留下的待交接先兑现（能就交接），再看要不要
-      // 问交接线、要不要起个名字。这一跳**不带任何与「刚刚发生了什么」有关的东西**（没有用量、
-      // 没有结论）—— 它就是「此刻它闲了」
+      // 问交接线、要不要起个名字。这一跳不带「刚刚发生了什么」（结果、结论），就是「此刻它闲了」
       onIdle: (sessionId) => {
         void this.handoffOnIdle(sessionId);
         this.autoNameOnIdle(sessionId);
@@ -724,7 +717,7 @@ export class HostApp {
     this.uploads = new UploadReceiver({
       assetsDir: paths.assetsDir,
       finalize: (request) => this.assetService.finalizeUpload(request),
-      // `asset.begin` 带 sha256 时先问一句：同一段会话里同一张图只存一份、只传一次
+      // `asset.begin` 带 sha256 时先问一句：同一份字节只存一份、只传一次（按摘要全局去重）
       findExisting: (input) => this.assetService.findExistingAsset(input),
       // 草稿会话（R56）在第一次带图上传时就落库：素材行按 `sessionId` 挂外键，
       // 所以落库这一步挪到 `asset.begin`（与「第一次 send」同义，`ensurePersisted` 自己幂等）
@@ -852,8 +845,8 @@ export class HostApp {
    *   1. **先看这台机器上是不是已经有人在服务**（发现文件是唯一真相）。活着就挂靠它的地址，
    *      本进程不重复监听 —— 同一个数据根起两个进程会各写一份 `host.json`，客户端连谁都不对。
    *      陈旧的（pid 已死、或文件坏了）清掉再起。
-   *   2. 自己起：本地实例先备好凭证交付文件 → 监听 → 按**实际**地址写发现文件。客户端读的是
-   *      发现文件里的端口，端口被占退回临时端口时启动参数里的那个数已经不是真的了。
+   *   2. 自己起：本地实例先备好凭证交付文件 → 监听 → 按**实际**地址写发现文件 —— 客户端读的是
+   *      发现文件里的端口（`port: 0` 时那一个是系统分配的，启动参数里的 `0` 不是真的）。
    */
   async start(): Promise<ListenTarget> {
     if (this.phase === "running" || this.phase === "attached") {
@@ -898,9 +891,9 @@ export class HostApp {
   }
 
   /**
-   * 收尾：对称于 `start()` —— 摘发现文件 → 销毁 Scope → 断连接 → 关上传 → 关库。
+   * 收尾：对称于 `start()` —— 摘发现文件 → 销毁 Scope → 断连接 → 清上传 → 关库 → 关日志。
    *
-   * 幂等：`host.shutdown`、判据、信号处理器都可能先到，只有第一次真的做事。
+   * 幂等：`host.shutdown`、信号处理器、升级与版本自检都可能先到，只有第一次真的做事。
    * 挂靠别人的实例时不摘发现文件（那份不属于本进程）。
    */
   stop(reason: ExitReason = "requested"): Promise<ExitFacts> {
@@ -940,14 +933,10 @@ export class HostApp {
       }
     }
     // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别的 agent 会替它关（D28 同生共死）。
-    // `disposeAll` 不拒绝（收尾时「还有 agent 活着」不是要挡住销毁的理由）。
     //
-    // agent 的登记先杀掉（不是「丢引用」）：进程要退了，那些 agent 不会再有下一批可跑，而它们
-    // 手里还有在途的请求与排着的条目 —— 留着只会让它们在剩下的那几毫秒里继续烧 token。
-    // 为何是 `kill` 而不是 `stop`：`stop` 是「存量走完」，而这里没人会来读那些结果（收尾流程
-    // 接下来就关库），等它排空没有任何意义。也不等它排空：这一步不 await（“尽力 kill”）。
-    // 先告诉运行时「这是收尾」：接下来那批 `kill()` 会把存量作废，但库里的 inbox 行要留着 ——
-    // 关掉再打开，那几句还在等（PRD 1.2 / 4.12）；用户按杀死才连行一起删。
+    // agent 这一步是「杀掉」而不是「丢引用」：进程要退了，没人会来读那些结果，硬着陆更快 ——
+    // 也正因此不 await。先 `markShuttingDown()`，因为接下来那批 kill 会把存量作废，而库里的
+    // inbox 行要留着：关掉再打开，那几句还在等（PRD 1.2 / 4.12）。
     this.chatRunner.markShuttingDown();
     this.agentRegistry.disposeAll();
     try {
@@ -976,8 +965,8 @@ export class HostApp {
   /**
    * 起一个低频自检：磁盘上的版本号变了（且已经是新的）就收尾退出，由启动方式重拉。
    *
-   * 它只把「包已经换了」这个事实变成一次重启（宿主不自己装包，D4）。缺省的启动方式带
-   * `unref()`：只有它还在跑时，也不该拦住进程退出。
+   * 它只把「包已经换了」这个事实变成一次重启（宿主不自己装包，D4）。缺省实现带 `unref()`：
+   * 它不该成为「进程为什么还没退」的原因。
    */
   private startVersionCheck(): void {
     if (this.stopVersionTimer !== null) return;
@@ -996,8 +985,8 @@ export class HostApp {
   /**
    * 比一次磁盘版本与运行版本。
    *
-   * 三条前提都成立才重启：磁盘读得出来、与正在跑的不是同一个版本、且磁盘上的那个**更新**
-   * （回退不算升级，重启只会把用户拉回旧版本）。重启前推一条通知：进程会走，界面上得有个交代。
+   * 两个条件都成立才重启：磁盘读得出来、且磁盘上的那个**更新**（回退不算升级，重启只会把用户
+   * 拉回旧版本）。重启前推一条通知：进程会走，界面上得有个交代。
    */
   private async checkDiskVersion(): Promise<void> {
     if (this.phase !== "running") return;
@@ -1205,8 +1194,8 @@ export class HostApp {
    * 缺省的交接服务：按这次装配的 cwd 造 SDK 口径的那个（文档落 `<cwd>/.ai-zen/handoffs`）。
    *
    * `context.scope.cwd` 就是这一段所属项目的 `workspaces.cwd`（`ScopeRegistry` 按项目行装配），
-   * 它用来算**文档落点**：`<cwd>/.ai-zen/handoffs`。新记忆长什么样不靠它 —— 换完的记忆就是
-   * 「系统提示 + 断点」两截（目录随时问 `cwd` 工具即可，不必往新记忆里塞一条）。
+   * 它只用来算**文档落点**：`<cwd>/.ai-zen/handoffs`。新记忆长什么样不靠它，那由 SDK 那一处
+   * 算（PLAN §5.3）。
    */
   private defaultHandoffProvider(): HandoffProvider {
     return (context) =>
@@ -1226,7 +1215,7 @@ export class HostApp {
    * 这一段的自动交接开关（`sessions.autoHandoff` 那一列）：读库，不读进程内记录。
    *
    * `true` = 开（平级会话那一侧：撞线自己交班、不问）；`false` = 关（用户建的那一侧：装不下
-   * 时问一次）。关是常态，也是缺省值。会话行没了就当关：没有这一段可问。
+   * 时问一次）。会话行没了就当关：没有这一段可问。
    */
   private async autoHandoffOf(sessionId: string): Promise<boolean> {
     const row = await this.sessions.get(sessionId);
@@ -1239,7 +1228,7 @@ export class HostApp {
    * 1. 上一次答完留下的待交接（`pendingHandoff`）现在能兑现就兑现 —— 那时这段不闲，所以没交接；
    * 2. 兑现了就不再问交接线（已经在交接，没理由再问一道）；没兑现（没事 / 仍然接不了）就照旧问。
    *
-   * 两件事都只读当下事实：没有「上一次回答的结果」，也没有用量以外的输入。
+   * 两件事都只读当下事实：不传「上一次回答的结果」进来。
    */
   private async handoffOnIdle(sessionId: string): Promise<void> {
     const started = await this.runPendingHandoff(sessionId);
@@ -1442,7 +1431,7 @@ export class HostApp {
         persist: false,
       });
     } catch (error) {
-      // 通知发不出去本身也是「通知失败」：记在通知模块那一格里（不许静默吞）
+      // 通知发不出去本身也是「通知失败」：记在通知模块那一格里，环就断在这儿
       this.noticeLogger.error("日志转通知失败", {
         level: record.level,
         message: record.message,
@@ -1534,8 +1523,8 @@ export class HostApp {
     const targets = wanted.filter((workspaceId) => existing.includes(workspaceId));
     for (const workspaceId of targets) {
       await this.scopeRegistry.refreshWorkspace(workspaceId);
-      // 能力已经换新的了；手里还拿着旧模型客户端的 agent 也一起换掉（这就是本单“配置改动
-      // 最迟下一段生效”的全部机关，见 `AgentRegistry.invalidate`）
+      // 能力已经换新的了；手里还拿着旧模型客户端的 agent 也一起换掉（`createModel` 是装配
+      // 那一刻读的，见 `AgentRegistry.invalidate`）
       const pending = this.agentRegistry.invalidate(workspaceId);
       if (pending.length > 0) {
         this.logInfo("配置生效：正忙的那几段变闲之后换掉 agent", {
@@ -1554,8 +1543,8 @@ export class HostApp {
   /**
    * `host.upgrade`：比一次「磁盘上的版本」与「正在跑的版本」。
    *
-   * 三种结论（契约里的 `HostUpgradeState`）：磁盘读不出来 → `not_available`；两个版本一样
-   * 且没有要求别的目标 → `already_latest`；磁盘已经是新的（或请求的目标版本已落盘）→
+   * 三种结论（契约里的 `HostUpgradeState`）：磁盘读不出来、或要的那个版本还没落盘 →
+   * `not_available`；目标版本已落盘但不是新的 → `already_latest`；落盘且比在跑的新 →
    * `restart_scheduled`，随后安排一次收尾：进程退出后由启动方式重新拉起（宿主不自己装包，
    * D4）。
    */
@@ -1615,7 +1604,7 @@ export class HostApp {
 // 单根之外的入口
 // ---------------------------------------------------------------------------
 
-/** 造一个 `HostApp`（`index.ts` 的 `createHost` 就是它） */
+/** 造一个 `HostApp`（`index.ts` 把它再导出给别的进程） */
 export function createHost(options: HostAppOptions = {}): Promise<HostApp> {
   return HostApp.create(options);
 }
@@ -1690,7 +1679,7 @@ function resolveLogger(options: HostAppOptions, paths: HostPaths): ResolvedLoggi
 /**
  * 「这条日志记录要不要转成一条通知」—— 全仓唯一的一条判据（D1）。
  *
- * 判据只有一条：`warn` / `error` 一律转通知；唯一例外是通知模块自己打的日志 —— 它带着
+ * 判据只有一条：`warn` / `error` 转通知，`info` 不转；例外是通知模块自己打的日志 —— 它带着
  * `source: "notice"`，转发它就会「通知失败 → 日志 → 通知」绕成环。
  *
  * 为什么不用一个「正在发通知」的布尔位：来源字段是**可检查**的。`host.log` 里那条
@@ -1744,7 +1733,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * 比两个版本号（`1.2.0` 与 `1.10.0`）：返回 `<0` 表示左边旧、`0` 相同、`>0` 左边新。
  *
- * 按 `.` 切段逐段比，两段都是数字时按数字比（`1.10.0` 比 `1.9.0` 新）；不是数字的段
+ * 按 `.` / `-` 切段逐段比，两段都是数字时按数字比（`1.10.0` 比 `1.9.0` 新）；不是数字的段
  * （`alpha` 这种预发布标记）按字符串比。够用的理由：升级自检只回答「磁盘上的是不是比我新」，
  * 不排序、不解析 semver 的完整规则。
  */

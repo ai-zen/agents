@@ -11,7 +11,8 @@
  * - `role` / `status` 仍以字符串存取（取值与 `AgentNS.Role` / `AgentNS.MessageStatus` 一致），
  *   收敛成 core 的枚举发生在服务层。
  * - `source` 是 core 的 `AgentNS.MessageSource`（**判别结构**，不是字符串）：库里存它的 JSON，
- *   读回来反序列化成同一个形状（兼容策略见 `MessageRepository.toSource`）。
+ *   读回来反序列化成同一个形状（读侧规则见 `MessageRepository.toSource`）。
+ * - `SessionRow` 的逐列口径与「谁读谁写」见 PLAN §7，本文件只记形状。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
@@ -62,8 +63,8 @@ export interface SessionRow {
   /**
    * 这段会话上一次压缩的时刻（毫秒）；`null` = 从来没压过。
    *
-   * 压缩只动 `messages`（`omit` 位 + 交接断点），会话行上原本一点痕迹也没有 —— 于是「自动压的
-   * 还是用户答完压的」既不能区分也无从观测。这两列就是那个痕迹，由两条压缩路径各自写。
+   * 压缩只动 `messages`（`omit` 位 + 交接断点），会话行上单看那两样分不出「自动压的还是
+   * 用户答完压的」—— 这两列就是那个痕迹，由两条压缩路径各自写。
    */
   compactedAt: number | null;
   /** 上一次压缩是谁促成的（`null` = 没压过）：`auto` = 派生会话自动压，`manual` = 用户答完问题后压 */
@@ -80,16 +81,15 @@ export interface SessionRow {
   /**
    * 待交接的 mode：答完交接题当时这段不闲、于是留到「下一次变闲」再兑现的那一格（PLAN §5.2）。
    *
-   * `null` = 没有待交接（常态）；`"self"` / `"summary"` = 下一次变闲时用哪一种执行者交接。
-   * 它必须落库：「等下一次变闲」可能跨重启，而题本身不落库（PRD 4.10），重启之后这是**唯一**
-   * 能带着走的那份事实。
+   * `null` = 没有待交接；`"self"` / `"summary"` = 下一次变闲时用哪一种执行者交接。它必须
+   * 落库：「等下一次变闲」可能跨重启，而题本身不落库（PRD 4.10）。
    */
   pendingHandoff: string | null;
   /**
    * 0 / 1：自动交接开关（PRD 1.4 的「自动交接开关」那一格）。
    *
-   * 1 = 开：撞线自己交班、不问（平级会话那一侧）；0 = 关：装不下时问用户一次（用户建的那一侧）。
-   * 初值由**谁开的这段会话**决定，创建那一刻写死（用户建 0 / 平级会话 1）。
+   * 1 = 开：撞线自己交班、不问；0 = 关：装不下时问用户一次。初值由**谁开的这段会话**决定，
+   * 创建那一刻写死（用户建 0 / 平级会话 1）。
    */
   autoHandoff: number;
   /**
@@ -109,11 +109,11 @@ export interface Session extends Omit<
   "pinned" | "nameIsAuto" | "autoHandoff" | "pendingHandoff"
 > {
   pinned: boolean;
-  /** 名字仍是自动起的那个（真值来自 `sessions.nameIsAuto` 列，不由名字反推） */
+  /** 与 `sessions.nameIsAuto` 同一格，转成布尔；不靠名字内容反推 */
   nameIsAuto: boolean;
-  /** 自动交接开关（真值来自 `sessions.autoHandoff` 列）：开 = 撞线自己交班、不问 */
+  /** 与 `sessions.autoHandoff` 同一格，转成布尔 */
   autoHandoff: boolean;
-  /** 待交接的 mode（真值来自 `sessions.pendingHandoff` 列）；`null` = 没有待交接 */
+  /** 与 `sessions.pendingHandoff` 同一格，认不出来的值当「没有待交接」 */
   pendingHandoff: HandoffMode | null;
 }
 
@@ -172,7 +172,7 @@ export interface MessageRow {
   seq: number;
   role: string;
   status: string;
-  /** 0 / 1：是否已被移出上下文（PRD D15 要求 status / omit 必须落盘） */
+  /** 0 / 1：是否已被移出上下文（边流边写，所以这一格必须落盘） */
   omit: number;
   /** JSON：消息正文（core 内容形状的 JSON 文本） */
   content: string;
@@ -221,10 +221,11 @@ export interface MessageUpsertInput {
 }
 
 /**
- * 全文搜索的范围：一段会话内，或一个 Workspace 下的全部会话。
+ * 全文搜索的范围：一段会话内、一个 Workspace 下的全部会话，或 `undefined`（不限，由调用方
+ * 显式传）。
  *
- * 之所以做成二选一的联合类型而不是两个可选字段，是因为「两个都没给」在语义上等于
- * 全库搜索，而 PRD D16 只要求「按 Workspace 过滤」，不给就不该搜全库。
+ * 做成联合类型而不是两个可选字段：两个都省略在类型上就分不出「只要这一段」与「全库」，
+ * 而全库搜索得由调用方明确写出来。
  */
 export type MessageSearchScope = { sessionId: string } | { workspaceId: string } | undefined;
 
@@ -312,17 +313,17 @@ export interface AssetVendorFileUpsertInput {
 
 export interface NoticeRow {
   id: string;
-  /** 语气档位（PRD L3 的三档），取值由上层定义，存储层不判断 */
+  /** 语气档位（PRD 4.9 的四档：信息 / 成功 / 警告 / 错误），存储层不判断取值 */
   level: string;
   /** 文案码：库里存码 + 参数，读出时按连接语言渲染（`PRD.md` 的契约口径：推送里存码不存句子） */
   code: string;
   /** JSON：文案参数 */
   params: string | null;
-  /** 毫秒数；null 表示永久存在，只能手动清（PRD L3） */
+  /** 毫秒数；null 表示永久存在，靠手动清（PRD 4.9） */
   durationMs: number | null;
   /** 这条通知与哪段会话有关；null 表示全局通知（会话删掉时随之级联删除） */
   sessionId: string | null;
-  /** 来源（`app` / `log`）：入库的那批总是 `app`，日志上浮的那批压根不落库 */
+  /** 来源（`app` / `log`）；入库的那批总是 `app`（日志上浮的那批不落库） */
   origin: string;
   createdAt: number;
 }
@@ -357,7 +358,7 @@ export interface NoticeCreateInput {
 export interface CredentialRow {
   id: string;
   note: string;
-  /** 凭证的 sha256 摘要；明文不进库（PRD L11） */
+  /** 凭证的 sha256 摘要；明文不在库里，只在 `agents-host token create` 那一次输出里出现 */
   hash: string;
   createdAt: number;
   /** 吊销时间；null 表示仍然有效 */

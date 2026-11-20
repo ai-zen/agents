@@ -19,7 +19,7 @@ interface WorkerInit {
   dbPath: string;
 }
 
-/** 主线程 → worker 的请求（与 Database.ts 里的 WorkerRequest 一一对应） */
+/** 主线程 → worker 的请求（与 Database.ts 里的 `RequestPayload` 一一对应） */
 type WorkerRequest =
   | { id: number; kind: "all"; sql: string; params: SQLInputValue[] }
   | { id: number; kind: "get"; sql: string; params: SQLInputValue[] }
@@ -51,7 +51,7 @@ const sqlite = new DatabaseSync(dbPath);
 
 // WAL：读不被写阻塞、写不被读阻塞，崩溃后也更容易恢复。
 // 读回来的模式必须真的是 "wal" —— 文件系统不支持时（网络盘、只读目录等）会静默留在
-// delete 模式，那种情况下并发读写会互相卡住，与其带病运行不如让启动直接失败。
+// delete 模式，那种情况下并发读写会互相卡住，带病运行不如让启动直接失败。
 const journal = sqlite.prepare("PRAGMA journal_mode = WAL").get() as
   { journal_mode?: string } | undefined;
 if (journal?.journal_mode !== "wal") {
@@ -105,8 +105,7 @@ function executeStatement(statement: Statement): unknown {
 
 /**
  * 一次消息内串行执行一批语句：`BEGIN IMMEDIATE` 先拿写锁，中途任何一条失败就整批
- * ROLLBACK。主线程的 `Database.tx` 就是靠这个保证「要么全成、要么全不成」，也是它能让
- * 回调里「先读再写」而不拆成两次往返的原因（读与写在同一个事务、同一条消息里跑完）。
+ * ROLLBACK。主线程的 `Database.tx` 就是靠这个保证「要么全成、要么全不成」。
  */
 function runBatch(statements: Statement[]): unknown[] {
   sqlite.exec("BEGIN IMMEDIATE");

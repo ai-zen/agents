@@ -133,7 +133,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     const first: AgentNS.Message = result.messages[0];
     expect(first.id).toBe("m-2");
     expect(first.tool_calls?.[0].function?.name).toBe("read");
-    // 没有额外的外壳字段（旧的 `segments` / `attachments` / `omitted` 都没了）
+    // 没有额外的外壳字段
     expect(Object.keys(first).sort()).toEqual([
       "content",
       "hidden",

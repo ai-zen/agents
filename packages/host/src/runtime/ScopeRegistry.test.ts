@@ -2,7 +2,7 @@
  * `ScopeRegistry` 的用例：幂等 get-or-create、显式 `dispose`（撞上存活 agent 就拒绝）、
  * `disposeAll` 收尾、与 MCP 同生共死，以及配置生效那条路（`refreshWorkspace`：就地刷，不销毁重建）。
  *
- * 这一层刻意**没有**空闲计时、引用计数与自动回收，所以这里也不再推进假时钟去等回收：
+ * 这一层没有空闲计时、引用计数与自动回收，所以这里也不推假时钟去等回收：
  * 「建出来就一直在」本身就是被钉住的语义（`Scope` 用真的 SDK 实例装一个记账式插件，
  * 于是「销毁 = `Scope.dispose()` = MCP 连接断开」这条链路是完整跑的，断言落在 `disposeCalls`）。
  */
@@ -53,7 +53,7 @@ describe("ScopeRegistry：幂等的 get-or-create", () => {
 
     expect(created).toEqual(["ws-1"]);
     expect(second).toBe(first);
-    // 「现在有没有」只有一个口：`workspaceIds` 报持有哪几个（看而不建的那个口已删）
+    // 「现在有没有」只有一个口：`workspaceIds` 报持有哪几个
     expect(registry.workspaceIds()).toEqual(["ws-1"]);
   });
 
@@ -93,7 +93,7 @@ describe("ScopeRegistry：没有自动回收", () => {
     const registry = new ScopeRegistry({ createScope: factory });
 
     const scope = await registry.create("ws-1");
-    // 本文件一个定时器都不该排（原来的 10 分钟空闲计时已撤掉）
+    // 本文件一个定时器都不该排（Scope 没有空闲回收）
     expect(clock.pending()).toBe(0);
 
     clock.advance(10 * 60 * 1000 * 24);
@@ -106,17 +106,17 @@ describe("ScopeRegistry：没有自动回收", () => {
   });
 
   it("构造函数不再接受 clock / idleTimeoutMs（只认 createScope / liveSessions / onError）", () => {
-    // 类型层面已经把这两个参数删掉了（下面两条 @ts-expect-error 就是在钉这件事），
-    // 运行时多塞进去的键也不会被读到 —— 没有空闲回收的代码路径了
+    // 这两个键不属于构造参数（下面两条 @ts-expect-error 钉住这件事），运行时多塞进去也不会
+    // 被读到
     const createScope = async () => createFakeScope().scope;
     const withIdle = new ScopeRegistry({
       createScope,
-      // @ts-expect-error 空闲计时已撤：这个键不再属于构造参数
+      // @ts-expect-error 这个键不属于构造参数
       idleTimeoutMs: 1,
     });
     const withClock = new ScopeRegistry({
       createScope,
-      // @ts-expect-error 时钟不再参与 Scope 的生命周期
+      // @ts-expect-error Scope 的生命周期不看时钟
       clock: new ManualClock(),
     });
 

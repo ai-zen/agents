@@ -1,6 +1,6 @@
 /**
- * 素材服务：上传产物的落定与登记、取用时变成内容段（F-H7 / R44）、按引用清理（R33）、
- * 以及段上 `__asset_id` 这条本地标记的两端（打上 / 按当前模型兜底重建）。
+ * 素材服务：上传产物的落定与登记、取用时变成内容段、按引用清理，以及段上 `__asset_id`
+ * 这条本地标记的两端（打上 / 按当前模型兜底重建）。
  *
  * 它围着 `assets` 这一份真相做五件事：
  *
@@ -9,7 +9,7 @@
  *      库里已经有同摘要的那一行时不重复落文件（全局去重），回既有那一行。
  *   2. **取用**（{@link AssetService.prepareAttachments}）：`MessageInput.assetIds` → core 的内容段。
  *      走文件引用、内联 base64 还是退化成文字，由**实发模型与它所用端点**决定，判定逻辑用 SDK 的
- *      `fileToContentSection`（同一份口径，不在这里另写一遍）。没送出去的一律如实记账，不假装成功。
+ *      `fileToContentSection`（同一份口径，不在这里另写一遍）。没送出去的一个个如实记账，不假装成功。
  *      产出**只有一份**内容：段上带着厂商产物（`file_id` / base64），并挂本地标记 `__asset_id`。
  *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `__asset_id` 在每次发送前还原成
  *      当前模型能吃的内容段 —— 换了模型、重启之后再跑，同一条历史照样发得出去。发出去的那一份
@@ -24,8 +24,8 @@
  *      （`session_assets`）由外键级联删，所以这里判的是「删完之后还剩几张引用」。
  *      这一层是碰 `assets/` 下**正式文件**的地方（临时文件的生与死归上传接收器）。
  *
- * 它被 `ChatRunner` 当作 `prepareAttachments` / `prepareHistory` / `linkMessageAssets` 注入
- * （PRD F-H7 / 裁定 R44）。
+ * 它被 `sessionHandlers` 当作 `prepareAttachments` 注入（投递前准备那一份内容），被 `ChatRunner`
+ * 当作 `prepareHistory` / `linkMessageAssets` 注入。
  */
 
 import { randomUUID } from "node:crypto";
@@ -173,7 +173,7 @@ export interface AssetServiceOptions {
   vendorFiles?: AssetVendorRegistry;
   paths: HostPaths;
   /**
-   * 按实发模型取模型与端点（F-H7 的判定依据）。不给时按「既没有视觉能力信息、也没有端点能力」
+   * 按实发模型取模型与端点（素材选路的判定依据）。不给时按「既没有视觉能力信息、也没有端点能力」
    * 处理：图片会走内联，超过内联上限的会如实报失败。
    */
   resolveModelContext?: AttachmentModelResolver;
@@ -336,13 +336,13 @@ export class AssetService {
   }
 
   // -------------------------------------------------------------------------
-  // 取用：assetIds → 内容段（PRD F-H7 / R44）
+  // 取用：assetIds → 内容段
   // -------------------------------------------------------------------------
 
   /**
    * 用户输入 + 已上传的素材 → 真正发给模型的内容（`ChatRunner` 的 `prepareAttachments`）。
    *
-   * 口径（F-H7 逐条）：
+   * 口径：
    *   - **文本段在前**：用户打的字始终是第一段，素材段按用户摆放的顺序跟在后面；
    *   - **按实发模型选传输方式**：能不能走 Files API 看端点声明、图片能不能进上下文看模型，
    *     判定与转换交给 SDK 的 `fileToContentSection`（与工具链里那段代码同一份口径）；
@@ -478,8 +478,8 @@ export class AssetService {
   /**
    * 按 id 取回素材内容（`asset.get`）。
    *
-   * `thumb` 目前**等同原图**：本波不引入原生图像库，两档返回同一份字节与同一个 mime；
-   * 客户端要小图时按回包里的 `width` / `height`（未知为 `null`）自己缩。
+   * `thumb` 目前**等同原图**：两档返回同一份字节与同一个 mime；客户端要小图时按回包里的
+   * `width` / `height`（未知为 `null`）自己缩。
    */
   async getAsset(input: { assetId: string; variant?: AssetVariant }): Promise<AssetGetResult> {
     const row = await this.assets.get(input.assetId);
@@ -513,7 +513,7 @@ export class AssetService {
    * 名字按它对模型做的事取（`sendAsset`）：它把一张素材送进这一份内容，不是「投递一条消息」
    * —— 宿主里叫 `deliver` 的是那一件事（`ChatRunner.deliver`）。
    *
-   * 抛错不往上扔：一张图没送出去不该让整个请求发不出去（F-H7 的「全失败退回纯文本」前提是
+   * 抛错不往上扔：一张图没送出去不该让整个请求发不出去（「全失败退回纯文本」的前提是
    * 其余内容照发），所以这里收敛成一个 `dropped` 的结局并上报。
    *
    * `quiet` 是历史重放用的：重放是每次发送的内部动作，一张旧图今天没送出去不等于用户刚做错了什么，
@@ -674,7 +674,7 @@ export class AssetService {
   }
 
   // -------------------------------------------------------------------------
-  // 按引用清理（R33）
+  // 按引用清理
   // -------------------------------------------------------------------------
 
   /**
@@ -709,7 +709,7 @@ export class AssetService {
    * 只删文件。
    *
    * 入参是数据根下的相对路径（`assets` 行的 `path` 就是这个形状）。路径必须落在 `assets/` 里：
-   * 这是唯一会让本服务删掉库外文件的地方，越界的路径一律不碰。
+   * 这是唯一会让本服务删掉库外文件的地方，越界的路径直接跳过。
    */
   async removeFiles(relativePaths: string[]): Promise<string[]> {
     const removed: string[] = [];
@@ -817,7 +817,7 @@ function withAssetId(
 /**
  * 一条内容里的全部素材 id（按出现顺序、去重）。
  *
- * 撤回时的“回填输入框”（R62）与消息落库时的关系行都靠它复原「这条消息挂了哪几张图」：
+ * 撤回时的“回填输入框”与消息落库时的关系行都靠它复原「这条消息挂了哪几张图」：
  * `assets` 行上不再记消息，`session_assets` 才是那个事实，而它的来源是 content。
  */
 export function assetIdsOf(content: AgentNS.MessageContent | undefined): string[] {
@@ -970,7 +970,7 @@ function deliveryOf(transport: "url" | "files-api" | "inline" | "text"): Attachm
 }
 
 /**
- * 把素材段接在用户输入后面（F-H7：文本段在前）。
+ * 把素材段接在用户输入后面（文本段在前）。
  *
  * 用户输入是字符串时先包成一段 `text`：core 的内容段数组里没有「裸字符串 + 数组」这种混装。
  */

@@ -9,7 +9,7 @@
  *   2. {@link createLocalCredential}：本地实例首次启动时造一串（备注 `local`）并写进交付文件。
  *
  * **所有连接都要凭证**（PLAN A5）：本地实例的「无感」来自「凭证已在交付文件里被客户端取走」，
- * 不是来自「回环地址免检」—— 所以这里没有任何「从 127.0.0.1 来就放行」的分支。
+ * 不是来自「回环地址免检」—— 这里没有「从 127.0.0.1 来就放行」的分支。
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -45,8 +45,8 @@ export interface TokenVerifier {
 /**
  * 一串明文 → 库里仍有效的那一行。
  *
- * 空串一律不通过：库里不会存在空串的摘要，但把「客户端漏传 token」与「token 不对」分成两种
- * 结果没有意义 —— 两者都是「这串不被接受」。
+ * 空串不通过：库里不会存在空串的摘要，而把「客户端漏传 token」与「token 不对」分成两种结果
+ * 没有意义 —— 两者都是「这串不被接受」。
  */
 export async function verify(db: Database, token: string): Promise<VerifiedCredential | null> {
   const plain = typeof token === "string" ? token.trim() : "";

@@ -7,15 +7,14 @@
  * `AssetService`。本文件唯一多做的一步是**把素材准备摆在投递之前**（见 {@link sendTurn}）：
  * 那是「这一次发送」的事，只有接线层同时看得见素材服务、会话行（要助手与模型）与执行者。
  *
- * 四件以前挂在这里、现在没有的事：
- *   - **没有运行状态那本账**：`session.state` 给的是四件事 + inbox（`ChatRunner.state`
- *     现读），用量与更细的阶段由客户端按到达的事件自己算（PRD 硬规矩 7）；
- *   - **没有排队分支**：投递只有一条路（`ChatRunner.deliver`），它自己判「会话在不在、agent
+ * 四件**不在**本文件的事：
+ *   - **运行状态那本账**：`session.state` 给的是四件事 + inbox（`ChatRunner.state` 现读）；
+ *   - **排队分支**：投递只有一条路（`ChatRunner.deliver`），它自己判「会话在不在、agent
  *     活不活」，忙不忙不是拒绝的理由；
- *   - **没有复合动作**：复活（`session.start`）与投递（`session.send`）是两个方法、各做一件事，
+ *   - **复合动作**：复活（`session.start`）与投递（`session.send`）是两个方法、各做一件事，
  *     「点发送」到底做哪几步由客户端按当时的处境编排（PLAN §5.1）；
- *   - **没有「做完之后」的收尾链**：自动命名与交接线提问都挂在「变闲那一拍」（`app.ts` 的
- *     `onIdle`），这里不再接 `turn.done`。
+ *   - **「做完之后」的收尾链**：自动命名与交接线提问都挂在「变闲那一拍」（`app.ts` 的
+ *     `onIdle`），这里不接 `turn.done`。
  */
 
 import type { Language } from "../i18n/index.js";
@@ -145,7 +144,8 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
  *   1. `assertSendable`（D23）：有挡着的问题（交接确认、不可撤销动作的确认）就先答它再发。
  *      排队不是绕过闸门的通道，所以这一步在投递之前。
  *   2. `ensurePersisted`（R56）：草稿在第一条用户消息之前不落库，这里把它写成真行（同 id）——
- *      消息行、素材关系行都按 `sessionId` 挂外键。（`session.start` 也调它：两处都幂等，谁先到\n *      谁写 —— PLAN §4「一段会话的诞生」。）
+ *      消息行、素材关系行都按 `sessionId` 挂外键。（`session.start` 也调它：两处都幂等，谁先到
+ *      谁写 —— PLAN §4「一段会话的诞生」。）
  *   3. **素材准备**（F-H7）：`assetIds` → 真正发出去的内容段（段上带着厂商产物与本地标记
  *      `__asset_id`，这一份也就是原样落库的那一份）。走文件引用、内联还是降级成文字，
  *      取决于这段会话现在的模型与端点 —— 那是 `AssetService` 的事，本层只把它要的三样事实
@@ -237,7 +237,7 @@ async function abort(
  * `session.pause`：暂停这段会话 —— **只翻输出闸，不接在途**（PRD 4.4）。
  *
  * 手上那批算已经开始，让它跑完；从下一批起不再取。要立刻停就用 `session.abort`。
- * 回的是**打完之后这道输出闸是不是关着**（现读，不是每次变量）：没有 agent（死的）回 `false`
+ * 回的是**打完之后这道输出闸是不是关着**（现读，不是记下来的那一份）：没有 agent（死的）回 `false`
  * —— 没有闸可翻，也不是错误；交接期间直接拒（`busy` / `handoff_in_progress`），因为那期间
  * 闸归交接收口管。
  */

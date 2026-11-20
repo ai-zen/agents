@@ -1,11 +1,11 @@
 /**
  * `sessions` 表仓储：只做 SQL，不含业务判断。
  *
- * 排序口径照 PRD D13：置顶优先，其次创建时间倒序。改名、活动、打开都**不**改变顺序，
- * 所以 `orderBy` 里没有 `updatedAt`。
+ * 排序口径照 PRD D13：置顶优先，其次创建时间倒序。改名、活动、打开都不改变顺序，
+ * 所以 `ORDER_BY` 里没有 `updatedAt`。
  *
  * 唯一一处跨表的语句是 {@link SessionRepository.replaceMemory}：交接换记忆时「插存档会话行 +
- * 搬消息行 + 写两条占位消息」必须在同一个事务里（PRD 4.5），拆到两个仓储就只能是两个事务。
+ * 搬消息行 + 写两条占位消息」必须在同一个事务里，拆到两个仓储就只能是两个事务。
  */
 
 import type { HandoffMode } from "../wire/methods.js";
@@ -21,23 +21,22 @@ const COLUMNS =
 /**
  * 新建会话时显式写的那几列。
  *
- * 不复用 `COLUMNS`：压缩那两列（v2 加的）在新建时一定是 NULL（新会话没压过），把 NULL 写进
- * 列清单只会让占位符与入参两处各自多两项、还得对着数。让它们走表的缺省值更省事，也更准。
+ * 不复用 `COLUMNS`：压缩那两列在新建时一定是 NULL（新会话没压过），把 NULL 写进列清单只会
+ * 让占位符与入参两处各自多两项、还得对着数，让它们走表的缺省值更省事。
  *
- * 两条阈值同样不在新建时写值（`null` = 跟模型走），但它们在列表里：v4 的四列要么由创建处定
- * 值（自动交接开关、血缘），要么由「跟模型走」这个 `null` 表意（阈值），所以这四列都显式写。
+ * 两条阈值同样给 `null`（= 跟模型走），但它们在列表里：这两格与自动交接开关、血缘一样显式写。
  */
 const INSERT_COLUMNS =
   "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, handoffThreshold, guardThreshold, autoHandoff, lineage, createdAt, updatedAt";
 
-/** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序（PRD D13） */
+/** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序 */
 const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
 
 /**
  * 登记一条「新建会话」语句：`nameIsAuto` 落 1（名字是创建时起的原名）、`pinned` 落 0。
  *
- * 自动交接开关与血缘由入参定（**创建那一刻写死**）：用户建 = 0 + NULL 血缘，平级会话 = 1 +
- * 父会话 id。两条阈值落 `null`（跟模型走），要单独调这一段就走会话行上的列。
+ * 自动交接开关与血缘由入参定（创建那一刻写死）：用户建 = 0 + NULL 血缘，平级会话 = 1 +
+ * 父会话 id。两条阈值落 `null`（跟模型走）。
  *
  * 导出的理由与 `registerMessageUpsert` 同一个：交接换记忆那一批要把这条与消息的两条塞进同一个事务。
  */
@@ -97,7 +96,7 @@ export class SessionRepository {
   }
 
   /**
-   * 新建会话：名字是创建时按时间起的原名，所以 `nameIsAuto` 落 1（R35）。
+   * 新建会话：名字是创建时按时间起的原名，所以 `nameIsAuto` 落 1。
    * 用户改名与自动命名各有自己的方法，不从这条路径走。
    */
   async create(input: SessionCreateInput): Promise<void> {
@@ -105,7 +104,7 @@ export class SessionRepository {
   }
 
   /**
-   * 交接换记忆（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上 SDK 算好的那几条消息。
+   * 交接换记忆：旧记忆成为另一段会话，原会话腾空之后换上 SDK 算好的那几条消息。
    *
    * 四步一批提交，顺序不能换：
    *   1. 插存档会话行（身份照抄原会话，只有 id / 名字 / 创建时刻是新的）；
@@ -115,10 +114,10 @@ export class SessionRepository {
    *   4. 按顺序写回新记忆的那几条行（此时原会话已经腾空，`seq` 自然从 1 开始）。
    *
    * 4 里那条断点消息就是 **SDK 算出来的那一条**（`role: system` + `hidden` + 只带路径）：
-   * 仓储不拼消息，它只把给它的行写下去。几条的顺序就按数组顺序 —— 存进去的就是内存里那份。
+   * 仓储不拼消息，它只把给它的行写下去，几条的顺序就按数组顺序。
    *
-   * 为什么这四步必须同一个事务：只成前几步就留下「旧记忆已经存档、原会话却空着」的第三种状态 ——
-   * 那正是交接要防的（崩溃安全）。失败整批回滚，库里回到交接前，一段存档会话都不会留下。
+   * 整个交接的分工见 PLAN §5.3；这里的关键是四步必须同一个事务：只成前几步就留下「旧记忆
+   * 已经存档、原会话却空着」的第三种状态，而失败时整批回滚不会留下一段存档会话。
    */
   async replaceMemory(input: SessionMemorySwap): Promise<void> {
     await this.db.tx((tx) => {
@@ -151,8 +150,7 @@ export class SessionRepository {
   /**
    * 谁由这段会话开的（血缘列反查）：平级会话的并发限额要数「我手头有几个还忙着」。
    *
-   * 从前这件事走 `PeerSessionService` 的进程内记录，重启即失；血缘落库之后它是库里的事实 ——
-   * 重启前后数出来的是同一批。血缘列没有索引：这张表小，而这条查询只在开平级会话那一刻走一次。
+   * 血缘列没有索引：这张表小，而这条查询只在开平级会话那一刻走一次。
    */
   async listByLineage(lineage: string): Promise<Session[]> {
     const rows = await this.db.all<SessionRow>(
@@ -169,8 +167,8 @@ export class SessionRepository {
   }
 
   /**
-   * 用户改名（PRD F-C3）：名字归用户，`nameIsAuto` 置 0（R35）。
-   * 身份与顺序都不受影响（PRD D1 / D13），只记一次修改时间。
+   * 用户改名：名字归用户，`nameIsAuto` 置 0。
+   * 身份与顺序都不受影响，只记一次修改时间。
    */
   async renameByUser(id: string, name: string, updatedAt: number): Promise<number> {
     const result = await this.db.run(
@@ -181,7 +179,7 @@ export class SessionRepository {
   }
 
   /**
-   * 自动命名（PRD D2）：写入起好的名字，并把它标成自动起的那一个（`nameIsAuto` = 1）。
+   * 自动命名：写入起好的名字，并把它标成自动起的那一个（`nameIsAuto` = 1）。
    *
    * 与用户改名分开成两个方法：两者的差别只在 `nameIsAuto` 这一列，靠调用方选方法来表达
    * 语义，读侧不必再猜名字是谁改的。
@@ -231,7 +229,7 @@ export class SessionRepository {
   }
 
   /**
-   * 写这段会话自己的两条阈值（PRD 1.4 / 4.7：会话行上的覆盖层）；`null` = 回到跟模型走。
+   * 写这段会话自己的两条阈值（会话行上的覆盖层）；`null` = 回到跟模型走。
    *
    * **只写入参里真的给了的那几格**：省略的那一列一个字节都不动 —— 「不给」与「显式给 `null`」
    * 是两件事，前者是「别碰它」，后者是「回到跟模型走」。
@@ -269,8 +267,8 @@ export class SessionRepository {
    * 记一次压缩（两条压缩路径各自写，不互相覆盖别的列）。
    *
    * 为什么不动 `updatedAt`：那一列是「最后一次结构性变化」的时间（改名 / 换模型 / 改档位），
-   * 压缩是上下文层的事，而且它总是紧跟着一次回答跑完发生 —— 写进去只会让「最后修改」变成
-   * 「最后一次说话」，那不是这一列的意思。
+   * 压缩是上下文层的事，而且总是紧跟着一次回答跑完发生 —— 写进去只会让那一列变成
+   * 「最后一次说话」。
    *
    * @returns 改动的行数（会话已经不存在时是 0，不是错）
    */
@@ -286,9 +284,9 @@ export class SessionRepository {
    * 写会话行上的待交接标记（PLAN §5.2 的 `pendingHandoff`）：`"self"` / `"summary"` / `null`。
    *
    * 不动 `updatedAt`：那一列是「最后一次结构性变化」（改名 / 换模型 / 改档位），待交接是一段
-   * 会话自己的进度，不是它的身份变了。也不是会话上的「设置」—— 客户端不该因为它变而重排。
+   * 会话自己的进度，不是它的身份变了，客户端也不该因为它变而重排。
    *
-   * @returns 改动的行数（会话已经不在了就是 0，不是错：待交接随会话一起没，没什么好写的）
+   * @returns 改动的行数（会话已经不在了就是 0，不是错）
    */
   async setPendingHandoff(id: string, mode: HandoffMode | null): Promise<number> {
     const result = await this.db.run("UPDATE sessions SET pendingHandoff = ? WHERE id = ?", [
@@ -299,11 +297,10 @@ export class SessionRepository {
   }
 
   /**
-   * 自动交接开关（PRD 1.4 的「自动交接开关」那一格）。
+   * 自动交接开关，写会话行上那一格。
    *
-   * 只有一条路会写它：用户答完交接题选了「不交接」（PRD 4.10 的「答案的后果要落」）——
-   * 关掉之后下一次撞线不再问，否则等于没记住。创建那一刻的初值不走这里（见
-   * `registerSessionInsert`：用户建 0 / 平级会话 1）。
+   * 调用方只有一处：用户答完交接题选了「不交接」（PRD 4.10 的「答案的后果要落」）——
+   * 关掉之后下一次撞线不再问。创建那一刻的初值不走这里（见 `registerSessionInsert`）。
    *
    * 它是一格会话设置，所以照别处的口径记一次修改时间（同 `setPinned` / `setThresholds`）。
    *
@@ -317,14 +314,14 @@ export class SessionRepository {
     return result.changes;
   }
 
-  /** 硬删会话（PRD D17），消息与素材行随之级联删除 */
+  /** 硬删会话，消息、关系行与 inbox 行随之级联删除 */
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
     return result.changes;
   }
 
   /**
-   * 按名字搜索（PRD D16 的「按名称」）。
+   * 按名字搜索。
    *
    * 名字搜索不走 FTS：名字短、还要支持只有一两个字的查询，`LIKE` 的子串语义正好对得上，
    * 也省掉维护第二张 FTS 表。

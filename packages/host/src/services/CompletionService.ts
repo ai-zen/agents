@@ -1,9 +1,9 @@
 /**
- * `@` 补全的数据来源：一个项目的文件清单（F-H5 / D7）。
+ * `@` 补全的数据来源：一个项目的文件清单。
  *
  * 为什么在宿主：远程前端看不到目录（PRD §3 尺子 ①），`@` 菜单列的是磁盘上的真实文件。
  *
- * 口径（D7 逐条）：
+ * 口径：
  *   - **按需扫描**：第一次问才扫，扫完缓存一下；
  *   - **git 仓库优先 `git ls-files`**：只列 git 认的文件（含未跟踪但没被 ignore 的），天然排除了
  *     `node_modules`、构建产物这些不该出现在补全里的东西；
@@ -36,21 +36,21 @@ import type { WorkspaceCwdLookup } from "./DiscoveryService.js";
 const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
-// 实现事实（D7 的几个数字）
+// 实现事实（几个数字）
 // ---------------------------------------------------------------------------
 
-/** 清单条数上限（D7：20000 条） */
+/** 清单条数上限（20000 条） */
 export const DEFAULT_MAX_ENTRIES = 20_000;
-/** 扫描超时（D7：5s） */
+/** 扫描超时（5s） */
 export const DEFAULT_SCAN_TIMEOUT_MS = 5_000;
-/** 缓存有效期（D7：15s） */
+/** 缓存有效期（15s） */
 export const DEFAULT_CACHE_TTL_MS = 15_000;
 /** 一次补全默认回多少条 */
 export const DEFAULT_LIMIT = 50;
 /** 一次补全最多回多少条 */
 export const MAX_LIMIT = 500;
 
-/** 遍历时要跳过的目录名（D7：`node_modules/.git/dist`） */
+/** 遍历时要跳过的目录名（`node_modules/.git/dist`） */
 const EXCLUDED_DIRS = new Set(["node_modules", ".git", "dist"]);
 
 /** `git ls-files` 的超时上限（比扫描预算略小，留出解析与遍历的时间） */
@@ -152,7 +152,7 @@ export class CompletionService {
   }
 
   /**
-   * `completion.files`（F-H5 / D7）。
+   * `completion.files`。
    *
    * 三条出口，全部带 `state`：
    *   - 有现成清单 → `ready`（可能带「不完整 / 被截断」的说明）；
@@ -185,7 +185,7 @@ export class CompletionService {
   /**
    * 等一次扫描落地（预热与用例用）。
    *
-   * 接线层可以在项目被打开时预取一次：这样用户第一次按 `@` 已经是 `ready`。
+   * 它只是「推到扫完为止」，不参与 `files` 的三条出口。
    */
   async prefetch(workspaceId: string): Promise<void> {
     const id = requireWorkspaceId(workspaceId);

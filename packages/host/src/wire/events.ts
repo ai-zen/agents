@@ -12,7 +12,7 @@ import type { SessionActivity, NoticeView, QuestionView } from "./states.js";
  * 一条约定：事件只描述「发生了什么变化」，客户端需要完整对象时回宿主拉 ——
  * 这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
  *
- * 十三个事件分五种粒度（PLAN §5.4）：
+ * 十三个事件分四组（粒度见 PLAN §5.4）：
  *   - 一条消息的生死：`message.added` / `message.changed` / `message.removed`（每次都带**当时那条消息的完整对象**）；
  *   - 流式一片：`message.delta`（core 的 `AgentNS.Delta` 原样）；
  *   - 忙闲、两道闸与出错：`state` / `output:paused` / `output:resumed` / `input:paused` /
@@ -24,7 +24,7 @@ import type { SessionActivity, NoticeView, QuestionView } from "./states.js";
  * **不**挤在 `state` 里，因为「没有 agent」不是「手上没活」。
  *
  * 这里**没有**用量事件、没有「请求中 / 思考中 / 输出中」这类阶段事件：用量在每条消息的
- * `usage` 上，阶段由客户端按上面这批事件的到达自己推（PRD 硬规矩 7）。
+ * `usage` 上，阶段由客户端按上面这批事件的到达自己推。
  *
  * 流式增量的载荷是 core 的 `AgentNS.Delta` 原样：它描述的正是一片 chunk 带来了什么
  * （`content` / `reasoning_content` / `tool_calls` / …），`applyChunk` 吃的是同一份，
@@ -36,7 +36,7 @@ import type { SessionActivity, NoticeView, QuestionView } from "./states.js";
 // ---------------------------------------------------------------------------
 
 /**
- * `message.added`：多了一条消息（`PLAN §5.3` 的「追加一条」）。
+ * `message.added`：多了一条消息（`PLAN §5.4` 的「追加一条」）。
  *
  * 落地的用户消息、core 追加的那条 `status: pending` 的助手消息、工具结果、注入的 cwd /
  * 交接摘要，都从同一个口出。客户端先有这一条，才挂得上后面那些 `message.delta`。
@@ -62,11 +62,9 @@ export interface MessageAddedPayload {
  * 正文、`reasoning_content` 是思考、`tool_calls` 是工具调用（PRD F-I2 的那三段）。
  * 外壳只带定位信息：哪个会话、哪条消息。
  *
- * **这里没有「这一片是第几片」**：这条连接是有序 WS，同一段会话的增量按发出顺序一条条到达，
- * 「乱序」与「中间那一小片丢了」这两种处境都不存在 —— 漏片只可能来自断线，而断线即作废
- * （见文件开头：不重放、不 ack），客户端靠 `resync`（`message.list` 全量，或带本地最后一条 id
- * 起的增量）把整段重新对齐。于是序号既没有判断依据、也没有可做的事：它只会让「客户端自己发现
- * 漏了一片再去补」这条根本不存在的路看起来存在。
+ * **这里没有「这一片是第几片」**：连接是一条有序 WS，同一段会话的增量按发出顺序到达；
+ * 漏片只可能来自断线，而断线即作废（见文件开头），客户端靠 `resync`（`message.list` 全量，
+ * 或带本地最后一条 id 起的增量）把整段重新对齐 —— 序号没有判断依据，也没有用得上的地方。
  */
 export interface MessageDeltaPayload {
   sessionId: string;

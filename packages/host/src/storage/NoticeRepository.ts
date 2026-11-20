@@ -1,13 +1,13 @@
 /**
- * `notices` 表仓储：通知持久化（PRD L3：手动清 + 持久化）。
+ * `notices` 表仓储：通知持久化（PRD 4.9：手动清 + 持久化）。
  *
  * 库里存的是**码 + 参数**而不是渲染好的句子：多语言在读出时按连接的语言渲染
  * （`PLAN.md` §8 的多语言渲染点），否则一条通知存死一种语言，换个语言连回来就错了。
  *
  * `durationMs` 为 null 表示永久存在；有值时到点消失，靠 `deleteExpired` 清掉。
  *
- * `sessionId` 是「这条通知与哪段会话有关」的真值列（可空 = 全域通知），
- * 按会话过滤与按会话清除都走它。
+ * `sessionId` 是「这条通知与哪段会话有关」的真值列（可空 = 全局通知），按会话过滤与按会话
+ * 清除都走它。
  */
 
 import type { Database } from "./Database.js";
@@ -72,7 +72,7 @@ export class NoticeRepository {
     return rows.map(toNotice);
   }
 
-  /** 手动清除一条（PRD L3：永久通知只能这样消失） */
+  /** 手动清除一条（永久通知就靠这一手消失） */
   async clear(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM notices WHERE id = ?", [id]);
     return result.changes;

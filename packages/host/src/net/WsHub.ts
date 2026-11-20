@@ -11,7 +11,7 @@
  *      业务逻辑一律不在本文件里。
  *   3. **推送**：JSON-RPC 通知（无 id），`params` 就是事件载荷。不重放、不需要 ack（PRD L5：
  *      断线重连由客户端自己拉）。受理即返回的方法（`session.send` 这类）会产生「事件早于回包」
- *      的顺序问题，所以按 `sessionId` 缓冲，回包写完再按序放行（裁定 R47）。
+ *      的顺序问题，所以按 `sessionId` 缓冲，回包写完再按序放行（R47，见 {@link dispatch}）。
  *   4. **上传帧**：二进制帧交给 `UploadReceiver` 落盘；连接断开时把它名下未完成的上传清掉。
  *
  * 错误一律走 JSON-RPC `error`：`data.code` 是稳定业务码、`data.message` 是按**这条连接的语言**
@@ -128,7 +128,7 @@ export type DefaultLanguageSource = Language | (() => Language | Promise<Languag
 export interface WsHubOptions {
   /** 监听地址（由调用方按 `resolveListenTarget` 算好传进来，本文件不判断本地/对外） */
   host: string;
-  /** 监听端口；`0` 表示由系统分配（用例与「端口被占时退回临时端口」都靠它） */
+  /** 监听端口；`0` 表示由系统分配（用例靠它拿随机端口） */
   port: number;
   /** 凭证校验（`auth.createTokenVerifier`；用例注入假实现） */
   verifyToken: TokenVerifier;
@@ -673,16 +673,10 @@ export class WsHub {
   }
 
   /**
-   * 一个事件落到这条连接上：**该压就压、该写就写**。
+   * 一个事件落到这条连接上：这一段有请求没回包就压着（{@link defer} 那一格还在），否则直接写。
    *
-   * 两件事分得很清楚，名字就是它们的分界：
-   *
-   *   - **压**（{@link defer} 压出来的那一格还在）：这一段有请求没回包，先把「怎么造这一帧」
-   *     的意图塞进队列，等回包写完那一拍由 {@link flush} 按序放行 —— 客户端不该在拿到 id
-   *     之前就收到这段会话的事件（R47）；
-   *   - **写**（{@link writeFrame}）：没有要等的回包，帧直接出去。
-   *
-   * 还没握手的连接一帧都不写（连推送都不给）。
+   * 压着的是「怎么造这一帧」的意图，回包写完那一拍由 {@link flush} 按序放行 —— 客户端不该在
+   * 拿到 id 之前就收到这段会话的事件（R47）。还没握手的连接一帧都不写。
    */
   private dispatch(
     state: ConnectionState,
@@ -809,9 +803,8 @@ function extractId(text: string): JsonRpcId | null {
       return asId(JSON.parse(raw));
     } catch {
       // 「搝得到就搝、搝不到就算了」是 `extractId()` 的契约：它的返回类型本来就是
-      // `JsonRpcId | null`，上一层的 `asId()` 也照样回 null。所以这里不是给不可能的状态兜底，
-      // 是这条路的正常答案（输入是客户端送进来的字节，本来就没保证）。抛出去反而会让这个
-      // 坏帧连一个回包都收不到 —— 这段代码是在 `onFrame` 的 catch 里被调的。
+      // `JsonRpcId | null`。抛出去反而会让这个坏帧连一个回包都收不到 —— 这段代码是在
+      // `onFrame` 的 catch 里被调的。
       return null;
     }
   }
@@ -834,7 +827,7 @@ function sessionKeyOfParams(params: unknown): string | null {
 /**
  * 事件载荷里的会话 id。
  *
- * 多数事件直接在顶层带 `sessionId`（忙闲、两道闸、出错、结构变化、三条消息事件）；通知与
+ * 多数事件直接在顶层带 `sessionId`（忙闲、两道闸、出错、结构变化、四条消息事件）；通知与
  * 问题是嵌套的，而且那个字段可以是
  * `null`（全局的：不受任何会话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
  */
@@ -879,8 +872,8 @@ function asRecord(value: unknown, field: string): Record<string, unknown> {
 /**
  * `hello` 入参的校验。
  *
- * 只校验「少了就完全没法握手」的三样：`token`、`clientInfo`（客户端自报身份，用于连接列表与日志）、
- * 以及可选的 `language`（不是字符串就当没给）。
+ * 只校验「少了就完全没法握手」的两样：`token` 与 `clientInfo`（客户端自报身份，用于连接列表与
+ * 日志）。`language` 不是字符串就当没给。
  */
 function asHelloParams(value: unknown): HostHelloParams {
   const record = asRecord(value, "params");

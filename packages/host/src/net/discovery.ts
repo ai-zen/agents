@@ -8,7 +8,7 @@
  * - `<dataRoot>/run/token` 是**本地凭证的交付口**：内容只有本地那串凭证，客户端首次连接时
  *   自动取走。凭证自己的真相在库里（可列出、带备注、可单独吊销），这里只是一份「给本机进程读」的副本。
  *
- * 目录由本文件按需创建：`run/` 与 `assets/` 都可能在首次启动时还不存在。
+ * 目录由本文件按需创建：`run/` 可能在首次启动时还不存在（`assets/` 由上传那一路自己建）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -22,11 +22,11 @@ import { HostError } from "../wire/errors.js";
  * `run/host.json` 的形状。
  *
  * `host` 是**实际监听**的地址（本地实例是 `127.0.0.1`，对外实例是调用方指定的地址），
- * `port` 是实际端口 —— 端口被占时宿主会退回系统分配的临时端口，所以客户端不能按「启动参数里的端口」
- * 去连，只能读这个文件。
+ * `port` 是 `hub.listen()` 报回来的实际端口 —— 启动参数可以给 `0`（由系统分配），所以客户端
+ * 不能按「启动参数里的端口」去连，只能读这个文件。
  */
 export interface HostFileInfo {
-  /** 宿主进程 id（客户端据此判断「上次那个进程还在不在」） */
+  /** 宿主进程 id（启动自查据此判断「上次那个进程还在不在」） */
   pid: number;
   host: string;
   port: number;
@@ -123,7 +123,7 @@ export async function readLocalToken(paths: HostPaths): Promise<string | null> {
   return token === "" ? null : token;
 }
 
-/** 清掉本地凭证交付文件（凭证被吊销 / 轮换时顺手做的事） */
+/** 清掉本地凭证交付文件（不存在不算错） */
 export async function clearLocalToken(paths: HostPaths): Promise<void> {
   await fs.rm(paths.tokenFile, { force: true });
 }

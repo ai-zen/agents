@@ -49,8 +49,8 @@ function sha256(bytes: Uint8Array): string {
 /**
  * 取本次 `begin` 的上传句柄。
  *
- * `uploadId` 在契约里可空：命中会话内去重时它没有句柄（客户端不必再传）。这几条用例走的都是
- * 新上传，所以这里要一个非空值；`null` 就说明 behaviour 变了，直接让用例红。
+ * `uploadId` 在契约里可空：命中全局去重时它没有句柄（客户端不必再传）。这几条用例走的都是新
+ * 上传，所以这里要一个非空值；`null` 就说明 behaviour 变了，直接让用例红。
  */
 function handleOf(began: AssetBeginResult): string {
   if (began.uploadId === null) throw new Error("新上传没有拿到 uploadId");

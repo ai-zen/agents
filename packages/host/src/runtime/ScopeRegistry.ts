@@ -7,35 +7,29 @@
  *
  * ## 没有空闲计时、没有引用计数、没有自动回收
  *
- * 实例活着就是因为有人显式持有它：
- *
- *   - 建出来之后一直活着，直到有人调 `dispose(workspaceId)`（Workspace 被删）或
- *     `disposeAll()`（进程收尾）。中间不会因为「没人用」而消失 —— 也没有「没人用」这个
- *     可判定的状态：Scope 是能力容器，它不属于某一段会话；
- *   - 因此本文件不再记引用计数（那是自动回收的输入），也不再持有计时器
- *     （PLAN §4 曾经唯一的那个空闲计时已撤掉）。
+ * 实例活着就是因为有人显式持有它：建出来之后一直活着，直到有人调 `dispose(workspaceId)`
+ * （Workspace 被删）或 `disposeAll()`（进程收尾）。中间不会因为「没人用」而消失 —— 也没有
+ * 「没人用」这个可判定的状态：Scope 是能力容器，它不属于某一段会话。因此本文件不记引用计数，
+ * 也不持有计时器。
  *
  * 「这个 Scope 上还活着几个 agent」是 `AgentRegistry` 的账，不是这里的账：本文件只在
  * `dispose` 时**问一句**（{@link ScopeRegistryOptions.liveSessions}），有活的就拒绝。
  *
  * ## 回收自下而上：撞上活着的 agent 就拒绝，不级联
  *
- * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `sessionId` 列表），
- * 而不是顺手把那些会话掐掉：级联会静默掐死正在跑的会话，而显式 API 的价值就是「动作要有意识」。
- * 调用方的顺序是：先让会话停下（`ChatRunner.abort` / `forget`）+ 丢掉 agent
- * （`AgentRegistry.kill` / `killAll`），再回来销毁 Scope。
+ * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `sessionId` 列表），而不是
+ * 顺手把那些会话掐掉：级联会静默掐死正在跑的会话。调用方的顺序是：先让会话停下
+ * （`ChatRunner.abort` / `forget`）+ 丢掉 agent（`AgentRegistry.kill` / `killAll`），再回来
+ * 销毁 Scope。
  *
  * `disposeAll` 是**收尾**用的，不拒绝：进程要退出了，那时已经没有「稍后再拆」这回事。
  *
  * ## 销毁就是 `Scope.dispose()`
  *
  * 它会逆序调用各插件的 `dispose()`，MCP 插件在那里断开它自持的全部连接，于是
- * 「Scope 与 MCP 连接同生共死」不用第二套代码来表达 —— 只是时机从「空闲到点」变成
- * 「显式 dispose / 进程退出」。
+ * 「Scope 与 MCP 连接同生共死」不用第二套代码来表达。
  *
- * **配置改动不是销毁场合**：配置改动的本质是「磁盘上几个 json 变了」，`refresh()`
- * （重读配置 + 各插件重新发现）就能让它生效，Scope 实例还是同一个 —— 见
- * `refreshWorkspace`。
+ * **配置改动不是销毁场合**：那是 `refreshWorkspace` 的事（就地刷，实例还是同一个）。
  *
  * Scope 的创建方式从构造参数进来：接线层提供真实的 SDK 装配（见本文件末尾的
  * `createWorkspaceScopeFactory`）。
@@ -52,17 +46,12 @@ import type { LogSink } from "@ai-zen/agents-logger";
  * `setTimeout` 返回「取消函数」而不是句柄：假时钟与真定时器都能实现它，调用方不必知道
  * 句柄长什么样，也就不需要 `clearTimeout` 的第二个入口。
  *
- * 本文件自己**完全不用**它：空闲计时已撤，构造参数里也不再有 `clock`。导出留着是因为
- * 真正的消费者在别处，用的还是同一个口径：`ChatRunner.ts` 里两个类都拿它（`ChatRunner` 用
- * `now()` 记时间戳，`SessionBridge` 用它做写库节流的计时与消息落库时间）与接线层
- * `app.ts`（`options.clock` 注入点，再往下分给各服务），`runtime/index.ts` 只是转手再导出；
- * 测试助手 `TestSupport.ManualClock` 实现的就是它。`services/CompletionService` **不在**此列
- * —— 它自带形状相同的 `CompletionClock` / `systemCompletionClock`，不引用这一份。
- *
- * 归属上这里只是「历史上的家」：它本来为 Scope 的空闲回收而生，回收撤掉之后没有任何
- * ScopeRegistry 的代码碰它。真要收拢，它该搬到一个不依赖任何东西的叶子模块
- * （如 `runtime/clock.ts`），这样 `ChatRunner` 不必为了一个时钟去 import ScopeRegistry。
- * 这一次重写不动导出（那会牵动一串 import）。
+ * 本文件自己**不用**它（Scope 没有空闲回收，构造参数里也没有 `clock`）：消费者是
+ * `ChatRunner.ts` 里两个类（`ChatRunner` 用 `now()` 记时间戳，`SessionBridge` 用它做写库
+ * 节流与消息落库时间）与接线层 `app.ts`（`options.clock` 注入点，再往下分给各服务）；
+ * `runtime/index.ts` 只是转手再导出，测试助手 `TestSupport.ManualClock` 实现的就是它。
+ * `services/CompletionService` **不在**此列 —— 它自带形状相同的 `CompletionClock` /
+ * `systemCompletionClock`，不引用这一份。
  */
 export interface Clock {
   /** 当前时刻（毫秒，`Date.now()` 口径） */
@@ -72,14 +61,13 @@ export interface Clock {
 }
 
 /**
- * 真实时钟。无状态，可以放心共享；需要可控时间的地方（测试、或将来把时钟挂到根对象上）
- * 通过构造参数换成别的实现。
+ * 真实时钟。无状态，可以放心共享；需要可控时间的地方（测试）通过构造参数换成别的实现。
  */
 export const systemClock: Clock = {
   now: () => Date.now(),
   setTimeout: (handler, ms) => {
     const timer = setTimeout(handler, ms);
-    // 计时不该单独把进程钉住：真要退出时由根对象按「什么都不欠了」判断
+    // 计时不该单独把进程钉住（退不退由显式动作决定）
     timer.unref?.();
     return () => clearTimeout(timer);
   },
@@ -169,7 +157,7 @@ export class ScopeRegistry {
    * 取一个 Scope：没有就建，有就原样返回（幂等 get-or-create）。
    *
    * 并发的两次 `create` 只会创建一次（两个调用方等同一个 Promise）。
-   * 调用方不必背顺序：`AgentRegistry.create` 内部就是这么确保「Scope 先于 agent 存在」的。
+   * 调用方不必背顺序：`AgentRegistry.acquire` 内部就是这么确保「Scope 先于 agent 存在」的。
    */
   create(workspaceId: string): Promise<Scope> {
     const existing = this.entries.get(workspaceId);
@@ -181,7 +169,7 @@ export class ScopeRegistry {
     return entry.created;
   }
 
-  /** 当前持有哪几个（报告「刷了哪些项目的 Scope」、判退出用） */
+  /** 当前持有哪几个（配置生效时据此决定刷哪些；收尾事实也记一笔） */
   workspaceIds(): string[] {
     return [...this.entries.keys()];
   }
@@ -233,10 +221,8 @@ export class ScopeRegistry {
   /**
    * 销毁某一个 Scope —— Workspace 被删（或别的「这个能力容器不要了」的显式场合）时用。
    *
-   * **撞上还活着的 agent 就拒绝**（{@link ScopeBusyError}，带着 `sessionId` 列表）：
-   * 不级联、不静默掐掉正在跑的会话。调用方要先停会话、丢掉 agent，再回来调它。
-   *
-   * 不存在就什么也不做（幂等）；销毁之后再 `create` 得到新实例。
+   * 撞上还活着的 agent 就拒绝（见文件头）；不存在就什么也不做（幂等）；销毁之后再
+   * `create` 得到新实例。
    */
   async dispose(workspaceId: string): Promise<void> {
     const entry = this.entries.get(workspaceId);
@@ -299,8 +285,7 @@ export class ScopeRegistry {
  *
  * 装配内容：`new Scope({ getConfig, cwd, agentsDir })` + `allInOne(...)`（内置工具、用户工具、
  * Skill、MCP、subagent 五类插件），然后 `init()` 做首次能力发现。MCP 插件自带连接管理器，
- * 于是「Scope 建好 = MCP 配置已发现」，`dispose()` 时连接一起断；配置改了则是 `refresh()`
- * （重读配置 + MCP 连接对账），不用重建 Scope。
+ * 于是「Scope 建好 = MCP 配置已发现」，`dispose()` 时连接一起断。
  *
  * 多给一个 `peerSessions` 端口时再装一个 `PeerSessionsScopePlugin`（平级会话的两个工具）：
  * 那是宿主注入的能力，不是磁盘上的目录，所以不在 `allInOne` 里。
@@ -374,7 +359,7 @@ export function createWorkspaceScopeFactory(options: WorkspaceScopeFactoryOption
       deps: options.deps,
     });
     scope.use(...allInOne(abilityPaths));
-    // 平级会话：能力来自宿主端口（不给就不装，老行为一个字不变）
+    // 平级会话：能力来自宿主端口（不给就不装）
     if (options.peerSessions) scope.use(new PeerSessionsScopePlugin(options.peerSessions));
     await scope.init();
     return scope;

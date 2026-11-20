@@ -2,8 +2,7 @@
  * 数据库门面：对外只有 `all` / `get` / `run` / `tx` / `close` 五个异步方法，内部把每条
  * 请求变成一条 worker 消息，交给 `dbWorker.ts` 在独立线程里用同步的 `DatabaseSync` 执行。
  *
- * 主线程因此完全不碰 SQL 执行：不会阻塞事件循环，也不会有「一个慢查询卡住所有 WebSocket
- * 连接」这种事。
+ * 主线程因此完全不碰 SQL 执行：不会阻塞事件循环，也不会有一个慢查询卡住所有 WebSocket 连接。
  *
  * 实例由创建者持有并注入给各 Repository（依赖从单根出发），本模块不导出任何模块级单例。
  */
@@ -43,7 +42,8 @@ export interface TxStatement<T> {
  *
  * 批次在回调返回后一次性送进 worker，在同一个事务里串行执行；读到的值由回调返回哪几条
  * 凭据决定（返回凭据数组 → 拿到等长的结果，返回单条凭据 → 拿到单条结果，什么都不返回 →
- * 只是一批写）。回调自己抛错时批次还没发出去，库里不会有任何改动。
+ * 只是一批写）。读出来的值回不到 JS 里决定下一条写什么（PLAN §7），要分支就把条件写进 SQL。
+ * 回调自己抛错时批次还没发出去，库里不会有任何改动。
  */
 export interface TxClient {
   all<T>(sql: string, params?: SQLInputValue[]): TxStatement<T[]>;
@@ -147,7 +147,7 @@ export class Database {
    * 事务：回调里用 `client.all` / `get` / `run` 登记语句，回调返回后整批在 worker 里
    * `BEGIN IMMEDIATE` → 按登记顺序逐条执行 → `COMMIT`，任一条失败就整体 ROLLBACK。
    *
-   * 回调返回的凭据决定拿回哪些结果，所以「先读后写」是一次往返、一个事务：
+   * 回调返回的凭据决定拿回哪些结果：整批一次往返，结果按凭据对回来。
    *
    * ```ts
    * const [found, written] = await db.tx((q) => [
@@ -196,7 +196,7 @@ export class Database {
     this.closed = true;
     const worker = this.worker;
     this.worker = null;
-    // 关库时仍在排队的请求一律以「已关闭」失败，不让调用方拿到永远不 resolve 的 Promise
+    // 关库时仍在排队的请求全以「已关闭」失败，不让调用方拿到永远不 resolve 的 Promise
     this.failAll(new Error("Database 已关闭，不再接受调用"));
     if (!worker) return;
 

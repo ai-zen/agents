@@ -40,8 +40,8 @@ export interface HostPaths {
   /**
    * 宿主自己那一格日志目录：`<dataRoot>/logs/host`。
    *
-   * 一个进程一格目录、一格只归一个进程写：`logs/` 只是各进程子目录的父层（CLI 写
-   * `logs/cli/`、将来的桌面端写 `logs/desktop/`），谁都不许往 `logs/` 顶层直接落文件。
+   * 一个进程一格目录：`logs/` 只是各进程子目录的父层（CLI 写 `logs/cli/`、将来的桌面端写
+   * `logs/desktop/`），落到顶层就分不清是哪个进程写的。
    */
   hostLogsDir: string;
 }
@@ -152,7 +152,7 @@ export interface ListenTargetInput {
  * 下一顺位。
  *
  * 两个来源的合法范围不同：启动参数允许 `0`（让系统分配，用例与冒烟都用它），配置文件里的
- * 端口必须是真端口 —— 写 `0` 的意图只能是「每次启动换一个」，而这件事在配置文件里说不清。
+ * 端口必须是真端口 —— 写 `0` 的意图无非「每次启动换一个」，而这件事在配置文件里说不清。
  */
 export function resolveListenTarget(input: ListenTargetInput): ListenTarget {
   return {
@@ -212,7 +212,7 @@ function invalidPort(field: string, value: unknown, source: string): HostError {
  * 宿主设置文件的形状。
  *
  * 只放「宿主自己的启动参数」这类东西，`config.json` 那一份归 SDK 管（R13）。眼下只有一个
- * `port`：D25 的中间那一档需要一个真实来源，而不是让 `configPort` 只能由宿主程序注入。
+ * `port`：D25 的中间那一档需要一个真实来源，而不是只由宿主程序注入。
  */
 export interface HostSettings {
   /** 端口；缺省表示「这一档没说话」，落到默认端口 */

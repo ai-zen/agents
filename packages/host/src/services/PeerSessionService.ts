@@ -1,14 +1,14 @@
 /**
  * 平级会话服务 —— 一段会话里的模型**开另一段会话**，之后还能**接着跟它说话**、能**问它现在怎么样**。
  *
- * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md`。本文件只做四件事：
+ * 本文件只做四件事：
  *
  * 1. **建**：按 `session.create` 同一条路开一段会话（草稿 → 落真行），拿到 sessionId
  *    就是 `sessionId`，把第一句交出去，**立刻返回**（不等它回答完 —— 等待就等于子代理，那已经
  *    存在了）。
  * 2. **记**：进程内 `Map<sessionId, label>` —— **只记可读名**。血缘、自动交接开关、深度、
- *    状态都不在这里：前两样是会话行上的列（v4：`lineage` / `autoHandoff`，重启也读得回来），
- *    深度由血缘推（父会话自己带血缘 = 它已经是第二层），状态一律现读执行者。进程内那份只剩
+ *    状态都不在这里：前两样是会话行上的列（`lineage` / `autoHandoff`，重启也读得回来），
+ *    深度由血缘推（父会话自己带血缘 = 它已经是第二层），状态现读执行者。进程内那份只剩
  *    「模型认得的那声名字」—— 它不需要落库（会话行上的 `name` 是另一个东西：那是人给这段
  *    会话起的名字）。
  * 3. **答状态**：{@link PeerSessionService.status} —— 它现在忙不忙**现读**（`chatRunner.state`），
@@ -19,10 +19,8 @@
  *
  * ## 为什么只剩一个名字在进程内
  *
- * 从前这里存「谁开的、几层、什么时候开的」，那些都是**身份**，而身份只在进程里活着的后果是
- * 重启就大面积说假话（开它的那段会话找不到它，它自己也不认得是谁开的）。v4 把它们搬到会话行上：
- * 血缘是 `sessions.lineage`、自动交接开关是 `sessions.autoHandoff`、开启时刻就是
- * `createdAt`。「只限一层」不再看进程内记的深度，而是看**父会话自己有没有血缘**。
+ * 身份都在会话行上：血缘是 `sessions.lineage`、自动交接开关是 `sessions.autoHandoff`、开启时刻
+ * 就是 `createdAt`。「只限一层」看的是**父会话自己有没有血缘**。
  *
  * 剩下没地方放的就是 `label`：它是模型在 `create_session` 里自己起的那个名字（模型记不住
  * UUID，`read_session_status` 靠它报「这是哪一段」），与会话行上那个给人看的 `name` 不是一回事。
@@ -34,12 +32,6 @@
  * {@link PeerSessionService.bind} 记一笔 `WeakMap`（agent → sessionId），工具回调里用
  * `ctx.agent` 认领调用方。**不给 core 的 `Agent` 加字段**：那是另一个包的类型，而且是
  * 「用完即弃」的对象，宿主侧记一笔就够，也不会泄漏（WeakMap 跟着 agent 一起回收）。
- *
- * ## 投递不在这里判
- *
- * 见 {@link PeerSessionService.send}：一句 `chatRunner.deliver(...)`，收下了就回 `{ ok }`。
- * 「目标在不在」「它忙不忙」都不是本文件的事 —— 忙不是拒绝的理由（队列本来就收），而不在
- * 那条真错误由执行者按 `HostError` 抛出来。
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
@@ -206,7 +198,7 @@ export interface PeerSessionServiceDeps {
           name: string;
           /** 谁开的这段会话；`null` = 用户建的（本文件用它判「只限一层」） */
           lineage: string | null;
-          /** 开出来的时刻（会话行上的事实；`read_session_status` 不报这一格 —— 需求里没有它） */
+          /** 开出来的时刻（会话行上的事实）；本文件不读它 —— `read_session_status` 里没有这一格 */
           createdAt: number;
         }
       | undefined
@@ -214,7 +206,7 @@ export interface PeerSessionServiceDeps {
     /**
      * 谁由这段会话开的（血缘列反查）：并发限额要数「我手头有几个还忙着」。
      *
-     * 从前这件事数的是进程内记录，重启即失；现在数的是库 —— 重启前后是同一批。
+     * 数的是库，所以重启前后是同一批。
      */
     listByLineage(lineage: string): Promise<{ id: string }[]>;
   };
@@ -223,10 +215,9 @@ export interface PeerSessionServiceDeps {
   /**
    * 消息仓储。
    *
-   * `read_session_status` 的摘要那一格**不从库读**：它要的是「这一段此刻说到哪了」，那是活
-   * 对象身上的事实（`chatRunner.messagesOf` 交回的 `agent.messages`，见 {@link PeerSessionRunner}）。
-   * 查库会把两件事搞错 —— 写库是异步的（刚说的那句话可能还没落行），而且状态与摘要会从
-   * 「同一刻的同一段」变成两个来源。接线照旧给着，清它归后面那一批收零调用符号。
+   * **本文件不读它**：摘要要的是「这一段此刻说到哪了」，那是活对象身上的事实
+   * （`chatRunner.messagesOf` 交回的 `agent.messages`）。查库会把两件事搞错 —— 写库是异步的
+   * （刚说的那句话可能还没落行），而且状态与摘要会从「同一刻的同一段」变成两个来源。
    */
   messages: { listBySession(sessionId: string): Promise<StoredMessage[]> };
   /** 执行者 */
@@ -239,11 +230,10 @@ function rejected(reason: PeerSessionRejectReason, hint: string): PeerSessionCre
 }
 
 /**
- * 宿主的**四件事** → SDK 的 `read_session_status` 报的那一格（**过渡投影，不是第二份事实**）。
+ * 宿主那边的**四件事** → SDK 的 `read_session_status` 报的那两格。
  *
- * 宿主这一侧四件事已经各占一格（`PRD.md` 4.4），SDK 那个面向模型的工具也按同一口径报：
- * 忙不忙（`status`）+ 死活（`alive`）。**不再有投影**：以前这里把四件事压回一格四词，
- * 就是因为 SDK 当时只收那一格；现在两边同名同值，直接端过去。
+ * 宿主这一侧四件事已经各占一格（`PRD.md` 4.4），SDK 那个面向模型的工具只报：忙不忙
+ * （`status`）+ 死活（`alive`），两边同名同值，直接端过去。
  *
  * 两道闸不对平级会话报（`PRD.md` 4.6 只要「忙不忙 + 最近一句摘要」）。
  *
@@ -374,10 +364,8 @@ export class PeerSessionService implements PeerSessionPort {
     // 6. 先把 agent 装起来，再把第一句交出去（受理即回）：来源写「父会话」，正文最前面那行注释由
     //    core 加。
     //
-    //    **这里就是创建者，所以它有权先把 agent 装起来**（刚建出来的会话还没人叫醒过）。而这份
-    //    权力**不靠参数**：它就靠这两句的先后 —— `start` 是复活那个正交动作，`deliver` 只管投。
-    //    从前用 `mayStart: true` 把它压进投递，于是「谁肯传这个值」变成了「谁能复活」；正交之后
-    //    投递对死会话一律报 `session_dead`，而这一条路显式调了 `start`，所以它不撞那道门。
+    //    创建者自己显式叫醒它（`start` 是复活那个正交动作），`deliver` 只管投 —— 投递对死会话
+    //    都报 `session_dead`，所以这两句的先后不能反。
     await this.deps.chatRunner.start(sessionId);
     await this.deps.chatRunner.deliver(sessionId, {
       content: input.prompt,
@@ -394,10 +382,8 @@ export class PeerSessionService implements PeerSessionPort {
    *
    * 找不到就是判别式的另一支（`{ found: false, status: null }`，**不抛错**：模型不该因为查了一段
    * 已经不存在的会话而断掉它手上的活）：判据只剩一条 —— **会话行在不在**（被用户删了就不在）。
-   *
-   * 从前这里还要求「进程内有它的记录」：那时血缘只在进程里，重启之后连自己开过哪一段都认不出。
-   * 现在血缘在会话行上（`lineage`），重启前后一段会话是不是平级会话是库里的事实，所以这里不再
-   * 看进程内那张表 —— 它只提供可读名，没有就退回行上的 `name`（那也是一句真话）。
+   * 血缘在会话行上，所以重启前后一段会话是不是平级会话是库里的事实；进程内那张表只提供可读名，
+   * 没有就退回行上的 `name`（那也是一句真话）。
    *
    * 三格全**现读**，不存镜像：状态读执行者那一格，摘要读那一段 `agent.messages` 里最后一条
    * 助手消息的正文（截断到 300 字）。**不给消息数组、不给条数、不给历史** —— 给了就等于把对方
@@ -427,22 +413,16 @@ export class PeerSessionService implements PeerSessionPort {
   /**
    * 跟一段平级会话**接着说话**（`post_message`）。
    *
-   * 只有一件事要做：`deliver`。**不看关系** —— 谁都能给谁说话（投递不看关系是整套模型的
-   * 一条硬规矩）；「目标不在」是唯一会失败的情形，而那是 `HostError`（`not_found` /
+   * 只有一件事要做：`deliver`。**不看关系** —— 谁都能给谁说话（投递不看关系是整套模型的一条
+   * 硬规矩）；「目标不在」是唯一会失败的情形，而那是 `HostError`（`not_found` /
    * `session_dead`），不是一条「拒绝」返回值。
    *
    * **不复活**（不叫 `start`）：agent 手上没有复活别人的权力（PRD 1.2 / 4.6「agent 不能复活
-   * 会话」）—— 那件事只在客户端的「发送」与这里上面那条创建路径上。正交之后这个工具的行为
-   * 反而更直接：死会话就是 `session_dead`，没有「传了个参数就顺手叫醒」那条暗路。
+   * 会话」）—— 那件事只在客户端的「发送」与这里上面那条创建路径上。死会话就是 `session_dead`，
+   * 没有「传了个参数就顺手叫醒」那条暗路。
    *
    * 回执只有「收下了」（`{ ok: true }`）：它忙不忙、什么时候取件、取走之后做什么，都不是
    * 投递这一刻能定下的事实 —— 本工具从不等结果，也不回状态。
-   *
-   * ## 重启之后仍然认得它
-   *
-   * 血缘在会话行上（`lineage`），不在进程内：重启之后这段会话还是别人开的那一段，用户照样
-   * 能接管它、接着说话，`status` 也照旧答得出它现在在哪一格。进程内只剩那个可读名，重启
-   * 之后退回行上的 `name`。
    */
   async send(input: PeerSessionSendInput): Promise<PeerSessionSent> {
     const callerSessionId = this.identityOf(input.caller);
@@ -477,8 +457,6 @@ export class PeerSessionService implements PeerSessionPort {
 
   /**
    * 这个父会话手头**忙着**的平级会话有几个（限额的判据：先按血缘列反查出那批，再现读执行者）。
-   *
-   * 「谁是我的孩子」不再数进程内记录：血缘落库之后它是库里的事实，重启也不丢。
    */
   private async busyPeersOf(parentSessionId: string): Promise<number> {
     const children = await this.deps.sessions.listByLineage(parentSessionId);

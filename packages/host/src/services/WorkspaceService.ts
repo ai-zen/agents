@@ -1,12 +1,9 @@
 /**
  * Workspace 服务：项目（一个工作目录）的登记、查看、改名、删除。
  *
- * 对应能力编号：F-C1 的前置（项目中承载会话）、D9 / D10 / D12（一等公民、cwd 不可变、
- * 目录不存在照常可看）、D11（删项目连带删名下会话，目录本身不碰）、D17（删除前给代价）、
- * F-F9（不可撤销动作由客户端二次确认，宿主负责算账）、R14（cwd 唯一）、R20（列表顺序）。
- *
- * 这个服务只做「一条项目记录怎么变」与「代价是多少」；文件系统方面只回答一件事 ——
- * 目录还在不在（`FolderFact.exists`），是否只读由客户端判断（D12）。
+ * 这个服务只做「一条项目记录怎么变」与「代价是多少」：cwd 一旦登记就不可变、同一个 cwd 只
+ * 登记一次；删项目连带删名下会话，目录本身宿主不碰。文件系统方面只回答一件事 —— 目录还在
+ * 不在（`FolderFact.exists`）。删之前的二次确认归客户端，宿主只负责算账。
  */
 
 import { randomUUID } from "node:crypto";
@@ -209,7 +206,7 @@ export class WorkspaceService {
    * 删项目（PRD D11 / D17 / F-F9 / R7）。
    *
    * `dryRun` 只算账：名下会话数、消息数、素材数，客户端拿去向用户说明代价。真删时按外键
-   * 级联把会话、消息、问题行、素材的引用关系一起删掉；`assets/` 下的文件不在服务的删除范围里
+   * 级联把会话、消息、素材的引用关系一起删掉；`assets/` 下的文件不在服务的删除范围里
    * （D11：目录本身宿主不碰），但素材的字节要按引用清 —— 那张图可能还有别的项目的会话在用，
    * 所以只把「这些会话引用过哪几份素材」交给 asset 层，删完之后由它问「还剩几张引用」。
    */
@@ -224,9 +221,8 @@ export class WorkspaceService {
     };
     const assetIds = new Set<string>();
     for (const session of sessions) {
-      // 这个数来自 `countBySession`：每段会话在 `messages` 表里的全部行（subagent 的话
-      // 从来不入库，`CORE.md` §17）。侧栏摘要的 `messageCount` 走 `listBySession`，两者
-      // 数的是同一批行、口径永远相等 —— 一个只取数、一个取行，没有第二套算法。
+      // 与侧栏摘要的 `messageCount` 同一批行：这边 `countBySession` 只取数、那边
+      // `listBySession` 取行，两边都排除 `hidden`
       consequences.messages += await this.messages.countBySession(session.id);
       const assets = await this.assets.listBySession(session.id);
       consequences.assets += assets.length;
@@ -264,8 +260,9 @@ export class WorkspaceService {
   /**
    * 组装一个项目的对外形状。
    *
-   * `updatedAt` 在 `workspaces` 表里没有对应列，这里取「最近一次会话活动」当它；一条会话
-   * 都没有时就是创建时间。`lastActivityAt` 同理来自会话的 `updatedAt`（新增消息会推进它）。
+   * `updatedAt` 在 `workspaces` 表里没有对应列，这里取名下会话 `updatedAt` 的最大值当它；
+   * 一条会话都没有时就是创建时间。`lastActivityAt` 是同一份读数。会话行的 `updatedAt` 由
+   * 改名 / 置顶 / 换模型这类写操作推进，新消息不动它。
    */
   private async toView(row: WorkspaceRow): Promise<WorkspaceView> {
     const sessions = await this.sessions.listByWorkspace(row.id);

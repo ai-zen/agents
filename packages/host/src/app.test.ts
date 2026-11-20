@@ -284,7 +284,7 @@ describe("HostApp 的组装", () => {
     // 本地实例启动时备好交付文件（客户端直接取）
     expect(await exists(app.paths.tokenFile)).toBe(true);
 
-    // 收尾：摘发现文件 + 断连接 + 拆 Scope + 关库（对称于 start）
+    // 收尾：摘发现文件 + 拆 Scope + 断连接 + 清上传 + 关库（对称于 start）
     const facts = await app.stop("requested");
     expect(facts).toEqual({ reason: "requested", connections: 0, scopes: 0 });
     expect(app.running).toBe(false);
@@ -541,7 +541,7 @@ function pathsOf(fixture: Fixture) {
 }
 
 // ---------------------------------------------------------------------------
-// 收尾（PRD 4.12：关宿主是显式动作，没有「没人连着就自己退」这回事）
+// 收尾（PRD 4.12：关宿主是用户的显式动作）
 // ---------------------------------------------------------------------------
 
 describe("收尾", () => {
@@ -947,8 +947,7 @@ describe("从磁盘重载（F-E1 / R63）", () => {
 
     const reloaded = await callMethod(app, "host.reload", {});
 
-    // 与 config.patch 同一份报告形状：重载就是「五类全重读一遍」（`scope` 那一档已删，
-    // 它从来没有调用方 —— 见 `ConfigService.reloadedOf()` 的注释）
+    // 与 config.patch 同一份报告形状：重载就是「五类全重读一遍」
     expect(reloaded.applied.reloaded).toEqual({
       config: true,
       tools: true,
@@ -1161,7 +1160,7 @@ describe("会话的三个钩子", () => {
 
     // 不落库：会话与消息表都是空的
     expect((await callMethod(app, "session.list")).total).toBe(0);
-    // 不推流式事件：回包之后队列里不该再冒出增量或六态
+    // 不推流式事件：回包之后队列里不该再冒出增量或状态事件
     await wait(120);
     expect(client.queue.size()).toBe(0);
     app.scopeRegistry.disposeAll();
@@ -1692,8 +1691,8 @@ describe("日志", () => {
 
   it("SDK 侧那几句话进的是 `sdk` 那一格（宿主把自己那份注了进去，不是库自己另找出口）", async () => {
     const fixture = await makeFixture();
-    // 一份读不出来的思考策略表：`ConfigManager` 会降级交出出厂表，但要记一句 error。
-    // 那一句从前走 SDK 的全局口（= 标准输出，宿主里没人接手），本单改成宿主注入的 `sdk` 那一格。
+    // 一份读不出来的思考策略表：`ConfigManager` 会降级交出出厂表，但要记一句 error ——
+    // 那一句落的是宿主注入的 `sdk` 那一格（库自己不再另找出口）。
     await fs.writeFile(
       join(fixture.dataRoot.path, "reasoning-presets.json"),
       "{ 不是 json",

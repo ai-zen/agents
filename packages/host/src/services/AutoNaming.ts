@@ -1,10 +1,10 @@
 /**
- * 自动命名（PRD D2 / F-C4）。
+ * 自动命名。
  *
  * 两件事同时成立才起名，缺一不动：
  *
  *   1. **名字还是「创建时间默认值」**（{@link defaultSessionName}）—— 这是**唯一**的判据：
- *      还是它 → 起名；不是它（用户改过、或已经自动起过）→ 永不再动；
+ *      还是它 → 起名；不是它（用户改过、或已经自动起过）→ 不再动；
  *   2. **开关开着**（`AppConfig.autoTitle`，缺省视为开 —— 老配置里没有这个字段，用户的意图
  *      显然是「按出厂的样子跑」）。
  *
@@ -16,14 +16,13 @@
  * 「库里现在有几条消息」当判据，只能问名字本身：它还是不是创建时那个默认值。
  *
  * 用哪一个模型：「取名模型」`AppConfig.namingModel`，没配就回落 `defaultModel`；两个都拿不到
- * 就**保持原名**（原名 = 创建时间，D2）—— 那是「不该起名」，沉默是对的。模型给了个空串同理。
+ * 就**保持原名**（原名 = 创建时间）—— 那是「不该起名」，沉默是对的。模型给了个空串同理。
  *
  * 而「配置读不出来」「叫模型失败（端点 401 / 超时）」**原样抛给调用方**：那不是「不该起名」，
- * 是「这次没起成」，得留痕 —— 出口是 `app.ts` 那条 `logger.warn("自动命名失败")`。从前这两处
- * 各自 `return`，而注释还写着「不值得把错丢到日志以外的地方」，可它连日志都没丢。
+ * 是「这次没起成」，得留痕 —— 出口是 `app.ts` 那条 `logger.warn("自动命名失败")`。
  *
  * 写回走 `applyAutoName`（而不是用户改名那个方法）：它把 `nameIsAuto` 置 1，于是「这个名字是
- * 自动起的」这个事实在库里继续成立（R35）。而它同时也是「起名这件事到此为止」的凭据：写回之后
+ * 自动起的」这个事实在库里继续成立。而它同时也是「起名这件事到此为止」的凭据：写回之后
  * 名字不再是默认值，下一次调用会当场掉头。
  */
 
@@ -72,7 +71,7 @@ export interface AutoNamingDeps {
   configManager: ConfigManager;
   /** 取名调用；缺省走 SDK 的 `completeOnce`（与交接摘要共用同一份请求体形状） */
   complete?: TitleCompleter;
-  /** 通知通道（起好名字后那条「给它起名叫…」的提示，F-I8） */
+  /** 通知通道（起好名字后那条「给它起名叫…」的提示） */
   notices?: NoticeService;
   emit?: ChatEventEmitter;
   now?: () => number;
@@ -147,8 +146,7 @@ export class AutoNaming {
    * 不必在内存里另记一份「谁起过了」。
    *
    * 回 `void`：它是后台钩子，调用方不要结果（`app.ts` 那一侧也只看它抛不抛）。「为什么没起名」
-   * 是六种情形，它们就写在下面的分支上 —— 不包成返回值往外传，因为没有任何调用方会拿它分支
-   * （从前那个 `skipped` 字段只有用例在读，那是用例在养一份生产不需要的形状）。
+   * 是六种情形，它们就写在下面的分支上 —— 不包成返回值往外传，因为没有任何调用方会拿它分支。
    */
   async nameIfUnnamed(sessionId: string, language: Language = DEFAULT_LANGUAGE): Promise<void> {
     const session = await this.sessions.get(sessionId);
@@ -160,7 +158,7 @@ export class AutoNaming {
     // 开关关着：一次请求都不发
     if (config.autoTitle === false) return;
 
-    // 判据只有这一条：名字还是不是那个「创建时间默认值」。不是它 → 永不再动（用户改过，
+    // 判据只有这一条：名字还是不是那个「创建时间默认值」。不是它 → 不再动（用户改过，
     // 或已经自动起过 —— `nameIsAuto` 只用来把这两种情形分别说清楚，不参与「起不起名」）
     if (session.name !== defaultSessionName(session.createdAt)) return;
 
@@ -207,8 +205,7 @@ export class AutoNaming {
    * 缺省的取名调用：用 SDK 的 `completeOnce`（与交接摘要共用同一份请求体形状）。
    *
    * 客户端按配置里的模型现场装配（`createModelFromConfig`）—— 起名是一次几十 token 的小
-   * 请求，为它拉一个 Scope（会连带连 MCP）代价与收益不成比例，所以这里不借 Scope。
-   */
+   * 请求，为它拉一个 Scope（会连带连 MCP）代价与收益不成比例，所以这里不借 Scope。   */
   private async completeOnce(system: string, user: string, modelId: string): Promise<string> {
     const config = await this.configManager.read();
     const { client, model, modelConfig } = createModelFromConfig(config, modelId);

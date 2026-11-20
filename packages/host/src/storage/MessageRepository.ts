@@ -1,18 +1,18 @@
 /**
  * `messages` 表仓储：消息读写 + 全文检索。
  *
- * 三处与别处不同的地方：
+ * 几处与别处不同的地方：
  *
- * 1. **边流边写**：一次回答的生成过程中同一条助手消息会被反复写（PRD D15）。`upsert` 按 id
- *    覆盖正文 / 状态 / omit，但 `seq` 与 `createdAt` 保留第一次写入时的值 —— 否则消息
- *    会在流式过程中不断「往后跳」。
+ * 1. **边流边写**：一次回答的生成过程中同一条助手消息会被反复写。`upsert` 按 id 覆盖正文 /
+ *    状态 / omit，但 `seq` 与 `createdAt` 保留第一次写入时的值 —— 否则消息会在流式过程中
+ *    不断「往后跳」。
  *
- * 2. **全文检索的分词现实**：FTS5 表用 `tokenize='trigram'`（见 migrations.ts），
- *    中文子串才搜得到；代价是查询词至少要 3 个字符，少于 3 个字符（典型是两字中文）
- *    在 trigram 下必然搜不到，这里退化到 `LIKE` 子串匹配。
+ * 2. **全文检索的分词现实**：FTS5 表用 `tokenize='trigram'`（见 migrations.ts），中文子串才
+ *    搜得到；代价是查询词至少要 3 个字符，更短的（典型是两字中文）在 trigram 下必然搜不到，
+ *    这里退化到 `LIKE` 子串匹配。
  *
- * 3. **表里只有主线消息**：subagent 的话不入库（`CORE.md` §17），所以「这段会话有多少条消息」
- *    只有一条取法 —— 表上也没有「这条消息挂在哪次工具调用上」那种归属列（见 migrations.ts）。
+ * 3. **表里只有主线消息**：subagent 的话不入库（`CORE.md` §17），所以「这段会话有多少条
+ *    消息」只有一条取法 —— 表上也没有「这条消息挂在哪次工具调用上」那种归属列。
  *
  * 4. **`hidden` 的两条读数**：`hidden` 是 core 的 `Message.hidden`，落在 `data` 列的 JSON 里
  *    （没有单独的列）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）默认把它
@@ -23,8 +23,8 @@
  *    写入时序列化、读回来反序列化，两个方向同一个形状；NULL（= 不知道来源）的含义与
  *    反序列化规则见 {@link toSource}。
  *
- * FTS 索引的同步交给 `messages` 上的触发器（同样在 migrations.ts 里建），所以本文件
- * 写消息时只写 `messages` 表，不需要额外维护索引。
+ * FTS 索引的同步交给 `messages` 上的触发器（在 migrations.ts 里建），所以本文件写消息时只写
+ * `messages` 表。
  */
 
 import type { SQLInputValue } from "node:sqlite";
@@ -63,7 +63,7 @@ export interface MessageListOptions {
 }
 
 /**
- * 写入语句：`seq` 取同会话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
+ * 写语句：`seq` 取同会话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
  *
  * `MAX(seq)` 与插入在同一条语句里完成，worker 又是单线程串行执行，所以不会出现两条
  * 消息抢到同一个 seq（`UNIQUE (sessionId, seq)` 是最后一道防线）。
@@ -95,7 +95,7 @@ const UPSERT_SQL = `
  *
  * 导出的理由：交接换记忆那一批要把「插存档会话行」「把消息搬走」「写 cwd 与断点两条消息」
  * 放进**同一个**事务（`SessionRepository.replaceMemory`）。就地复制一份 `UPSERT_SQL` 会让
- * `seq` 的口径多出第二份实现 —— 那正是「同一段会话里两条消息抢到同一个 seq」的来源。
+ * `seq` 的口径多出第二份实现，那正是「同一段会话里两条消息抢到同一个 seq」的来源。
  */
 export function registerMessageUpsert(
   tx: TxClient,
@@ -249,7 +249,7 @@ export class MessageRepository {
   /**
    * 物理删掉一条消息（core 的「丢」= 真删，`CORE.md` §6）。
    *
-   * 运行时的 `messageRemoved` 事件走它：core 在一次请求开头修历史时删掉的残局，库里也必须消失 ——
+   * 运行时的 `messageRemoved` 事件走它：core 在一次请求开头修历史时删掉的残局，库里也得消失 ——
    * 否则用户会看见一条模型那边已经不存在的消息。关系行（`session_assets`）跟着外键级联走。
    */
   async delete(id: string): Promise<void> {
@@ -270,16 +270,11 @@ export class MessageRepository {
    *   它的内容已经变了，得重新拿最新的。
    * - 给了 `after` 但库里没有这个 id（已删除、或换了库）：退回整段历史。
    *
-   * 读到的是这段会话的全部行：subagent 的话不入库（`CORE.md` §17），表上也没有归属列，
-   * 所以这里不需要再筛一次。
-   *
+   * 读到的是这段会话的全部行：subagent 的话不入库，表上也没有归属列，所以不需要再筛一次。
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
    *
-   * **它与 {@link countBySession} 数的是同一批行**（两边都只看 `hidden`）：同一段会话
-   * 那句「有多少条消息」不应该有两个数。
-   *
-   * `hidden` 的消息默认不在结果里（侧栏条数、`message.list` 都用这条默认）。要看的那一侧
-   * （模型的历史、排查）传 `includeHidden`。
+   * 它与 {@link countBySession} 数的是同一批行（两边都只看 `hidden`），口径见 PLAN §7。
+   * `hidden` 的消息默认不在结果里；要看的那一侧（模型的历史、排查）传 `includeHidden`。
    */
   async listBySession(
     sessionId: string,
@@ -301,10 +296,9 @@ export class MessageRepository {
   }
 
   /**
-   * 全文搜索（PRD D16：按聊天内容、可只搜一个 Workspace）。
+   * 全文搜索（按聊天内容，可只搜一个 Workspace）。
    *
-   * @param scope 一段会话内 / 一个 Workspace 下 / 不限（`undefined` 由调用方显式传入
-   *              表示不限；本层不替调用方决定「不给条件就搜全库」是不是合理）
+   * @param scope 一段会话内 / 一个 Workspace 下 / `undefined`（不限；由调用方显式传入）
    * @param keyword 查询词：长度 >= 3 走 FTS5 trigram，< 3 走 LIKE 子串
    * @param limit 上限
    */
@@ -389,13 +383,10 @@ export class MessageRepository {
   }
 
   /**
-   * 数一段会话在 `messages` 表里的行数（PRD D17 / F-F9 的代价一侧用它）。
+   * 数一段会话在 `messages` 表里的行数（删除代价那一侧用它）。
    *
-   * 与 {@link listBySession} 数的是**同一批行**（两边都只看 `hidden`）：同一个问题
-   * （「这段会话有多少条消息」）只应该有一个数。
-   *
-   * `hidden` 的消息两边都不算：它在界面上从来没出现过，删掉它数进代价里会让用户看到
-   * 一个对不上的数字。
+   * 与 {@link listBySession} 数的是同一批行：`hidden` 两边都不算 —— 它在界面上从来没出现过，
+   * 数进代价里会让用户看到一个对不上的数字。
    */
   async countBySession(sessionId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(

@@ -1,14 +1,14 @@
 /**
  * 交接的验收：谁写文档（自交接＝同一个 agent 接着写 / 独立摘要＝拿这段记忆去问模型）、文档真的落进
- * `<cwd>/.ai-zen/handoffs/`（D19）、模板来自磁盘上的 `handoff` Skill（读不到用兜底）、
- * 降级要说明（F-D7）、取消不报错（F-D7）、换记忆与存档会话（PRD 4.5）、只产文档不另开会话（F-D4）。
+ * `<cwd>/.ai-zen/handoffs/`、模板来自磁盘上的 `handoff` Skill（读不到用兜底）、降级要说明、
+ * 取消不报错、换记忆与存档会话（PRD 4.5）、只产文档不另开会话。
  *
  * 四件口径：
  *
  * 1. `start()` 只回「已经开始」，那一趟在后台跑。所以每个用例都靠那条**摘牌**（`endHandoff`，
  *    `runToEnd` 的 `finally` 里最后一个动作）等它收尾 —— 提交与回滚都从那里过去，于是「跑完了没有」
  *    这件事有一个确定的答案，而不是靠睡一会儿。只看 `memory_replaced` 不够：那条在提交点就推了，
- *    后面还有 `afterCommit`（开新会话 / 标压缩 / 把题标已答）。
+ *    后面还有 `afterCommit`（开新会话 / 标压缩）。
  * 2. 「写完了没有」由 SDK 判（那次写文档的工具调用的输入与结果）；宿主只做提交之后那一半 ——
  *    文档在盘上、够长，就换记忆。
  * 3. 入口判据只有一条：**那段会话闲着才发起**。非空闲（忙 / 暂停 / 没有 agent）直接拒，
@@ -174,7 +174,7 @@ interface Built {
    *
    * 「收尾了」= 挂的那块牌子摘了（`endHandoff`）：它是 `runToEnd` 的 `finally` 里最后一步，
    * 四条结局（成功 / 降级 / 失败 / 取消）都从那里过。不能只看 `memory_replaced` —— 那条在**提交点**
-   * 就推了，而它后面还有 `afterCommit`（开新会话 / 标压缩 / 把题标已答），以及在 `finally` 里的
+   * 就推了，而它后面还有 `afterCommit`（开新会话 / 标压缩），以及在 `finally` 里的
    * 截记忆与摘牌：停在那里断言等于只测了一半（而 `afterCommit` 里的差错是吞掉上报的，看不见）。
    */
   settle(): Promise<void>;
@@ -292,7 +292,7 @@ async function seedHarness(): Promise<Harness> {
   const created = await sessionService.create({ workspaceId: "w1", agentId: "a1" });
   if (!created.session) throw new Error("session.create 没有建出会话");
   const sessionId = created.session.id;
-  // R56：`create` 只发 id，落库发生在首次 `send`；夹具里直接落库（后面要往它名下写消息）
+  // `create` 只发 id，落库发生在第一次真用上它；夹具里直接落库（后面要往它名下写消息）
   await sessionService.ensurePersisted(sessionId);
 
   // 一段有内容的会话：用户说一句 + 助手回一句
@@ -1245,7 +1245,7 @@ describe("前置条件", () => {
       built.service.start({ sessionId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "working" } });
 
-    // 拒绝就是拒绝：没挂牌、没投递，agent 也没被打断（掐在途那套编排已经作废）
+    // 拒绝就是拒绝：没挂牌、没投递，也没人去打断它
     expect(built.runnerCalls).toEqual([]);
     expect(built.instructions).toEqual([]);
     expect(driver.abortCalls).toBe(0);

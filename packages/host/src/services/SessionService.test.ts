@@ -1,6 +1,6 @@
 /**
- * 会话服务的验收：项目与助手创建时定死（R18）、侧栏顺序（D13）、改名与置顶各管一件事、
- * 硬删与代价（D17）、撤回（D24）、会话级模型与思考档位（F-B4 / F-B6 / D20）。
+ * 会话服务的验收：项目与助手创建时定死、侧栏顺序、改名与置顶各管一件事、硬删与代价、
+ * 撤回、会话级模型与思考档位。
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -74,7 +74,7 @@ interface Harness {
   assets: AssetRepository;
   /** 挂在这段上的题（现读内存：题不落库） */
   questions: { countPending: (sessionId: string) => number; pending: Map<string, number> };
-  /** 推出去的事件（`session.changed`，L5 / D22） */
+  /** 推出去的事件（`session.changed`） */
   events: Array<{ name: string; payload: unknown }>;
   /** 交给素材层「归零清扫」的素材 id（每调一次记一笔） */
   sweeps: string[][];
@@ -220,9 +220,9 @@ async function buildHarness(): Promise<Harness> {
 /**
  * 建一段会话并让它落库。
  *
- * R56 之后 `create` 只发 id 与身份（草稿），落库发生在首次 `session.send`。这个文件里
- * 绝大多数用例要看的是「落库之后」的行为（排序、改名、撤回、换模型），所以造完直接
- * 用 `ensurePersisted` 落成真行。
+ * `create` 只发 id 与身份（草稿），落库要等它第一次真被用上（`session.send` / `session.start` /
+ * 上传）。这个文件里绝大多数用例要看的是「落库之后」的行为（排序、改名、撤回、换模型），
+ * 所以造完直接用 `ensurePersisted` 落成真行。
  */
 async function createPersisted(
   service: SessionService,
@@ -448,7 +448,7 @@ describe("SessionService.list（D13）", () => {
 
     expect(byId.get(busy.session.id)).toMatchObject({ status: "working", inboxPending: 2 });
     expect(byId.get(idle.session.id)).toMatchObject({ status: "idle", inboxPending: 0 });
-    // 再也没有「跑 + 开始时刻」那一格：那是对「一次运行」的记账
+    // 没有任何「一次运行」的记账格
     expect("run" in (byId.get(busy.session.id) ?? {})).toBe(false);
     expect("running" in (byId.get(busy.session.id) ?? {})).toBe(false);
   });
@@ -538,7 +538,7 @@ describe("SessionService.get / rename / pin", () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
 
-    // 自动命名是 W4-H 的动作，这里直接走仓储那一条写入路径
+    // 自动命名由 `app.ts` 在变闲那一拍触发，这里直接走仓储那一条写入路径
     await harness.sessions.applyAutoName(id, "重写存储层", 2_000);
 
     const { session } = await harness.service.get({ sessionId: id });
@@ -629,7 +629,7 @@ describe("R56：create 不落库，首次发消息才写行", () => {
     expect(opened.session.messageCount).toBe(0);
     expect(opened.session.workspaceId).toBe("w1");
 
-    // 侧栏列表只给已经落库的（F-C2：否则一堆空会话）
+    // 侧栏列表只给已经落库的（否则一堆空会话）
     expect((await harness.service.list({ workspaceId: "w1" })).total).toBe(0);
   });
 
@@ -922,7 +922,8 @@ describe("SessionService.setModel（F-B4 / D20：会话级、落库）", () => {
     const result = await harness.service.setModel({ sessionId: id, modelId: "m3" });
     expect(result.session.model).toMatchObject({ modelId: "m3", source: "session" });
     expect(result.model.modelId).toBe("m3");
-    // 上下文占用不在这里给：客户端按消息上的用量自己算（宿主不算、不存、不报）
+    // `context` 这一格不存在：宿主不推「这一段用了多少」那种快照（单条消息上的 `usage`
+    // 是另一回事，宿主照存不误，见 PLAN §5.4）
     expect("context" in result).toBe(false);
     // 库里那一行就是新模型；再打开读到的也是它（不是内存里的临时值）
     expect((await harness.sessions.get(id))?.modelId).toBe("m3");

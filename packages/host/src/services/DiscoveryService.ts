@@ -3,7 +3,7 @@
  *
  * 对应能力编号：F-G1（MCP 5 层链，可编辑的只有 2 个作用域）、F-G2（Skill 4 层、工具与 subagent
  * 各 2 层，只发现真实存在的目录，离项目越近越优先）、F-F6（坏文件按层分两种处置，见下）、
- * L9（MCP 的 5 层链）、R54（5 层链与各能力目录由本服务算好交给 ScopeRegistry）。
+ * R54（各能力目录由本服务算好交给 ScopeRegistry）。
  *
  * **F-F6 里「坏文件」的那条口径不是一句话，按文件在哪分**：用户级那份
  * （`<数据根>/mcp.json`）坏了由 SDK 恢复出厂并留残骸（PRD D32），本服务因此看到的是一个
@@ -18,9 +18,7 @@
  *      哪些目录 / 文件找」这一件事，与有没有东西在里面无关。组装层（ScopeRegistry 的
  *      `createWorkspaceScopeFactory`）拿的就是这些路径。
  *   2. **读**（{@link DiscoveryService.discover}）：把每一层的 `missing | ok | broken` 与条目
- *      报出来。`missing` 与 `broken` 必须分开（F-F6）：以前两者都当空配置，一保存就把用户的
- *      文件覆盖掉了；`broken` 在项目侧与 `~/.agents` 各层是「看得见、能修」，用户级那层由
- *      SDK 恢复出厂（D32）。
+ *      报出来。这两档分开的理由见上面 F-F6 那段。
  *   3. **写**（{@link DiscoveryService.writeMcpEntry} / {@link DiscoveryService.deleteMcpEntry}）：
  *      只写 MCP 的两个可编辑作用域，一次只动一条；写回时保留这一版不认识的字段与 `oauth`
  *      （F-F6），其中 `oauth.clientSecret` 省略就按磁盘原文保留（F-F2：读出去的是掩码，
@@ -241,7 +239,8 @@ export class DiscoveryService {
   }
 
   /**
-   * 5 层链里那两个可写的层（第 1 层与第 4 层）；没有项目时 `workspace` 那层是 `null`。
+   * 5 层链里那两个可写的层（第 2 层与第 4 层，即 depth 1 与 depth 3）；没有项目时 `workspace`
+   * 那层是 `null`。
    *
    * 位置、能不能写、归谁只在这里定一次：读（`mcpLayers`）与写（`writableMcpLayer`）拿的
    * 是同一份定义。
@@ -337,7 +336,7 @@ export class DiscoveryService {
     };
   }
 
-  /** 只取 MCP 的 5 层路径（喂给 SDK 的 `discoverMcpServers` / `McpScopePlugin`） */
+  /** 只取 MCP 的 5 层路径（`scopeAbilityPaths` 里那一格的单独取法） */
   mcpPaths(cwd: string): string[] {
     return this.mcpLayers(cwd).map((layer) => layer.path);
   }
@@ -380,10 +379,10 @@ export class DiscoveryService {
   }
 
   /**
-   * 5 层 MCP 链的合并结果（SDK 的 `discoverMcpServers`，先到先得）。
+   * 5 层 MCP 链按 SDK 口径合并的结果（`discoverMcpServers`，同 id 先到先得）。
    *
-   * 这个方法是「client 侧看到的分层清单」与「Scope 实际连的那些 server」之间的对照点：
-   * 两者应当一致，不一致就说明某一层的文件坏了或者被近的层盖住了。
+   * 与 {@link DiscoveryService.readMcpLayers} 的分层清单对照着看：两边对不上，说明某一层的
+   * 文件坏了，或者那一条被更近的层盖住了。
    */
   async effectiveMcpServers(cwd: string): Promise<McpServerConfig[]> {
     return await discoverMcpServers(this.mcpPaths(cwd), { logger: this.logger });

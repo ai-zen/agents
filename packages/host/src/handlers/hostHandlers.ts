@@ -4,17 +4,14 @@
  * 三件事在这里：
  *   - `version`：报进程事实（版本、协议版本、启动时刻、pid），一个字都不编；
  *   - `upgrade`：比磁盘上的版本与正在跑的版本，确认新版本真的落盘了才安排重启（D4 / F-E3）；
- *   - `shutdown`：受理一次收尾请求。真正退不退由单根的退出判据决定（PRD L4 / 裁定 R53）。
+ *   - `shutdown`：受理一次收尾请求。真正动手在单根（`HostApp.requestStop`：回包先写出去，
+ *     收尾排到下一轮事件循环）。
  *
  * `host.hello` / `host.setLanguage` / `asset.*` 由接线层自己接管（语言是连接状态、
  * 上传要按连接分帧），这里不重复注册。
  *
  * `host.reload`（F-E1）在这里只做转发：重载是「让磁盘上的改动生效」，那条路（刷新 Scope、
  * 合成一条通知）的持有者是配置服务。
- *
- * 用量不在这一域（裁定 2026-11-13）：F-I5 的「本次 / 累计（含 subagent）/ 速率」由
- * `session.state` 的 `usage`（`UsageSnapshot`）给，`host.usage` 的「按项目 / 整机」聚合
- * 没有任何客户端消费，已从契约面删除。
  */
 
 import type { HandlerTable } from "../net/index.js";

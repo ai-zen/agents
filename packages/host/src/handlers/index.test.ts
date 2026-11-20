@@ -174,8 +174,6 @@ describe("handler 表", () => {
 });
 
 describe("只转发的两个域", () => {
-  // `credential.*` 已从契约面删除（裁定 2026-11-13：凭据归宿主自己管），那三个方法不再是
-  // 客户端能调的入口；能力本身（`CredentialService`）另在 `services/CredentialService.test.ts` 验。
   it("message.list / search.* 都接到服务层", async () => {
     const { app, workspaceDir } = await startApp();
     const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });

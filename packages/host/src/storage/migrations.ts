@@ -7,16 +7,12 @@
  *
  * 不识别任何旧数据、不做数据搬迁（PRD 1.9「明确不做」：迁移或识别旧数据）。
  *
- * **一条迁移都没跑过，就是当前形状**：`MIGRATIONS` 只有一条 v1，它是这套表结构的完整建表语句 ——
- * 所有表、所有列、所有索引一次建齐。「先建个缺几列的、再 ADD COLUMN 补齐」「先建一张表、
- * 再 DROP 掉」这类写法，只在模拟一段不存在的演进史时才有意义；这里没有旧库，所以不写。
+ * 眼下只有一条 v1，它是这套表结构的完整建表语句：所有表、所有列、所有索引一次建齐。库里
+ * 没有旧版本要兼容，表名 / 列名 / 索引名就直接写在这一条里，不另做 `RENAME` 迁移，也不模拟
+ * 「先缺几列、再 ADD COLUMN 补齐」那种演进史。
  *
- * 将来改结构时**追加**新条目（v2、v3 ……）：一个库的版本号只往前走一次，跑过的条目不会重跑，
- * 所以往后的结构变化只能靠新增条目；回头改旧条目会让两台机器的表结构悄悄分叉。
- *
- * **库里没有旧版本**：这套表结构还没随任何版本发出去，表名 / 列名 / 索引名就是现在这一版
- * （`sessions` / `session_assets` / `sessionId`）。改名时**没有**写 `RENAME`、也没有新增条目：
- * 建表语句就地改，版本号序列不变。本地开发库不迁移 —— 删掉重来即可。
+ * 往后改结构靠追加新条目：一个库的版本号只往前走一次，跑过的条目不会重跑 —— 回头改旧条目
+ * 会让两台机器的表结构悄悄分叉。各表的分工、「两个条数口径」、阈值的读写方见 PLAN §7。
  */
 
 import type { Database } from "./Database.js";
@@ -30,10 +26,10 @@ export interface Migration {
 }
 
 /**
- * 迁移列表：只有一条 v1，内容就是整套建表语句。
+ * 迁移列表：只有一条 v1，内容就是整套建表语句（新库只会经历 `0 → 1`）。
  *
- * 「版本号 + 逐级执行 + 一级一个事务」这套机制留着，因为将来加列 / 加表还要用它：
- * 老库靠新追加的那一条补上，新库从 0 直接跑到最新。现在它只会经历 `0 → 1`。
+ * 逐级执行、一级一个事务这套机制留着给往后改结构用：老库靠新追加的那一条补上，新库从 0
+ * 跑到最新。
  */
 export const MIGRATIONS: Migration[] = [
   {
@@ -58,32 +54,21 @@ export const MIGRATIONS: Migration[] = [
 
       // sessions：项目 / 助手创建时定死，模型与思考档位是这段会话自己的（可以改）。
       // agentId / modelId 不允许为空 —— 解析不出助手或模型时在创建处就失败，不落半成品行。
-      // nameIsAuto 记住「这个名字是不是自动起的」（R35）：创建时的原名算自动，用户改名置 0，
-      // 自动命名写入新名并置 1。
-      // thinkingLevel 存档位名（可空）：空 = 跟随助手定义上的那份参数；非空 = 这一段会话选的档位，
-      // 装配 agent 时按该模型的思考策略表展开成参数补丁。
+      // nameIsAuto 记住「这个名字是不是自动起的」：创建时的原名算自动，用户改名置 0，
+      // 自动命名写入新名并置 1。thinkingLevel 存档位名（可空）：空 = 跟随助手定义上的那份参数，
+      // 非空 = 这一段会话选的档位，装配 agent 时按该模型的策略表展开成参数补丁。
       //
       // compactedAt / compactionMode 是「压过」这件事的另外两格事实：光有消息上的 `omit` 位与
-      // 一条交接断点消息，说不出「什么时候压的、自动还是手动」。compactedAt 是时刻（可空 =
-      // 从来没压过），compactionMode 是 `"auto"`（派生会话自动压）/ `"manual"`（用户答完
-      // 交接问题后压）。
+      // 一条交接断点消息，说不出「什么时候压的、自动还是手动」。前者是时刻（可空 = 从来没压过），
+      // 后者是 `"auto"`（派生会话自动压）/ `"manual"`（用户答完交接问题后压）。
       //
-      // handoffThreshold / guardThreshold 是两条阈值的会话级覆盖值（PRD 1.4 的 11 格）：
-      // 可空 = 跟模型走（`models[].tokenThresholds` 那份），非空 = 这段会话自己定过。
-      //
-      // autoHandoff 是自动交接开关：0 = 关（常态，撞线停下来问一句，PRD 4.10）/ 1 = 开
-      // （平级会话，撞线自己交班）。非空、缺省 **0**：缺省值只在有人漏写时说话，而猜错的代价
-      // 不对称 —— 猜成「问」最多多问一句（用户答「不交接」就不再问，PRD 4.10 的「答案的后果
-      // 要落」），猜成「不问」则是用户从头到尾不知道发生过什么。写入方（创建处）一定显式写：
-      // 用户建 0 / 平级会话 1。
-      //
-      // lineage 是血缘（可空）：NULL = 用户建的；非空 = 开这段会话的那段会话的 id。它只是**身份**
-      // （历史展示「由会话 X 创建」），不是通行证 —— 投递不看关系（PRD 1.2 / 4.6）。
-      //
-      // pendingHandoff 是「答完题之后当时不闲、等它闲下来再交接」的那一格（`PLAN §5.2`）：
-      // `"self"` / `"summary"`，NULL = 没有待交接。它必须落库：「等下一次变闲」可能跨重启，
-      // 而重启之后题已经没了（题不落库，见下面「库里没有题表」那段），这是**唯一**能带着走的
-      // 那份事实。
+      // handoffThreshold / guardThreshold 是两条阈值的会话级覆盖层（可空 = 跟模型走，读的
+      // 那一侧见 PLAN §7）。autoHandoff 是自动交接开关：0 = 撞线停下来问一句、1 = 撞线自己
+      // 交班；缺省 0 只在写入方漏写时说话，`registerSessionInsert` 两处都显式写
+      // （用户建 0 / 平级会话 1）。lineage 是血缘：NULL = 用户建的，非空 = 开这段会话的那段
+      // 会话 id。pendingHandoff 是「答完题之后当时不闲、等它闲下来再交接」的那一格
+      // （`PLAN §5.2`）：`"self"` / `"summary"`，NULL = 没有待交接 —— 它必须落库，因为
+      // 「等下一次变闲」可能跨重启，而题本身不落库（见下面「库里没有题表」那段）。
       `CREATE TABLE IF NOT EXISTS sessions (
          id               TEXT PRIMARY KEY,
          workspaceId      TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
@@ -137,25 +122,9 @@ export const MIGRATIONS: Migration[] = [
          ON messages (sessionId, seq)`,
 
       // inbox：队列里**还没被取走**的那些条目落库（PRD 1.2 / 4.12）—— 条目只活在 core 的
-      // 队列里就会「关掉就丢东西」，而 PRD 要的是「打开就是上次的样子，包括没被处理的
-      // 那几句话 —— 它们还在等」。
-      //
-      // **列按「条目上有什么就存什么」**（`CORE.md` §3 的 `InboxEntryWithContent`），
-      // 内容一个字都不清理、不派生、不转换：
-      //
-      // - `messageId`：主键。它同时是恢复时的去重键（「这条已经落地过了就扔掉」），而同一个
-      //   id 也不会入队两次 —— 它是客户端乐观回显用的那个 id（PRD D5），投递方定死；
-      // - `sessionId`：这一条排在哪段会话的队列里。删会话 / 删工作区时条目跟着没 ——
-      //   它是那段会话 inbox 里的条目，会话没了它就没有去处（与 `notices` / `messages` 同一个口径）；
-      // - `source`：core 的 `MessageSource` 判别结构的 **JSON 原文**（不是字符串，口径同
-      //   `messages.source`）；
-      // - `content`：正文的 **JSON 原文**，字符串与多模态段数组都原样进去、原样读回来
-      //   （落库时清理会让两次请求的前缀对不上，prompt caching 全 miss）；
-      // - `createdAt`：条目的 ISO 串**原样**。这里是 TEXT 而不是全库惯用的 INTEGER 毫秒 ——
-      //   条目上那一格就是 ISO 串，存下来要读回同一个值（「一个字段都不重算」）；
-      // - `seq`：入队顺序。**必须要它**：`createdAt` 只到毫秒，同一毫秒进来的两条（一次批量
-      //   投递、重启后紧接着投）会撞在一起，光按 `createdAt` 排就还原不回它们本来的先后。
-      //   它在**一段会话内**递增（入队就是队尾，于是「顺序 = 取件顺序」这条在库里也成立）。
+      // 队列里就会「关掉就丢东西」。列按「条目上有什么就存什么」：`source` / `content` 存
+      // JSON 原文，`createdAt` 存条目自带的 ISO 串（所以是 TEXT，不是全库惯用的毫秒 INTEGER），
+      // `seq` 是入队顺序（`createdAt` 只到毫秒会撞）。逐列的口径见 `InboxRepository`。
       `CREATE TABLE IF NOT EXISTS inbox (
          messageId      TEXT PRIMARY KEY,
          sessionId      TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
@@ -164,16 +133,13 @@ export const MIGRATIONS: Migration[] = [
          createdAt      TEXT NOT NULL,
          seq            INTEGER NOT NULL
        )`,
-      // 按会话取，且顺序即入队顺序（装配时按会话一次取干是唯一的读取路径，
-      // 两者一个复合索引就够，不再为 `seq` 单建一条）
+      // 按会话取，且顺序即入队顺序（装配时按会话一次取干是唯一的读取路径）：一条复合索引就够了
       `CREATE INDEX IF NOT EXISTS idx_inbox_session ON inbox (sessionId, seq)`,
 
-      // assets：二进制素材的唯一真相（PRD L2 / F-H8）—— 文件在 assets/ 下，这一行记的是引用、
-      // 大小、类型、内容摘要与像素尺寸。
-      // 去重是**全局**的：sha256 唯一，同一份字节在整台机器上只有一行、一份磁盘。所以这张表
-      // 不再记「属于哪段会话 / 哪条消息」：归属在 session_assets 里，一张图贴到两个项目
-      // 就是一行素材 + 两行关系。
-      // width / height 可空：落定时按文件头解（PNG / JPEG），解不出来就是 NULL。
+      // assets：二进制素材的唯一真相（PRD 1.8）—— 文件在 assets/ 下，这一行记的是引用、
+      // 大小、类型、内容摘要与像素尺寸。去重是**全局**的：sha256 唯一，同一份字节在整台机器上
+      // 只有一行、一份磁盘。所以这张表不记归属：归属在 session_assets 里，一张图贴到两个项目
+      // 就是一行素材 + 两行关系。width / height 可空：落定时按文件头解（PNG / JPEG）。
       `CREATE TABLE IF NOT EXISTS assets (
          id        TEXT PRIMARY KEY,
          name      TEXT,
@@ -186,12 +152,10 @@ export const MIGRATIONS: Migration[] = [
          createdAt INTEGER NOT NULL
        )`,
 
-      // session_assets：谁引用了哪份素材（消息 × 素材的关系行）。
-      // 写入时机是消息落库那一刻（扫 content 里的 `__asset_id`，同一 message+asset 一行）；
-      // 撤回 / 删会话 / 删消息都由外键级联删掉关系行，不需要谁去减计数。
-      // assetId 用 RESTRICT：还有人引用时物理删不掉素材行（护栏），真正的删除条件由
-      // 「COUNT(*) = 0」判定（见 AssetRepository.deleteIfUnreferenced）。
-      // 「几张会话引用了它」= COUNT(DISTINCT sessionId)，走 idx_session_assets_asset。
+      // session_assets：谁引用了哪份素材（消息 × 素材的关系行）。写入时机是消息落库那一刻
+      // （扫 content 里的 `__asset_id`，同一 message+asset 一行）；撤回 / 删会话 / 删消息都由
+      // 外键级联删掉关系行。assetId 用 RESTRICT：还有人引用时物理删不掉素材行，「归零才删」
+      // 由 `AssetRepository.deleteIfUnreferenced` 的 `NOT EXISTS` 判。
       `CREATE TABLE IF NOT EXISTS session_assets (
          sessionId      TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
          messageId      TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
@@ -203,9 +167,8 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_session_assets_session
          ON session_assets (sessionId)`,
 
-      // asset_vendor_files：厂商侧文件 id 的缓存（端点维度）。
-      // 它**不是**真相：删光之后从 assets 重建即可（下次发送时重新上传一遍），所以这里只记
-      // 「哪个素材在哪个端点上对应哪个 file_id」；素材没了就跟着走。
+      // asset_vendor_files：厂商侧文件 id 的缓存（端点维度）。它不是真相：删光之后下次发送
+      // 重新上传一遍即可，所以这里只记「哪个素材在哪个端点上对应哪个 file_id」。
       `CREATE TABLE IF NOT EXISTS asset_vendor_files (
          assetId      TEXT NOT NULL REFERENCES assets (id) ON DELETE CASCADE,
          endpointId   TEXT NOT NULL,
@@ -216,12 +179,11 @@ export const MIGRATIONS: Migration[] = [
       // 缓存行的两种查法靠 UNIQUE (assetId, endpointId)：
       // 「这个端点上有没有」与「别的端点上有没有」都走这条（都是 assetId 前缀查询）
 
-      // notices：持久化，durationMs 为 null 表示永久（PRD L3）。
-      // sessionId 是「这条通知与哪段会话有关」的真值（可空 = 全局通知）：按会话过滤、
-      // 按会话清都走这一列；会话没了它也就没有意义，所以跟着级联删除。
-      // origin 是「谁让它出现的」（`app` / `log`）：日志上浮的那批压根不落库（只推给当时
-      // 在线的连接），所以入库的行里它总是 `app`；这一列留着是为了从库里读出一个来源，
-      // 而不是读出时才按 `code` 反推。
+      // notices：持久化，durationMs 为 null 表示永久（PRD 4.9）。
+      // sessionId 是「这条通知与哪段会话有关」的真值（可空 = 全局通知）：按会话过滤与按会话清
+      // 都走这一列，会话没了它跟着级联删除。origin 是「谁让它出现的」（`app` / `log`）：日志
+      // 上浮的那批不落库，所以入库的行里它总是 `app` —— 留着这一列是从库里读得出来源，
+      // 而不是读出时按 `code` 反推。
       `CREATE TABLE IF NOT EXISTS notices (
          id             TEXT PRIMARY KEY,
          level          TEXT NOT NULL,
@@ -235,10 +197,9 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_notices_createdAt ON notices (createdAt)`,
       `CREATE INDEX IF NOT EXISTS idx_notices_session ON notices (sessionId)`,
 
-      // 库里没有题表：题改成进程内对象（`services/QuestionService.ts`），只做实时（PRD 4.10）。
-      // 题存在的意义是「答完之后触发某件事」，所以要有活着的消费者来消费它 —— 落进库里的那一行
-      // 在重启之后只会变成一个没人认领的孤儿。题的生命 = 这段会话活着的这段时间；
-      // 「等它闲下来再交接」这个必须跨重启的事实落在 sessions.pendingHandoff 上，不落在题上。
+      // 库里没有题表：题是进程内对象（`services/QuestionService.ts`），只做实时（PRD 4.10）。
+      // 题的意义是「答完之后触发某件事」，要有活着的消费者来消费它 —— 落进库里的那一行在重启
+      // 之后只会变成没人认领的孤儿。必须跨重启的那件事落在 sessions.pendingHandoff 上。
 
       // credentials：只存 sha256 摘要，明文不在库里（PRD L11：多串、带备注、可单独吊销）
       `CREATE TABLE IF NOT EXISTS credentials (
@@ -251,9 +212,9 @@ export const MIGRATIONS: Migration[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_hash ON credentials (hash)`,
 
       // 全文检索：外部内容表挂在 messages 上，只索引 searchText（正文纯文本，不含 JSON 键名）。
-      // tokenize='trigram'：默认的 unicode61 会把整段中文当成一个 token，那样中文搜索永远
-      // 命中不了；trigram 按三字符切分，中文子串才搜得到（代价是查询词至少 3 个字符，
-      // 少于 3 个字符的查询在仓储里退化到 LIKE，见 MessageRepository.search）
+      // tokenize='trigram'：默认的 unicode61 把整段中文当成一个 token，中文搜索永远命中不了；
+      // trigram 按三字符切分，中文子串才搜得到 —— 代价是查询词至少 3 个字符，更短的查询由
+      // `MessageRepository.search` 退化到 LIKE。
       `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5 (
          searchText,
          content='messages',

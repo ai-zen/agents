@@ -8,9 +8,9 @@
  *
  * ## 为什么单独一个文件而不是给 `ChatRunner` 加开关
  *
- * `ChatRunner` 的骨架是「落库 + 推流 + 边流边写」，这三件事对一次性会话全是多余的；
- * 加开关会让每一条写库路径后面都跟一个 `if`，而一次性会话在语义上又确实就是「跑一次就散」。
- * 于是执行逻辑复用 core 的同一套（`agent.runOnce()` 跑完那一组内循环），落库与推送这一层换掉。
+ * `ChatRunner` 的骨架是「落库 + 推流 + 边流边写」，这三件事对一次性会话全是多余的；加开关会
+ * 让每一条写库路径后面都跟一个 `if`。于是执行逻辑复用 core 的同一套（`agent.runOnce()` 跑完
+ * 那一组内循环），落库与推送这一层换掉。
  *
  * ## Scope 的口径
  *
@@ -145,15 +145,14 @@ export class TransientRunner {
           role: AgentNSValue.Role.User,
           content: cwd,
           status: AgentNSValue.MessageStatus.Completed,
-          // core 现在要求**所有** user 消息都带 `source`（`CORE.md` §3）：这条是宿主注入的，
+          // core 要求 user 消息都带 `source`（`CORE.md` §3）：这条是宿主注入的，
           // 谁注入谁填，所以它记成「宿主 / cwd」而不是用户说的话
           source: { kind: "system", label: "cwd" },
           hidden: true,
         }),
       );
-      // 一次性会话是**一次性**的：只有一条因果链（就是这一次请求），所以这里是全仓唯一允许
-      // 「等」的地方（`CORE.md` §1 的 `runOnce`）。它起 → 塞 → 等闲 → 关门 → 死透，然后把
-      // 跑出来的消息交回来。常驻会话不能这么用：那会把一个长期会话关掉。
+      // 一次性会话是**一次性**的：全仓只有这里允许「等」（`CORE.md` §1 的 `runOnce`）——
+      // 它起 → 塞 → 等闲 → 关门 → 死透。常驻会话不能这么用：那会把一个长期会话关掉。
       agent.lifetime = "one-shot";
       await agent.runOnce({
         content: params.input.content,

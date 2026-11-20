@@ -22,7 +22,7 @@ import type { MessageKey } from "../i18n/index.js";
  * 那几个类型，没有第二份定义。
  *
  * 这里**没有**用量快照、没有「请求中 / 思考中 / 输出中」这类阶段：用量在每一条消息的
- * `usage` 上，阶段由客户端按到达的事件自己推 —— 宿主不算、不存、不报（PRD 硬规矩 7）。
+ * `usage` 上，阶段由客户端按到达的事件自己推。
  *
  * 时间用 ISO 8601 字符串（与 SDK 的 `createdAt` / `updatedAt` 同口径）；id 是字符串，
  * 由宿主分配（PRD L6）。
@@ -93,8 +93,7 @@ export const SESSION_ACTIVITIES: readonly SessionActivity[] = ["working", "idle"
  * | `alive` | 死活：有没有 agent 实例 | `true` / `false` |
  *
  * **四件事不压成一格**：「闲」与「输出闸关」必须分得开（一个是手上没活，一个是不取新活），
- * 「没有 agent」也不是四件事里的其中一件（它说的是有没有那个对象）。把三项合成一个合成值
- * （四个词）的旧写法已作废。
+ * 「有没有 agent」也不是四件事里的其中一件（它说的是有没有那个对象）。
  *
  * 四件事都是**现读**，不落库、不是会话字段、不推算：`status` 读 `agent.state`、两道闸读
  * `agent.isInputPaused` / `agent.isOutputPaused`、死活看“有没有那个 agent 对象”。
@@ -120,9 +119,7 @@ export interface InboxItem {
   /**
    * 这条条目的来源，core 的 `AgentNS.MessageSource` **原样**（判别结构）。
    *
-   * 从前这里是一个自由字符串（`"user"` / `"会话 1"` …）。core 改成判别结构之后，宿主不再
-   * 自己解释它：`kind` 说「谁说的」，`label` 说「哪个来源」。客户端按 `kind` 分支即可，
-   * 不必再去比字符串。
+   * `kind` 说「谁说的」，`label` 说「哪个来源」；客户端按 `kind` 分支即可，不必去比字符串。
    */
   source: AgentNS.MessageSource;
   /** 入队时刻（ISO 8601） */
@@ -135,7 +132,7 @@ export interface InboxItem {
  * subagent 名册的一行（{@link SessionState.subAgents}）。
  *
  * subagent 不是一段会话、不入库（`CORE.md` §17）：它的话只在它自己那个对象里，名册在父
- * 身上。所以这一栏只能是**现读**，没有第二个来源可读。
+ * 身上。所以这一栏是**现读**：没有第二个来源可读。
  *
  * `state` 两格之外多一个 `ended`：一次性 subagent 跑完之后它自己那一格会停在 `idle`，把
  * 已经散场的东西报成「闲」等于告诉界面它还在 —— 名册上有了结束时刻就是 `ended`。
@@ -175,8 +172,8 @@ export interface SessionState extends SessionPresence {
    * 这段会话此刻派出去的 subagent（现读父的名册）。
    *
    * 死了就是空数组：名册跟着 agent 走，它没了，那些话也一起没了。客户端拿它铺 subagent 那一栏，
-   * 之后按事件（`toolCallId`）增量重建每一栏 —— 那一栏的消息**不从 `message.list` 补**
-   * （subagent 不入库，重连之后也只有这一份名册）。
+   * 之后按事件（`toolCallId`）增量重建 —— 要整段重拉就调 `message.list { toolCallId }`，
+   * 但那一份同样只在它活着时才有（subagent 不入库）。
    */
   subAgents: SubAgentFact[];
   /**
@@ -406,9 +403,9 @@ export const MAX_ASSETS_PER_MESSAGE = 4;
  * 内容段上的**本地扩展**：以 `__` 开头的键只在本机有意义（指回数据根下的一份素材）。
  * 发给厂商的那一份由 core 的 `formatContent` 按字段白名单重建（`__` 开头的键因此不在里面）。
  *
- * 目前只有一个：`__asset_id` 指向 `assets` 表的一行。它取代了早先把 `asset://<id>` 塞进
- * `image_url.url` / `file.file_id` 的做法：那两个字段是**真字段**，装一个假 scheme 会让
- * 「这一段的 url 是空的」与「这一段的 url 指向本机素材」看起来是同一件事。
+ * 目前只有一个：`__asset_id` 指向 `assets` 表的一行。它不能塞进 `image_url.url` /
+ * `file.file_id`：那两个字段是**真字段**，装一个假 scheme 会让「这一段的 url 是空的」与
+ * 「这一段的 url 指向本机素材」看起来是同一件事。
  */
 export interface LocalSectionExtensions {
   /** 这一段引用的素材 id（缺省 / 空串表示「这一段不引用素材」） */

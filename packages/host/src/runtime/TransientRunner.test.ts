@@ -3,8 +3,7 @@
  * 不进列表、不可 attach、不推流式事件；只借 Scope，与 Workspace 无关。
  *
  * 夹具里一个库都不建：`TransientRunner` 的依赖只有 `scopes` / `createAgent` / `configManager`
- * （见它自己的构造参数），根本没有库句柄 —— 以前这里每个用例 `new Database + migrate` 只为
- * 查一句「库里 0 行」，而那句永远为真。「零痕迹」在真库上验才有意义，那条在 `app.test.ts`。
+ * （见它自己的构造参数），根本没有库句柄。「零痕迹」在真库上验才有意义，那条在 `app.test.ts`。
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

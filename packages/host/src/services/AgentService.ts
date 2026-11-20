@@ -105,8 +105,8 @@ type AgentHome = "agents" | "sub-agents";
 /**
  * 一个助手的最小只读事实：它现在叫什么、现在能不能用。
  *
- * `describe()` 的返回值。状态栏的助手块（`session.state`）只要这两条：它不展示提示词、
- * 权限、思考档位，所以不必把整份 `AgentView` 搬过去。
+ * `describe()` 的返回值。会话视图的助手块（`SessionView.agent`）只要「它现在叫什么、现在能不能
+ * 用」这两条：那一块不展示提示词、权限、思考档位，所以不必把整份 `AgentView` 搬过去。
  */
 export interface AgentDescription {
   /** 定义上的 id（与传入的 `agentId` 相同） */
@@ -319,8 +319,8 @@ export class AgentService {
    * 主助手在前、subagent 在后，各自按 id 排 —— 同一份磁盘状态每次给同一个顺序。
    * 读不出来的定义文件也列出来（`available: false` + 原因）：藏起来会让人以为它没了。
    *
-   * `workspaceId` 只做存在性校验：助手定义的可用性（模型、端点、密钥）是全局配置的事实，
-   * 与项目无关；「这个项目里能不能用」要等可用的 Skill / MCP 清单定下来才有答案。
+   * `workspaceId` 现在没用上：助手定义的可用性（模型、端点、密钥）是全局配置的事实，与项目
+   * 无关；「这个项目里能不能用」要等可用的 Skill / MCP 清单定下来才有答案。
    */
   async list(_params: AgentListParams = {}): Promise<AgentListResult> {
     const config = await this.configManager.read();
@@ -644,7 +644,7 @@ export class AgentService {
   toView(config: AppConfig, presets: ReasoningPresets, item: LoadedAgent): AgentView {
     if (item.definition === null) {
       // 文件在但读不出来：照样占一行，说明为什么用不了（F-B5）。原因就是读它的那一手
-      // 抛出来的那句话（不是 JSON / 没权限），从前这里一律写死成「not readable as JSON」
+      // 抛出来的那句话（不是 JSON / 没权限）
       return {
         id: item.id,
         name: item.id,
