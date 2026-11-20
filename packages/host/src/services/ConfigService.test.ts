@@ -351,6 +351,23 @@ describe("ConfigService.patch / setDefaults", () => {
     expect((await readConfig()).defaultAgent).toBe("default");
   });
 
+  it("默认助手指向一份读不出来的定义：报「那份定义坏了」，不说「没有这个助手」", async () => {
+    await writeFile(join(dataRoot, "agents", "broken.json"), "{ 这里坏掉了", "utf-8");
+
+    // 写：拒得出来，且码是「配置坏了」而不是「助手不存在」
+    await expect(
+      service.setDefaults({ defaults: { defaultAgent: "broken" } }),
+    ).rejects.toMatchObject({ code: "config_invalid", messageKey: "agent.fileBroken" });
+
+    // 读：`config.get` 的问题清单里也是「读不出来」，不是「没了」
+    await writeJson(join(dataRoot, "config.json"), { ...baseConfig(), defaultAgent: "broken" });
+    const { issues } = await service.get();
+    const broken = issues.find((issue) => issue.code === "default_agent_broken");
+    expect(broken?.path).toBe("defaultAgent");
+    expect(broken?.text.messageKey).toBe("agent.fileBroken");
+    expect(issues.some((issue) => issue.code === "default_agent_missing")).toBe(false);
+  });
+
   it("缺省语言写得进，config.get 读得回（R58）", async () => {
     const written = await service.setDefaults({ defaults: { language: "zh" } });
     expect(written.config.defaults.language).toBe("zh");

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { resolve, sep } from "node:path";
+import { getLogger } from "./logger.js";
 
 /**
  * 通用实体仓储 — 对磁盘 JSON 文件的 CRUD 操作。
@@ -7,7 +8,8 @@ import { resolve, sep } from "node:path";
  * 约定：
  *   - 每个实体一个 JSON 文件，文件名 = `${id}.json`
  *   - 目录不存在时自动创建
- *   - 解析失败的文件会被跳过（list 时）
+ *   - `read()` 只把「文件不在」答成 `null`；文件在但读不出来（不是 JSON、没权限）照抛
+ *   - `list()` 跳过读不出来的那**一条**并报一句（一个坏文件不许让整张列表读不出来）
  */
 export class EntityRepository<T extends { id: string }> {
   constructor(private dir: string) {}
@@ -31,7 +33,12 @@ export class EntityRepository<T extends { id: string }> {
     return target;
   }
 
-  /** 列出目录下所有实体（跳过解析失败的文件） */
+  /**
+   * 列出目录下所有实体。
+   *
+   * 一个坏文件**不许**让整张列表读不出来（宿主的界面靠它每个 id 自己的 `brokenReason` 把
+   * 「读不出来」显示成一行），所以这里接住并报一句：跳过的是这一条，不是整张表。
+   */
   async list(): Promise<T[]> {
     try {
       await fs.access(this.dir);
@@ -44,21 +51,33 @@ export class EntityRepository<T extends { id: string }> {
 
     const entities: T[] = [];
     for (const id of ids) {
-      const entity = await this.read(id);
-      if (entity) entities.push(entity);
+      try {
+        const entity = await this.read(id);
+        if (entity !== null) entities.push(entity);
+      } catch (error) {
+        getLogger().warn(
+          `[entity] 读不出来，列表里跳过这一条：${this.path(id)}（${String(error)}）`,
+        );
+      }
     }
     return entities;
   }
 
-  /** 读取单个实体；文件不在、读不出、不是 JSON 都返回 null */
+  /**
+   * 读取单个实体：**只有文件不在才回 `null`**。
+   *
+   * 「没有这一条」与「这一条坏了」（不是 JSON、EACCES、EIO）是两个答案。折叠成一个 `null`
+   * 会让读者对坏文件说假话 —— 从前 `createAgent()` 就是这么把一份读不出来的定义报成
+   * `Agent "x" not found` 的。要把它当成「没有」的调用方自己接住，并在那一处写明为什么。
+   */
   async read(id: string): Promise<T | null> {
     // `path()` 留在 try 外面：id 逃出目录是调用方的错，该抛，不该被当成「没有这一条」
     const p = this.path(id);
-    // 一次读就够：文件不在时 `readFile` 自己抛 ENOENT，与「读坏了」一样回 null
     try {
       return JSON.parse(await fs.readFile(p, "utf-8")) as T;
-    } catch {
-      return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
     }
   }
 

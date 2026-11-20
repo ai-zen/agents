@@ -139,7 +139,26 @@ describe("createAgent", () => {
   it("Agent 不存在时抛异常", async () => {
     const scope = await makeScope();
 
-    await expect(createAgent(scope, "nonexistent")).rejects.toThrow();
+    await expect(createAgent(scope, "nonexistent")).rejects.toThrow(
+      'Agent "nonexistent" not found',
+    );
+  });
+
+  it("定义文件在但读不出来：报真实原因，不说「找不到这个助手」", async () => {
+    const agentsDir = join(dir, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    await fs.writeFile(join(agentsDir, "broken.json"), "{ 这里坏掉了", "utf-8");
+
+    const scope = await makeScope();
+    const error = await createAgent(scope, "broken").then(
+      () => null,
+      (thrown: Error) => thrown,
+    );
+    if (error === null) throw new Error("坏文件竟然装配成功了");
+
+    // 这是两个答案：「这一条坏了」与「没这一条」，不能对用户说错的那一个
+    expect(error.message).toContain('Agent "broken" definition could not be read');
+    expect(error.message).not.toContain("not found");
   });
 
   it("可选的发现目录不存在不抛异常", async () => {

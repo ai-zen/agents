@@ -155,6 +155,18 @@ describe("AgentService.list", () => {
     expect(defaultAgentId).toBe("default");
   });
 
+  it("坏文件那一行的原因是真实的读失败，不是写死的「not readable as JSON」", async () => {
+    const { agents } = await service.list();
+    const broken = agents.find((agent) => agent.id === "broken");
+
+    // F-B5：界面上那一行还在，且说的是「读不出来」
+    expect(broken?.available).toBe(false);
+    expect(broken?.unavailableReason?.messageKey).toBe("agent.fileBroken");
+    // 原因就是读它的那一手抛出来的那句话（解析失败），同一份事实给到文案里
+    expect(String(broken?.unavailableReason?.params?.reason)).toMatch(/JSON/);
+    expect(broken?.unavailableReason?.message).toContain("broken");
+  });
+
   it("模型没了 / 端点没密钥 / 没有可用模型，各有各的说法", async () => {
     await writeJson(
       join(dataRoot, "agents", "missing-model.json"),
@@ -311,6 +323,17 @@ describe("AgentService.create / update", () => {
         messageKey: "agent.fileBroken",
       },
     );
+  });
+
+  it("坏文件不是「没这个助手」：报的是 config_invalid + 真实原因", async () => {
+    await expect(service.get({ agentId: "broken" })).resolves.toMatchObject({
+      agent: { available: false },
+    });
+    await expect(service.setModel({ agentId: "broken", modelId: "m-a1" })).rejects.toMatchObject({
+      code: "config_invalid",
+      messageKey: "agent.fileBroken",
+      params: { name: "broken", reason: expect.stringMatching(/JSON/) },
+    });
   });
 });
 

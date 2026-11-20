@@ -1402,4 +1402,14 @@ describe("对外失败一律是 HostError", () => {
       await expect(call).rejects.toBeInstanceOf(HostError);
     }
   });
+
+  it("助手定义文件在但读不出来：报「读不出来」，不说成「没有这个助手」", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    await writeFile(join(harness.dir, "agents", "a1.json"), "{ 这里坏掉了", "utf-8");
+
+    await expect(harness.service.get({ sessionId: created.session.id })).rejects.toMatchObject({
+      code: "config_invalid",
+      messageKey: "agent.fileBroken",
+    });
+  });
 });

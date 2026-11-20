@@ -66,7 +66,17 @@ export async function createAgent(
   agentId: string,
   options: CreateAgentOptions = {},
 ): Promise<SdkAgent> {
-  const stored = await new AgentRepository(scope.agentsDir).read(agentId);
+  const repository = new AgentRepository(scope.agentsDir);
+  let stored: AgentDefinition | null;
+  try {
+    stored = await repository.read(agentId);
+  } catch (error) {
+    // 文件在、但读不出来（不是 JSON / 没权限）：这不是「没有这个助手」，别对用户说那句假话
+    throw new Error(
+      `Agent "${agentId}" definition could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
   if (!stored) throw new Error(`Agent "${agentId}" not found`);
 
   const resolved = resolveModel({

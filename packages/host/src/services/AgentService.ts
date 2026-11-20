@@ -111,14 +111,15 @@ export interface AgentDescription {
   available: boolean;
 }
 
-/** 仓储里读到的一条定义；`definition` 为 `null` 表示文件在但读不出来 */
-interface LoadedAgent {
-  id: string;
-  home: AgentHome;
-  definition: AgentDefinition | null;
-  /** 读不出来的原因（`definition === null` 时才有） */
-  brokenReason: string | null;
-}
+/**
+ * 仓储里读到的一条定义。
+ *
+ * 两种形状分得开：读出来了（`brokenReason` 为 `null`），或者**文件在但读不出来**
+ * （`definition` 为 `null`，原因在 `brokenReason` 里）—— 「没有这个文件」不在这里，它是 `null`。
+ */
+type LoadedAgent =
+  | { id: string; home: AgentHome; definition: AgentDefinition; brokenReason: null }
+  | { id: string; home: AgentHome; definition: null; brokenReason: string };
 
 // ---------------------------------------------------------------------------
 // 文案
@@ -634,9 +635,9 @@ export class AgentService {
 
   /** 一条定义（或一个读不出来的文件）→ 对外形状 */
   toView(config: AppConfig, presets: ReasoningPresets, item: LoadedAgent): AgentView {
-    const definition = item.definition;
-    if (definition === null) {
-      // 文件在但读不出来：照样占一行，说明为什么用不了（F-B5）
+    if (item.definition === null) {
+      // 文件在但读不出来：照样占一行，说明为什么用不了（F-B5）。原因就是读它的那一手
+      // 抛出来的那句话（不是 JSON / 没权限），从前这里一律写死成「not readable as JSON」
       return {
         id: item.id,
         name: item.id,
@@ -653,7 +654,7 @@ export class AgentService {
         available: false,
         unavailableReason: text("agent.fileBroken", {
           name: item.id,
-          reason: item.brokenReason ?? "unreadable",
+          reason: item.brokenReason,
         }),
         thinking: {
           preset: null,
@@ -667,6 +668,7 @@ export class AgentService {
       };
     }
 
+    const definition = item.definition;
     const modelId = definition.modelId ?? config.defaultModel ?? null;
     const model = modelId ? findModel(config, modelId) : undefined;
     const unavailable = this.unavailableProblem(config, modelId, model);
@@ -760,19 +762,11 @@ export class AgentService {
     return definition.function === undefined ? "agents" : "sub-agents";
   }
 
-  /** 读一个定义（两个目录都找）；不存在回 `null` */
+  /** 读一个定义（两个目录都找）；两个目录都没有这个 id 才回 `null` */
   private async load(id: string): Promise<LoadedAgent | null> {
     for (const home of ["agents", "sub-agents"] as const) {
-      const path = join(this.repoDir(home), `${id}${JSON_SUFFIX}`);
-      const exists = await fileExists(path);
-      if (!exists) continue;
-      const definition = await this.repos[home].read(id);
-      return {
-        id,
-        home,
-        definition,
-        brokenReason: definition === null ? "not readable as JSON" : null,
-      };
+      const item = await this.loadIn(home, id);
+      if (item) return item;
     }
     return null;
   }
@@ -781,18 +775,28 @@ export class AgentService {
   private async loadAll(): Promise<LoadedAgent[]> {
     const result: LoadedAgent[] = [];
     for (const home of ["agents", "sub-agents"] as const) {
-      const ids = await listJsonIds(this.repoDir(home));
-      for (const id of ids) {
-        const definition = await this.repos[home].read(id);
-        result.push({
-          id,
-          home,
-          definition,
-          brokenReason: definition === null ? "not readable as JSON" : null,
-        });
+      for (const id of await listJsonIds(this.repoDir(home))) {
+        const item = await this.loadIn(home, id);
+        if (item) result.push(item);
       }
     }
     return result;
+  }
+
+  /**
+   * 读某个目录里的一个定义。
+   *
+   * 三件事分得开：读出来了 / 这个目录里没有这个文件（回 `null`，换下一个目录找）/ 文件在但
+   * 读不出来（照占一行，原因是读它的那一手抛出来的那句话）。所以这里不需要先 `stat` 探一次
+   * 「文件在不在」——「不在」与「坏了」本来就是两个答案。
+   */
+  private async loadIn(home: AgentHome, id: string): Promise<LoadedAgent | null> {
+    try {
+      const definition = await this.repos[home].read(id);
+      return definition === null ? null : { id, home, definition, brokenReason: null };
+    } catch (error) {
+      return { id, home, definition: null, brokenReason: reasonOf(error) };
+    }
   }
 
   /** 仓储对应的目录 */
@@ -811,11 +815,11 @@ export class AgentService {
     if (found.definition === null) {
       throw new HostError("config_invalid", {
         messageKey: "agent.fileBroken",
-        params: { name: id, reason: found.brokenReason ?? "unreadable" },
+        params: { name: id, reason: found.brokenReason },
         detail: { agentId: id, path: join(this.repoDir(found.home), `${id}${JSON_SUFFIX}`) },
       });
     }
-    return { ...found, definition: found.definition };
+    return found;
   }
 
   /** 引用：默认助手 + 别的助手在权限里点名的 subagent function */
@@ -879,11 +883,7 @@ async function listJsonIds(dir: string): Promise<string[]> {
   }
 }
 
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    const info = await fs.stat(path);
-    return info.isFile();
-  } catch {
-    return false;
-  }
+/** 读不出来时给用户看的那一句：读它的那一手抛出来的原始消息，原样带出去 */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

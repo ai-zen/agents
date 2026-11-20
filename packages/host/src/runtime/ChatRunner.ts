@@ -2504,14 +2504,19 @@ function thinkingPatchOf(
  * 读一次助手定义（只为拿它绑定哪个模型、带哪些参数）。
  *
  * SDK 的 `createAgent` 自己也会读一次定义；这里多这一遍是因为会话档位展开的参数要叠在
- * 定义那份参数上，而只有定义在手才知道该叠什么。文件不在 / 读坏了 `read()` 自己回 `null`
- * （真正的报错由 `createAgent` 那句给出）。
+ * 定义那份参数上，而只有定义在手才知道该叠什么。
  *
- * 这里的 `read()` 不包 try：它唯一的抛出点是 id 逃出目录的检查，而 `context.agentId` 来自会话行，
- * 那个值在 `SessionService.create` 已被同一处检查挡过一次。
+ * **这里把「读不出来」当成「没有」**：这一遍只用来叠参数，紧接着的 `createAgent` 会用同一个
+ * id 读同一份文件 —— 坏文件由那一处带上真实原因抛出去
+ * （`Agent "x" definition could not be read: …`）。到这里再抛一遍只会让同一件事有两句说法。
+ * 「文件不在」本来就是 `null`（`read()` 只对它回 `null`），两者在这一处汇合。
  */
 async function readAgentDefinition(context: AgentBuildContext): Promise<AgentDefinition | null> {
-  return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
+  try {
+    return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
+  } catch {
+    return null;
+  }
 }
 
 /**

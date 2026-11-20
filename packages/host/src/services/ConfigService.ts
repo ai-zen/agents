@@ -489,6 +489,22 @@ export class ConfigService {
   // 内部：校验与合并
   // -------------------------------------------------------------------------
 
+  /**
+   * 一个助手定义读得怎么样。
+   *
+   * 三件事分开：「读出来了」 / 「没有这个文件」 / 「文件在但读不出来（带原因）」—— 后两者
+   * 从前被折叠成同一个 `null`，于是坏文件被说成「没有这个助手」。没注入仓储时一律算读得出来
+   * （这个服务被单独用的时候不看助手定义）。
+   */
+  private async agentReadState(agentId: string): Promise<AgentReadState> {
+    if (!this.agents) return { state: "ok" };
+    try {
+      return (await this.agents.read(agentId)) === null ? { state: "missing" } : { state: "ok" };
+    } catch (error) {
+      return { state: "broken", reason: reasonOf(error) };
+    }
+  }
+
   private async readConfig(): Promise<AppConfig> {
     return await this.configManager.read();
   }
@@ -526,8 +542,10 @@ export class ConfigService {
 
     if (input.defaultAgent !== undefined && input.defaultAgent !== null) {
       const agentId = requireText(input.defaultAgent, "defaults.defaultAgent");
-      const exists = this.agents ? (await this.agents.read(agentId)) !== null : true;
-      if (!exists) {
+      const state = await this.agentReadState(agentId);
+      // 文件在、但读不出来：不是「没有这个助手」，是那份定义坏了 —— 按真实原因报
+      if (state.state === "broken") throw brokenAgent(agentId, state.reason);
+      if (state.state === "missing") {
         throw new HostError("invalid_params", {
           params: { field: "defaults.defaultAgent" },
           detail: { field: "defaults.defaultAgent", reason: "agent_not_found", agentId },
@@ -723,13 +741,22 @@ export class ConfigService {
       }
     }
 
-    if (config.defaultAgent !== undefined && this.agents) {
-      const exists = (await this.agents.read(config.defaultAgent)) !== null;
-      if (!exists) {
+    if (config.defaultAgent !== undefined) {
+      const state = await this.agentReadState(config.defaultAgent);
+      if (state.state === "missing") {
         issues.push({
           severity: "warning",
           code: "default_agent_missing",
           text: text("config.issue.defaultAgentMissing", { id: config.defaultAgent }),
+          path: "defaultAgent",
+        });
+      } else if (state.state === "broken") {
+        // 文件在、读不出来：这不是「没了」，是那份定义坏了。两件事分开说，否则用户会去
+        // 找一个其实还在的文件
+        issues.push({
+          severity: "warning",
+          code: "default_agent_broken",
+          text: text("agent.fileBroken", { name: config.defaultAgent, reason: state.reason }),
           path: "defaultAgent",
         });
       }
@@ -899,4 +926,21 @@ function requireChoice<T extends string>(
       detail: { field, reason: "not_allowed", value, allowed },
     });
   }
+}
+
+/** 一个助手定义读得怎么样：「读出来了」 / 「没有这个文件」 / 「文件在但读不出来（带原因）」 */
+type AgentReadState = { state: "ok" } | { state: "missing" } | { state: "broken"; reason: string };
+
+/** 默认助手指向一份读不出来的定义：报它坏在哪，而不是说成「没有这个助手」 */
+function brokenAgent(name: string, reason: string): HostError {
+  return new HostError("config_invalid", {
+    messageKey: "agent.fileBroken",
+    params: { name, reason },
+    detail: { agentId: name, reason },
+  });
+}
+
+/** 读不出来时给用户看的那一句：读它的那一手抛出来的原始消息 */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

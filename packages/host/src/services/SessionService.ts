@@ -1123,18 +1123,21 @@ export class SessionService {
     return agent;
   }
 
+  /**
+   * 读一个助手定义文件；**文件不在**回 `null`（「没有这个助手」），文件在但读不出来报真实原因。
+   *
+   * 两件事从前被折到同一个 `catch` 里：那时 `read()` 对坏文件回 `null`，这里于是把它说成
+   * 「没有这个助手」（下一条 `readAgent` 报 `not_found`）—— 一句假话。坏文件是配置坏了（F-B5），
+   * 按它自己抛出来的那句报。
+   */
   private async readAgentOrNull(agentId: string): Promise<AgentDefinition | null> {
     try {
       return await this.agents.read(agentId);
     } catch (error) {
-      // 仓储会挡掉逃逸出 agents/ 目录的 id（抛的是普通 Error），这里转成参数错误
-      throw new HostError("invalid_params", {
-        params: { field: "agentId" },
-        detail: {
-          field: "agentId",
-          agentId,
-          reason: error instanceof Error ? error.message : String(error),
-        },
+      throw new HostError("config_invalid", {
+        messageKey: "agent.fileBroken",
+        params: { name: agentId, reason: reasonOf(error) },
+        detail: { agentId, reason: reasonOf(error) },
       });
     }
   }
@@ -1324,4 +1327,9 @@ function latestCreatedAt(stored: StoredMessage[]): number {
 function contentHasImage(content: AgentNS.MessageContent | undefined): boolean {
   if (!content || typeof content === "string") return false;
   return content.some((section) => section.type === "image_url");
+}
+
+/** 读不出来时给用户看的那一句：读它的那一手抛出来的原始消息 */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
