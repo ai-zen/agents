@@ -50,18 +50,13 @@ export class EntityRepository<T extends { id: string }> {
     return entities;
   }
 
-  /** 读取单个实体，不存在返回 null */
+  /** 读取单个实体；文件不在、读不出、不是 JSON 都返回 null */
   async read(id: string): Promise<T | null> {
+    // `path()` 留在 try 外面：id 逃出目录是调用方的错，该抛，不该被当成「没有这一条」
     const p = this.path(id);
+    // 一次读就够：文件不在时 `readFile` 自己抛 ENOENT，与「读坏了」一样回 null
     try {
-      await fs.access(p);
-    } catch {
-      return null;
-    }
-
-    try {
-      const raw = await fs.readFile(p, "utf-8");
-      return JSON.parse(raw) as T;
+      return JSON.parse(await fs.readFile(p, "utf-8")) as T;
     } catch {
       return null;
     }
@@ -69,11 +64,8 @@ export class EntityRepository<T extends { id: string }> {
 
   /** 写入实体（创建或更新） */
   async write(entity: T): Promise<void> {
-    try {
-      await fs.access(this.dir);
-    } catch {
-      await fs.mkdir(this.dir, { recursive: true });
-    }
+    // `mkdir(recursive)` 幂等，不必先探测目录在不在
+    await fs.mkdir(this.dir, { recursive: true });
     await fs.writeFile(this.path(entity.id), JSON.stringify(entity, null, 2), "utf-8");
   }
 

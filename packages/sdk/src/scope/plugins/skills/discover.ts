@@ -70,12 +70,7 @@ export async function discoverSkills(
       if (seen.has(entry.name)) continue;
 
       const skillMdPath = join(dir, entry.name, "SKILL.md");
-      try {
-        await fs.access(skillMdPath);
-      } catch {
-        continue;
-      }
-
+      // 不必先 `access`：`readSkillFromPath()` 自己 catch-all，读不到就回 null
       const skill = await readSkillFromPath(entry.name, skillMdPath, silent);
       if (skill) {
         seen.add(entry.name);
@@ -101,13 +96,9 @@ export async function readSkill(
 ): Promise<SkillInfo | null> {
   const silent = options?.silent ?? false;
   for (const dir of skillDirs) {
-    const candidate = join(dir, skillId, "SKILL.md");
-    try {
-      await fs.access(candidate);
-      return await readSkillFromPath(skillId, candidate, silent);
-    } catch {
-      continue;
-    }
+    // `readSkillFromPath()` 读不到就回 null，所以不必先探测再读
+    const skill = await readSkillFromPath(skillId, join(dir, skillId, "SKILL.md"), silent);
+    if (skill) return skill;
   }
   return null;
 }

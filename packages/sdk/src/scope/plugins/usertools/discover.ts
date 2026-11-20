@@ -199,13 +199,10 @@ export async function discoverUserToolFiles(
         if (!seen.has(name)) {
           seen.add(name);
           const path = join(dir, name + ext);
-          try {
-            const tool = await loadToolFile(path, options);
-            if (tool) {
-              items.push({ name, path, tool });
-            }
-          } catch {
-            // 跳过加载失败的文件
+          // 不必再包一层：`loadToolFile()` 自己 catch-all，加载失败会走 `reportReject` 上报并回 null
+          const tool = await loadToolFile(path, options);
+          if (tool) {
+            items.push({ name, path, tool });
           }
         }
       }

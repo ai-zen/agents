@@ -92,12 +92,8 @@ export class ConfigManager {
   }
 
   async write(config: AppConfig): Promise<void> {
-    const dir = dirname(this.configPath);
-    try {
-      await fs.access(dir);
-    } catch {
-      await fs.mkdir(dir, { recursive: true });
-    }
+    // `mkdir(recursive)` 幂等：目录已在时直接返回，不必先用 `access` 探一遍
+    await fs.mkdir(dirname(this.configPath), { recursive: true });
 
     const tmpPath = this.configPath + ".tmp";
     await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), "utf-8");
@@ -481,12 +477,8 @@ export class ConfigManager {
 
   /** 原子写 JSON 文件（先写 .tmp 再 rename，避免半成品）。 */
   private async writeJson<T>(path: string, data: T): Promise<void> {
-    const dir = dirname(path);
-    try {
-      await fs.access(dir);
-    } catch {
-      await fs.mkdir(dir, { recursive: true });
-    }
+    // 同上：`mkdir(recursive)` 幂等，不必先探测
+    await fs.mkdir(dirname(path), { recursive: true });
     const tmpPath = path + ".tmp";
     await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
     await fs.rename(tmpPath, path);
