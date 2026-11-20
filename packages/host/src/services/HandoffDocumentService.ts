@@ -88,7 +88,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 import { AgentNS, Message } from "@ai-zen/agents-core";
-import type { Logger, ModelParams } from "@ai-zen/agents-sdk";
+import type { LogSink, ModelParams } from "@ai-zen/agents-sdk";
 import {
   completeOnce,
   HandoffAbortedError,
@@ -239,7 +239,7 @@ export interface SdkHandoffExecutorOptions {
   model?: string;
   modelConfig?: ModelParams;
   /** SDK 那边的日志口（读不到 Skill、self 降级都会在那里留一条） */
-  logger?: Logger;
+  logger?: LogSink;
 }
 
 /** 造 SDK 交接服务（插件那一路）还要一份模板目录：它是按 cwd 造出来的那一个 */
@@ -373,6 +373,11 @@ export interface HandoffDocumentServiceDeps {
   skillDirs?: (cwd: string) => string[];
   /** 后台那一趟里不该打断主流程的差错（落日志用）；不注入就不记 */
   onError?: (error: unknown, context: string) => void;
+  /**
+   * 缺省执行者（`execute` 没注入时）的日志口：SDK 交接服务读不到 Skill、`self` 降级成
+   * `summary` 都会在那里留一条。不给就沿 SDK 的缺省（不记）。
+   */
+  logger?: LogSink;
   now?: () => number;
 }
 
@@ -459,7 +464,7 @@ export class HandoffDocumentService {
     this.workspaces = deps.workspaces;
     this.messages = deps.messages;
     this.sessionViews = deps.sessionViews;
-    this.execute = deps.execute ?? createSdkHandoffExecutor();
+    this.execute = deps.execute ?? createSdkHandoffExecutor({ logger: deps.logger });
     this.agents = deps.agents;
     this.runner = deps.runner;
     this.notices = deps.notices;

@@ -1688,6 +1688,32 @@ describe("日志", () => {
     expect(text).toContain("宿主已收尾");
   });
 
+  it("SDK 侧那几句话进的是 `sdk` 那一格（宿主把自己那份注了进去，不是库自己另找出口）", async () => {
+    const fixture = await makeFixture();
+    // 一份读不出来的思考策略表：`ConfigManager` 会降级交出出厂表，但要记一句 error。
+    // 那一句从前走 SDK 的全局口（= 标准输出，宿主里没人接手），本单改成宿主注入的 `sdk` 那一格。
+    await fs.writeFile(
+      join(fixture.dataRoot.path, "reasoning-presets.json"),
+      "{ 不是 json",
+      "utf8",
+    );
+    const app = await createHost({
+      aiZenDir: fixture.dataRoot.path,
+      port: 0,
+      local: true,
+      exit: () => undefined,
+    });
+    await app.start();
+    apps.push(app);
+    await app.stop("requested");
+
+    const text = await fs.readFile(join(fixture.dataRoot.path, "logs", "host.log"), "utf8");
+    const line = text.split("\n").find((row) => row.includes("[ConfigManager]"));
+    expect(line).toBeDefined();
+    // 行格式：`<ISO> <级别定宽> <来源> <消息>`；来源那一列是 `sdk`，不是 `app`
+    expect(line).toMatch(/\sERROR\ssdk\s\[ConfigManager\] 思考策略表读不出来/);
+  });
+
   it("判据：warn / error 一律转通知，info 不转", () => {
     const at = "2026-01-01T00:00:00.000Z";
     expect(shouldNotifyFromLog({ level: "warn", source: "host", message: "m", at })).toBe(true);

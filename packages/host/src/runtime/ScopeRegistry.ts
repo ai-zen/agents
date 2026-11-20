@@ -44,6 +44,7 @@
 import type { AllInOneOptions, AppConfig, ToolEnvDeps } from "@ai-zen/agents-sdk";
 import { allInOne, PeerSessionsScopePlugin, Scope } from "@ai-zen/agents-sdk";
 import type { PeerSessionPort } from "@ai-zen/agents-sdk";
+import type { LogSink } from "@ai-zen/agents-logger";
 
 /**
  * 计时入口。
@@ -329,6 +330,12 @@ export interface WorkspaceScopeFactoryOptions {
   peerSessions?: PeerSessionPort;
   /** 出网/外部依赖的注入点（测试替身） */
   deps?: ToolEnvDeps;
+  /**
+   * 能力发现的日志口（可选）：四个读盘的插件（用户工具 / Skill / MCP / subagent）把它们
+   * 「这个文件读不出来」报到这里。不传就沿 SDK 的缺省（不记）—— 接线处给的是宿主自己
+   * 那份 `withSource("sdk")`。
+   */
+  logger?: LogSink;
 }
 
 /**
@@ -357,6 +364,7 @@ export function createWorkspaceScopeFactory(options: WorkspaceScopeFactoryOption
       toolsPaths: pathsFor(options.toolsPaths, workspace.cwd),
       subAgentsPaths: pathsFor(options.subAgentsPaths, workspace.cwd),
       mcpPaths: options.mcpPaths?.(workspace.cwd),
+      logger: options.logger,
     };
     const scope = new Scope({
       // 端口原样转交：首份由 init() 读，之后每次 refresh() 都重读（配置改了不重建 Scope）

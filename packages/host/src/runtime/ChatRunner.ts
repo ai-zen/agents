@@ -129,6 +129,7 @@ import {
   SubAgentGuardInstallerPlugin,
   UnknownToolHintPlugin,
 } from "@ai-zen/agents-sdk";
+import type { LogSink } from "@ai-zen/agents-logger";
 
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { MessageKey } from "../i18n/index.js";
@@ -2449,6 +2450,11 @@ export interface SdkAgentFactoryOptions {
    * 读一次表（`refreshThinkingPresets`），拿旧快照会把已删掉的档位展开成空补丁。
    */
   thinkingPresets?: () => ReasoningPresets | null;
+  /**
+   * SDK 侧的日志口（可选）：交接插件迁移失败那一条、以及按 id 读助手定义时的「读不出来」
+   * 都走它。不传就沿 SDK 的缺省（不记）—— 接线处给的是宿主自己那份 `withSource("sdk")`。
+   */
+  logger?: LogSink;
 }
 
 /**
@@ -2511,9 +2517,12 @@ function thinkingPatchOf(
  * （`Agent "x" definition could not be read: …`）。到这里再抛一遍只会让同一件事有两句说法。
  * 「文件不在」本来就是 `null`（`read()` 只对它回 `null`），两者在这一处汇合。
  */
-async function readAgentDefinition(context: AgentBuildContext): Promise<AgentDefinition | null> {
+async function readAgentDefinition(
+  context: AgentBuildContext,
+  logger?: LogSink,
+): Promise<AgentDefinition | null> {
   try {
-    return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
+    return await new AgentRepository(context.scope.agentsDir, logger).read(context.agentId);
   } catch {
     return null;
   }
@@ -2537,7 +2546,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
     // 再往下的三级解析（助手定义 → 全局兜底）仍由 SDK 那一处算
     const modelId = context.modelId ?? undefined;
     const sessionModel = context.scope.config.models.find((candidate) => candidate.id === modelId);
-    const definition = await readAgentDefinition(context);
+    const definition = await readAgentDefinition(context, options.logger);
     const agent = await createAgent(context.scope, context.agentId, {
       modelId,
       modelParams: sessionModelParams({
@@ -2570,6 +2579,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
           new AutoMigratePlugin({
             service: handoff,
             handoffTokens: thresholds.handoff,
+            logger: options.logger,
             // 归一规则按**会话行上的自动交接开关**分：开着的那一段没人盯着它，越线就自己压
             // （`"self"`）；关着的那一段把「要不要压」交还给宿主（变闲那一刻问用户），这里回
             // `null` = 本次不迁移。开关在越线那一刻现读（它能改，改了不必重建 agent）。

@@ -31,6 +31,7 @@ import type {
   ReasoningPreset,
   ReasoningPresets,
 } from "@ai-zen/agents-sdk";
+import type { LogSink } from "@ai-zen/agents-logger";
 
 import type { SessionDraftStore } from "../runtime/SessionDrafts.js";
 import { hasThinkingKey } from "./thinking.js";
@@ -185,6 +186,11 @@ export interface SessionServiceDeps {
    * `null`（说「不知道」而不是编一个像真的名字）。
    */
   describeAgent?: (agentId: string) => Promise<{ name: string; available: boolean } | null>;
+  /**
+   * 缺省造助手定义仓储时用的日志口（可选）：`list()` 跳过读不出来的定义时那几句走它。
+   * 不注就沿 SDK 的缺省（不记）—— 接线处给的是宿主自己那份 `withSource("sdk")`。
+   */
+  logger?: LogSink;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
@@ -327,7 +333,7 @@ export class SessionService {
     this.emit = deps.emit;
     this.describeAgent = deps.describeAgent;
     this.now = deps.now ?? Date.now;
-    this.agents = new AgentRepository(join(deps.configManager.basePath, "agents"));
+    this.agents = new AgentRepository(join(deps.configManager.basePath, "agents"), deps.logger);
   }
 
   /**

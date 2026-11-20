@@ -31,6 +31,7 @@ import type {
   ReasoningPreset,
   ReasoningPresets,
 } from "@ai-zen/agents-sdk";
+import type { LogSink } from "@ai-zen/agents-logger";
 
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
 import { hasThinkingKey, thinkingSourceOf } from "./thinking.js";
@@ -89,6 +90,11 @@ export interface AgentServiceOptions {
   agents?: AgentRepository;
   /** subagent 定义仓储；缺省按 `<basePath>/sub-agents/` 造一个 */
   subAgents?: AgentRepository;
+  /**
+   * 缺省造那两个仓储时用的日志口（可选）：`list()` 跳过读不出来的定义时那几句走它。
+   * 已经注入 `agents` / `subAgents` 时它不用 —— 那两份的日志由造它们的人给。
+   */
+  logger?: LogSink;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
@@ -294,10 +300,11 @@ export class AgentService {
     this.configManager = options.configManager;
     this.repos = {
       agents:
-        options.agents ?? new AgentRepository(join(options.configManager.basePath, DIR_AGENTS)),
+        options.agents ??
+        new AgentRepository(join(options.configManager.basePath, DIR_AGENTS), options.logger),
       "sub-agents":
         options.subAgents ??
-        new AgentRepository(join(options.configManager.basePath, DIR_SUB_AGENTS)),
+        new AgentRepository(join(options.configManager.basePath, DIR_SUB_AGENTS), options.logger),
     };
     this.now = options.now ?? Date.now;
   }

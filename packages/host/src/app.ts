@@ -126,6 +126,14 @@ const HOST_LOG_FILE_NAME = "host.log";
 /** 通知模块自己那一格日志的来源标签：只在这个来源上挂「不转通知」这条规则 */
 const NOTICE_SOURCE = "notice";
 
+/**
+ * SDK 那一格日志的来源标签。
+ *
+ * 「SDK 库里面的事」（发现、配置降级、MCP 连接、交接）落在宿主日志里，但行上的来源说「谁写的」，
+ * 于是 grep `sdk` 一列就能把库那一半单独看。与 `ws` / `notice` 同一种用法。
+ */
+const SDK_SOURCE = "sdk";
+
 /** 配置生效那条通知留几秒（F-F9：一次改动合成一条，一秒级的提示归 `info`） */
 const APPLIED_NOTICE_SECONDS = 3;
 
@@ -353,6 +361,9 @@ export class HostApp {
   private readonly fileLogger: FileLogger | null;
   /** 通知模块自己那一格日志（`source: "notice"`）：它写出去的东西不再转通知 */
   private readonly noticeLogger: LogSink;
+  /** 注入 SDK 的那一格日志（`source: "sdk"`）：每处 `new ConfigManager` / `new AgentRepository`
+   *  / Scope 装配 / 交接服务 / agent 工厂都用这一份 —— 一处定、一条链路到底 */
+  private readonly sdkLogger: LogSink;
   /** 日志记录往通知那一侧转发的位置（容器，通知服务造好之后才接上） */
   private readonly logRecords: LogRecordRelay;
   private readonly exitHook: ExitHook;
@@ -400,6 +411,7 @@ export class HostApp {
     this.logger = logging.logger;
     this.fileLogger = logging.fileLogger;
     this.logRecords = logging.records;
+    this.sdkLogger = logging.sdkLogger;
     this.noticeLogger = logging.fileLogger?.withSource(NOTICE_SOURCE) ?? {
       // 注入了外部 logger 时那份只有 warn / error（`HubLogger`）：缺的 info 补一个空实现
       info: () => undefined,
@@ -425,8 +437,14 @@ export class HostApp {
     this.credentials = new CredentialRepository(db);
 
     /** 助手与 subagent 的定义仓储（配置层与助手/模型/配置三个服务共用同一份目录） */
-    const agentRepository = new AgentRepository(join(configManager.basePath, "agents"));
-    const subAgentRepository = new AgentRepository(join(configManager.basePath, "sub-agents"));
+    const agentRepository = new AgentRepository(
+      join(configManager.basePath, "agents"),
+      logging.sdkLogger,
+    );
+    const subAgentRepository = new AgentRepository(
+      join(configManager.basePath, "sub-agents"),
+      logging.sdkLogger,
+    );
     /** 按 workspaceId 取 cwd：发现、补全、配置三个服务都要同一份口径 */
     const findWorkspace = async (workspaceId: string) => {
       const row = await this.workspaces.get(workspaceId);
@@ -478,6 +496,8 @@ export class HostApp {
       messages: this.messages,
       workspaces: this.workspaces,
       assets: this.assets,
+      // 缺省造的助手定义仓储：`list()` 跳过读不出来的定义时那几句进 `sdk` 那一格
+      logger: this.sdkLogger,
       // 撤回 / 删会话之后同一件事：引用归零的素材才删字节
       sweepAssets: (assetIds) => this.assetService.sweepUnreferenced(assetIds),
       // 侧栏那个「有没有题挂着」的圆点：题在内存里，所以问 `QuestionService`（不查表）。
@@ -519,6 +539,7 @@ export class HostApp {
     this.discoveryService = new DiscoveryService({
       configManager: this.configManager,
       findWorkspace,
+      logger: this.sdkLogger,
     });
     this.modelService = new ModelService({
       configManager: this.configManager,
@@ -528,6 +549,7 @@ export class HostApp {
       configManager: this.configManager,
       agents: agentRepository,
       subAgents: subAgentRepository,
+      logger: this.sdkLogger,
       now: () => this.clock.now(),
     });
     this.completionService = new CompletionService({ findWorkspace });
@@ -603,6 +625,8 @@ export class HostApp {
       onError: (error, context) => {
         this.logger.error("交接出错", { context, error: describeError(error) });
       },
+      // 缺省执行者（SDK 的交接服务）自己那几句也进 `sdk` 那一格
+      logger: this.sdkLogger,
       now: () => this.clock.now(),
     });
     this.questionService = new QuestionService({
@@ -778,12 +802,16 @@ export class HostApp {
       throw error;
     }
 
-    const configManager = new ConfigManager(paths.configFile, recoveries.onRecovered);
+    const logging = resolveLogger(options, paths);
+    const configManager = new ConfigManager(
+      paths.configFile,
+      recoveries.onRecovered,
+      logging.sdkLogger,
+    );
     // SDK 口径的首次初始化：目录 + config.json + 默认助手 + subagent + mcp.json + 出厂 Skill
     // + 思考策略表。已有文件不覆盖（用户自定义的助手定义 `custom: true` 原样保留）。
     await configManager.bootstrap();
 
-    const logging = resolveLogger(options, paths);
     let app: HostApp;
     try {
       app = new HostApp(options, paths, db, configManager, configPort, logging);
@@ -1120,6 +1148,8 @@ export class HostApp {
       toolsPaths: (cwd) => abilityPaths(cwd).toolsPaths,
       subAgentsPaths: (cwd) => abilityPaths(cwd).subAgentsPaths,
       mcpPaths: (cwd) => abilityPaths(cwd).mcpPaths,
+      // 能力发现的日志口：四个读盘的插件（用户工具 / Skill / MCP / subagent）都往这一格写
+      logger: this.sdkLogger,
       // 平级会话的两个工具（`create_session` / `read_session_status`）靠这个端口落地
       peerSessions: this.peerSessions,
     });
@@ -1129,6 +1159,8 @@ export class HostApp {
   private defaultAgentFactory(): AgentFactory {
     const assembled = createSdkAgentFactory({
       handoff: (context) => this.handoffFor(context),
+      // SDK 侧的两处出口（交接插件迁移失败、按 id 读助手定义读不出来）进 `sdk` 那一格
+      logger: this.sdkLogger,
       // 档位名 → 参数补丁要用思考策略表；配置变更后会重读，所以这里给一个现读入口
       thinkingPresets: () => this.presets,
       // 压缩的归一规则按**会话行上的自动交接开关**分（读库，不读进程内记录）：开着的那一段
@@ -1185,6 +1217,8 @@ export class HostApp {
         // 有了它，平级会话越线自动交班时记忆真的会换（旧记忆成存档会话、原会话换上断点）、
         // 闸也真的会开 —— 记忆长什么样仍是 SDK 那一处算（PRD 4.5）
         commitMemory: this.handoffService.memoryCommitter(context.sessionId),
+        // SDK 交接服务自己的那几句（读不到 Skill、`self` 降级）进宿主日志的 `sdk` 那一格
+        logger: this.sdkLogger,
       });
   }
 
@@ -1609,12 +1643,14 @@ class LogRecordRelay {
   }
 }
 
-/** `resolveLogger()` 的三件产物：对外口子、本对象拥有的文件日志、记录的转发口 */
+/** `resolveLogger()` 的四件产物：对外口子、本对象拥有的文件日志、记录的转发口、SDK 那一格 */
 interface ResolvedLogging {
   logger: HubLogger;
   /** 自己拥有的文件日志（注入了外部 logger 时为 `null`：那份不归本对象关） */
   fileLogger: FileLogger | null;
   records: LogRecordRelay;
+  /** 注入 SDK 的那份日志（`withSource("sdk")`）：每处构造 SDK 对象时都用这一份 */
+  sdkLogger: LogSink;
 }
 
 /**
@@ -1624,12 +1660,26 @@ interface ResolvedLogging {
  */
 function resolveLogger(options: HostAppOptions, paths: HostPaths): ResolvedLogging {
   const records = new LogRecordRelay();
-  if (options.logger !== undefined) return { logger: options.logger, fileLogger: null, records };
+  if (options.logger !== undefined) {
+    const { logger } = options;
+    return {
+      logger,
+      fileLogger: null,
+      records,
+      // 注入了外部 logger 时那份只有 warn / error（`HubLogger`）：缺的 `info` 补一个空实现
+      // —— SDK 的 info 是「加载了什么」这类观测，不该退回标准输出
+      sdkLogger: {
+        info: () => undefined,
+        warn: (message, detail) => logger.warn(message, detail),
+        error: (message, detail) => logger.error(message, detail),
+      },
+    };
+  }
   const fileLogger = new FileLogger({
     file: join(paths.logsDir, HOST_LOG_FILE_NAME),
     onRecord: (record) => records.forward(record),
   });
-  return { logger: fileLogger, fileLogger, records };
+  return { logger: fileLogger, fileLogger, records, sdkLogger: fileLogger.withSource(SDK_SOURCE) };
 }
 
 // ---------------------------------------------------------------------------

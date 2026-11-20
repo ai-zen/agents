@@ -41,6 +41,7 @@ import {
   discoverUserToolFiles,
 } from "@ai-zen/agents-sdk";
 import type { ConfigManager, McpServerConfig } from "@ai-zen/agents-sdk";
+import type { LogSink } from "@ai-zen/agents-logger";
 
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
 import { HostError } from "../wire/errors.js";
@@ -134,6 +135,11 @@ export interface DiscoveryServiceOptions {
   findWorkspace?: WorkspaceCwdLookup;
   /** 用户主目录（`~/.agents/` 那一层），缺省 `os.homedir()`；测试注入临时目录 */
   homeDir?: string;
+  /**
+   * SDK 发现函数的日志口（可选）：MCP 配置 parse 不了 / subagent 文件读不出来时那几句走它。
+   * 不注就沿 SDK 的缺省（不记）—— 接线处给的是宿主自己那份 `withSource("sdk")`。
+   */
+  logger?: LogSink;
 }
 
 /** 一层的读取结果 */
@@ -187,11 +193,14 @@ export class DiscoveryService {
   private readonly configManager: ConfigManager;
   private readonly findWorkspace?: WorkspaceCwdLookup;
   private readonly homeDir: string;
+  /** SDK 发现函数的日志口（不给就不记：SDK 那边缺省就是沉默） */
+  private readonly logger?: LogSink;
 
   constructor(options: DiscoveryServiceOptions) {
     this.configManager = options.configManager;
     this.findWorkspace = options.findWorkspace;
     this.homeDir = options.homeDir ?? homedir();
+    this.logger = options.logger;
   }
 
   /** 数据根（SDK 的 `basePath`：`config.json` 所在目录） */
@@ -377,7 +386,7 @@ export class DiscoveryService {
    * 两者应当一致，不一致就说明某一层的文件坏了或者被近的层盖住了。
    */
   async effectiveMcpServers(cwd: string): Promise<McpServerConfig[]> {
-    return await discoverMcpServers(this.mcpPaths(cwd));
+    return await discoverMcpServers(this.mcpPaths(cwd), { logger: this.logger });
   }
 
   // -------------------------------------------------------------------------
@@ -710,7 +719,7 @@ export class DiscoveryService {
   private async readSkillLayer(dir: string): Promise<LayerReading> {
     let discovered;
     try {
-      discovered = await discoverSkills([dir], { silent: true });
+      discovered = await discoverSkills([dir], { silent: true, logger: this.logger });
     } catch (error) {
       return {
         state: "broken",
@@ -834,7 +843,7 @@ export class DiscoveryService {
   private async readSubAgentLayer(dir: string): Promise<LayerReading> {
     let discovered;
     try {
-      discovered = await discoverSubAgents([dir]);
+      discovered = await discoverSubAgents([dir], { logger: this.logger });
     } catch (error) {
       return {
         state: "broken",
