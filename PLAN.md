@@ -19,7 +19,7 @@ index.ts      包出口（wire 类型 + createHost）
 wire/         契约：methods（方法表）、frames（帧）、errors（业务码）、events（事件）、states（状态形状）
 net/          WsHub、auth、discovery、UploadReceiver
 handlers/     方法实现（一域一文件）+ index（HandlerTable 与桥接名单）
-services/     薄服务 + Logger（日志文件与轮转）
+services/     薄服务（写流不在本包：`packages/logger` 的 `FileLogger`，见 §3）
 runtime/      ScopeRegistry、AgentRegistry、RunRegistry、ChatRunner、TransientRunner
 storage/      Database、dbWorker、Repository、migrations
 i18n/         文案（en 基准 / zh）
@@ -58,7 +58,7 @@ HostApp（根：组装、启动、退出）
 │  ├─ Database             SQLite worker（all / get / run / tx / close）
 │  ├─ *Repository          只做 SQL，不含业务（一表一文件）
 │  ├─ i18n                 render / normalizeLanguage（en 基准、zh；未知语言回落 en）
-│  └─ Logger               日志落 `logs/host.log`（按大小轮转）、warn / error 同时上通知
+│  └─ FileLogger           `@ai-zen/agents-logger` 的实例（`resolveLogger` 造），落 `logs/host/host.log`；warn / error 按来源转通知
 ├─ 服务（一服务一文件，薄，共 16 个）
 │  ├─ WorkspaceService、SessionService、MessageService、AgentService
 │  ├─ ModelService、ConfigService、AssetService、SearchService、CredentialService
@@ -308,7 +308,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 ├── assets/                上传临时文件与正式素材
 ├── config.json            配置唯一真相（ConfigManager 以它为边界）
 ├── host.json              宿主自己的设置（端口那一档）
-├── logs/                  host.log + 轮转出的 .1…
+├── logs/                  一格一个进程：host/host.log（+ 轮转 .1…）、cli/{cli,launch,keys}.log
 ├── reasoning-presets.json 思考策略表（ConfigManager）
 ├── mcp.json               用户级 MCP 配置（ConfigManager）
 ├── agents/  sub-agents/  skills/  tools/  mcp-oauth/   由 ConfigManager 推导
@@ -456,12 +456,12 @@ pin 与退出信号必须分开，理由各一条：
 
 | 波 | 目标 | 状态 |
 |---|---|---|
-| **P0 接口正交** | 四个动作各管一件事（§5.1）：`mayStart` 作废，复活析成 `session.start`，`deliver` 只剩入队；复合动作（复活 → 开闸 → 投递）由客户端编排。接口面加 `session.start`（67 → 68） | ⬜ 未开始 |
+| **P0 接口正交** | 四个动作各管一件事（§5.1）：`mayStart` 作废，复活析成 `session.start`，`deliver` 只剩入队；复合动作（复活 → 开闸 → 投递）由客户端编排。接口面加 `session.start`（67 → 68） | ✅ 完成（`3a6fc4b` 契约与运行时、`4f000a2` e2e） |
 | **W1 契约补齐** | 用户裁定的契约面 12 条落进 `wire`（`AgentView.messages/function`、`agent.restoreFactory`、`setThinking(null)`、MCP 传输字段与 `extra`、`saveMcp`/`deleteMcp`、`DiscoveryLayerView.scope`、阈值可选、`message.list(around)`、删 `host.usage` 与 `credential.*` 的 wire 面、保留 `upgrade`/`shutdown`、图片模型不补恢复出厂） | ✅ 完成 |
 | **W2 CLI 收口** | `npx` 现下现起 + 下载屏 + `/ws` + `/shutdown` + 命令集增删；同批发 `agents-host@0.1.0-alpha.1` | ✅ 完成 |
 | **W3 归档与文档** | `cli-old` 降级为只读归档、旧包名清干净、文档跟上新契约 | ✅ 完成 |
 | **W4 桌面端完整问答视图** | 问答面板 → 完整视图 → 22 项零入口 → 体验欠账；真 GUI 竖切六步（连上 / 流式 / 作答交接问题 / 撤回 / 搜索命中并定位 / 置顶） | ⬜ 未开始（优先级最低） |
-| **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清；判据是**必要性**（不是「能删就删」）：不可能发生的条件删掉、真实会发生的坏输入与外部失败留着并写清「谁会走到」 | 第一遍完成；第二遍只在有新证据时做 |
+| **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清；判据是**必要性**（不是「能删就删」）：不可能发生的条件删掉、真实会发生的坏输入与外部失败留着并写清「谁会走到」 | ✅ 第一遍完成；第二遍只在有新证据时做 |
 | **W6 运行期可输入与重开回看** | 跑中发送进 inbox、投递回执、inbox 条数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧运行中输入与 `/sessions` | ✅ 完成 |
 | **W7 平级会话阶段 1** | `create_session` / `read_session_status`、建完即回（其中「结果投回并唤醒发起者」已被 PRD 4.6 判死，见 §14） | ✅ 完成（回投那半已废） |
 | **W8 agent 常驻与投递收口** | agent 常驻跨轮复用、Scope 去空闲回收、配置改成就地刷新、投递收敛成一个入口、平级会话进阶段 2 | ✅ 完成 |
@@ -481,7 +481,7 @@ pin 与退出信号必须分开，理由各一条：
 |---|---|
 | subagent 消息回看（PRD F-I7） | **不是欠账，是结论**：subagent 的消息不入库（`CORE.md` §17），`message.list { toolCallId }` 走内存（`ChatRunner.messagesOf`）；`messages.parentToolCallId` 那一列一并删掉，库里不再有第二种取法 |
 | 客户端自造问题 | 契约只有 `question.list` / `question.answer`；问题由宿主内部产生（交接线 / 二次确认）。集成用例因此绕开契约直开库造一行 |
-| 平级会话阶段 3 | 只剩一件事：**「agent 建的」标记**（`session.list` 给个派生的 `createdBy: "user" | "agent"`，客户端不用自己解释 `lineage === null`）。**没有「超时」这回事**（PRD 4.4：生死全手动、没有超时；这一格是旧计划的残留，已删）。`/sessions` 那条命令在 TUI，本仓没有 TUI 包。**「补投」不再是欠账**：会话间通信只有投递（PRD 4.6）。**「跨重启的孤儿」半条出列**（W10）：血缘与会话本身的身份落到了 `sessions.lineage` / `autoHandoff` 上，重启之后仍认得它与谁开的它；**没有** `peer_sessions` 那张表，也不再需要 |
+| 平级会话阶段 3 | **✅ 已完成**（`2c7f788`）：`session.list` 给个派生的 `createdBy: "user" | "agent"`（从 `lineage` 派生、不落库），客户端不用自己解释 `lineage === null`。**没有「超时」这回事**（PRD 4.4：生死全手动、没有超时；这一格是旧计划的残留，已删）。`/sessions` 那条命令在 TUI，本仓没有 TUI 包。**「补投」不再是欠账**：会话间通信只有投递（PRD 4.6）。**「跨重启的孤儿」半条出列**（W10）：血缘与会话本身的身份落到了 `sessions.lineage` / `autoHandoff` 上，重启之后仍认得它与谁开的它；**没有** `peer_sessions` 那张表，也不再需要 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
 | **desktop 未跟改（另一个仓）** | `desktop/packages/{main,shared,render}` 都 `link:` 本地 agents 包，但 `shared` / `render` 还把 `@ai-zen/agents-core` 钉在 `^4.1.0` —— 与 `5.0.0-alpha.0` 对不上，会在他俩的树里落两份 core。它读的 `InboxItem.source` 也已是判别结构。本仓没装 desktop 的依赖（那边连 `tsc` 都没有），所以**行级影响未核实**；动它要装 electron 那一套，属于另一个 workspace。 |
 | 「有方法、没入口」的契约面 | 以 `cli/src` + `packages/client/src` 为准数（2026-11-20）：**零调用点 11 条** —— `workspace.rename` / `workspace.remove` / `session.delete` / `session.kill` / `session.setThresholds` / `agent.restoreFactory` / `model.listImages` / `handoff.listDocuments` / `search.sessions` / `search.messages` / `host.upgrade`。**`host.upgrade` 出列**：它不是死方法，是远端唯一那条「受校验的重启」（见 §8 升级）。其余逐条按 PRD §4 的判据定删或留；`config.patch` / `getDiscovery` / `saveMcp` / `deleteMcp` / `notice.*` 已有消费面，不在这一格里 |
@@ -489,7 +489,7 @@ pin 与退出信号必须分开，理由各一条：
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删会话 / 删工作区之后确认一句、撞硬线、撤回之后、subagent 结束、附件超限…… |
 | `desktop` 的构建前提 | 类型检查依赖 `agents/packages/host/dist` 已构建，构建顺序没写进脚本（PRD Q12） |
 | 测试规模的口径 | 默认套件是一个文件一个库 + 一次 `tx` 清表；新增碰库的用例照这个形状写，否则单条用例要付 55ms 的建库钱 |
-| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | 现状：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。已定的形状：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（不引第三方库，**不带级别开关**——实测生产代码零传值：`cli` 一处 `info` 都不打，`host` 那 7 条里有一条是「这段会话为什么没 agent」的唯一线索，关不得）。细节见 `.ai-zen/pending/20261120-logging-governance.md` |
+| **日志治理**（一格一个进程 / 日志与通知「限定耦合」/ SDK 去全局 logger） | **✅ 已完成**（2026-11-20，`9181d9b`–`73a0c29` + cli 的 `35e5bbe`）。**改前**：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），靠一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。**改后（已落地）**：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）；**日志仍然默认转通知，但环路靠来源字段断**（通知模块注入 `source: "notice"` 的 logger，带这个来源的记录不转发，`notifying` 布尔位删掉）；**日志转发来的通知不持久化**（`origin: "log"` + `persist: false`：不入库、不重放，客户端在用户发送那一刻清掉）；写流由独立包 `@ai-zen/agents-logger` 提供（`packages/logger`：零运行时依赖、一实例一文件一轮转、不读 env、不持单例、不写 stdout、**不带级别开关**——实测生产代码零传值）。落点：`logs/host/host.log`、`logs/cli/{cli,launch,keys}.log`。细节见 `.ai-zen/pending/20261120-logging-governance.md` |
 
 ---
 
@@ -498,7 +498,7 @@ pin 与退出信号必须分开，理由各一条：
 每条都跑，不许减项：
 
 1. `npm run pretest`（`tsc --noEmit -p tsconfig.test.json`）零错误。
-2. `./node_modules/.bin/vitest run` 全绿；**失败不许用 `.skip` 换绿**，要么修好要么删掉并说明。当前基线（`packages/host`）：**889 passed / 55 文件**；`packages/logger` 19、`packages/sdk` 744。
+2. `./node_modules/.bin/vitest run` 全绿；**失败不许用 `.skip` 换绿**，要么修好要么删掉并说明。当前基线（2026-11-20 实跑）：`packages/host` **890 passed / 55 文件**、`packages/logger` **16**（1 文件）、`packages/sdk` **742**（58 文件）。
 3. 真进程竖切跑通（不是只有单测绿）：`npm run test:e2e` 的两条真子进程 + 真 WebSocket 用例。
 4. **不必要性审查**：新增的每个可选入参、可空返回、防御分支，都要答得出「哪个客户端的哪一行会走到」；答不出来就删。
 5. 文档同步：改了行为就改 `PRD.md` / `PLAN.md` 的对应条目，不许文档落后于代码。
