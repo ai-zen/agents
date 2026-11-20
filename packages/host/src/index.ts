@@ -1,3 +1,6 @@
+export { HostApp } from "./app.js";
+export type { HostAppDeps, HostAppOpenOptions } from "./app.js";
+export type { AppRouter } from "./modules/api/router.js";
 export { HostError } from "./infra/errors.js";
 export type { ErrorCode } from "./infra/errors.js";
 export { createTranslator } from "./modules/i18n/index.js";

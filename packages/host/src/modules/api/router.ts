@@ -1,0 +1,23 @@
+import { agentRouter } from "./agent.js";
+import type { HostApiDeps } from "./deps.js";
+import { eventsProcedure } from "./events.js";
+import { sessionRouter } from "./session.js";
+import { createTrpc } from "./trpc.js";
+
+/**
+ * 契约。每个 procedure 的入参与出参都写在各自的 `.input()` / `.output()` 上，这里只合名字。
+ *
+ * `events` 是单段路径：它是一条流，不属于某个域的「动作」集合。
+ */
+export function createAppRouter(deps: HostApiDeps) {
+  // tRPC 的根在这里建：失败出网那一层要读翻译函数，而 `t` 只有装配根上有。
+  const api = createTrpc(deps.t);
+
+  return api.router({
+    session: sessionRouter(deps, api),
+    agent: agentRouter(deps, api),
+    events: eventsProcedure(deps, api),
+  });
+}
+
+export type AppRouter = ReturnType<typeof createAppRouter>;

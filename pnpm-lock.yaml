@@ -97,6 +97,9 @@ importers:
       '@ai-zen/agents-sdk':
         specifier: workspace:^
         version: link:../sdk
+      '@trpc/server':
+        specifier: ^11.29.5
+        version: 11.29.5(@types/ws@8.18.2)(typescript@7.0.2)
       ws:
         specifier: ^8.22.2
         version: 8.22.2
@@ -334,6 +337,27 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+
+  '@trpc/server@11.29.5':
+    resolution: {integrity: sha512-8ET3fqBo4byVkjLNU047NFwmT3JQIjZCVpdJwanb6Tpv7b5P3M9pjN7JofqGyDQZaDR5XLkWX2hWrsIpjtt5wA==}
+    peerDependencies:
+      '@types/aws-lambda': '*'
+      '@types/express': '*'
+      '@types/ws': '*'
+      fastify: '*'
+      next: '*'
+      typescript: '>=5.7.2'
+    peerDependenciesMeta:
+      '@types/aws-lambda':
+        optional: true
+      '@types/express':
+        optional: true
+      '@types/ws':
+        optional: true
+      fastify:
+        optional: true
+      next:
+        optional: true
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -1262,6 +1286,12 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
+
+  '@trpc/server@11.29.5(@types/ws@8.18.2)(typescript@7.0.2)':
+    dependencies:
+      typescript: 7.0.2
+    optionalDependencies:
+      '@types/ws': 8.18.2
 
   '@types/chai@5.2.3':
     dependencies:
