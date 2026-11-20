@@ -47,7 +47,6 @@ import type {
 } from "@ai-zen/agents-sdk";
 
 import type { DeliveryInput } from "../runtime/ChatRunner.js";
-import type { StoredMessage } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
 import type { SessionCreateParams, SessionCreateResult } from "../wire/index.js";
 import type { SessionPresence } from "../wire/states.js";
@@ -177,7 +176,7 @@ export interface PeerSessionRunner {
    * 这一段此刻**在内存里的**消息 —— 就是 `agent.messages` 本身（`ChatRunner.messagesOf` 结构上
    * 满足）：活着读内存，没有 agent 就是 `null`（那时也就不可能有人「刚说过一句」）。
    *
-   * 摘要走这一口而不走 `deps.messages`：状态与摘要是同一刻的同一段，两者必须同源。
+   * 摘要走这一口而不查库：状态与摘要是同一刻的同一段，两者必须同源。
    */
   messagesOf(sessionId: string): AgentNS.Message[] | null;
 }
@@ -212,14 +211,6 @@ export interface PeerSessionServiceDeps {
   };
   /** 平级会话的诞生 */
   sessionCreator: PeerSessionSessionCreator;
-  /**
-   * 消息仓储。
-   *
-   * **本文件不读它**：摘要要的是「这一段此刻说到哪了」，那是活对象身上的事实
-   * （`chatRunner.messagesOf` 交回的 `agent.messages`）。查库会把两件事搞错 —— 写库是异步的
-   * （刚说的那句话可能还没落行），而且状态与摘要会从「同一刻的同一段」变成两个来源。
-   */
-  messages: { listBySession(sessionId: string): Promise<StoredMessage[]> };
   /** 执行者 */
   chatRunner: PeerSessionRunner;
 }

@@ -10,10 +10,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./protocol": {
-      "types": "./dist/protocol/index.d.ts",
-      "default": "./dist/protocol/index.js"
-    },
     "./package.json": "./package.json"
   },
   "bin": {

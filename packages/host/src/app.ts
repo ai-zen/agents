@@ -557,7 +557,6 @@ export class HostApp {
     this.peerSessions = new PeerSessionService({
       sessions: this.sessions,
       sessionCreator: this.sessionService,
-      messages: this.messages,
       chatRunner: {
         // 复活：创建者显式叫醒它（`create` 里那一句），与投递正交
         start: (sessionId) => this.chatRunner.start(sessionId),

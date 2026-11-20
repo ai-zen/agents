@@ -165,7 +165,6 @@ function makeHarness(rounds: FakeRound[]): Harness {
       listByLineage: async (lineage) => childrenOf(rows, lineage),
     },
     sessionCreator: new RegisteringCreator(rows),
-    messages: { listBySession: (sessionId) => store.listBySession(sessionId) },
     chatRunner: runner,
   });
   service.bind(caller, PARENT_ID);

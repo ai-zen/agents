@@ -182,31 +182,6 @@ export class CompletionService {
     };
   }
 
-  /**
-   * 等一次扫描落地（预热与用例用）。
-   *
-   * 它只是「推到扫完为止」，不参与 `files` 的三条出口。
-   */
-  async prefetch(workspaceId: string): Promise<void> {
-    const id = requireWorkspaceId(workspaceId);
-    const state = this.stateOf(id);
-    if (state.pending !== null) {
-      await state.pending;
-      return;
-    }
-    if (state.expiresAt !== null && state.expiresAt > this.clock.now()) return;
-    const cwd = await this.resolveCwd(id);
-    state.pending = this.scan(cwd, state).finally(() => {
-      state.pending = null;
-    });
-    await state.pending;
-  }
-
-  /** 丢掉一个项目的缓存（项目被删时用；下次问会重新扫） */
-  forget(workspaceId: string): void {
-    this.states.delete(workspaceId);
-  }
-
   // -------------------------------------------------------------------------
   // 扫描
   // -------------------------------------------------------------------------

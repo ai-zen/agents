@@ -84,6 +84,16 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
   throw new Error(`等不到：${label}`);
 }
 
+/** 等后台那次扫描跑完（`files` 在扫的这段时间一直回 `scanning`，扫完才给清单） */
+async function waitForScan(service: CompletionService): Promise<void> {
+  for (let index = 0; index < 200; index += 1) {
+    const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
+    if (result.state !== "scanning") return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("等不到：扫描跑完");
+}
+
 beforeEach(async () => {
   dataRoot = await mkdtemp(join(tmpdir(), "ai-zen-completion-"));
   project = join(dataRoot, "project");
@@ -118,7 +128,7 @@ describe("CompletionService：git 仓库", () => {
     expect(first.scannedAt).toBeNull();
     expect(first.problem?.messageKey).toBe("completion.scanning");
 
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
 
     const ready = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(ready.state).toBe("ready");
@@ -141,7 +151,7 @@ describe("CompletionService：git 仓库", () => {
       files: ["src/components/button.tsx", "src/core.ts", "src/a.ts", "test/x.test.ts"],
     };
     const service = makeService(git);
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
 
     const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "src/" });
     expect(result.entries).toEqual([
@@ -164,7 +174,7 @@ describe("CompletionService：git 仓库", () => {
     git.listing = { ok: false, files: [], reason: "git not found" };
     const service = makeService(git);
 
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
     const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "src/" });
     expect(result.state).toBe("ready");
     expect(result.entries.map((entry) => entry.path)).toContain("src/index.ts");
@@ -184,7 +194,7 @@ describe("CompletionService：非 git 目录", () => {
     const git = new FakeGit();
     git.listing = { ok: false, files: [], reason: "not a repository" };
     const service = makeService(git);
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
 
     const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(result.state).toBe("ready");
@@ -200,7 +210,7 @@ describe("CompletionService：非 git 目录", () => {
 
   it("空目录是 ready（不是 unavailable）", async () => {
     const service = makeService(new FakeGit());
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
     const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(result.state).toBe("ready");
     expect(result.entries).toEqual([]);
@@ -214,7 +224,7 @@ describe("CompletionService：上限、超时、缓存", () => {
     const git = new FakeGit();
     git.listing = { ok: true, files: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"] };
     const service = makeService(git, { maxEntries: 3 });
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
 
     const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(result.state).toBe("ready");
@@ -251,7 +261,7 @@ describe("CompletionService：上限、超时、缓存", () => {
     git.listing = { ok: true, files: ["a.ts"] };
     const service = makeService(git);
 
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
     expect(git.calls).toHaveLength(1);
 
     clock.advance(10_000);
@@ -262,7 +272,7 @@ describe("CompletionService：上限、超时、缓存", () => {
     clock.advance(6_000);
     const expired = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(expired.state).toBe("scanning");
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
     expect(git.calls).toHaveLength(2);
   });
 
@@ -291,7 +301,7 @@ describe("CompletionService：拿不到清单的情况", () => {
   it("目录已经不在了就说清楚（D12 / D7）", async () => {
     const service = makeService(new FakeGit());
     await rm(project, { recursive: true, force: true });
-    await service.prefetch(WORKSPACE_ID);
+    await waitForScan(service);
 
     const result = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(result.state).toBe("unavailable");

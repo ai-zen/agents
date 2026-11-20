@@ -12,7 +12,7 @@ import type { Agent } from "@ai-zen/agents-core";
 
 import type { DeliveryInput } from "../runtime/ChatRunner.js";
 import { FakeAgent } from "../runtime/TestSupport.js";
-import type { Session, StoredMessage } from "../storage/types.js";
+import type { Session } from "../storage/types.js";
 import type {
   SessionCreateParams,
   SessionCreateResult,
@@ -47,23 +47,6 @@ function session(id: string, overrides: Partial<Session> = {}): Session {
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...overrides,
-  };
-}
-
-/** 一段会话里的一行消息（只填本服务读到的那几格） */
-function row(sessionId: string, role: string, text: string, seq = 1): StoredMessage {
-  return {
-    id: `${sessionId}-m${seq}`,
-    sessionId,
-    source: null,
-    seq,
-    role,
-    status: AgentNS.MessageStatus.Completed as string,
-    omit: false,
-    content: text,
-    data: {},
-    createdAt: seq,
-    updatedAt: seq,
   };
 }
 
@@ -178,8 +161,8 @@ interface Harness {
   runner: FakeRunner;
   /** 调用方（父会话那段会话里装配出来的 agent） */
   caller: Agent;
-  /** 摆一段会话的「库里那一行」与它的消息 */
-  seed(sessionId: string, messages?: StoredMessage[]): void;
+  /** 摆一段会话的「库里那一行」 */
+  seed(sessionId: string): void;
   /** 摆「那一段此刻在内存里说了什么」（`agent.messages`：状态与摘要都从这里现读） */
   say(sessionId: string, ...messages: AgentNS.Message[]): void;
 }
@@ -187,7 +170,6 @@ interface Harness {
 function makeHarness(): Harness {
   const creator = new FakeCreator();
   const runner = new FakeRunner();
-  const stored = new Map<string, StoredMessage[]>();
   const caller = new FakeAgent();
 
   const service = new PeerSessionService({
@@ -199,9 +181,6 @@ function makeHarness(): Harness {
           .map((row) => ({ id: row.id })),
     },
     sessionCreator: creator,
-    messages: {
-      listBySession: async (sessionId) => stored.get(sessionId) ?? [],
-    },
     chatRunner: runner,
   });
   service.bind(caller, PARENT_ID);
@@ -211,11 +190,10 @@ function makeHarness(): Harness {
     creator,
     runner,
     caller,
-    seed: (sessionId, messages = []) => {
+    seed: (sessionId) => {
       if (!creator.rows.has(sessionId)) {
         creator.rows.set(sessionId, session(sessionId));
       }
-      stored.set(sessionId, messages);
     },
     say: (sessionId, ...messages) => {
       if (!creator.rows.has(sessionId)) {
