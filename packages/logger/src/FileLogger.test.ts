@@ -1,5 +1,5 @@
 /**
- * 一份日志文件的行为：行格式、按大小轮转、级别阈值、排队的写盘、收尾、来源标签，
+ * 一份日志文件的行为：行格式、按大小轮转、排队的写盘、收尾、来源标签，
  * 以及两个订阅口（`onRecord` / `onWriteError`）。
  *
  * 用例只碰临时目录，不等真时间：轮转靠把 `maxBytes` 调小，时间靠注入的时钟。
@@ -117,57 +117,6 @@ describe("轮转", () => {
     expect(await readIfExists(`${file}.1`)).not.toBeNull();
     // maxFiles: 2 = 正在写的那份 + 一份旧的，没有 .2
     expect(await readIfExists(`${file}.2`)).toBeNull();
-  });
-});
-
-describe("级别阈值", () => {
-  it("低于阈值的记录不落盘", async () => {
-    const dir = await makeDir();
-    const file = join(dir, "host.log");
-    const logger = new FileLogger({ file, level: "warn" });
-
-    logger.info("只是信息");
-    logger.warn("有点问题");
-    logger.error("出事了");
-    await logger.close();
-
-    const text = (await readIfExists(file)) ?? "";
-    expect(text).not.toContain("只是信息");
-    expect(text).toContain("有点问题");
-    expect(text).toContain("出事了");
-  });
-
-  it("被过滤的记录也不触发 onRecord（阈值挡的是「这条记录」）", async () => {
-    const dir = await makeDir();
-    const records: LogRecord[] = [];
-    const logger = new FileLogger({
-      file: join(dir, "host.log"),
-      level: "error",
-      onRecord: (record) => records.push(record),
-    });
-
-    logger.info("只是信息");
-    logger.warn("有点问题");
-    logger.error("出事了");
-    await logger.close();
-
-    expect(records.map((record) => record.level)).toEqual(["error"]);
-  });
-
-  it("setLevel 从下一行起生效", async () => {
-    const dir = await makeDir();
-    const file = join(dir, "host.log");
-    const logger = new FileLogger({ file });
-
-    logger.info("改之前");
-    logger.setLevel("error");
-    logger.info("改之后");
-    logger.warn("改之后的警告");
-    await logger.close();
-
-    const text = (await readIfExists(file)) ?? "";
-    expect(text).toContain("改之前");
-    expect(text).not.toContain("改之后");
   });
 });
 

@@ -5,16 +5,16 @@
  * 不认识「通知」这个概念** —— 谁想知道刚刚写出去了一条什么，订阅 `onRecord` 自己处理。
  * 于是「日志」这件事没有隐藏的第二个出口，谁在用这个包，一眼能看全。
  *
- * 四件事在这里定死：
+ * 三件事在这里定死：
  *
  * 1. **按大小轮转**：单份到 `maxBytes`（缺省 5MB）就换下一份，保留 `maxFiles` 份（缺省 5，
  *    含正在写的那份）。命名是 `<file>`（正在写）、`<file>.1`（上一份）……，最老的一份在
  *    轮转时删掉。不引依赖：`node:fs` 的 `rename` / `rm` 就够。
- * 2. **级别阈值在入口判**：被挡下的记录既不落盘，**也不触发 `onRecord`** —— 阈值是「这条
- *    记录不存在」，不是「这条记录只是不写盘」。
- * 3. **写盘按到达顺序串行排队**：一行日志的代价不该被写盘拖住，所以调用方不必等；`close()`
+ * 2. **写盘按到达顺序串行排队**：一行日志的代价不该被写盘拖住，所以调用方不必等；`close()`
  *    把队排空再关流（进程退出前没写出去的行等于没写）。
- * 4. **流是懒开的**：第一次真的要写才 open —— 一行都没写的进程不必在磁盘上留一个空文件。
+ * 3. **流是懒开的**：第一次真的要写才 open —— 一行都没写的进程不必在磁盘上留一个空文件。
+ *
+ * 没有级别阈值：`info` / `warn` / `error` 一视同仁地写出去。挡掉哪一档不是这个包的判断。
  *
  * 行格式：`<ISO 时间> <级别> <来源> <消息> [detail JSON]`。级别定宽（`INFO ` / `WARN ` /
  * `ERROR`），于是 grep 一列就能筛。
@@ -57,8 +57,6 @@ export interface FileLoggerOptions {
   maxBytes?: number;
   /** 保留几份（含正在写的那份），缺省 5 */
   maxFiles?: number;
-  /** 阈值：低于它的记录在入口就被挡掉，缺省 `info` */
-  level?: LogLevel;
   /** 行里的来源标签，缺省 `app` */
   source?: string;
   /** 注入时钟（用例要可复现），缺省 `Date.now` */
@@ -75,9 +73,6 @@ export const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 /** 保留几份（含正在写的那一份） */
 export const DEFAULT_MAX_FILES = 5;
 
-/** 级别的先后次序：阈值比较用（越往后越严重） */
-const LEVEL_ORDER: Record<LogLevel, number> = { info: 0, warn: 1, error: 2 };
-
 export class FileLogger implements LogSink {
   private readonly file: string;
   private readonly maxBytes: number;
@@ -86,9 +81,6 @@ export class FileLogger implements LogSink {
   private readonly now: () => number;
   private readonly onRecord?: (record: LogRecord) => void;
   private readonly onWriteError?: (error: unknown) => void;
-
-  /** 当前阈值（`setLevel` 可改） */
-  private level: LogLevel;
 
   private stream: WriteStream | null = null;
   /** 正在写的那份已经写了多少字节（轮转判据） */
@@ -103,7 +95,6 @@ export class FileLogger implements LogSink {
     this.file = options.file;
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.maxFiles = Math.max(1, options.maxFiles ?? DEFAULT_MAX_FILES);
-    this.level = options.level ?? "info";
     this.defaultSource = options.source ?? "app";
     this.now = options.now ?? Date.now;
     this.onRecord = options.onRecord;
@@ -144,11 +135,6 @@ export class FileLogger implements LogSink {
     };
   }
 
-  /** 改阈值（下一行起生效） */
-  setLevel(level: LogLevel): void {
-    this.level = level;
-  }
-
   /**
    * 收尾：停止接纳新行 → 把排队的行写完 → 关流。
    *
@@ -164,13 +150,12 @@ export class FileLogger implements LogSink {
   // -------------------------------------------------------------------------
 
   /**
-   * 一条记录的唯一入口：阈值 → 记时间 → 排队写盘 → 通知订阅者。
+   * 一条记录的唯一入口：记时间 → 排队写盘 → 通知订阅者。
    *
    * `onRecord` 在**排队之后**才叫：它抛错不能把这条记录从盘上抹掉。
    */
   private log(level: LogLevel, source: string, message: string, detail?: unknown): void {
     if (this.closed) return;
-    if (LEVEL_ORDER[level] < LEVEL_ORDER[this.level]) return;
     const at = new Date(this.now()).toISOString();
     const line = formatLine(at, level, source, message, detail);
     this.queue = this.queue
