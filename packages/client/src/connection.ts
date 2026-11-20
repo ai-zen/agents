@@ -110,6 +110,16 @@ export interface SpawnedHost {
 export interface SpawnHostContext {
   dataRoot: string;
   /**
+   * 拉起日志的**完整路径**：拉起时给子进程收 stdout/stderr 的那个文件（每次拉起重新写）。
+   *
+   * 由**调用方**给，不由本包按数据根推 —— 日志落哪一格是各进程自己的事（一格只归一个进程写）：
+   * CLI 给 `<数据根>/logs/cli/launch.log`，桌面端将来给它自己那一格。本包替调用方决定落点，
+   * 就是把「谁的日志」重新焊回拉起这一层。
+   *
+   * 功能用途：子进程拉不起来时，这个文件的**最后一行**就是上屏的那句原因。
+   */
+  launchLog: string;
+  /**
    * 宿主入口（`@ai-zen/agents-host` 的 `dist/cli.js`，或宿主自己捆好的那一个）。
    *
    * 给了就起它；没给就按 `versionRange` 让 npx 现下现起。
@@ -138,6 +148,11 @@ export interface SpawnDeps {
 export interface EnsureHostOptions {
   /** 数据根：显式给 > `AI_ZEN_DIR` > `~/.ai-zen` */
   dataRoot?: string;
+  /**
+   * 拉起日志的完整路径（每次拉起重新写）：只在「真要拉起一个」时才用得上，由调用方决定落哪一格
+   * （见 `SpawnHostContext.launchLog`）。显式地址那条路绝不拉起，给了也不会碰。
+   */
+  launchLog: string;
   /** 客户端身份（握手带上，宿主用它做连接列表与日志） */
   clientInfo: ClientInfo;
   /** 上一次的连接设置（`settings.ts`）。`remote` 即「显式地址」 */
@@ -322,6 +337,7 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
   const spawnHost = options.spawnHost ?? spawnHostByContext;
   const spawned = await spawnHost({
     dataRoot,
+    launchLog: options.launchLog,
     ...(options.hostEntry === undefined ? {} : { entry: options.hostEntry }),
     ...(options.versionRange === undefined ? {} : { versionRange: options.versionRange }),
     onStage,
@@ -340,7 +356,7 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
     throwIfCancelled();
-    if (launchFailure) throw launchFailed(launchFailure, dataRoot, language);
+    if (launchFailure) throw launchFailed(launchFailure, options.launchLog, language);
     const facts = await readHostFile(dataRoot, readText);
     // 只认**新**的那个 pid：旧发现文件（进程已死）对应的端口不该被当成刚拉起的那个
     if (facts && facts.pid !== discovered?.pid) {
@@ -360,15 +376,15 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
   }
 
   throwIfCancelled();
-  if (launchFailure) throw launchFailed(launchFailure, dataRoot, language);
+  if (launchFailure) throw launchFailed(launchFailure, options.launchLog, language);
   throw localError("host_did_not_start", {
     language,
-    params: { timeoutMs, dataRoot, log: join(dataRoot, "logs", "host.log") },
+    params: { timeoutMs, dataRoot, log: join(dataRoot, HOST_LOG_FILE) },
     detail: {
       dataRoot,
       timeoutMs,
       discoveredPid: discovered?.pid ?? null,
-      logFile: join(dataRoot, "logs", "host.log"),
+      logFile: join(dataRoot, HOST_LOG_FILE),
     },
   });
 }
@@ -489,10 +505,18 @@ export function npxHostArgv(input: {
   };
 }
 
-/** `<数据根>/logs/host-launch.log`：拉起过程中那个子进程的输出（失败时的那句原因就在这里） */
-export function hostLaunchLogPath(dataRoot: string): string {
-  return join(dataRoot, "logs", "host-launch.log");
-}
+/**
+ * 宿主自己那份日志：`<数据根>/logs/host/host.log`。
+ *
+ * 这是全仓**唯一**一处不得不重复宿主路径的地方：`host_did_not_start` 要给用户指出「该去看哪个
+ * 文件」，而这里不能 import 宿主（宿主对本包只是 `devDependency`，产物里不带它的代码，见
+ * `hostFilePath` 同一段理由）。**与 host 包的 `HostPaths.hostLogsDir` + `HOST_LOG_FILE_NAME`
+ * 同步**：宿主那边改布局，这里跟着改。
+ *
+ * 别和拉起日志（`SpawnHostContext.launchLog`）混起来：那一份是**客户端**给子进程收输出的文件，
+ * 路径由调用方给；这一份是**宿主**自己写的日志。
+ */
+const HOST_LOG_FILE = join("logs", "host", "host.log");
 
 /**
  * 宿主入口：**已装的那个私有包**的 `dist/cli.js`。
@@ -532,7 +556,7 @@ interface StartHostProcessInput extends SpawnDeps {
  *
  * ## 输出为什么不走管道
  *
- * 它写 `<数据根>/logs/host-launch.log`（每次拉起重新写）。管道有两个问题：一是把 npm 的进度混进
+ * 它写调用方给的那个拉起日志路径（`context.launchLog`，每次拉起重新写）。管道有两个问题：一是把 npm 的进度混进
  * 调用方的终端（TUI 是全屏渲染，任何一行都会把界面打花）；二是一条活着的管道会把客户端钉在事件
  * 循环里 —— `ai "…"` 于是永远退不出去。文件顺带解决了「失败时从哪儿读那句原因」。
  *
@@ -547,7 +571,7 @@ interface StartHostProcessInput extends SpawnDeps {
  */
 async function startDetachedHost(input: StartHostProcessInput): Promise<SpawnedHost> {
   const platform = input.platform ?? process.platform;
-  const logFile = hostLaunchLogPath(input.context.dataRoot);
+  const logFile = input.context.launchLog;
   const logFd = openLaunchLog(logFile);
   const child = (input.spawn ?? spawn)(input.command, input.args, {
     env: input.env ?? process.env,
@@ -644,10 +668,9 @@ function lastMeaningfulLine(path: string): string {
 /** 子进程提前退出 → 一条能上屏的失败（原因原样给，不翻译、不改写） */
 function launchFailed(
   failure: HostLaunchFailure,
-  dataRoot: string,
+  logFile: string,
   language: string | undefined,
 ): ClientError {
-  const logFile = hostLaunchLogPath(dataRoot);
   const reason =
     failure.reason !== ""
       ? failure.reason

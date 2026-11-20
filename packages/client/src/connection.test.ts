@@ -19,7 +19,6 @@ import type { ClientInfo } from "@ai-zen/agents-host";
 import type { Client, ClientOptions } from "./client.js";
 import {
   ensureHost,
-  hostLaunchLogPath,
   npxHostArgv,
   readHostFile,
   resolveDataRoot,
@@ -36,6 +35,14 @@ import { fromHostError, localError, type ClientError } from "./errors.js";
 
 const DATA_ROOT = "/data/ai-zen";
 const CLIENT_INFO: ClientInfo = { name: "test-client", version: "0.0.0-test" };
+
+/**
+ * 拉起日志的落点由**调用方**给，所以用例自己定一个（CLI 那边给的是 `<数据根>/logs/cli/launch.log`）。
+ * 本包不再有「按数据根推出来」的那个函数。
+ */
+function launchLogOf(dataRoot: string): string {
+  return join(dataRoot, "logs", "cli", "launch.log");
+}
 const HOST_FILE = hostFilePath(DATA_ROOT);
 const TOKEN_FILE = tokenFilePath(DATA_ROOT);
 
@@ -95,6 +102,7 @@ function harness(config: {
 
   const options: EnsureHostOptions = {
     dataRoot: DATA_ROOT,
+    launchLog: launchLogOf(DATA_ROOT),
     clientInfo: CLIENT_INFO,
     ...(config.settings ? { settings: config.settings } : {}),
     hostEntry: "/host/dist/cli.js",
@@ -291,7 +299,7 @@ describe("本机：没有就拉一个", () => {
     expect(error.code).toBe("host_did_not_start");
     expect(error.detail).toMatchObject({
       dataRoot: DATA_ROOT,
-      logFile: `${DATA_ROOT}/logs/host.log`,
+      logFile: `${DATA_ROOT}/logs/host/host.log`,
     });
     expect(test.spawned).toHaveLength(1);
   });
@@ -420,7 +428,12 @@ describe("两条路的判据：给了 entry 就起它，没给就 npx", () => {
     const fake = fakeSpawn();
 
     const spawned = await spawnHostByContext(
-      { dataRoot: "/data/ai-zen", entry: "/host/dist/host.mjs", versionRange: RANGE },
+      {
+        dataRoot: "/data/ai-zen",
+        launchLog: launchLogOf("/data/ai-zen"),
+        entry: "/host/dist/host.mjs",
+        versionRange: RANGE,
+      },
       { spawn: fake.spawn, platform: "linux" },
     );
 
@@ -444,7 +457,7 @@ describe("两条路的判据：给了 entry 就起它，没给就 npx", () => {
     const fake = fakeSpawn();
 
     await spawnHostByContext(
-      { dataRoot: "/data/ai-zen", versionRange: RANGE },
+      { dataRoot: "/data/ai-zen", launchLog: launchLogOf("/data/ai-zen"), versionRange: RANGE },
       { spawn: fake.spawn, platform: "linux" },
     );
 
@@ -454,12 +467,12 @@ describe("两条路的判据：给了 entry 就起它，没给就 npx", () => {
 });
 
 describe("npx 那条路的子进程", () => {
-  it("windowsHide + detached；输出落 <数据根>/logs/host-launch.log（不进终端、不占管道）", async () => {
+  it("windowsHide + detached；输出落调用方给的那个拉起日志（不进终端、不占管道）", async () => {
     const dir = tempDataRoot();
     const fake = fakeSpawn();
 
     await spawnHostViaNpx(
-      { dataRoot: dir, versionRange: RANGE },
+      { dataRoot: dir, launchLog: launchLogOf(dir), versionRange: RANGE },
       { spawn: fake.spawn, platform: "linux" },
     );
 
@@ -472,7 +485,7 @@ describe("npx 那条路的子进程", () => {
     expect(stdio[1]).toBe("ignore");
     // 第三格是一个打开的文件描述符：进程的输出写进那个文件，而不是一条活管道
     expect(typeof stdio[2]).toBe("number");
-    expect(existsSync(hostLaunchLogPath(dir))).toBe(true);
+    expect(existsSync(launchLogOf(dir))).toBe(true);
     expect(fake.child.unrefd).toBe(true);
   });
 
@@ -482,7 +495,12 @@ describe("npx 那条路的子进程", () => {
     const stages: HostLaunchStage[] = [];
 
     await spawnHostViaNpx(
-      { dataRoot: dir, versionRange: RANGE, onStage: (stage) => stages.push(stage) },
+      {
+        dataRoot: dir,
+        launchLog: launchLogOf(dir),
+        versionRange: RANGE,
+        onStage: (stage) => stages.push(stage),
+      },
       { spawn: fake.spawn, platform: "linux" },
     );
 
@@ -491,9 +509,10 @@ describe("npx 那条路的子进程", () => {
 
   it("没给版本范围 → host_version_range_missing，一个进程都不起", async () => {
     const fake = fakeSpawn();
-    const error = (await spawnHostViaNpx({ dataRoot: "/data/ai-zen" }, { spawn: fake.spawn }).catch(
-      (caught: unknown) => caught,
-    )) as ClientError;
+    const error = (await spawnHostViaNpx(
+      { dataRoot: "/data/ai-zen", launchLog: launchLogOf("/data/ai-zen") },
+      { spawn: fake.spawn },
+    ).catch((caught: unknown) => caught)) as ClientError;
 
     expect(error.code).toBe("host_version_range_missing");
     expect(fake.calls).toEqual([]);
@@ -522,7 +541,12 @@ describe("阶段与取消", () => {
     const fake = fakeSpawn();
 
     const spawning = spawnHostViaNpx(
-      { dataRoot: dir, versionRange: RANGE, signal: controller.signal },
+      {
+        dataRoot: dir,
+        launchLog: launchLogOf(dir),
+        versionRange: RANGE,
+        signal: controller.signal,
+      },
       // win32 那一支不走 `process.kill(-pid)`：用例不该真的去碰一个进程组
       { spawn: fake.spawn, platform: "win32" },
     );
@@ -555,13 +579,13 @@ describe("拉起失败：拿子进程最后一行输出当原因", () => {
     const fake = fakeSpawn({
       exit: { code: 1 },
       output: {
-        path: hostLaunchLogPath(dir),
+        path: launchLogOf(dir),
         text: "npm warn exec 需要安装\n\u001b[31mnpm error 404 not found @ai-zen/agents-host\u001b[0m\n\n",
       },
     });
 
     const spawned = await spawnHostViaNpx(
-      { dataRoot: dir, versionRange: RANGE },
+      { dataRoot: dir, launchLog: launchLogOf(dir), versionRange: RANGE },
       { spawn: fake.spawn, platform: "linux" },
     );
 
@@ -584,6 +608,6 @@ describe("拉起失败：拿子进程最后一行输出当原因", () => {
 
     expect(error.code).toBe("host_launch_failed");
     expect(error.message).toContain("npm error 404 not found");
-    expect(error.detail).toMatchObject({ code: 1, logFile: hostLaunchLogPath(DATA_ROOT) });
+    expect(error.detail).toMatchObject({ code: 1, logFile: launchLogOf(DATA_ROOT) });
   });
 });

@@ -352,6 +352,7 @@ describe("ensureHost 对真实例", () => {
     let spawned = 0;
     const result = await ensureHost({
       dataRoot,
+      launchLog: join(dataRoot, "logs", "cli", "launch.log"),
       clientInfo: CLIENT_INFO,
       settings: { mode: "local", language: "zh" },
       spawnHost: async () => {
@@ -376,6 +377,8 @@ describe("真拉起一个宿主进程（end-to-end）", () => {
     try {
       const result = await ensureHost({
         dataRoot: freshRoot,
+        // 拉起日志的落点由调用方给：这里给一个属于本次临时数据根的路径
+        launchLog: join(freshRoot, "logs", "cli", "launch.log"),
         clientInfo: CLIENT_INFO,
         settings: { mode: "local" },
         // 缺省的拉起方式是让 npx 现下现起（PRD L14），而这一条验的是「本机已经有那一份时
