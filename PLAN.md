@@ -76,6 +76,12 @@ HostApp（根：组装、启动、退出）
 │  └─ handlers/            方法实现（一域一文件）→ HandlerTable
 ```
 
+**根的职责只有装配**：`this.x = await createX(...)`，一行一个。造对象的事写在各自的工厂里（`resolveLogger` / `resolveCliEnv` / `createNoticeSubsystem` 这类），跟它造的东西放同一处；根里不出现业务 `if`，也不出现「没有就给个默认」——那是工厂的事。
+
+**门面不往下传**：`HostApp` 递进 `services` / `runtime` 的是**它要的那几件事**（`handoffService` 收的是 `{ sessions, workspaces, messages, sessionViews, agents, runner }`，不是 `HostApp`）。传根会让「这个对象依赖什么」从签名里消失，也会让依赖方向成环。
+
+判据一句话：**打开一个文件，应该一眼答出「这东西是谁造的、它依赖什么、它活多久」**。三个根（`HostApp` / `CliApp` / `DesktopApp`）同一个形状——构造便宜、`start()` 按序造齐、`stop()` 逆序收尾；拿不准就照 `HostApp.start()`、`resolveCliEnv`、`resolveLogger` 抄，不另立条文。
+
 **视图与入参的几处形状**（每条写「谁产生 → 客户端拿它做什么」）：
 
 | 形状 | 谁产生 | 客户端拿它做什么 |
@@ -455,6 +461,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删会话 / 删工作区之后确认一句、撞硬线、撤回之后、subagent 结束、附件超限…… |
 | `desktop` 的构建前提 | 类型检查依赖 `agents/packages/host/dist` 已构建，构建顺序没写进脚本（PRD Q12） |
 | 测试规模的口径 | 默认套件是一个文件一个库 + 一次 `tx` 清表；新增碰库的用例照这个形状写，否则单条用例要付 55ms 的建库钱 |
+| **日志治理**（目录按进程分 / 日志与通知解耦 / SDK 去全局 logger） | 现状：两端都把 `warn` / `error` 顺手推上通知栏（`Logger.raiseNotice`、`cli/src/sdk-log.ts` 的 `deliver`），要一个 `notifying` 重入标记才不打架；服务端进程里 SDK 那 23 处 `getLogger()` 没人接管 → 走 `console` → 落进客户端 spawn 的 `logs/host-launch.log`，而那个文件每次拉起都清空。方向已谈定：**一个进程一格目录**（`logs/host/`、`logs/cli/`、将来的 `logs/desktop/`）、**日志只落文件、通知由调用点显式发**、**日志写流由一个独立包提供**（不引第三方库）。未决策清单见 `.ai-zen/pending/20261120-logging-governance.md` |
 
 ---
 
