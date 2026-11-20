@@ -84,8 +84,7 @@ describe("createSubAgentTool", () => {
   });
 
   it("buildAgent 造出来的subagent 是「一次性」的，且注入的 user 消息带 source", async () => {
-    // 委派 = 燃料 + 一把钥匙（CORE.md §9）：`buildAgent` 只能造一次性 agent，
-    // 否则它既没人 stop、又会把「结果靠事件回来」的能力错配给一个用完就扔的节点。
+    // 一次性委派的理由见 `subAgentTools.ts`（`CORE.md` §9）
     const scope = mockScope();
     const def = sampleDef("sa1", "agent_one");
     def.modelId = "gpt4"; // 有独立模型 → 不必碰父 agent 的 client

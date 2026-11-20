@@ -119,7 +119,7 @@ export class DownloadFileTool extends SdkCallbackTool {
         success: false,
         ...(aborted ? { aborted: true } : {}),
         error: error?.message || "Download failed",
-        // 已开始写盘时文件可能不完整：只如实告知，绝不去删（同路径的原文件可能本来就存在）
+        // 已开始写盘时文件可能不完整：只如实告知，不去删（同路径的原文件可能本来就存在）
         ...(startedWriting
           ? { note: "The file at the save path may be incomplete or overwritten" }
           : {}),

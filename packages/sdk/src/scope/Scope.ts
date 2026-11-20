@@ -19,8 +19,9 @@ export interface FilterOutput {
 }
 
 /**
- * 排除项黑名单（优先级高于 permissions）。
- * 与 permissions 四维对称，用于安全预过滤。
+ * 排除项黑名单，在权限过滤之前先剔除。
+ * 与 permissions 四维对称；实际用途是「这一层不该看见某个名字」（如 subagent 解析
+ * 自己的工具时排掉自身，防递归）。
  */
 export interface ExcludeOptions {
   tools?: string[];
@@ -35,7 +36,7 @@ export interface FilterOptions {
 }
 
 /**
- * 取配置的端口 —— `Scope` 不再收一份配置快照，而是收「怎么拿到当下这一份」。
+ * 取配置的端口 —— `Scope` 收的是「怎么拿到当下这一份」，不是一份配置快照。
  *
  * 配置的本质是磁盘上那几个 json：改完之后该由下一次 `refresh()` 现读读到，
  * 而不是把整个 Scope 拆掉重建（拆掉会连带别的能力一起重来，且正在跑的那一次请求
@@ -47,7 +48,7 @@ export type ScopeConfigSource = () => AppConfig | Promise<AppConfig>;
 /**
  * Scope — 全局上下文 + 能力装配编排容器。
  *
- * Scope 是 SDK 的唯一入口对象，持有：
+ * 持有：
  *   - 应用配置（端点、模型等）
  *   - 当前工作目录 cwd（相对路径解析基准，ToolEnv.cwd 的来源）
  *   - Agent 定义目录 agentsDir（createAgent 用）
@@ -61,7 +62,7 @@ export type ScopeConfigSource = () => AppConfig | Promise<AppConfig>;
  * ```
  *
  * 设计原则：
- *   - Scope 只做编排：三阶段管线骨架（发现 → 过滤 → 实例化）+ 生命周期
+ *   - Scope 只做编排：三阶段管线骨架 + 生命周期，契约见 `ScopePlugin`
  *   - 能力来源（内置/用户工具、Skill、MCP、SubAgent）全部疏散到 ScopePlugin，各自自持
  *   - config 随 `refresh()` 更新（每次现读端口），cwd / agentsDir 创建之后不变
  */
@@ -89,7 +90,7 @@ export class Scope {
   /** 已注册的插件 */
   private _plugins: ScopePlugin[] = [];
 
-  /** 是否已 init（init 之后禁止再 use） */
+  /** 是否已 init（init 之后再 use() 会抛错） */
   private _initialized = false;
 
   constructor(options: {
@@ -206,7 +207,7 @@ export class Scope {
 
   /**
    * 按权限过滤候选集，返回过滤后的名称列表。
-   * 汇总各插件 candidates() → 应用 exclude 安全预过滤 → 四维权限过滤。
+   * 汇总各插件 candidates() → 剔除 `exclude` 里的名字 → 四维权限过滤。
    * 纯名称操作，不涉及 Tool 实例化。
    */
   filter(definition: AgentDefinition, options?: FilterOptions): FilterOutput {
@@ -229,7 +230,7 @@ export class Scope {
       c.subagents?.forEach((n) => subagents.add(n));
     }
 
-    // 2 + 3. exclude 预过滤 + 四维权限过滤
+    // 2 + 3. 剔除 exclude + 四维权限过滤
     const evaluator = new PermissionEvaluator(definition.permissions);
     const filtered = evaluator.filter({
       tools: [...tools].filter((n) => !excludeTools.has(n)),

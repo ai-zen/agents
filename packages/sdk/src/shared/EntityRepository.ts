@@ -9,13 +9,12 @@ import { SILENT_LOG, type LogSink } from "./logger.js";
  *   - 每个实体一个 JSON 文件，文件名 = `${id}.json`
  *   - 目录不存在时自动创建
  *   - `read()` 只把「文件不在」答成 `null`；文件在但读不出来（不是 JSON、没权限）照抛
- *   - `list()` 跳过读不出来的那**一条**并报一句（一个坏文件不许让整张列表读不出来）
+ *   - `list()` 跳过读不出来的那**一条**并报一句
  */
 export class EntityRepository<T extends { id: string }> {
   /**
    * @param dir 实体目录
-   * @param logger 日志口（可选）：`list()` 跳过读不出来的那一条时从它报一句。缺省不记
-   *   —— 库不替调用方往 stdout 写（谁要这一行，谁把自己那份日志注进来）
+   * @param logger 日志口（可选）：`list()` 跳过读不出来的那一条时从它报一句。缺省 `SILENT_LOG`
    */
   constructor(
     private dir: string,
@@ -44,8 +43,8 @@ export class EntityRepository<T extends { id: string }> {
   /**
    * 列出目录下所有实体。
    *
-   * 一个坏文件**不许**让整张列表读不出来（宿主的界面靠它每个 id 自己的 `brokenReason` 把
-   * 「读不出来」显示成一行），所以这里接住并报一句：跳过的是这一条，不是整张表。
+   * 一个坏文件只影响它自己那一行（宿主的「这个模型被哪个助手引用」读的是整张表），所以
+   * 这里接住并报一句：跳过的是这一条，不是整张表。
    */
   async list(): Promise<T[]> {
     try {
@@ -75,8 +74,7 @@ export class EntityRepository<T extends { id: string }> {
    * 读取单个实体：**只有文件不在才回 `null`**。
    *
    * 「没有这一条」与「这一条坏了」（不是 JSON、EACCES、EIO）是两个答案。折叠成一个 `null`
-   * 会让读者对坏文件说假话 —— 从前 `createAgent()` 就是这么把一份读不出来的定义报成
-   * `Agent "x" not found` 的。要把它当成「没有」的调用方自己接住，并在那一处写明为什么。
+   * 会让读者对坏文件说假话。要把它当成「没有」的调用方自己接住，并在那一处写明为什么。
    */
   async read(id: string): Promise<T | null> {
     // `path()` 留在 try 外面：id 逃出目录是调用方的错，该抛，不该被当成「没有这一条」

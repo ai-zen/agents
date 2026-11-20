@@ -6,10 +6,10 @@
  * | 条件 | 结果 |
  * |------|------|
  * | http(s) URL | 直接 `image_url`（不上传、不内联） |
- * | 端点声明 `capabilities.filesApi` | 上传 Files API → `file` 块（`file_id`）；上传失败即抛，不换传输方式 |
+ * | 端点声明 `capabilities.filesApi` 且有 `apiKey` | 上传 Files API → `file` 块（`file_id`）；上传失败即抛，不换传输方式 |
  * | 其余端点 + 图片 | `image_url` + base64 data URL |
  * | 其余端点 + 非图片 | `file` 块 + `file_data`（base64 data URL） |
- * | 模型明确不支持视觉（`vision === false`）且是图片 | 退化为 `text`，只给路径提示 |
+ * | 图片且模型不是视觉模型（`vision !== true`） | 退化为 `text`，只给路径提示 |
  * | 内联体积超过上限且无法上传 | 抛错（不静默塞进请求体） |
  *
  * 本模块只负责**选路**与**上传这一个 HTTP 动作**：需要 `file_id` 时每次调用都真上传，
@@ -98,8 +98,7 @@ export interface FileToSectionResult {
   /**
    * 退化为文本提示时的人类可读说明，供上层拼提示。
    *
-   * 唯一产生者是下面「模型看不见图 → 退化为文本」那一支。上传失败不再是产生者：
-   * 那条路径现在直接抛错，由调用方落成「这一次没成」。
+   * 唯一产生者是下面「模型看不见图 → 退化为文本」那一支（上传失败直接抛错，不走这里）。
    */
   warning?: string;
 }

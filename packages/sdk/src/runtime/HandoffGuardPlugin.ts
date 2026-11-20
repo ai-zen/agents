@@ -37,7 +37,7 @@ export interface SelfHandoffWatch {
  *
  * 1. **门**（PRD 3.6）：只放行对交接文档那一份文件的写入 ——
  *    - `write`：仅当目标路径（按交接时给定的 cwd 归一后）等于交接文档路径时放行；
- *    - `edit` / `batch_edit` / `rm` / `rename` / `mkdir` / `copy`：一律拒绝；
+ *    - `edit` / `batch_edit` / `rm` / `rename` / `mkdir` / `copy`：拒绝；
  *    - 读取类工具与其他工具：放行。
  *    拒绝方式是**软拒绝**（返回字符串）：core 会把该字符串作为那条 tool 消息的正文回给模型并
  *    接着跑，模型读到引导（「只允许写交接文档」）能自己转回正题。反例：抛错会穿到 `start()`
@@ -49,7 +49,7 @@ export interface SelfHandoffWatch {
  *    而换记忆在宿主那一侧（SDK 这一趟只产出文档），由宿主在交接收口开。
  *    「用户按了停」不靠这道闸认，靠 `onAbort`（`abort()` 有自己的事实，闸只是它的副作用）。
  *
- * 边界（如实记录，不要当成安全边界）：
+ * 边界（不是安全边界）：
  *   - **挡不住 `exec`**：`echo > file`、`cat > file <<EOF` 永远能绕过。本插件降低的是
  *     「顺手改代码」的误操作概率，不是沙箱。
  *   - **料不到的参数不算放行**：参数解析失败时 `parsedArgs` 为 `undefined`，`write` 会被
@@ -58,7 +58,7 @@ export interface SelfHandoffWatch {
  *     故用「同一实例 + 开关」而非反复注册，避免插件数组无限增长。
  */
 export class HandoffGuardPlugin implements AgentPlugin {
-  /** 写入类工具（除白名单的 write 外一律拒绝） */
+  /** 写入类工具（门会拒掉这些；`write` 单独判路径） */
   private static readonly WRITE_TOOLS = new Set([
     "edit",
     "batch_edit",

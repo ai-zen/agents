@@ -39,7 +39,7 @@ interface ConnectionEntry {
  * 建连超时缺省值（毫秒）。
  *
  * 没有上限时，配置错误的 SSE / HTTP 端点会让 `load_mcp` 永久挂起（SSE 在服务端不发
- * 响应头时尤其如此，fetch 只对建链有兜底，对"连上了但永不回话"没有）。与请求超时同口径。
+ * 响应头时尤其如此，fetch 只对建链有兜底，对"连上了但永不回话"没有）。
  */
 const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 
@@ -257,7 +257,7 @@ export class McpConnectionManager {
       throw new Error(`Connection to "${name}" was cancelled`);
     }
 
-    // 断线检测：运行期 transport 关掉时把状态标回 disconnected，避免 load_mcp / 状态栏
+    // 断线检测：运行期 transport 关掉时把状态标回 disconnected，避免 `load_mcp`
     // 一直展示过期清单（不做自动重连：重连策略属于上层）。
     const prevOnClose = transport.onclose;
     transport.onclose = () => {
@@ -354,8 +354,7 @@ export class McpConnectionManager {
    * 断开**单个** server（不影响别的 server）。
    *
    * 状态与清单一起失效：断开之后 `getState()` 回到 `disconnected`、`getManifest()` 为空，
-   * 下一次 `connect()` 会按新的定义重新建链（懒连）。MCP 插件的发现对账就靠它落地 ——
-   * 声明变了而旧连接还在，等于「配置改了但实际没生效」。
+   * 下一次 `connect()` 会按新的定义重新建链（懒连）。
    */
   async disconnect(name: string): Promise<void> {
     const entry = this.servers.get(name);

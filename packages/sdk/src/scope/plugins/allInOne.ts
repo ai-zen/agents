@@ -22,7 +22,7 @@ export interface AllInOneOptions {
 /**
  * 标准能力插件工厂 —— 恒返回 5 个标准插件（"全家桶"）。
  *
- * 顺序即优先级（去重时后注册覆盖先注册）：
+ * 顺序即优先级（去重时后注册覆盖先注册，见 `Scope.instantiate`）：
  *   builtin → user-tools → skills → mcp → subagents
  * 因此用户工具可覆盖同名内置工具。
  *

@@ -12,8 +12,7 @@
  * 它答的是「拿到**这个形状**的响应之后服务怎么走」，答不了「SDK 真会给这个形状吗」。真实的
  * `chat.completions.create` 还负责：把 `modelConfig` 展开进 body、决定非流式到底发不发
  * `stream`、把 HTTP 错误包成 `InternalServerError`、把 `RequestOptions.signal` 真的接到
- * socket 上。这四件事没有一件能靠手捏对象验出来 —— 而这正是本项目踩过的坑的形状
- * （core 那条 `chunk-parsed` 两参的 bug，就是因为假件的形状与真件不一致，躲过了整轮单测）。
+ * socket 上。这四件事没有一件能靠手捏对象验出来。
  *
  * ## 为什么用假端点而不是真模型
  *

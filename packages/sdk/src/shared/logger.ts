@@ -8,8 +8,8 @@
  * 这件属于进程的事替调用方定了 —— 宿主被拉起时 stdout / stderr 归谁、落到哪个文件，只有
  * 进程自己知道。库缺省沉默，嵌入方（宿主 / 命令行）把自己那一份注入进来。
  *
- * 与 `@ai-zen/agents-logger` 的同名类型**结构相容**，但本包不依赖那个包：依赖必须看得见，
- * 而「三方法」这件事不值得让库去认下一个文件日志包。
+ * 与 `@ai-zen/agents-logger` 的同名类型**结构相容**，但本包不依赖那个包：「三方法」不值得
+ * 让库去认下一个文件日志包。
  */
 export interface LogSink {
   info(message: string, detail?: unknown): void;

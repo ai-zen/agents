@@ -46,11 +46,7 @@ export interface OutputGuardOptions<T> {
 /**
  * 标准输出保护骨架。
  *
- * 各工具在 call() 出口调用，只需提供三个回调：
- *   1) isOverLimit  —— 是否超过上限（工具自读 config 判定，未被超限即原样返回 content）；
- *   2) dump         —— 超限时落盘哪些文件（可省略 = 只警告不落盘）；
- *   3) buildWarning —— 超限时返回给模型的内容。
- *
+ * 各工具在 call() 出口调用，三个回调的含义见 {@link OutputGuardOptions}。
  * 骨架职责：判定 → 未超限原样返回 / 超限时创建独立目录并写文件 → 交给 buildWarning。
  *
  * 落盘目录：<os.tmpdir()>/ai-zen/tool-output/<tool>-<时间戳>-<随机串>/，

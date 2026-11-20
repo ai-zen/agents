@@ -21,7 +21,10 @@ export interface SkillValidationError {
   message: string;
 }
 
-/** Skill 完整信息。id = 目录名 = SKILL.md 的 name 字段 */
+/**
+ * Skill 完整信息。id = 目录名；`name` 取自 SKILL.md 的 frontmatter，
+ * 两者不一致时 `validateSkill()` 只报一条错误，不拦收录。
+ */
 export interface SkillInfo {
   id: string;
   name: string;
@@ -121,7 +124,7 @@ async function readSkillFromPath(
     const fm = parseFrontmatter(content);
     if (!fm.name) return null;
 
-    // 规范合规校验
+    // 规范合规校验（只报不拦；且 `silent` 时连校验都不跑）
     if (!options.silent) {
       const errors = validateSkill(skillId, fm);
       const logger = options.logger ?? SILENT_LOG;

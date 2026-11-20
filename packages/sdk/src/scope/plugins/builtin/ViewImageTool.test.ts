@@ -13,7 +13,7 @@ const uploadDeps = { upload: mockUpload };
 
 /**
  * 工具运行上下文：端点按 `ctx.agent.model` 反查（`file_id` 是端点维度资源）。
- * 配置层已无 `defaultModel`，所以测试必须显式传当前模型名。
+ * 反查不拿 `config.defaultModel` 兜底，所以测试必须显式传当前模型名。
  */
 const visionCtx = { agent: { model: "ds-vision" } } as any;
 

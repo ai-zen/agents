@@ -9,8 +9,8 @@
  * modelConfig 怎么摊开 / signal 怎么传」—— 这四件事写错任何一样都不会报错，只会让请求
  * 变成另一种东西（例如带了 `stream: true` 于是拿到的正文永远是空的）。
  *
- * 所以：请求体的形状只在这里拼一次，两处（`HandoffService.generateSummary`、服务端的
- * 自动标题）都从这里走。
+ * 所以：请求体的形状只在这里拼一次，两处（`HandoffService.generateSummary`、宿主的
+ * `AutoNaming`）都从这里走。
  *
  * ## 为什么返回字符串而不是整条 response
  *

@@ -310,7 +310,7 @@ async function protectCallOutput(
  *
  * 返回形态：
  *   - 仅文本 → 纯字符串；
- *   - 含媒体 → 内容块数组：首块为受保护的文本，其后原样透传 image / file 块。
+ *   - 含媒体 → 内容块数组，按 MCP content 的原始顺序（文本块可能夹在中间）。
  *
  * env 仅用于读取 maxToolOutput（文本输出保护上限），与内置工具口径一致。
  */
@@ -469,8 +469,7 @@ export function createReadMcpResourceTool(
           signal: ctx?.signal,
           deps: env.deps,
         };
-        // 与 call_mcp_tool 同一套映射：文本归一为 text 块，媒体按端点能力上传或内联，
-        // 不再把二进制资源（图片 / PDF）静默丢掉。
+        // 与 call_mcp_tool 同一套映射：文本归一为 text 块，媒体按端点能力上传或内联
         const sections = await Promise.all(
           contents.map((content) => resourceToMessageSection(content, mediaContext)),
         );
@@ -489,8 +488,6 @@ export function createReadMcpResourceTool(
           );
         }
 
-        // 与 call_mcp_tool 共用同一套输出保护：文本超限落盘 result.txt，
-        // 媒体块原位保留；未超限时纯文本退化为字符串、含媒体返回块数组。
         const textSections = sections.filter(
           (section): section is AgentNS.TextContentSection => section.type === "text",
         );

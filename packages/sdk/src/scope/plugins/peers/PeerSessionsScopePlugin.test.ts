@@ -65,8 +65,7 @@ function recordingPort(answers: {
     async status(input) {
       statuses.push(input);
       // 默认答案照着 `PeerSessionStatus` 那两支里的「有这一段」写：忙不忙只有 `working` / `idle`
-      // 两格，死活是同一条答复里另给的 `alive`（`fd97841` 正交化之后就是这样；原来这里写的是
-      // 四词投影时代的 `status: "busy"`，那一格早已不存在）。
+      // 两格，死活是同一条答复里另给的 `alive`。
       return (
         answers.status ?? {
           found: true,
@@ -101,7 +100,7 @@ describe("PeerSessionsScopePlugin：端口决定能力面", () => {
     const plugin = new PeerSessionsScopePlugin();
     expect(plugin.candidates()).toEqual({});
     expect(plugin.instantiate(fakeScope, filteredWith([...PEER_SESSION_TOOL_NAMES]))).toEqual([]);
-    // 连工具名单里也没有它们：没有端口的 SDK 用户看到的能力面与从前一致
+    // 连工具名单里也没有它们：没有端口的 SDK 用户一个也拿不到
     expect([...PEER_SESSION_TOOL_NAMES]).toEqual([
       CREATE_SESSION_TOOL,
       READ_SESSION_STATUS_TOOL,
@@ -291,7 +290,7 @@ describe("post_message：只回「收下了」", () => {
     const description = postTool.function.description ?? "";
     expect(description).toContain("does not depend on how the two of us are related");
     expect(description).toContain("Do not poll");
-    // 不再有「把结果投回来」这种对未来的断言
+    // 描述里不含「把结果投回来」这类对未来的断言
     expect(description.toLowerCase()).not.toContain("pushed back to me");
 
     await call(postTool, { sessionId: 42, content: 7 });

@@ -50,7 +50,7 @@ const DENY_ALL: AgentPermissions = {
   subagents: { deny: ["*"] },
 };
 
-/** 把权限包成 AgentDefinition（filter/buildTools 现在接收 definition） */
+/** 把权限包成 AgentDefinition（filter / buildTools 收的是 definition） */
 function makeDef(permissions?: AgentPermissions, modelId?: string): AgentDefinition {
   return {
     id: "t",

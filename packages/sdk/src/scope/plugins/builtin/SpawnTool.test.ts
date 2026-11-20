@@ -25,7 +25,7 @@ describe("SpawnTool", () => {
     expect(parsed.started).toBe(true);
     expect(parsed.pid).toBeGreaterThanOrEqual(0);
     expect(parsed.message).toContain("Process started");
-    // 不再声称 success：本工具不跟踪退出状态
+    // 结果里没有 success：本工具不跟踪退出状态
     expect(parsed.success).toBeUndefined();
     expect(parsed.note).toContain("does not track the exit status");
   });

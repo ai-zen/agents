@@ -11,9 +11,8 @@ import type { Scope } from "../scope/Scope.js";
 
 // 插件机制在 core：重新导出，SDK 侧 import 来源保持不变。
 //
-// 钩子的 ctx 类型一并转出（旧的全家桶 `SendContext` 已随 core 重写删除）：写插件的人要用
-// `InnerLoopContext` / `ToolHookContext` / `OuterLoopContext` / `SubAgentHookContext`
-// 这几个形状，SDK 不另造一套。
+// 钩子的 ctx 类型一并转出：写插件的人要用 `InnerLoopContext` / `ToolHookContext` /
+// `OuterLoopContext` / `SubAgentHookContext` 这几个形状，SDK 不另造一套。
 export type {
   AgentPlugin,
   InnerLoopContext,
@@ -30,8 +29,8 @@ export type {
  *   - scope：全局 Scope 实例
  *   - definition：Agent 定义（含权限 permissions）。**模型解析生效之后的那一份**：
  *     会话级覆盖会写进它的 `modelId`（见 `createAgent`），于是「读哪个字段都不会跑偏」。
- *     没有「哪一级」这个字段：档位只由宿主那一处判定（`modelSource()`）报出，
- *     SDK 不再存第二份。
+ *     它没有「档位」这一格：档位是 `resolveModel` 的返回值，宿主会话视图的
+ *     `modelSource()` 另有自己的一格。
  *
  * 插件能力（use / init / 钩子分发）继承自 Core Agent，此处不重复实现。
  * 未知工具的 MCP 智能提示由独立插件 `UnknownToolHintPlugin` 提供（调用方显式 use）。

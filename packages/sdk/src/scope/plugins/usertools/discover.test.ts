@@ -20,7 +20,7 @@ function writeTool(filename: string, code: string) {
   writeFileSync(join(dir, filename), code);
 }
 
-/** 记账的日志口：拒绝原因走注入进来的 `LogSink`，不走任何回调 API */
+/** 记账的日志口：拒绝原因走注入进来的 `LogSink` */
 function captureLogs(): ReturnType<typeof recordingLog> {
   return recordingLog();
 }
@@ -316,9 +316,7 @@ export async function exec(args) {
 // 宿主护栏：tools/ 目录里的「坏文件」不能伤到宿主
 // ==================================================================
 //
-// 起因是一次真实事故：用户把一次性开发脚本（无参数时 `process.exit(2)`）放进
-// tools 目录，于是每次启动都在初始化途中被脚本杀掉；另有脚本在顶层直接写 PNG。
-// 这一组用例把四类危害逐个钉住。
+// 这一组用例把四类危害逐个钉住（护栏本身的实现在 `discover.ts` 顶部有说明）。
 describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
   it("没有 export 的文件：跳过且**不执行**（顶层副作用不会发生）", async () => {
     const marker = join(dir, "executed.marker");
@@ -402,7 +400,7 @@ describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
 /**
  * 文件级出口：与 `discoverUserTools` 共用同一条扫描规则，只是把「文件」也交出来。
  *
- * 为什么需要它：`AssetSummary.path`（`asset.list` 的载荷）要的是文件本身，而 `Tool` 不记
+ * 为什么需要它：上层（宿主 `DiscoveryService` 列配置层）要的是文件本身，而 `Tool` 不记
  * 自己来自哪个文件。让调用方按工具名去目录里再找一遍，就等于把「目录顺序 / 同名去重 /
  * 扩展名」这套规则抄第二份 —— 两份扫描规则迟早不一致。
  */

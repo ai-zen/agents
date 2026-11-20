@@ -80,7 +80,7 @@ describe("基础工具函数", () => {
     } as unknown as AppConfig;
 
     expect(resolveModelAndEndpoint(config, "gpt-x").endpoint?.id).toBe("openai");
-    // 未命中 → 不做任何隐式回退（模型真相源在 Agent 定义上，配置层无默认模型）
+    // 未命中 → 这里的反查不兜底（模型兜底走 `resolveModel`）
     expect(resolveModelAndEndpoint(config, "unknown").endpoint).toBeNull();
     expect(resolveModelAndEndpoint(config, undefined).endpoint).toBeNull();
   });
@@ -233,11 +233,10 @@ describe("fileToContentSection：传输方式选择", () => {
 });
 
 /**
- * 默认上传实现走的是**真 HTTP**（`fetch` + `FormData`），不再是 `openai` 包。
+ * 默认上传实现走的是**真 HTTP**（`fetch` + `FormData`，不用 `openai` 包）。
  *
  * 这里用本地 `node:http` 假端点钉住线格式：路径、鉴权头、multipart 的两个字段名。
- * 换实现时这三样最容易悄悄错 —— 错了的表现以前是「上传失败 → 静默降级成内联」，
- * 界面上一切正常、只是每张图都变成请求体里的 base64；现在降级已经删了，错了就是直接抛错。
+ * 换实现时这三样最容易悄悄错 —— 错了就是直接抛错，不会有人替它降级。
  */
 describe("默认上传实现（真 HTTP，不注入 upload）", () => {
   async function fakeEndpoint(): Promise<{

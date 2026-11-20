@@ -10,8 +10,8 @@ import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/a
 /**
  * `createAgent` 的可选行为开关。
  *
- * 不传时先取 `scope.config`（`config.json`）里的同名配置，再往下才是 core 默认值：
- * 中断策略属于**产品配置**，调用方不该自己读配置再转一道参数。
+ * 两个中断策略开关不传时先取 `scope.config`（`config.json`）里的同名配置，再往下才是
+ * core 默认值：中断策略属于**产品配置**，调用方不该自己读配置再转一道参数。
  */
 export interface CreateAgentOptions {
   /** 工具轮次被中断（或结果不完整）时的归一策略（core 默认 `fill`） */
@@ -27,15 +27,15 @@ export interface CreateAgentOptions {
   /**
    * **会话级**模型覆盖（三级解析的第一级）。
    *
-   * 只有「这一段会话」该换模型时才传（服务端从 `SessionRecord.modelId` 取，`/model`
+   * 只有「这一段会话」该换模型时才传（宿主从会话行的 `modelId` 取，`/model`
    * 不带作用级别的写法写的就是它）。不传就落到 Agent 定义，再落到 `config.defaultModel`。
    *
    * 为什么由调用方传、而不是 SDK 自己去读会话存档：本层不认识会话（它只认识 Scope 与
-   * Agent 定义），会话存档是服务端的财产。**解析顺序仍只在这里实现**（见 `resolveModel`）。
+   * Agent 定义），会话存档是宿主的财产。解析顺序只有 `resolveModel` 一处实现。
    */
   modelId?: string;
   /**
-   * **会话级**模型参数覆盖（三级解析里与 `modelId` 同一级的那一份，服务端从会话存档的
+   * **会话级**模型参数覆盖（三级解析里与 `modelId` 同一级的那一份，宿主从会话行的
    * `modelParams` 取）。
    *
    * 只有 `modelId` 那一级赢了它才会真正生效 —— 取哪一份由 `resolveModelParams` 按档位
@@ -50,7 +50,7 @@ export interface CreateAgentOptions {
  *
  * 通过 Scope 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
  * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）；
- * **参数取「模型来自哪一级」那一份**、绝不跨级混合（同一处实现：`resolveModelParams`）。
+ * **参数取「模型来自哪一级」那一份**，不跨级混合（同一处实现：`resolveModelParams`）。
  *
  * ```ts
  * const agent = await createAgent(scope, "my-agent");
@@ -97,7 +97,7 @@ export async function createAgent(
   // 生效的模型写进**这一份**（内存里的）定义：运行期所有读 `definition.modelId` 的地方
   // —— 状态栏快照、上下文阈值（`tokenThresholds`）、插件 —— 必须看到同一个模型，否则
   // 就又回到「界面写着 A、请求发给 B」。磁盘上的定义一个字都不动：会话级覆盖只属于这一段
-  // 会话，落盘走的是会话存档的 `modelId`（见服务端 `SessionManager.recordOf`）。
+  // 会话，落盘走的是会话行的 `modelId`（见宿主 `SessionRepository.setModel`）。
   const definition: AgentDefinition = { ...stored, modelId: resolved.modelId };
 
   // 参数跟着「模型来自哪一级」走：档位是上面那次解析的产物，这里只按它取那一份
@@ -123,16 +123,15 @@ export async function createAgent(
     client,
     model,
     modelConfig,
-    // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用。
-    // AgentContext.messages 是 mutable 运行时数组，若直接把 definition.messages
-    // 传入，会话期间 append() 会反向污染 Agent 定义模板——definition.messages
-    // 被塞入完整历史后，迁移 prune/omit 失效、/new 继承旧历史。
-    // 快照后，运行时改动只作用于会话副本，模板保持纯净。
+    // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用：
+    // 运行时的消息数组是可变的，直接传模板进去会让 append() 反向污染 Agent 定义 ——
+    // 模板被塞进完整历史之后，prune / omit 与「开一段新会话」都会带着旧历史。
+    // 快照之后，运行时改动只作用于会话副本。
     messages: [...(definition.messages ?? [])] as AgentNS.Message[],
     tools,
     // 中断相关策略：**显式参数 > `scope.config` > core 默认值**。
-    // 中间那一层是「配置即事实」：策略写在 `config.json` 里，各端（CLI / Desktop）
-    // 不必自己读配置再转成参数，subagent 创建时也能自然继承同一份策略。
+    // 中间那一层是「配置即事实」：策略写在 `config.json` 里，各端与 subagent 创建
+    // 读的是同一份，不必自己读配置再转成参数。
     abortedToolRoundStrategy:
       options.abortedToolRoundStrategy ?? scope.config?.abortedToolRoundStrategy,
     abortedToolRoundReason: options.abortedToolRoundReason,

@@ -38,10 +38,10 @@ export type MigrationStrategy = "omit" | "prune";
  * 交接被调用方取消（`AbortSignal` 触发）。
  *
  * 单独成类型而不是复用 `Error`，原因有两个：
- *   - 调用方（如 TUI）要把「用户按了 Ctrl+C」与「交接真的失败了」区分开 ——
- *     前者应静默收尾并提示「已取消」，后者才该报错；
- *   - 它**不可降级**：`self` 被取消后绝不能退到 `summary` 再跑一遍。
- *     把「用户中止」当成「模型没写出文档」，会白白多烧一次全量输入。
+ *   - 调用方要把「用户按了 Ctrl+C」与「交接真的失败了」区分开 ——
+ *     前者静默收尾并提示「已取消」，后者才该报错；
+ *   - 它不降级：`self` 被取消后不重试 `summary`。把「用户中止」当成「模型没写出文档」，
+ *     会白白多烧一次全量输入。
  */
 export class HandoffAbortedError extends Error {
   constructor() {
@@ -68,7 +68,7 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
  * 让一件承诺与取消信号赛跑：信号响了就用给定的那个值作答。
  *
  * 返回的 `stop()` 要把监听摧掉 —— 调用方的 signal 可能活得比这一趟长得多。没有信号时那条
- * 承诺永不落定，赛跑就等于等另一头。
+ * 承诺不会落定，赛跑就等于等另一头。
  */
 function abortRace<T>(
   signal: AbortSignal | undefined,
@@ -113,8 +113,7 @@ export interface HandoffContext {
 /** 交接服务构造参数 */
 export interface HandoffServiceOptions {
   /**
-   * 交接文档目录（绝对路径推荐）。
-   * 默认按进程 cwd 推导为 `<cwd>/.ai-zen/handoffs`；多工作区场景请显式传入，勿依赖默认值。
+   * 交接文档目录。默认按进程 cwd 推导为 `<cwd>/.ai-zen/handoffs`；多工作区场景显式传入。
    */
   handoffDir?: string;
   /** 默认执行者，默认 `self`（可被 `handoff()` / `migrate()` 的参数覆盖） */
@@ -150,13 +149,14 @@ export interface HandoffServiceOptions {
   /**
    * **落库的接缝**：`migrate()` 把算好的记忆交给它，由调用方落库。
    *
-   * 它**不改变记忆长什么样**：哪些旧消息留、哪些标 `omit`、断点消息的形状（`role: system` + `hidden` + 正文只带路径）、文档够不够长（不到 `minHandoffBytes` 算没写出来）—— 全在
-   * `migrate()` 这一处算完（`PRD.md` 4.5）。接缝只决定「这份记忆落在哪儿」：
+   * 它**不改变记忆长什么样**：哪些旧消息留、哪些标 `omit`、断点消息的形状（`role: system` +
+   * `hidden` + 正文只带路径）、文档够不够长（不到 `minHandoffBytes` 算没写出来，
+   * `runSelfHandoff` 里判）—— 全在 SDK 里算完（`PRD.md` 4.5）。接缝只决定「这份记忆落在哪儿」：
    *   - **不注入**：SDK 自己把它换到 `agent.messages` 上 —— 外部使用者走的就是这条；
    *   - **注入**：SDK 一个字节都不动 `agent.messages`，由调用方落到库、落到内存（宿主走这条）。
    */
   commitMemory?: (commit: MemoryCommit) => void | Promise<void>;
-  /** 可注入日志（可选）：不注入就什么都不写（库缺省沉默） */
+  /** 可注入日志（可选）：缺省 `SILENT_LOG`，不注入就不记 */
   logger?: LogSink;
 }
 
@@ -199,8 +199,9 @@ export interface MigrateParams extends HandoffParams {
 /**
  * 任务交接服务。
  *
- * 职责只有一件：`handoff()` —— **只产出交接文档**（停工 → 写文档 → 失败降级），不动会话。
- * 换记忆（开新会话、旧历史成存档、断点消息）全在宿主那一侧：那是一个库事务，SDK 不认识库。
+ * 职责两半：`handoff()` 只产出交接文档（停工 → 写文档 → 失败降级），不动会话；`migrate()`
+ * 再算出「换完之后记忆长什么样」并交给接缝。落库（旧历史挂成存档会话、写回会话行）在宿主
+ * 那一侧：那是一个库事务，SDK 不认识库。
  *
  * 模板的唯一真相源是 `handoff` Skill（`SKILL.md`）；代码只负责
  * 「读正文 → 注入 → 读不到时用兜底模板」，不持有第二份章节清单。
@@ -216,8 +217,8 @@ export interface MigrateParams extends HandoffParams {
  *
  * ## 取消只认调用方递进来的 `signal`
  *
- * 服务自己不持有取消句柄（没有 `busy` 时代的 `abort()`）：谁启动这一趟，谁手里的 `signal`
- * 就是它的取消口；这一趟被取消后一律回到交接前的状态（见 {@link HandoffService.restoreBeforeHandoff}）。
+ * 服务自己不持有取消句柄：谁启动这一趟，谁手里的 `signal` 就是它的取消口；这一趟被取消后
+ * 回到交接前的状态（见 {@link HandoffService.restoreBeforeHandoff}）。
  */
 export class HandoffService {
   /** 交接文档兜底模板（仅在读不到 Skill 时使用） */
@@ -312,7 +313,7 @@ export class HandoffService {
   /**
    * 拼装「这次交接」的指令：`[Skill 正文] + [本次交接参数]`。
    *
-   * 不在 Skill 正文里发明占位符（本体系没有模板变量引擎），参数一律由代码拼在后面，
+   * 不在 Skill 正文里发明占位符（本体系没有模板变量引擎），参数都由代码拼在后面，
    * 这样 Skill 只讲「怎么写」、代码只讲「写到哪、有什么能力」。
    */
   static createHandoffInstruction(params: {
@@ -517,7 +518,7 @@ export class HandoffService {
    * 取消后清掉半成品文档。
    *
    * 只删「本次新建」的文件：交接文件名含时间戳，正常不会撞已有文件，但调用方也
-   * 可以把 `handoffDir` 指向人工目录；不管怎样都不该删掉别人的文件。
+   * 可以把 `handoffDir` 指向人工目录，那就不能删别人的文件。
    * 留着半成品更糟 —— 下一回接手方会把不完整的内容当成真实交接读进去。
    */
   private async discardPartialFile(path: string, existedBefore: boolean): Promise<void> {
@@ -550,8 +551,6 @@ export class HandoffService {
     const handoffPath = join(this.handoffDirPath, HandoffService.createHandoffFileName(new Date()));
     const model = this.model ?? agent.model;
     const messageCountBefore = agent.messages.length;
-    // 只删「本次新建」的文档：交接文件名含时间戳，正常不会撞已有文件，但调用方也可以
-    // 把 `handoffDir` 指向人工目录，不管怎样都不该删掉别人的文件
     const existedBefore = await this.fileExists(handoffPath);
 
     try {
@@ -594,8 +593,7 @@ export class HandoffService {
       }
 
       if (mode === "summary") {
-        // 这一档没有「那一批」（不投指令、不进队列），所以没人替它关闸 —— 生成摘要之前自己关。
-        // 开闸同样不在这里：换记忆在宿主那一侧，由它在交接收口开（见方法注释）。
+        // 这一档没有「那一批」（不投指令、不进队列），所以没人替它关闸 —— 生成摘要之前自己关
         if (!agent.isOutputPaused) agent.pauseOutput();
         historyText = HandoffService.serializeMessages(agent.messages.filter((m) => !m.omit));
         handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
@@ -620,14 +618,12 @@ export class HandoffService {
       };
 
       await this.onHandoff?.(ctx);
-      // 闸不开：开闸的时刻是「记忆换定了」，而那一步在宿主那一侧（见方法注释）
       return ctx;
     } catch (err) {
       if (!(err instanceof HandoffAbortedError) && !isAbortError(err, signal)) {
         throw err;
       }
-      // 取消：交接回合截掉、半成品文档删掉（闸不在这里开：用户按的停由用户开，
-      // 这一趟自己关的那一道由宿主在收口时按实际情形开）
+      // 取消：交接回合截掉、半成品文档删掉（闸不在这里开，见方法注释）
       await this.restoreBeforeHandoff({ agent, messageCountBefore, handoffPath, existedBefore });
       throw new HandoffAbortedError();
     }
@@ -679,13 +675,11 @@ export class HandoffService {
    *
    * ## 门与判据挂在同一处
    *
-   * `arm()` 之后守卫同时干两件事：交接期间只放行写这份文档的那次调用（别的写操作软拒，见
-   * PRD 3.6），以及把上面那两个事实报回来。于是「只许写这份文档」与「写完了没有」用的是同一份
-   * 输入 —— 工具参数里的路径，谁也绕不过谁。
+   * `arm()` 之后守卫既当门、又把上面那两个事实报回来（细节见 {@link HandoffGuardPlugin}）：
+   * 「只许写这份文档」与「写完了没有」看的是同一份输入 —— 工具参数里的路径。
    *
    * **只投一次**：没写出来就是没写出来，不「再问一次」。第二次投递要能跑就得先把闸开开，
    * 一开闸，这期间用户压着的件就跟着那一批一起被取走，而那一趟仍然要换记忆 —— 同一个误伤。
-   * 一次投递、一次结论：闸只关一次，开闸在宿主交接收口。
    *
    * ## 判据只有一条：文档写出来了没有
    *
@@ -696,8 +690,7 @@ export class HandoffService {
    *
    * 于是四种情形，各自的姿势：
    *
-   *   - **写出来了**：`failures` 一律不看。文档已经落盘，之后再冒的错与这一次交接无关，不该
-   *     反过来把一份写好的文档判死；
+   *   - **写出来了**：`failures` 不再看。文档已经落盘，之后再冒的错与这一次交接无关；
    *   - **这个会话已经没了**（`gone`）：回 `false`，先于「写没写过」—— 没有可写的东西，也别为
    *     一个死掉的会话白烧一次全量输入；
    *   - **没写出来，且这一回合报过错**：那个错就是真因，**原样抛给调用方**。降级 summary 会为
@@ -755,12 +748,12 @@ export class HandoffService {
       if (outcome === "gone") return false;
       // 这一批收口了还没见到那次写：这一次交接没成，`failures` 只解释「为什么没写出来」
       if (outcome !== "written") {
-        // 没写出来的真因是这一趟里报过的那个错：原样交上去，不许降级 summary 再烧一次全量输入
+        // 没写出来的真因是这一趟里报过的那个错：原样交上去，不再降级 summary 烧一次全量输入
         if (failures.length > 0) throw failures[0];
         // 一个错都没报，模型只说了句「写好了」而一个字没写：交上层降级
         return false;
       }
-      // 写出来了：这一次交接已经成，`failures` 从此一律不看（文档在盘上，之后冒的错与它无关）
+      // 写出来了：这一次交接已经成，`failures` 从此不再看（文档在盘上，之后冒的错与它无关）
       // 等这一批收口：此后这个会话的消息不再增长，要换掉的就是定了的这一份
       await this.waitRoundOver(watch, signal);
       // 写出来了没有：文件在不在、够不够长（默认 400 字节，`PRD.md` 3.6）。
@@ -774,8 +767,7 @@ export class HandoffService {
       if (err instanceof AgentError && err.code === "closed") throw err;
       if (isAbortError(err, signal)) throw new HandoffAbortedError();
       // 其余一切都不是「模型没写出来」：原样抛给调用方，由它报失败（宿主 `onFailed`）
-      // 并把输出闸开回来。从前这里只记一行 `logger.error` 再回 `false`，于是上层把
-      // `mode` 降成 summary、再烧一次全量输入 —— 用户付两次钱，只换到一行 warn。
+      // 并把输出闸开回来。
       throw err;
     } finally {
       stopWatchingFailures();
@@ -847,8 +839,7 @@ export class HandoffService {
     this.throwIfAborted(signal);
 
     // 请求体形状（system + user、modelConfig 展开、signal 走 RequestOptions）的唯一实现在
-    // `completeOnce`：会话自动标题那一类「辅助小请求」走同一条路，两边不会一份带 stream、
-    // 另一份不带
+    // `completeOnce`（会话自动标题那一类小请求也走它）
     const handoffDoc = await completeOnce({
       client,
       model,

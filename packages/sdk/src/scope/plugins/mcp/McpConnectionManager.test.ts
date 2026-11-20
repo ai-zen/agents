@@ -47,7 +47,6 @@ describe("McpConnectionManager", () => {
     vi.clearAllMocks();
 
     // 通过自定义 transport 工厂 + 自定义 Client 工厂来注入 mock
-    // McpConnectionManager 现在支持可选的 transportFactory 和 clientFactory
     manager = new McpConnectionManager(
       // transportFactory
       () => mockTransport as any,

@@ -74,8 +74,8 @@ function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
 /**
  * 工具运行上下文：模型名来自 `ctx.agent.model`（= Model.modelName ?? id）。
  *
- * 端点必须按当前模型反查（`file_id` 是端点维度资源），所以测试也必须把 ctx 传进去；
- * 配置层已无 `defaultModel`，不能再靠隐式回退找端点。
+ * 端点只能按当前模型反查（`file_id` 是端点维度资源，且不拿 `config.defaultModel` 兜底），
+ * 所以测试也必须把 ctx 传进去。
  */
 const visionCtx = { agent: { model: "ds-vision" } } as any;
 const chatCtx = { agent: { model: "ds-chat" } } as any;
@@ -135,7 +135,7 @@ describe("createLoadMcpTool", () => {
     expect(tool.function.name).toBe("load_mcp");
     expect((tool.function.parameters.properties as any).server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
-    // 披露开关：可选参数，默认 true（不改变既有契约）
+    // 披露开关：可选参数，默认 true
     expect((tool.function.parameters.properties as any).include_manifest.type).toBe("boolean");
     expect((tool.function.parameters.properties as any).include_manifest.default).toBe(true);
     expect(tool.function.parameters.required).not.toContain("include_manifest");

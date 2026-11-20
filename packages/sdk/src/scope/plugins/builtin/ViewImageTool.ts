@@ -20,9 +20,7 @@ function isLocalUrl(value: string): boolean {
 }
 
 /**
- * 查看图片工具 — 让 Agent 主动查看/分析一张图片。**仅对视觉模型可用**：
- * 由 `isAvailable(config, definition)` 声明（从 definition.modelId 解析模型，检查 Model.vision），
- * buildTools 阶段按声明过滤——非视觉模型不会拿到该工具，故无需运行时重复校验。
+ * 查看图片工具 — 让 Agent 主动查看/分析一张图片。
  *
  * 输入 `path_or_url`：
  *   - http(s) URL → 直接以 `image_url` 内容块返回；
@@ -34,7 +32,7 @@ function isLocalUrl(value: string): boolean {
  * 资源，传错端点会返回 not found。
  */
 export class ViewImageTool extends SdkCallbackTool {
-  /** 仅视觉模型可用：从 definition.modelId 解析当前模型，非视觉模型由 buildTools 过滤 */
+  /** 仅视觉模型可用：从 definition.modelId 解析当前模型，非视觉模型不进候选集 */
   isAvailable(config: AppConfig, definition: AgentDefinition): boolean {
     const modelId = definition.modelId;
     const model = (config.models ?? []).find((m) => m.id === modelId);

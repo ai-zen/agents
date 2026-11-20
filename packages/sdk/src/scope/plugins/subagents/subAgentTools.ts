@@ -9,7 +9,6 @@ import { createModel } from "../../../runtime/createModel.js";
  * 创建 SubAgent 工具（AgentToolLazy）。
  *
  * SubAgent 是有 `function` 字段的 Agent，可被其他 Agent 作为工具调用。
- * 使用延迟构建（AgentToolLazy）避免工具列表构建阶段的递归创建问题。
  */
 export function createSubAgentTool(def: AgentDefinition, scope: Scope): Tool {
   if (!def.function) {

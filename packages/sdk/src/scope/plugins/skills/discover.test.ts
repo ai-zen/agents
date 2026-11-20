@@ -127,7 +127,7 @@ describe("discoverSkills", () => {
 // ==================================================================
 
 describe("parseFrontmatter", () => {
-  // ---- 向后兼容：现有字段 ----
+  // ---- 核心字段 ----
 
   it("解析 name、description、sub-agent", () => {
     const fm = parseFrontmatter(`---
@@ -166,7 +166,7 @@ sub-agent: false
     expect(fm).toEqual({});
   });
 
-  // ---- 新增：规范字段 ----
+  // ---- 规范字段 ----
 
   it("解析 license 和 compatibility", () => {
     const fm = parseFrontmatter(`---

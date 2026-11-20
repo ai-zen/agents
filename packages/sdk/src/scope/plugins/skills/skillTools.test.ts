@@ -101,7 +101,7 @@ describe("createLoadSkillTool", () => {
     expect(result).toContain("Skill directory path:");
     expect(result).toContain("Git operations guide");
     expect(result).toContain("Skill content starts");
-    // 不再注入 system message
+    // load_skill 只把正文拼进返回值，不往 agent.messages 里塞东西
     const injected = agent.messages.find((m) => String(m.content).includes("Skill"));
     expect(injected).toBeUndefined();
   });
@@ -223,7 +223,6 @@ describe("createCallSkillSubAgentTool", () => {
       },
     });
     const startEvent = vi.fn();
-    // 事件名换成新 core 的那一套（旧的 kebab-case 全部不存在了）
     host.on("subAgentStarted", startEvent);
 
     const result = await tool.exec(

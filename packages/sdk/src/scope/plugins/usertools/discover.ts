@@ -14,7 +14,7 @@ export interface DiscoverUserToolsOptions {
   importTimeoutMs?: number;
 }
 
-/** 默认的单文件 import 超时：工具目录里不该有需要长过它的模块求值 */
+/** 默认的单文件 import 超时（毫秒） */
 const DEFAULT_IMPORT_TIMEOUT_MS = 5000;
 
 // ==================================================================
@@ -32,11 +32,9 @@ const DEFAULT_IMPORT_TIMEOUT_MS = 5000;
 //   · `console.log / info / debug`     → 改指 stderr，不撕宿主的 stdout（TUI 画面）；
 //   · 顶层 await 永不 settle（异步挂死）→ 超时放弃该文件。
 //
-// **挡不住**的（只有进程隔离能解，而那正是 MCP 的职责）：
+// **挡不住**的（只有进程隔离能解，那正是 MCP 的职责）：
 //   · 顶层同步死循环——事件循环被占，连超时定时器都不会跑；
 //   · `process.kill(process.pid)` 这类原生自杀。
-//
-// 所以 tools/ 的定位是**可信的本地扩展**；不可信的代码请写成 MCP 服务器。
 
 /** 正在被 import 的文件（护栏回报错误时用它定位） */
 let importingFile: string | null = null;
@@ -109,7 +107,7 @@ function installHostGuards(): () => void {
  * `import()` + 超时。
  *
  * 超时只是「不再等它」：ESM 求值**不可取消**，该模块随后仍可能被求值完并产生副作用，
- * 因此超时只记告警、不声称已终止。真正的隔离需要独立进程（即 MCP）。
+ * 因此超时只记告警、不声称已终止。
  */
 async function importWithTimeout(url: string, timeoutMs: number): Promise<unknown> {
   if (timeoutMs <= 0) return import(url);
@@ -138,8 +136,8 @@ function reportReject(
  * 一个用户工具文件（加载成功的那一个）：文件身份 + 加载出来的实例。
  *
  * 为什么要成对给：`Tool` 自己不记「我是从哪个文件来的」（它只是 core 的一个工具对象），
- * 而 `asset.list` 那类「把发现结果报给客户端看」的调用方需要的正是**文件**（路径、
- * 文件名）。让调用方拿着工具名去某个目录里找同名文件，就是第二套扫描规则。
+ * 而把发现结果报给上层的调用方（宿主 `DiscoveryService` 列配置层）需要的正是**文件**。
+ * 让调用方拿着工具名去某个目录里找同名文件，就是第二套扫描规则。
  */
 export interface UserToolFile {
   /** 文件名（不含扩展名）：同一条扫描里的唯一键，也是发现顺序的依据 */
@@ -151,14 +149,11 @@ export interface UserToolFile {
 
 /**
  * 扫描多个 tools/ 目录，发现所有 .js / .mjs 文件，动态加载为 Tool 实例。
- * 使用原生 dynamic import() 加载（在 "type": "module" 下 .js 也是 ESM），
- * 每次添加时间戳 querystring 防止缓存。
  *
  * 按优先级从高到低传入路径列表，同名工具靠前的路径优先（先到先得）。
  * 按文件名排序以保证确定性。
  *
- * 本体在 {@link discoverUserToolFiles}：两个出口共用同一条扫描规则（顺序、去重、导入护栏、
- * 超时都在那一处），否则「Agent 装了哪些工具」与「资产清单里列了哪些」迟早对不上。
+ * 本体在 {@link discoverUserToolFiles}，这里只是取出 `tool`。
  */
 export async function discoverUserTools(
   paths: string[],
@@ -170,8 +165,7 @@ export async function discoverUserTools(
 /**
  * 同 {@link discoverUserTools}，但把**文件**也一起交出来（路径 / 文件名）。
  *
- * 发现规则只有一份：目录顺序、同名去重、扩展名、导入护栏、超时全部写在本函数里，
- * 另一个出口只是上面的 `map`。
+ * 扫描规则只写在本函数里，另一个出口只是上面的 `map`。
  */
 export async function discoverUserToolFiles(
   paths: string[],
@@ -256,7 +250,7 @@ async function loadToolFile(
       default?: unknown;
     };
 
-    // import() 返回模块命名空间对象，取其 default 导出
+    // import() 返回模块命名空间对象，优先取 default 导出；没有 default 时整个命名空间当导出
     const exported = mod.default ?? mod;
 
     if (!exported || (typeof exported === "object" && Object.keys(exported).length === 0)) {

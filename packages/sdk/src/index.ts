@@ -115,7 +115,7 @@ export { FACTORY_REASONING_PRESETS, REASONING_PRESETS_FILE } from "./config/reas
 export { EntityRepository } from "./shared/EntityRepository.js";
 export { AgentRepository } from "./crud/AgentRepository.js";
 
-// 文件 → 内容块（统一入口）— 上层应用构造媒体消息时请走这里，不要自己判断上传还是内联
+// 文件 → 内容块（统一入口）：走上传、内联还是直接引用 URL，由它判断
 export {
   fileToContentSection,
   resolveModelAndEndpoint,
@@ -151,7 +151,7 @@ export type {
 } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
 export type { CreateAgentOptions } from "./runtime/createAgent.js";
-// 模型三级解析（唯一实现）：档位类型也导出，服务端与客户端要按它渲染「当前生效档」
+// 模型三级解析（唯一实现）：档位类型也导出，宿主与客户端按它渲染「当前生效档」
 export { resolveModel, resolveModelParams } from "./runtime/resolveModel.js";
 export type {
   ModelLevel,

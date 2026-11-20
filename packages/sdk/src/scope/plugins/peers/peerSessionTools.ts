@@ -142,13 +142,13 @@ export interface PeerSessionCreateInput {
 /**
  * 宿主实现给 SDK 的端口（**SDK 不依赖宿主**：这个接口是唯一的一处接线）。
  *
- * 不给端口时插件不产出任何工具 —— 老行为一个字不变。
+ * 不给端口时插件不产出任何工具。
  */
 export interface PeerSessionPort {
   /**
    * 开一段会话，**建完立刻回** `{ sessionId, label }`。
    *
-   * 「立刻」是这一格的全部意思：不许在里面等那边答完、不许挂 `.then` 去接任何后续事实。
+   * 「立刻」是这一格的全部意思：不在里面等那边答完，也不挂 `.then` 去接任何后续事实。
    * 拒绝照 {@link PeerSessionCreated} 的样子回，不抛错。
    */
   create(input: PeerSessionCreateInput): Promise<PeerSessionCreated>;

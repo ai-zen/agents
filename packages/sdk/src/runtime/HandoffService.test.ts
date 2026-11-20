@@ -55,7 +55,7 @@ type Listener = (payload: any) => void;
 /**
  * 假 agent：只实现 `HandoffService` 用到的表面。
  *
- * 新 core 里**没有 `send()`** 了（`CORE.md` §1）：自交接靠「`push` 一条指令」，判据是那次写文档
+ * 常驻会话没有 `send()`（`CORE.md` §1）：自交接靠「`push` 一条指令」，判据是那次写文档
  * 的**工具调用**。所以这个替身要把 core 那条路的三样东西都演出来：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
  *   - `push(entry)`：落一条 user 消息 → 变 `working` → 这一批（`onOuterLoopStart`）→ 跑脚本
@@ -74,7 +74,7 @@ class FakeAgent {
   model = "fake-model";
   modelConfig: Record<string, unknown> = {};
   scope = { cwd: process.cwd() };
-  /** 投进来的指令正文（等价于旧 `send()` 收到的内容） */
+  /** 投进来的指令正文（`push` 收到的 `entry.content`） */
   sent: string[] = [];
   plugins: any[] = [];
   client: any;
@@ -1074,7 +1074,7 @@ describe("取消（AbortSignal）", () => {
   it("self 模式被取消：不重试、不降级 summary（这正是 Ctrl+C 无效的根因）", async () => {
     const { service } = await makeService();
     const ac = new AbortController();
-    // 真机形态：`agent.abort()` 不抛错，send 正常返回，但文档没写出来
+    // 真机形态：`agent.abort()` 不抛错，push 正常返回，但文档没写出来
     const agent = new FakeAgent({ onSend: () => void ac.abort() });
 
     await expect(

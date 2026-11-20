@@ -74,7 +74,7 @@ describe("discoverSubAgents", () => {
     const result = await discoverSubAgents([dir], { logger: log.logger });
     expect(result).toHaveLength(1);
     expect(result[0].function!.name).toBe("helper");
-    // skills / mcp / usertools 三条发现路径都会报，这里从前一声不吹
+    // 与 skills / mcp / usertools 三条发现路径一致：坏文件跳过，但留一行 warn
     const warns = messagesAt(log.records, "warn");
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("bad.json");

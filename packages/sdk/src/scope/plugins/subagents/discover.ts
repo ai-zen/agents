@@ -50,7 +50,7 @@ export async function discoverSubAgents(
         }
       } catch (error) {
         // 跳过坏文件是对的（一个坏文件不该让整张 SubAgent 列表读不出来），但要留一行：
-        // skills / mcp / usertools 三条发现路径都报了，只有这里一声不吹
+        // 文件读不出来是个事实，静默跳过会让配置看着像生效了
         logger.warn(
           `[subagents] ${join(dir, file)} 读不出来或不是合法定义，跳过：${String(error)}`,
         );

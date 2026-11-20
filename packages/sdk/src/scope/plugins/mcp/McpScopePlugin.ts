@@ -18,8 +18,7 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
  * 三个元工具名恒上报 `tools` 维度；`mcpManager` 由本插件私有持有，
  * 有配置路径时在构造时创建，`dispose()` 时统一断开。
  *
- * 每次 `discover()` 除了重读 mcp 文件，还会把连接与发现结果对账一次（`reconcileConnections`）：
- * 于是「改了 mcp 配置」= 刷一次 Scope，不需要把 Scope 拆掉重建。
+ * 每次 `discover()` 除了重读 mcp 文件，还会把连接与发现结果对账一次（见 `reconcileConnections`）。
  */
 export class McpScopePlugin implements ScopePlugin {
   static readonly ID = "mcp";
@@ -56,7 +55,7 @@ export class McpScopePlugin implements ScopePlugin {
    *   - 新增的 server → 不主动连（保持懒连接：没人调用就不起进程 / 不建链）；
    *   - 定义没变的 → 一个字节都不动（连接与清单原样留着）。
    *
-   * 对账在 `refresh()` / `init()` 里跑，于是「配置改了」只需刷一次 Scope，不必重建它。
+   * 于是「改了 mcp 配置」只需刷一次 Scope，不必重建它。
    */
   private async reconcileConnections(discovered: McpServerConfig[]): Promise<void> {
     const manager = this.mcpManager;

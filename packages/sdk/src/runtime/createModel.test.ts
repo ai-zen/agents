@@ -182,8 +182,7 @@ describe("createModel：Agent 级参数覆盖（浅合并，SDK 不解释键名�
 
 describe("createModelFromConfig：没有 Scope 的那条路", () => {
   it("与 createModel 逐字同源：同一份配置得到同样的模型名与参数", () => {
-    // 服务端的辅助小请求（自动标题）只拿得到配置：为了它去建一个 Scope 会连带拉起
-    // MCP 连接。两条路必须落到同一份「模型 → 端点 → client」解析上。
+    // 没有 Scope 的那条路（宿主的自动标题）与 createModel 同一份解析
     const viaConfig = createModelFromConfig(baseConfig, "ds-v3", { temperature: 0.1 });
     const viaScope = createModel(mockScope(baseConfig), "ds-v3", { temperature: 0.1 });
 
