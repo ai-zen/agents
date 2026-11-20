@@ -17,7 +17,8 @@ import type { SdkAgent } from "./SdkAgent.js";
  * - `self`：**原 agent 在自己的会话里**停工后写（默认）。上下文完整、可用工具核实真实状态，
  *   产出质量最好；代价是多 1~2 次全量输入。
  * - `summary`：一次独立的模型调用，把序列化后的历史摘要成交接文档（无工具、无原会话上下文）。
- *   便宜、确定，但保真度低——它是**逃生模式**，也是 `self` 失败时的单向降级目标。
+ *   便宜、确定，但保真度低——它是**逃生模式**，也是 `self` 没写出来时的单向降级目标
+ *   （`self` 那一回合自己出错的（端点 4xx、超时）不降级：那种事换个执行者也不会成）。
  */
 export type HandoffMode = "self" | "summary";
 
@@ -567,7 +568,8 @@ export class HandoffService {
       await this.safeHook(this.onBeforeHandoff, beforeCtx);
       this.throwIfAborted(signal);
 
-      // ---- 执行者：self 优先，失败/不可用则单向降级 summary ----
+      // ---- 执行者：self 优先，不可用/没写出来才单向降级 summary ----
+      // 「没写出来」以外的抛出（端点 4xx、超时、core 内部错）不从这条道走：它们原样穿到调用方
       let mode = requestedMode;
       let handoffDoc: string | undefined;
       let historyText = "";
@@ -683,7 +685,17 @@ export class HandoffService {
    * 一开闸，这期间用户压着的件就跟着那一批一起被取走，而那一趟仍然要换记忆 —— 同一个误伤。
    * 一次投递、一次结论：闸只关一次，开闸在宿主交接收口。
    *
-   * 失败（模型压根没调写工具 / 写出来不到 `minHandoffBytes` / 这一段没了）交上层单向降级 summary；
+   * ## 两件不同的事，两种姿势
+   *
+   *   - **模型没写出来**（齐根没调写工具 / 写出来不够长 / 这一段没了）：回 `false`，交上层单向
+   *     降级 summary —— 那是逃生模式，一次写不成还有第二条路；
+   *   - **这一回合里出了错**（端点 4xx、超时、core 内部错、插件抛错）：**原样抛给调用方**。
+   *     它不是「模型没写出来」，也不是「换个执行者就能成」：降级 summary 会为一次已经失败的
+   *     请求再烧一次全量输入，而用户只拿到一行 warn。
+   *
+   * 后一种事实 core 不从 `start()` 往外招（`Agent.start()` 的注释：一次请求挂了就是一次挂了，
+   * 循环接着等下一个事件），它报成 `failed` 事件 —— 所以这一回合期间订阅它一次。
+   *
    * **取消不算失败**：用户按了中断就抛 {@link HandoffAbortedError}，既不重试也不降级。取消的
    * 善后（删文档、截消息）不在这里做 —— 交给 {@link runHandoff} 的 catch 一处处理。
    */
@@ -698,6 +710,15 @@ export class HandoffService {
     const guard = this.ensureGuard(agent);
     const skillContent = await this.readSkillContent();
     const cwd = (agent as { scope?: { cwd?: string } }).scope?.cwd ?? process.cwd();
+
+    /*
+     * 这一回合里 core 报过的错（端点 4xx / 超时 / core 内部错 / 插件抛错）。
+     * 只在这个窗口里听：订阅与 `guard.arm()` 同一拍开，`finally` 里一定撕。
+     */
+    const failures: Error[] = [];
+    const stopWatchingFailures = agent.on("failed", ({ error }) => {
+      failures.push(error instanceof Error ? error : new Error(String(error)));
+    });
 
     /*
      * 交接期间护栏的让行由 `ContextGuardPlugin.isSuspended` 负责（接线为
@@ -717,6 +738,8 @@ export class HandoffService {
       this.throwIfAborted(signal);
       // 那一下被掐（用户把它叫停了）：回到交接前，不降级
       if (outcome === "interrupted") throw new HandoffAbortedError();
+      // 回合里出过错：这不是「模型没写出来」，而是这一次已经失败了 —— 原样交上去，不降级
+      if (failures.length > 0) throw failures[0];
       // 这一段已经不在了：没有可写的东西，也别为一个死掉的会话白烧一次全量输入
       if (outcome === "gone") return false;
       // 这一批收口了还没见到那次写：模型只说了句「写好了」而一个字没写，交上层降级
@@ -733,9 +756,12 @@ export class HandoffService {
       // 为一个死掉的会话白烧一次全量输入，所以直接把 `closed` 往上交（调用方该知道这件事）
       if (err instanceof AgentError && err.code === "closed") throw err;
       if (isAbortError(err, signal)) throw new HandoffAbortedError();
-      this.logger.error(`[handoff] self handoff failed: ${err?.message ?? err}`);
-      return false;
+      // 其余一切都不是「模型没写出来」：原样抛给调用方，由它报失败（宿主 `onFailed`）
+      // 并把输出闸开回来。从前这里只记一行 `logger.error` 再回 `false`，于是上层把
+      // `mode` 降成 summary、再烧一次全量输入 —— 用户付两次钱，只换到一行 warn。
+      throw err;
     } finally {
+      stopWatchingFailures();
       guard.disarm();
     }
   }

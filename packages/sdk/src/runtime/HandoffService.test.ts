@@ -719,6 +719,37 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
 
     agent.kill();
   });
+
+  it("端点 4xx：不降级 summary，原样抛给调用方", async () => {
+    // 「模型没写出来」与「这一次请求失败了」是两件事：后者换个执行者也不会成，
+    // 再跑一趟 summary 只是让用户为同一次失败再付一次全量输入
+    const { service, dir } = await makeService();
+    const create = vi.fn(async () => {
+      throw Object.assign(new Error("401 Incorrect API key provided"), { status: 401 });
+    });
+    const writeTool = new CallbackTool({
+      function: {
+        name: "write",
+        description: "写文件",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      callback: async () => "ok",
+    });
+    const agent = new Agent({
+      client: { chat: { completions: { create } } } as any,
+      model: "m",
+      tools: [writeTool],
+    });
+
+    await expect(service.handoff({ agent: agent as any })).rejects.toThrow(
+      /401 Incorrect API key provided/,
+    );
+    // 只发了那一次请求（没有第二趟 summary），盘上也没有文档
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(await fs.readdir(dir)).toEqual([]);
+
+    agent.kill();
+  });
 });
 
 // ---------------------------------------------------------------------------
