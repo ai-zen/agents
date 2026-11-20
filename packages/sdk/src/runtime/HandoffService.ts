@@ -135,15 +135,16 @@ export interface HandoffServiceOptions {
    * 只看文件大小，不读内容 —— 「写出来了没有」不需要读懂它写了什么。
    */
   minHandoffBytes?: number;
-  /** 交接回合开始前触发（此时 `agent.messages` 仍是完整旧历史） */
+  /** 交接回合开始前触发（此时 `agent.messages` 仍是完整旧历史）。抛错就让这一次交接失败 */
   onBeforeHandoff?: (ctx: HandoffContext) => void | Promise<void>;
   /**
    * 交接文档写好后触发（换记忆还没发生：记忆由 `migrate()` 算、由 {@link commitMemory} 落地）。
+   * 抛错就让这一次交接失败。
    */
   onHandoff?: (ctx: HandoffContext) => void | Promise<void>;
   /**
    * 换记忆完成之后触发（`migrate()` 的最后一拍：记忆已经换上 —— 是 SDK 自己换的还是接缝落的，
-   * 这里不区分）。`handoff()` 不叫它：那一路不换记忆。
+   * 这里不区分）。`handoff()` 不叫它：那一路不换记忆。抛错就让这一次交接失败。
    */
   onMigrated?: (ctx: HandoffContext) => void | Promise<void>;
   /**
@@ -437,7 +438,8 @@ export class HandoffService {
         ctx.agent.messages.splice(0, ctx.agent.messages.length, ...memory);
       }
 
-      await this.safeHook(this.onMigrated, ctx);
+      // 换记忆就是这一拍落下：叫完之后记忆已经是新的那一份
+      await this.onMigrated?.(ctx);
       return ctx;
     });
   }
@@ -565,7 +567,7 @@ export class HandoffService {
         messageCountBefore,
         historyText: "",
       };
-      await this.safeHook(this.onBeforeHandoff, beforeCtx);
+      await this.onBeforeHandoff?.(beforeCtx);
       this.throwIfAborted(signal);
 
       // ---- 执行者：self 优先，不可用/没写出来才单向降级 summary ----
@@ -617,7 +619,7 @@ export class HandoffService {
         historyText,
       };
 
-      await this.safeHook(this.onHandoff, ctx);
+      await this.onHandoff?.(ctx);
       // 闸不开：开闸的时刻是「记忆换定了」，而那一步在宿主那一侧（见方法注释）
       return ctx;
     } catch (err) {
@@ -892,18 +894,5 @@ export class HandoffService {
       this.guardedAgents.add(agent);
     }
     return guard;
-  }
-
-  /** 钩子容错：抛错只记录，不中断交接（与既有迁移钩子语义一致） */
-  private async safeHook(
-    hook: ((ctx: HandoffContext) => void | Promise<void>) | undefined,
-    ctx: HandoffContext,
-  ): Promise<void> {
-    if (!hook) return;
-    try {
-      await hook(ctx);
-    } catch (err: any) {
-      this.logger.error(`[handoff] hook execution failed: ${err?.message ?? err}`);
-    }
   }
 }

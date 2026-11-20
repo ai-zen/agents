@@ -182,7 +182,7 @@ describe("AutoMigratePlugin", () => {
     expect(migrate).not.toHaveBeenCalled();
   });
 
-  it("交接失败被吞掉（不让 onIdle 抛错）", async () => {
+  it("交接失败不让 onIdle 抛错（失败走日志 + 失败回声）", async () => {
     const { service, migrate } = stubService();
     migrate.mockRejectedValueOnce(new Error("boom"));
 
@@ -286,12 +286,13 @@ describe("AutoMigratePlugin", () => {
     expect(onFailed).not.toHaveBeenCalled();
   });
 
-  it("回声自己抛错不影响交接（只记日志）", async () => {
+  it("回声自己抛错不接：onMigrated 崩了就在这次 onIdle 里炸出来", async () => {
+    // 写钩子的是宿主：它写崩了该在自己的调用栈里看到，而不是被吞成一行日志
     const { service, migrate } = stubService();
-    const errors: string[] = [];
-    setLogger({ info: () => {}, warn: () => {}, error: (m) => errors.push(m) });
-    try {
-      await goIdle(
+    migrate.mockResolvedValueOnce({ mode: "self" } as any);
+
+    await expect(
+      goIdle(
         new AutoMigratePlugin({
           service,
           handoffTokens: MAX_HANDOFF_TOKENS,
@@ -301,13 +302,33 @@ describe("AutoMigratePlugin", () => {
           },
         }),
         { promptTokens: MAX_HANDOFF_TOKENS + 1 },
-      );
+      ),
+    ).rejects.toThrow("db down");
+
+    expect(migrate).toHaveBeenCalledTimes(1);
+  });
+
+  it("失败回声自己抛错也不接：那是「把闸开回来」的唯一一道门", async () => {
+    const { service, migrate } = stubService();
+    migrate.mockRejectedValueOnce(new Error("boom"));
+    setLogger({ info: () => {}, warn: () => {}, error: () => {} });
+    try {
+      await expect(
+        goIdle(
+          new AutoMigratePlugin({
+            service,
+            handoffTokens: MAX_HANDOFF_TOKENS,
+            resolveMode: async () => "self" as const,
+            onFailed: async () => {
+              throw new Error("闸没打开");
+            },
+          }),
+          { promptTokens: MAX_HANDOFF_TOKENS + 1 },
+        ),
+      ).rejects.toThrow("闸没打开");
     } finally {
       setLogger({ info: console.log, warn: console.warn, error: console.error });
     }
-
-    expect(migrate).toHaveBeenCalledTimes(1);
-    expect(errors.some((line) => line.includes("onMigrated"))).toBe(true);
   });
 
   it("用户取消不记 error 日志（默认 logger 是 console.error，TUI 下会撕画面）", async () => {

@@ -1,7 +1,7 @@
 import { AgentError } from "@ai-zen/agents-core";
 import type { AgentPlugin, OuterLoopContext } from "@ai-zen/agents-core";
 import { HandoffAbortedError } from "../runtime/HandoffService.js";
-import type { HandoffMode, HandoffService } from "../runtime/HandoffService.js";
+import type { HandoffContext, HandoffMode, HandoffService } from "../runtime/HandoffService.js";
 import { lastPromptTokens } from "../runtime/lastPromptTokens.js";
 import { getLogger } from "../shared/logger.js";
 import type { SdkAgent } from "../runtime/SdkAgent.js";
@@ -39,15 +39,19 @@ export interface AutoMigrateOptions {
    * 迁移完成之后的回声（可选）：`mode` 是**实际**用的执行者（`self` 降级到 `summary` 时以
    * 服务报的为准）。宿主据此落「这段会话压缩过」这类观测事实 —— 插件自己不认识存储层。
    *
-   * 钩子抛错只记一条日志：迁移已经完成，标不出来是观测问题，不该反过来让这一次交接报错。
+   * 钩子抛错就让这一次迁移报错（本插件不接）：写钩子的是宿主，它写崩了该在自己的调用栈里
+   * 炸出来，而不是被吞成一行日志。
    */
   onMigrated?: (info: AutoMigrateTriggerInfo & { mode: HandoffMode }) => void | Promise<void>;
   /**
-   * 迁移**没成**的回声（可选）：模型没有写出来、写出来不够长、落库失败……
+   * 迁移**没成**的回声（可选）：模型没有写出来、写出来不够长、落库失败、端点 4xx……
    *
    * **取消不算失败**（用户按了停那条不叫它）：那是回到交接前，没什么要收尾的。
    * 宿主拿它把输出闸开回来 —— 闸是交接那一批的批头关上的，而开闸只有宿主能决定
    * （SDK 不认识「记忆换完了」这件事，见 `HandoffService.runHandoff` 的注释）。
+   *
+   * 钩子抛错就让这一次迁移报错（本插件不接）：这一道是「把闸开回来」的唯一一道门，
+   * 它自己崩了被吞成一行日志，闸就可能一直关着。
    */
   onFailed?: (info: AutoMigrateTriggerInfo & { error: unknown }) => void | Promise<void>;
 }
@@ -113,6 +117,8 @@ export class AutoMigratePlugin implements AgentPlugin {
     if (promptTokens == null) return;
     if (promptTokens <= handoffTokens) return;
 
+    // 迁移本身（写文档 + 换记忆）失败：报一句、把失败回声叫起来
+    let migrated: HandoffContext;
     try {
       const mode = resolveMode ? await resolveMode({ promptTokens, handoffTokens }) : undefined;
       if (mode === null) return; // 用户选择跳过本次交接
@@ -120,17 +126,11 @@ export class AutoMigratePlugin implements AgentPlugin {
       // 自动交接走 `migrate()`：**写文档 + 换记忆**。记忆长什么样只有 SDK 这一处算，
       // 落在哪儿看服务有没有注入落库接缝（宿主注入了，于是它落库、落内存；外部使用者没注入，
       // 于是 SDK 自己换 `agent.messages`）—— 不是两套实现，是同一份结果两个落点。
-      const migrated = await service.migrate({
+      migrated = await service.migrate({
         agent,
         promptTokens,
         handoffTokens,
         mode: mode ?? undefined,
-      });
-      // 记忆已经换完：这时候才报「压过了」（实际执行者以服务报的为准）
-      await this.notifyMigrated(onMigrated, {
-        promptTokens,
-        handoffTokens,
-        mode: migrated.mode,
       });
     } catch (err: any) {
       // 用户主动取消不是失败：服务已把会话退回交接前，这里再报错只会在界面上
@@ -140,33 +140,14 @@ export class AutoMigratePlugin implements AgentPlugin {
       // 不报错、也不降级 summary —— 那会为一个已经没有的会话白烧一次全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
       getLogger().error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
-      await this.notifyFailed(onFailed, { promptTokens, handoffTokens, error: err });
+      // 失败回声是「把闸开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里炸出来
+      await onFailed?.({ promptTokens, handoffTokens, error: err });
+      return;
     }
-  }
 
-  /** 迁移之后的回声：钩子自己的失败不影响迁移结果（只记日志） */
-  private async notifyMigrated(
-    hook: AutoMigrateOptions["onMigrated"],
-    info: AutoMigrateTriggerInfo & { mode: HandoffMode },
-  ): Promise<void> {
-    if (!hook) return;
-    try {
-      await hook(info);
-    } catch (err: any) {
-      getLogger().error(`[autoMigrate] onMigrated hook failed: ${err?.message ?? err}`);
-    }
-  }
-
-  /** 没成那一拍的回声：同样只记日志（这一趟就是要告诉宿主一声，它崩了不该变成第二件坏事） */
-  private async notifyFailed(
-    hook: AutoMigrateOptions["onFailed"],
-    info: AutoMigrateTriggerInfo & { error: unknown },
-  ): Promise<void> {
-    if (!hook) return;
-    try {
-      await hook(info);
-    } catch (err: any) {
-      getLogger().error(`[autoMigrate] onFailed hook failed: ${err?.message ?? err}`);
-    }
+    // 记忆已经换完：这时候才报「压过了」（实际执行者以服务报的为准）。
+    // 它故意留在上面那个 try 之外：回声自己崩了不是「交接失败」，不该被当成失败再报一遍
+    // 失败回声 —— 它就在这个调用栈里炸出来（与 `commitMemory` 同一个口径）。
+    await onMigrated?.({ promptTokens, handoffTokens, mode: migrated.mode });
   }
 }

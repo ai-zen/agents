@@ -862,25 +862,48 @@ describe("migrate", () => {
     expect(order).toEqual(["before", "handoff", "migrated"]);
   });
 
-  it("钩子抛错不中断流程", async () => {
-    const { service } = await makeService({
+  it("钩子抛错就让这一次交接失败（三处都不再接，与 commitMemory 同一个口径）", async () => {
+    // 宿主是唯一消费者：钩子写错时该在它自己的调用栈里炸出来，而不是被吞成一行日志
+
+    // onBeforeHandoff 崩了：还没开工，什么都没有发生
+    const before = await makeService({
       strategy: "prune",
       onBeforeHandoff: () => {
-        throw new Error("UI error");
-      },
-      onHandoff: () => {
-        throw new Error("log error");
-      },
-      onMigrated: () => {
-        throw new Error("save error");
+        throw new Error("盘点那一步崩了");
       },
     });
-    const agent = selfAgent();
+    const beforeAgent = selfAgent();
+    await expect(before.service.migrate({ agent: asAgent(beforeAgent) })).rejects.toThrow(
+      "盘点那一步崩了",
+    );
+    expect(beforeAgent.sent).toHaveLength(0);
 
-    const ctx = await service.migrate({ agent: asAgent(agent) });
+    // onHandoff 崩了：文档已经写好，记忆还没换 —— 抛，记忆仍是旧的
+    const afterWrite = await makeService({
+      strategy: "prune",
+      onHandoff: () => {
+        throw new Error("写完之后那一拍崩了");
+      },
+    });
+    const afterWriteAgent = selfAgent();
+    await expect(afterWrite.service.migrate({ agent: asAgent(afterWriteAgent) })).rejects.toThrow(
+      "写完之后那一拍崩了",
+    );
+    // 模板 + 历史 2 + 交接回合 2：还没换成「模板 + 断点」那两截
+    expect(afterWriteAgent.messages).toHaveLength(5);
 
-    expect(existsSync(ctx.handoffPath)).toBe(true);
-    expect(agent.messages).toHaveLength(2);
+    // onMigrated 崩了：记忆已经换完才炸 —— 抛，但记忆确实是新的那一份（不回头改）
+    const afterMigrate = await makeService({
+      strategy: "prune",
+      onMigrated: () => {
+        throw new Error("回声崩了");
+      },
+    });
+    const afterMigrateAgent = selfAgent();
+    await expect(
+      afterMigrate.service.migrate({ agent: asAgent(afterMigrateAgent) }),
+    ).rejects.toThrow("回声崩了");
+    expect(afterMigrateAgent.messages).toHaveLength(2);
   });
 });
 
