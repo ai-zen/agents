@@ -18,7 +18,10 @@ import type {
 //   - stdio: 使用 StdioClientTransport（子进程 spawn）
 //   - http:  使用 StreamableHTTPClientTransport（Streamable HTTP：POST + 可选 SSE 流）
 //   - sse:   使用 SSEClientTransport（旧版 HTTP+SSE：GET 建立 SSE 流 + POST 发送消息）
-//   - 重连、退避、空闲超时、状态机
+//   - 空闲超时、建连超时、状态机
+//
+// 建连失败只做一件事：把原错误抛给调用方。重试策略不在本类里 —— 哪些错误值得重试、
+// 隔多久重试，只有调用方知道。
 // ---------------------------------------------------------------------------
 
 interface ConnectionEntry {
@@ -29,9 +32,7 @@ interface ConnectionEntry {
   pendingPromise?: Promise<void>;
   timeoutMs?: number;
   timeoutTimer?: ReturnType<typeof setTimeout>;
-  retryTimer?: ReturnType<typeof setTimeout>;
   cancelled?: boolean;
-  cancelRetryWait?: (err: Error) => void;
 }
 
 /**
@@ -47,12 +48,6 @@ export interface McpConnectOptions {
   idleTimeoutMs?: number;
   /** 建连超时（毫秒），默认 60s；超时即断开并抛错，避免工具永久挂起 */
   connectTimeoutMs?: number;
-  /** 失败时自动重连 */
-  autoReconnect?: boolean;
-  /** 最大重试次数，默认 3 */
-  maxRetries?: number;
-  /** 判断是否为配置错误（不重试），默认全部重试 */
-  isConfigError?: (err: unknown) => boolean;
 }
 
 const DEFAULT_IDLE_TIMEOUT: Record<string, number> = {
@@ -60,12 +55,6 @@ const DEFAULT_IDLE_TIMEOUT: Record<string, number> = {
   http: 5 * 60 * 1000,
   sse: 5 * 60 * 1000,
 };
-
-/** 指数退避: 1s → 2s → 4s → 8s → 16s → 30s（封顶） */
-function backoff(attempt: number): number {
-  const ms = Math.min(1000 * Math.pow(2, attempt), 30_000);
-  return ms;
-}
 
 export class McpConnectionManager {
   private servers = new Map<string, ConnectionEntry>();
@@ -121,7 +110,7 @@ export class McpConnectionManager {
 
     const timeoutMs =
       options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT[config.transport] ?? 5 * 60 * 1000;
-    const pendingPromise = this.connectWithRetry(name, config, options, 0);
+    const pendingPromise = this.doConnect(name, config);
 
     this.servers.set(name, {
       state: "connecting",
@@ -189,48 +178,6 @@ export class McpConnectionManager {
       throw err;
     } finally {
       if (timer) clearTimeout(timer);
-    }
-  }
-
-  private async connectWithRetry(
-    name: string,
-    config: McpServerConfig,
-    options: McpConnectOptions,
-    attempt: number,
-  ): Promise<void> {
-    try {
-      await this.doConnect(name, config);
-    } catch (err) {
-      const entry = this.servers.get(name);
-      if (entry?.cancelled) throw err;
-      if (options.isConfigError?.(err)) throw err;
-      if (!options.autoReconnect) throw err;
-
-      const maxRetries = options.maxRetries ?? 3;
-      if (attempt >= maxRetries) throw err;
-
-      const delay = backoff(attempt);
-      await new Promise<void>((resolve, reject) => {
-        const current = this.servers.get(name);
-        if (current) current.cancelRetryWait = reject;
-
-        const timer = setTimeout(() => {
-          const current2 = this.servers.get(name);
-          if (current2) current2.cancelRetryWait = undefined;
-          if (current2?.cancelled) {
-            reject(new Error(`Connection to "${name}" was cancelled`));
-          } else {
-            resolve();
-          }
-        }, delay);
-
-        const current3 = this.servers.get(name);
-        if (current3) current3.retryTimer = timer;
-      });
-
-      const recheck = this.servers.get(name);
-      if (recheck?.cancelled) throw new Error(`Connection to "${name}" was cancelled`);
-      return this.connectWithRetry(name, config, options, attempt + 1);
     }
   }
 
@@ -411,16 +358,6 @@ export class McpConnectionManager {
 
     entry.cancelled = true;
 
-    if (entry.cancelRetryWait) {
-      entry.cancelRetryWait(new Error(`Connection to "${name}" was cancelled`));
-      entry.cancelRetryWait = undefined;
-    }
-
-    if (entry.retryTimer) {
-      clearTimeout(entry.retryTimer);
-      entry.retryTimer = undefined;
-    }
-
     this.clearTimeout(name);
 
     // 断开失败也清理状态。注意保留 `cancelled`：建连中的 await 回来后要据此放弃写入。
@@ -434,8 +371,6 @@ export class McpConnectionManager {
       manifest: undefined,
       pendingPromise: undefined,
       timeoutTimer: undefined,
-      retryTimer: undefined,
-      cancelRetryWait: undefined,
     });
   }
 
