@@ -7,9 +7,7 @@ import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "./outputG
 /**
  * stdout + stderr 的内存上限（字节，两流合计）。
  *
- * `exec` 默认 maxBuffer 只有 1MB：超限时它直接杀掉子进程、只留下前 1MB，还把
- * `error.code` 变成一个字符串错误码。这里显式放大上限，并在真的截断时如实标注
- * `truncated`（尾部内容已丢失）。
+ * 超限就杀掉整个进程组并把已到的输出截在那里，结果里带 `truncated`（尾部内容已丢失）。
  */
 const MAX_BUFFER = 16 * 1024 * 1024;
 
