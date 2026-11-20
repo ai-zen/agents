@@ -49,9 +49,8 @@ import type { LocalizedText, QuestionView } from "../wire/states.js";
  * 库里那条 `code` 在文案字典里查不到时用的兜底键。
  *
  * `notices` 的行比写它的代码活得久 —— 永久通知（`duration: null`）落库之后一直躺着等人手动
- * 清，而文案键会随功能一起被删（`notice.*` 历史上就删过一批），库本身也是可以被手改的磁盘
- * 文件。读的那一刻认不出这个码，用户至少能看到「有一条通知（{code}）」，而不是整个列表读崩
- * 或者这条静默消失。
+ * 清，而文案键会随功能一起被删（`notice.*` 历史上就删过一批）。读的那一刻认不出这个码，
+ * 用户至少能看到「有一条通知（{code}）」，而不是整个列表读崩或者这条静默消失。
  */
 const UNKNOWN_CODE_KEY: MessageKey = "notice.unknown";
 
