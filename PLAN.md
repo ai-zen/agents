@@ -323,7 +323,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **凭证交付**：凭证自身一份真相在库里；`<数据根>/run/token` 只是交付口（内容只有本地那串），对外实例不写它。文件权限尽力而为设成 `0600`（Windows 上 `mode` / `chmod` 不改 ACL），文档与文案都不把它当安全保证。
 
-**升级**（2026-11-20 定：**远端也要能升**；本机与远端同一条路）：宿主不自装包、不 re-exec（PRD 第 237 行），它只做「验目标版本 → 记 pin → 安排收尾」，拉起归启动方式。三段分工：
+**升级**（需求见 PRD 3.8 / 4.12：**远端也要能升**，本机与远端同一条路）：宿主不自装包、不 re-exec（PRD 2.2 硬规矩），它只做「验目标版本 → 记 pin → 安排收尾」，拉起归启动方式。三段分工：
 
 | 段 | 谁 | 干什么 |
 |---|---|---|
@@ -469,7 +469,7 @@ pin 与退出信号必须分开，理由各一条：
 | **W10 平级会话阶段 2** | 编排元数据落到会话行（`lineage` / `autoHandoff` / `createdAt`），进程内只剩 `label` 一个可读名 | ✅ 完成 |
 | **W11 素材引用去 base64** | 引用改成内容段上的本地扩展字段 `__asset_id`（不再往 `image_url.url` / `file.file_id` 里塞 `asset://`），素材全局去重、关系行随消息落库 | ✅ 完成 |
 | **W12 本轮重写** | 题进内存（v5 删表）、判断收一处（四个拒因）、交接期间不收件、`session.pause`/`resume`、记忆形状只在 SDK 一处算（400 字节 / 断点 / cwd 只在创建时）、inbox 三事件恢复、`applyChunk` 只吃 `AgentNS.Delta`、删 `seq` | ✅ 完成 |
-| **W13 远端升级** | 宿主：`upgradeHost` 两条判据（磁盘就地换过 / registry 有这一版，后者用内置 `fetch`）+ 写 pin `<数据根>/run/next-version.json` + `ExitReason` 加 `upgrade` 与专属退出码；客户端：`/upgrade` 删本机 `npx` 预下与 `cli/host-version.json`，`connectHost` 改读 pin；启动方式：读 pin 重拉（我们自己给 `agents-host up`，还是只出文档 —— 待拍，见 §8 升级） | ⬜ 未开始 |
+| **W13 远端升级**（PRD 3.8 / 4.12） | 宿主：`upgradeHost` 两条判据（磁盘就地换过 / registry 有这一版，后者用内置 `fetch`）+ 写 pin `<数据根>/run/next-version.json` + `ExitReason` 加 `upgrade` 与专属退出码；客户端：`/upgrade` 删本机 `npx` 预下与 `cli/host-version.json`，`connectHost` 改读 pin；启动方式：读 pin 重拉（我们自己给 `agents-host up`，还是只出文档 —— 待拍，见 §8 升级） | ⬜ 未开始 |
 
 **并行规则**：同波次里两个 agent 的目录不重叠才能同时派；跨目录要改别人的文件先报。
 
