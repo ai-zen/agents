@@ -11,6 +11,9 @@
  * 另外两条是同一条判据的另一半：删图片模型时默认项要改指（不然默认项指着一条不在的），
  * 改中断策略时活着的执行体要当场按新的走（不然「下一句话就按新的来」只在文件层面成立）。
  *
+ * 语言也是全局那几格之一（`setGlobal` 是它的写口，不另开一条 procedure）：写完宿主那份语言当场
+ * 跟着变（`t` 在调用那一刻现读，不重建任何执行体），非法值在边界上被拒、文件一个字都不动。
+ *
  * 落盘全用真的：临时目录 + 真的 `ConfigManager`（打桩磁盘只会验到桩）。只有执行体那一条给
  * `runtime` / `workspaces` / `sessions` 替身 —— 造一个真的运行时得先有一个能出网的模型，
  * 而那条用例问的是「哪几格被赋了新值」。
@@ -317,6 +320,52 @@ describe("配置面：读", () => {
     expect(got.config.endpoints.map((item) => item.id)).toEqual(["ep-a", "ep-b"]);
     expect(got.config.defaultImageModel).toBe("img-a1");
     expect(got.presets).toEqual(presets);
+  });
+});
+
+describe("配置面：语言", () => {
+  /**
+   * 语言是宿主的全局那一格，写口就是 `config.setGlobal`（不另开一条 procedure）。写完的即时效果
+   * 不靠重建任何执行体：宿主那份 `t` 是 `createTranslator(() => general.language())`，调用那一刻
+   * 现读，所以下一次渲染就是新语言 —— 这里用同一个造法造一个 `t`，验证的正是那条现读的线。
+   *
+   * 起手那份配置不写 `language`（缺省按 `en`），写完读回 `zh`：两个方向都验到了。
+   */
+  it("写 language 之后读回来是新的，宿主那份语言当场跟着变", async () => {
+    const host = await newHost();
+    const t = createTranslator(() => host.deps.config.language());
+    expect(t("交接失败：{reason}", { reason: "x" })).toBe("Handoff failed: x");
+
+    const { config } = await host.caller.config.setGlobal({ language: "zh" });
+
+    expect(config.language).toBe("zh");
+    // 读口看到的是改完之后那一份：客户端不必自己把补丁叠到手里那份快照上
+    expect((await host.caller.config.get()).config.language).toBe("zh");
+    // 宿主那份语言跟着变，且不需要重建任何执行体
+    expect(host.deps.config.language()).toBe("zh");
+    expect((await onDisk()).language).toBe("zh");
+    // 同一刻产生的下一句就是新语言：语言不是造 `t` 那一刻的快照
+    expect(t("交接失败：{reason}", { reason: "x" })).toBe("交接失败：x");
+  });
+
+  /**
+   * 非法值在边界上被拒（而不是写进文件之后由 `normalizeConfig` 静默修）：静默修的话界面上写着
+   * 「已保存」，而宿主照旧回落成 `en`。
+   */
+  it("language 给了 `en` / `zh` 之外的值：边界上拒掉，文件一个字都不动", async () => {
+    const host = await newHost();
+    const beforeText = await readFile(configPath, "utf-8");
+
+    await expect(
+      host.caller.config.setGlobal({ language: "fr" as unknown as "en" }),
+    ).rejects.toThrow();
+
+    expect(await readFile(configPath, "utf-8")).toBe(beforeText);
+    // 内存那一份也没动：拒的是这一次调用，不是「不让改语言」
+    expect(host.deps.config.language()).toBe("en");
+    // 合法的值照样写得进去
+    const { config } = await host.caller.config.setGlobal({ language: "zh" });
+    expect(config.language).toBe("zh");
   });
 });
 

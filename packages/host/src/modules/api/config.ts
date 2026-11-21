@@ -30,12 +30,14 @@ const defaultsInput = z.object({
 });
 
 /**
- * 全局两项 + 工具输出上限。
+ * 全局那几格：语言、工具输出上限、中断策略两项。
  *
- * 中断策略两项的取值就是 `AppConfig` 里那两种联合类型：写错了要在边界上被拒，而不是写进
- * 文件之后由 `normalizeConfig` 在下次启动时静默补成出厂值 —— 那时用户以为改成功了。
+ * 取值就是 `AppConfig` 里的那几种联合类型：写错了要在边界上被拒，而不是写进文件之后由
+ * `normalizeConfig` 在下次启动时静默补成出厂值 —— 那时用户以为改成功了。语言尤其如此：
+ * 这里放过一个 `fr`，宿主的 `t` 会一直照着回落到中文，而界面上写着「已保存」。
  */
 const globalInput = z.object({
+  language: z.enum(["en", "zh"]).optional(),
   maxToolOutput: z.number().optional(),
   abortedMessageStrategy: z.enum(["drop", "keep"]).optional(),
   abortedToolRoundStrategy: z.enum(["drop", "fill"]).optional(),
@@ -77,10 +79,14 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
       .mutation(async ({ input }) => ({ config: await setDefaults(deps, input) })),
 
     /**
-     * 工具输出上限 + 中断策略两项。
+     * 全局那几格：语言、工具输出上限、中断策略两项。
      *
-     * 写完**就地刷新活着的执行体**（见 `applyInterruptStrategies`）；`maxToolOutput` 不在这条
-     * 路上刷新，理由也写在那儿。
+     * `language` 写完**不重建任何执行体**：宿主那份语言只有一个写口（`HostApp` 上的 `t`），它
+     * 在调用那一刻现读配置，下一次渲染就是新语言。已经落库的通知也不回填 —— 那里存的是产生那
+     * 一刻的成品句子，改语言不追认旧账。
+     *
+     * 中断策略写完**就地刷新活着的执行体**（见 `applyInterruptStrategies`）；`maxToolOutput` 不
+     * 在这条路上刷新，理由也写在那儿。
      */
     setGlobal: api.procedure
       .input(globalInput)
@@ -89,6 +95,7 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
         // 只把「给出来的那几格」放进补丁：`{ maxToolOutput: undefined }` 合并进去会把这一格
         // 从配置里抹掉，而调用方只是没提它
         const change: Partial<AppConfig> = {};
+        if (input.language !== undefined) change.language = input.language;
         if (input.maxToolOutput !== undefined) change.maxToolOutput = input.maxToolOutput;
         if (input.abortedMessageStrategy !== undefined) {
           change.abortedMessageStrategy = input.abortedMessageStrategy;
