@@ -203,8 +203,8 @@ export class HostApp {
     const models = new ModelService({ general: this.general, t });
     const imageModels = new ImageModelService({ general: this.general, t });
     const presets = new PresetService({ general: this.general, config: deps.manager, t });
-    // MCP 现在有运行期的消费者（`openScope` 里的发现），配置面那一路（`effective()`）还没有
-    // procedure 用它。两者看的是同一批文件、问的是不同的问题。
+    // MCP 的两条路看的是同一批文件、问的是不同的问题：运行期（`openScope` 里的发现）问「这些
+    // 服务器怎么连」，配置面（`mcp` 这个 router）问「每条写在哪一层、还能不能改」。
     const mcp = new McpConfig({
       dataRoot: deps.dataRoot,
       homeDir: homedir(),
@@ -379,6 +379,7 @@ export class HostApp {
       models,
       imageModels,
       presets,
+      mcp,
       messages,
       inbox,
       assets,

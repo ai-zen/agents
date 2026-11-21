@@ -7,6 +7,7 @@ import type { AgentDefinitionService } from "../config/agents.js";
 import type { EndpointService } from "../config/endpoints.js";
 import type { GeneralConfig } from "../config/general.js";
 import type { ImageModelService } from "../config/imageModels.js";
+import type { McpConfig } from "../config/mcp.js";
 import type { ModelService } from "../config/models.js";
 import type { PresetService } from "../config/presets.js";
 import type { HostEvent } from "../events.js";
@@ -43,6 +44,11 @@ export interface HostApiDeps {
   readonly models: ModelService;
   readonly imageModels: ImageModelService;
   readonly presets: PresetService;
+  /**
+   * MCP 那五层文件。与运行期（`openScope` 里的发现）看的是同一批文件、问的是不同的问题：
+   * 这里问「每条写在哪一层、还能不能改」，那里问「怎么连」。
+   */
+  readonly mcp: McpConfig;
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
   readonly assets: AssetService;

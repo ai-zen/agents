@@ -37,8 +37,6 @@ export const en: Record<string, string> = {
   "MCP 配置 {path} 不由宿主写入": 'The host does not write the MCP config "{path}"',
   "MCP 配置 {path} 里没有名为 {name} 的服务器":
     'The MCP config "{path}" has no server named "{name}"',
-  "目录 {cwd} 上的能力容器还有 {count} 段会话活着，无法拆除":
-    'Cannot dispose the scope at "{cwd}": {count} sessions are still live',
   "会话 {sessionId} 没有运行中的执行体，先运行它再投递":
     'Session "{sessionId}" has no running agent; start the session before sending',
   "宿主内部出错，这次调用没有完成": "Internal host failure: the call did not complete",

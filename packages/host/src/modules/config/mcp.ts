@@ -64,6 +64,46 @@ export class McpConfig {
     return discoverMcpServers(this.paths(cwd), { logger: this.deps.log });
   }
 
+  /**
+   * 每条服务器来自哪一层、是不是停用。层归属按「近的赢」算，与合并同一个次序。
+   *
+   * **不是 {@link effective} 的别名**：`effective` 回答的是「现在能连哪些」，界面要回答的是
+   * 「这些服务器各写在哪一层的文件里、哪一条被停用了」—— 停用的那一条在第一份里根本不存在。
+   * 而「重新启用一条」读的正是它所在的那一层，不是那份合并后的清单；所以这两个问题不能由一份
+   * 清单回答。
+   *
+   * 名字先被近层认领，远处同名的就不再出现：与 `discoverMcpServers` 同一个口径 —— 写成
+   * `disabled: true` 的那一条同样占住名字，它是对这个名字的发言，不是「这一层没提过它」。
+   */
+  async describe(cwd: string): Promise<Array<{ server: McpServerConfig; scope: McpScope }>> {
+    // 能连成一份完整配置的那几条用有效清单里这一份：它已经归一过别名（`type` / `transport` /
+    // `transportType`、没写 type 时由 command / url 推断出来的 transport）。
+    const connectable = new Map((await this.effective(cwd)).map((server) => [server.id, server]));
+
+    const seen = new Set<string>();
+    const items: Array<{ server: McpServerConfig; scope: McpScope }> = [];
+
+    for (const scope of LAYER_ORDER) {
+      const servers = this.readRaw(this.pathOf(scope, cwd));
+      for (const name of Object.keys(servers)) {
+        if (seen.has(name)) continue;
+        // 与 `discoverMcpServers` 同一个次序：不是对象的那一条连名字都不占
+        const entry: unknown = servers[name];
+        if (typeof entry !== "object" || entry === null) continue;
+        seen.add(name);
+
+        // 连不上的（停用的、或条目本身不合法：没有 type 也推不出 transport）用这一层的原始条目
+        // 拼一份 —— 界面要显示的是「这条写在这里」，不是「这条连得上」。
+        items.push({
+          server: connectable.get(name) ?? serverOf(name, entry as Record<string, unknown>),
+          scope,
+        });
+      }
+    }
+
+    return items;
+  }
+
   async save(scope: McpScope, cwd: string, server: McpServerConfig): Promise<void> {
     const path = this.writablePath(scope, cwd);
     this.mutate(path, (servers) => {
@@ -140,6 +180,17 @@ export class McpConfig {
   }
 
   /**
+   * 这一层文件里的原始条目，读不出来时当它空着。
+   *
+   * 与 {@link readForWrite} 是同一份解析口径（同一个 `readTextFile` + `parseRawFile`），但**不抛**：
+   * 合并那一路本来就是这么处置坏文件的（由 SDK 的发现记一句日志），把它改成抛错会让界面
+   * 「一条服务器都看不见」，而事实只是「这一层的那几条看不见」。
+   */
+  private readRaw(path: string): RawServers {
+    return parseRawFile(readTextFile(path))?.mcpServers ?? {};
+  }
+
+  /**
    * 写回要的那一份：文件原样。`mcpServers` 缺了这一格就按空表算 —— 这一层第一次存服务器时
    * 正是这种情形，而文件里其余的键仍然要跟着走。
    *
@@ -172,8 +223,8 @@ interface RawFile {
 }
 
 /**
- * 文本读不成 JSON 回 `undefined`。两个调用处对它的处置不同：合并那一路当这一层空着（坏文件
- * 由 SDK 的发现记日志），写那一路报 `config_invalid` 并且不写。
+ * 文本读不成 JSON 回 `undefined`。两个方向对它的处置不同：读的那两路（合并、层归属）当这一层
+ * 空着（坏文件由 SDK 的发现记日志），写的那一路报 `config_invalid` 并且不写。
  */
 function parseRawFile(text: string | undefined): RawFile | undefined {
   if (text === undefined) return undefined;
@@ -182,6 +233,48 @@ function parseRawFile(text: string | undefined): RawFile | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 用某一层文件里的原始条目拼一份 `McpServerConfig`。
+ *
+ * 只有连不上的那几条走到这里，所以它只保证「这条写在这里、长这样」，不保证连得上。认的字段与
+ * SDK 的归一化同一份（`discover.ts` 的 `normalizeConfig`）：多认一格，界面就会显示一个写回去
+ * 时不存在的键。
+ *
+ * `transport` 认不出来时按 `"stdio"` 填：缺一格不该让这条从界面上消失，而界面要选的默认值就是
+ * 那个最常用的。
+ */
+function serverOf(name: string, raw: Record<string, unknown>): McpServerConfig {
+  const declared = raw.type ?? raw.transport ?? raw.transportType;
+  return {
+    // 名字就是这一层文件里的那个键：它是这一条的 id，也是 `remove` 认的那一格
+    id: name,
+    transport: transportOf(declared, raw),
+    // 停用就是这一条上写着 `disabled: true`，不必另开一格
+    disabled: raw.disabled === true ? true : undefined,
+    description: raw.description as string | undefined,
+    command: raw.command as string | undefined,
+    args: raw.args as string[],
+    env: raw.env as Record<string, string>,
+    url: raw.url as string | undefined,
+    headers: raw.headers as Record<string, string>,
+    // oauth 是对象就原样带上，否则视为没配（与 SDK 同一判据）
+    oauth:
+      typeof raw.oauth === "object" && raw.oauth !== null && !Array.isArray(raw.oauth)
+        ? (raw.oauth as McpServerConfig["oauth"])
+        : undefined,
+  };
+}
+
+/** 与 SDK 同一个认法：认声明的那个值，认不出来就按有没有 command / url 推断，都没有才算 stdio */
+function transportOf(
+  declared: unknown,
+  raw: Record<string, unknown>,
+): McpServerConfig["transport"] {
+  if (declared === "stdio" || declared === "http" || declared === "sse") return declared;
+  if (raw.url !== undefined) return "http";
+  return "stdio";
 }
 
 /**

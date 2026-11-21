@@ -5,6 +5,7 @@ import { configRouter } from "./config.js";
 import type { HostApiDeps } from "./deps.js";
 import { eventsProcedure } from "./events.js";
 import { handoffRouter } from "./handoff.js";
+import { mcpRouter } from "./mcp.js";
 import { noticeRouter } from "./notice.js";
 import { questionRouter } from "./question.js";
 import { searchRouter } from "./search.js";
@@ -31,6 +32,7 @@ export function createAppRouter(deps: HostApiDeps) {
     handoff: handoffRouter(deps, api),
     search: searchRouter(deps, api),
     config: configRouter(deps, api),
+    mcp: mcpRouter(deps, api),
     agentDefinition: agentDefinitionRouter(deps, api),
     events: eventsProcedure(deps, api),
   });
