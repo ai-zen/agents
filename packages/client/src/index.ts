@@ -35,8 +35,9 @@ export {
   AI_ZEN_DIR_ENV,
   ensureHost,
   npxHostArgv,
-  readLocalToken,
   readHostFile,
+  readHostVersionPin,
+  readLocalToken,
   resolveDataRoot,
   resolveHostEntry,
   hostFilePath,
@@ -44,12 +45,14 @@ export {
   spawnHostEntry,
   spawnHostViaNpx,
   tokenFilePath,
+  versionPinFilePath,
 } from "./connection.js";
 export type {
   EnsureHostOptions,
   EnsureHostResult,
   HostLaunchFailure,
   HostLaunchStage,
+  HostVersionPin,
   LocalHostFacts,
   NpxHostArgv,
   SpawnDeps,
@@ -58,8 +61,15 @@ export type {
   SpawnHostContext,
 } from "./connection.js";
 
-export { ClientError, fromTRPCError, isClientError, localError } from "./errors.js";
-export type { ClientErrorCode, HostErrorCode, LocalErrorCode, TRPCErrorCode } from "./errors.js";
+export { ClientError, fromTRPCError, isClientError, localError, localWarning } from "./errors.js";
+export type {
+  ClientErrorCode,
+  HostErrorCode,
+  LocalErrorCode,
+  LocalWarning,
+  LocalWarningCode,
+  TRPCErrorCode,
+} from "./errors.js";
 
 export {
   reconnectUntilConnected,

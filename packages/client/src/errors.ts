@@ -216,6 +216,47 @@ export function fromTRPCError(error: unknown): ClientError {
   return localError("unexpected", { params: { reason }, detail: { reason } });
 }
 
+/**
+ * 一条本地提醒：不拦流程，只让人看见。
+ *
+ * 与失败分开的理由：坏掉的升级 pin 只让「这一次拉哪一版」退回版本范围，拉起照旧进行 —— 把它抛
+ * 成错会让一次本来能成功的拉起直接失败，而把它吞掉则会让「升过的版本自己退回去了」永远没有解释。
+ */
+export interface LocalWarning {
+  /** 提醒的种类 */
+  code: LocalWarningCode;
+  /** 可以直接展示的那句话（已按语言渲染） */
+  message: string;
+  /** 结构化事实：哪一份文件、坏在哪一格 */
+  detail?: unknown;
+}
+
+/** 客户端自己产生的提醒码（只有它一条：目前没有第二件事需要「说出来但不拦」） */
+export type LocalWarningCode = "version_pin_broken";
+
+/** 提醒的模板，口径同 {@link LOCAL_TEXT} */
+const LOCAL_WARNING_TEXT: Record<LocalWarningCode, { zh: string; en: string }> = {
+  version_pin_broken: {
+    zh: "升级 pin（{path}）读不懂，这次按版本范围拉起",
+    en: "The upgrade pin ({path}) cannot be used; this launch falls back to the version range",
+  },
+};
+
+/** 一条本地提醒：句子按语言从 {@link LOCAL_WARNING_TEXT} 取 */
+export function localWarning(
+  code: LocalWarningCode,
+  options: { language?: string; params?: Record<string, unknown>; detail?: unknown } = {},
+): LocalWarning {
+  const params = options.params ?? {};
+  const text = LOCAL_WARNING_TEXT[code];
+  const template = usesChinese(options.language) ? text.zh : text.en;
+  return {
+    code,
+    message: fill(template, params),
+    ...(options.detail === undefined ? {} : { detail: options.detail }),
+  };
+}
+
 /** 一条本地失败：句子按语言从 {@link LOCAL_TEXT} 取 */
 export function localError(
   code: LocalErrorCode,

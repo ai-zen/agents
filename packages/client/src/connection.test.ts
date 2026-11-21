@@ -19,17 +19,19 @@ import {
   ensureHost,
   npxHostArgv,
   readHostFile,
+  readHostVersionPin,
   resolveDataRoot,
   hostFilePath,
   spawnHostByContext,
   spawnHostViaNpx,
   tokenFilePath,
+  versionPinFilePath,
   type EnsureHostOptions,
   type HostLaunchStage,
   type SpawnDeps,
   type SpawnHostContext,
 } from "./connection.js";
-import { ClientError, localError } from "./errors.js";
+import { ClientError, localError, type LocalWarning } from "./errors.js";
 
 const DATA_ROOT = "/data/ai-zen";
 
@@ -57,6 +59,8 @@ interface HarnessResult {
   options: EnsureHostOptions;
   spawned: SpawnHostContext[];
   connects: ClientOptions[];
+  /** 那份假文件系统（用例在拉起过程中自己往里放文件） */
+  files: Map<string, ScheduledFile>;
   /** 推进手摇时钟（`sleep` 被调用一次就 +1） */
   tick(): number;
 }
@@ -73,6 +77,8 @@ function harness(config: {
   ) => { ok: true } | { ok: false; code: "host_unavailable" } | { ok: false; code: "unauthorized" };
   /** spawn 时做什么（缺省什么都不做） */
   onSpawn?: (context: SpawnHostContext, files: Map<string, ScheduledFile>) => void;
+  /** 宿主入口：给一个字符串就是「入口那条路」；`null` 是没给入口（走 npx） */
+  hostEntry?: string | null;
   timeoutMs?: number;
   retryIntervalMs?: number;
 }): HarnessResult {
@@ -100,7 +106,9 @@ function harness(config: {
     dataRoot: DATA_ROOT,
     launchLog: launchLogOf(DATA_ROOT),
     ...(config.settings ? { settings: config.settings } : {}),
-    hostEntry: "/host/dist/cli.js",
+    ...(config.hostEntry === null
+      ? {}
+      : { hostEntry: config.hostEntry ?? "/host/dist/cli.js" }),
     timeoutMs: config.timeoutMs ?? 1_000,
     retryIntervalMs: config.retryIntervalMs ?? 100,
     readTextFile: async (path) => {
@@ -132,7 +140,7 @@ function harness(config: {
     },
   };
 
-  return { options, spawned, connects, tick: () => ticks };
+  return { options, spawned, connects, files, tick: () => ticks };
 }
 
 describe("显式地址：只连，绝不拉起", () => {
@@ -595,5 +603,175 @@ describe("拉起失败：拿子进程最后一行输出当原因", () => {
     expect(error.code).toBe("host_launch_failed");
     expect(error.message).toContain("npm error 404 not found");
     expect(error.detail).toMatchObject({ code: 1, logFile: launchLogOf(DATA_ROOT) });
+  });
+});
+
+// ==================== 升级：pin 与 75 ====================
+
+const PIN_FILE = versionPinFilePath(DATA_ROOT);
+
+/** pin 的形状照宿主 `infra/versionPin.ts` 那一份写 */
+function pinContent(version: string): string {
+  return JSON.stringify({ version, requestedAt: "2026-11-22T03:00:00.000Z" });
+}
+
+describe("读 pin", () => {
+  it("文件不在：没有 pin（没升过级是正常路径）", async () => {
+    await expect(readHostVersionPin(DATA_ROOT, async () => null)).resolves.toEqual({
+      kind: "absent",
+    });
+  });
+
+  it("形状对：给出那一版（requestedAt 用不到）", async () => {
+    await expect(
+      readHostVersionPin(DATA_ROOT, async () => pinContent("0.2.0")),
+    ).resolves.toEqual({ kind: "pinned", version: "0.2.0" });
+  });
+
+  it("不是 JSON / 没有 version：都算坏了，且指出坏在哪一格", async () => {
+    await expect(readHostVersionPin(DATA_ROOT, async () => "{ 半个 JSON")).resolves.toEqual({
+      kind: "broken",
+      path: PIN_FILE,
+      reason: "not_json",
+    });
+    await expect(
+      readHostVersionPin(DATA_ROOT, async () => JSON.stringify({ requestedAt: "x" })),
+    ).resolves.toEqual({ kind: "broken", path: PIN_FILE, reason: "missing_version" });
+  });
+});
+
+describe("升级：拉哪一版由 pin 定", () => {
+  it("盘上有 pin：npx 那条路拉的是 pin 那一版，不是调用方给的范围", async () => {
+    const test = harness({
+      settings: { mode: "local" },
+      hostEntry: null,
+      files: { [PIN_FILE]: { content: pinContent("0.2.0"), fromTick: 0 } },
+      onSpawn: (_context, files) => {
+        files.set(HOST_FILE, {
+          content: JSON.stringify({ pid: 222, host: "127.0.0.1", port: 6000 }),
+          fromTick: 1,
+        });
+      },
+    });
+    test.options.versionRange = RANGE;
+
+    const result = await ensureHost(test.options);
+
+    expect(result.started).toBe(true);
+    expect(test.spawned).toHaveLength(1);
+    expect(test.spawned[0]?.versionRange).toBe("0.2.0");
+    // pin 由宿主自己清，这一侧只读：拉起之后它还在盘上
+    expect(test.files.has(PIN_FILE)).toBe(true);
+  });
+
+  it("pin 那一版原样进 npx 的命令行", async () => {
+    const dir = tempDataRoot();
+    const fake = fakeSpawn();
+    const test = harness({
+      settings: { mode: "local" },
+      hostEntry: null,
+      files: { [versionPinFilePath(dir)]: { content: pinContent("0.2.0"), fromTick: 0 } },
+      timeoutMs: 300,
+    });
+    test.options.dataRoot = dir;
+    test.options.launchLog = launchLogOf(dir);
+    test.options.versionRange = RANGE;
+    // 真的拉起方式，只把子进程换成假件
+    test.options.spawnHost = (context) =>
+      spawnHostByContext(context, { spawn: fake.spawn, platform: "linux" });
+
+    // 假子进程不会写发现文件：到时限就抛，这里要的是它起的那一刻的命令行
+    await ensureHost(test.options).catch(() => {});
+
+    expect(fake.calls[0]?.args).toContain("@ai-zen/agents-host@0.2.0");
+  });
+
+  it("没有 pin：照旧用调用方给的范围", async () => {
+    const test = harness({
+      settings: { mode: "local" },
+      hostEntry: null,
+      onSpawn: (_context, files) => {
+        files.set(HOST_FILE, {
+          content: JSON.stringify({ pid: 222, host: "127.0.0.1", port: 6000 }),
+          fromTick: 1,
+        });
+      },
+    });
+    test.options.versionRange = RANGE;
+
+    await ensureHost(test.options);
+
+    expect(test.spawned[0]?.versionRange).toBe(RANGE);
+  });
+
+  it("给了 entry：盘上的 pin 换不掉随包分发的那一份", async () => {
+    const test = harness({
+      settings: { mode: "local" },
+      files: { [PIN_FILE]: { content: pinContent("0.2.0"), fromTick: 0 } },
+      onSpawn: (_context, files) => {
+        files.set(HOST_FILE, {
+          content: JSON.stringify({ pid: 222, host: "127.0.0.1", port: 6000 }),
+          fromTick: 1,
+        });
+      },
+    });
+    test.options.versionRange = RANGE;
+
+    await ensureHost(test.options);
+
+    expect(test.spawned[0]?.entry).toBe("/host/dist/cli.js");
+    expect(test.spawned[0]?.versionRange).toBe(RANGE);
+  });
+
+  it("pin 坏了：退回版本范围拉起，并把那份文件说出来", async () => {
+    const warnings: LocalWarning[] = [];
+    const test = harness({
+      settings: { mode: "local" },
+      hostEntry: null,
+      files: { [PIN_FILE]: { content: "{ 半个 JSON", fromTick: 0 } },
+      onSpawn: (_context, files) => {
+        files.set(HOST_FILE, {
+          content: JSON.stringify({ pid: 222, host: "127.0.0.1", port: 6000 }),
+          fromTick: 1,
+        });
+      },
+    });
+    test.options.versionRange = RANGE;
+    test.options.onWarning = (warning) => warnings.push(warning);
+
+    await ensureHost(test.options);
+
+    expect(test.spawned[0]?.versionRange).toBe(RANGE);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.code).toBe("version_pin_broken");
+    expect(warnings[0]?.message).toContain(PIN_FILE);
+    expect(warnings[0]?.detail).toEqual({ path: PIN_FILE, reason: "not_json" });
+  });
+
+  it("缺 version 的 pin 也算坏了（不静默地当成升过级）", async () => {
+    const warnings: LocalWarning[] = [];
+    const test = harness({
+      settings: { mode: "local" },
+      hostEntry: null,
+      files: {
+        [PIN_FILE]: { content: JSON.stringify({ requestedAt: "2026-11-22T03:00:00.000Z" }), fromTick: 0 },
+      },
+      onSpawn: (_context, files) => {
+        files.set(HOST_FILE, {
+          content: JSON.stringify({ pid: 222, host: "127.0.0.1", port: 6000 }),
+          fromTick: 1,
+        });
+      },
+    });
+    test.options.versionRange = RANGE;
+    test.options.onWarning = (warning) => warnings.push(warning);
+
+    await ensureHost(test.options);
+
+    expect(test.spawned[0]?.versionRange).toBe(RANGE);
+    expect(warnings[0]).toMatchObject({
+      code: "version_pin_broken",
+      detail: { path: PIN_FILE, reason: "missing_version" },
+    });
   });
 });

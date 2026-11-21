@@ -41,6 +41,15 @@
  * 判据只有一句 `context.entry === undefined`（{@link spawnHostByContext}）。两条路的差别只在
  * 「起哪个进程」：之后都是同一段「轮询发现文件 + 握手」，本文件里没有第二套语义。
  *
+ * ## 升级：pin 由宿主写，这里只读
+ *
+ * 宿主不自装包、也不 exec 回自己：它验过「这一版拿得到」之后写下
+ * `<数据根>/run/next-version.json`，再以退出码 75 退出（`host.upgrade` 那一侧的事）。装包只能
+ * 发生在宿主那台机器上，所以替它装的只能是启动方式 —— 也就是这里：走 npx 那条路之前先读 pin，
+ * 读到了就拉 `@<pin.version>`，读不到才用调用方给的版本范围。
+ *
+ * pin 的清理归宿主（它启动时发现 pin 指的就是自己那一版就删掉），这一侧只读、不删。
+ *
  * ## 阶段（PRD D31）
  *
  * {@link HostLaunchStage} 是给**屏**用的：调用方按它换那一行字。这里只报「走到哪一步了」，
@@ -57,7 +66,13 @@ import type { HostFileInfo } from "@ai-zen/agents-host";
 
 import { isLoopbackHost, parseAddress, webSocketUrl, type HostTarget } from "./address.js";
 import { connect as connectToHost, type ClientOptions, type HostClient } from "./client.js";
-import { isClientError, localError, type ClientError } from "./errors.js";
+import {
+  isClientError,
+  localError,
+  localWarning,
+  type ClientError,
+  type LocalWarning,
+} from "./errors.js";
 import { settingsToTarget, type ConnectionSettings } from "./settings.js";
 
 /** 数据根的环境变量名（与宿主的 `AI_ZEN_DIR_ENV` 同一个词） */
@@ -167,6 +182,13 @@ export interface EnsureHostOptions {
   onStage?: (stage: HostLaunchStage) => void;
   /** 取消：中止正在拉起的那个子进程（CLI 的下载屏按 Esc / Ctrl+C 时 abort） */
   signal?: AbortSignal;
+  /**
+   * 一句不该拦住启动、但该被人看见的话（升级 pin 读不懂）。
+   *
+   * 缺省写到 stderr：全屏界面接了这一格自己上屏，接不上的时候它至少还留在终端的错误输出里，
+   * 不会无声无息地退化成「按版本范围拉起」。
+   */
+  onWarning?: (warning: LocalWarning) => void;
   /** 读文本文件（缺省 `fs.readFile`；读不到返回 `null`） */
   readTextFile?: (path: string) => Promise<string | null>;
   /** 等一会儿（缺省 `setTimeout`；注入出来让用例不必真等） */
@@ -243,6 +265,59 @@ export async function readHostFile(
   if (typeof facts.pid !== "number" || typeof facts.host !== "string") return null;
   if (typeof facts.port !== "number") return null;
   return { pid: facts.pid, host: facts.host, port: facts.port };
+}
+
+/**
+ * `<数据根>/run/next-version.json`：宿主留下的升级 pin —— 下一拍该跑哪一版。
+ *
+ * 与 `run/host.json` 同一层目录，为什么这条路径也在这里手写一份见 {@link hostFilePath}。
+ */
+export function versionPinFilePath(dataRoot: string): string {
+  return join(dataRoot, "run", "next-version.json");
+}
+
+/**
+ * 盘上那份 pin 的三种读法结果。
+ *
+ * 「文件不在」与「文件坏了」分开：前者是正常路径（这台机器上没升过级），后者要让人看见 —— 一份
+ * 坏掉的 pin 若被当成「没升过级」，症状是「升过的版本自己退回去了」，而解释永远出不来。
+ */
+export type HostVersionPin =
+  | { readonly kind: "absent" }
+  | { readonly kind: "pinned"; readonly version: string }
+  | {
+      readonly kind: "broken";
+      /** 那份文件在哪 */
+      readonly path: string;
+      /** 坏在哪一格 */
+      readonly reason: "not_json" | "missing_version";
+    };
+
+/**
+ * 读 pin。宿主写下的形状是 `{ version, requestedAt }`，这里只认 `version` —— 另一个字段是它自己
+ * 的记账，启动方式用不到。
+ */
+export async function readHostVersionPin(
+  dataRoot: string,
+  readText: (path: string) => Promise<string | null> = readTextFile,
+): Promise<HostVersionPin> {
+  const path = versionPinFilePath(dataRoot);
+  const raw = await readText(path);
+  if (raw === null) return { kind: "absent" };
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return { kind: "broken", path, reason: "not_json" };
+  }
+  if (typeof value !== "object" || value === null) {
+    return { kind: "broken", path, reason: "missing_version" };
+  }
+  const version = (value as { version?: unknown }).version;
+  if (typeof version !== "string" || version.trim() === "") {
+    return { kind: "broken", path, reason: "missing_version" };
+  }
+  return { kind: "pinned", version: version.trim() };
 }
 
 /** 读本地凭证；文件不在 / 内容为空一律 `null` */
@@ -324,13 +399,44 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
   }
 
   // ---- 拉起一个 ----------------------------------------------------------------
-  throwIfCancelled();
   const spawnHost = options.spawnHost ?? spawnHostByContext;
+  const warn = options.onWarning ?? warningToStderr;
+  /** 坏掉的 pin 只说一句：重拉之前会再读一遍同一份文件 */
+  let pinReported = false;
+
+  /**
+   * 这一趟让 npx 拉哪一版：盘上的 pin 说哪一版就拉哪一版，没有 pin 才用调用方给的范围。
+   *
+   * 只对 npx 那条路成立：给了 `entry` 起的是随包分发的那一份，盘上的 pin 换不掉一个已经打好的
+   * 产物 —— 那条路上的升级归给 `entry` 的调用方。
+   */
+  const versionToStart = async (): Promise<string | undefined> => {
+    if (options.hostEntry !== undefined) return options.versionRange;
+    const pin = await readHostVersionPin(dataRoot, readText);
+    if (pin.kind === "pinned") return pin.version;
+    if (pin.kind === "broken" && !pinReported) {
+      pinReported = true;
+      warn(
+        localWarning("version_pin_broken", {
+          language,
+          params: { path: pin.path },
+          detail: { path: pin.path, reason: pin.reason },
+        }),
+      );
+    }
+    return options.versionRange;
+  };
+
+  throwIfCancelled();
+  // 拉哪一版必须在起子进程之前定下来：盘上有 pin 就是 pin 那一版
+  const versionRange = await versionToStart();
+  // 这一趟之前的发现文件：轮询只认 pid 与它不同的那一个
+  const before = await readHostFile(dataRoot, readText);
   const spawned = await spawnHost({
     dataRoot,
     launchLog: options.launchLog,
     ...(options.hostEntry === undefined ? {} : { entry: options.hostEntry }),
-    ...(options.versionRange === undefined ? {} : { versionRange: options.versionRange }),
+    ...(versionRange === undefined ? {} : { versionRange }),
     onStage,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
@@ -350,7 +456,7 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
     if (launchFailure) throw launchFailed(launchFailure, options.launchLog, language);
     const facts = await readHostFile(dataRoot, readText);
     // 只认**新**的那个 pid：旧发现文件（进程已死）对应的端口不该被当成刚拉起的那个
-    if (facts && facts.pid !== discovered?.pid) {
+    if (facts && facts.pid !== before?.pid) {
       // 发现文件出现＝宿主进程真的起来了，剩下的只是握手
       if (!announcedStarting) {
         announcedStarting = true;
@@ -374,10 +480,15 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
     detail: {
       dataRoot,
       timeoutMs,
-      discoveredPid: discovered?.pid ?? null,
+      discoveredPid: before?.pid ?? null,
       logFile: join(dataRoot, HOST_LOG_FILE),
     },
   });
+}
+
+/** 缺省的提醒出口：写一行到 stderr（全屏界面接了这一格就不会走到这里） */
+function warningToStderr(warning: LocalWarning): void {
+  process.stderr.write(`${warning.message}\n`);
 }
 
 /**
