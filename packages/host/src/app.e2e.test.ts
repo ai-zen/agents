@@ -884,3 +884,74 @@ describe("连关两次", () => {
     expect(existsSync(hostFile)).toBe(false);
   }, 60_000);
 });
+
+/**
+ * 客户端关掉宿主（`host.shutdown`）。
+ *
+ * 四条：答复先写回、`stop` 真的被走到、退出码是正常关闭的那个 0、正常关闭把 pin 清掉。
+ *
+ * 第一条最要紧，也最只能在这一组验：收尾会把连接断掉，答复没出去的话客户端只看得到「连不上了」。
+ * 所以这里起一台真的宿主、用真的 ws 客户端调这一条 —— 答复到底有没有过网，只有真的过一遍才算数。
+ * 连着的客户端不去先踢掉：带着连接关正是要验的处境（一台机器一个宿主，关它就是把这一台关掉）。
+ *
+ * `exit` 是可注入的，注一个记账的替身：真的 `process.exit` 会把整个用例进程带走。也不碰网络与
+ * 模型 —— 这条路上一个请求都不发。
+ */
+describe("关掉宿主", () => {
+  let dataRoot: string;
+  let pinFile: string;
+  let previousHome: string | undefined;
+
+  beforeAll(() => {
+    dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-shutdown-"));
+    pinFile = join(dataRoot, "run", "next-version.json");
+
+    process.env.AI_ZEN_DIR = dataRoot;
+    // 与另几组同口径：用户主目录也指到临时目录，别让用例去读开发机的 `~/.agents`
+    previousHome = process.env.HOME;
+    process.env.HOME = join(dataRoot, "home");
+  }, 60_000);
+
+  afterAll(() => {
+    delete process.env.AI_ZEN_DIR;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(dataRoot, { recursive: true, force: true });
+  }, 60_000);
+
+  it("答复先到，随后是收尾与退出码 0", async () => {
+    // 上一次升级留下的那条 pin：正常关闭要把它清掉，否则启动方式会照着它把服务又拉起来
+    writeVersionPin(pinFile, { version: "9.9.9", requestedAt: new Date().toISOString() });
+
+    const exits: number[] = [];
+    const app = await HostApp.open({
+      port: 0,
+      local: true,
+      exit: (code) => exits.push(code),
+    });
+    await app.start();
+
+    const hostFile = join(dataRoot, "run", "host.json");
+    expect(existsSync(hostFile)).toBe(true);
+    // 启动只清「跑着的这一版」那条 pin，9.9.9 不是它，所以跑起来之后它还在
+    expect(readVersionPin(pinFile)?.version).toBe("9.9.9");
+
+    const client = await HostClient.connect(
+      app.address.port,
+      readFileSync(join(dataRoot, "run", "token"), "utf8").trim(),
+    );
+
+    // 答复先写回：这一句兑现得到 `{ accepted: true }`，就说明它在连接被断掉之前出去了
+    await expect(client.mutation("host.shutdown", undefined)).resolves.toEqual({ accepted: true });
+
+    // 退出推后一拍，所以这里等它：正常关闭的那个码，不是升级专用的 75
+    await vi.waitFor(() => expect(exits).toEqual([0]), { timeout: 10_000, interval: 20 });
+
+    // `stop` 真的被走到的两条痕迹：发现文件清掉，这条连接被断掉
+    expect(existsSync(hostFile)).toBe(false);
+    await client.whenClosed();
+
+    // 正常关闭清 pin。这一格与「答复先写回」是一体的：pin 的去留只听 stop 的判据，这里不自己判
+    expect(existsSync(pinFile)).toBe(false);
+  }, 60_000);
+});

@@ -479,6 +479,8 @@ export class HostApp {
       search,
       handoff,
       updates,
+      // 关宿主是客户端那条命令（`host.shutdown`）的最后一步：收尾与退出在装配根上，这里只递一句「请」
+      shutdown: () => this.requestShutdown(),
       events,
       t,
       onError,
@@ -566,6 +568,31 @@ export class HostApp {
           // 它让开
           this.log.error("Upgrade shutdown did not complete", { error });
           this.exit(UPGRADE_EXIT_CODE);
+        },
+      );
+    });
+  }
+
+  /**
+   * 正常关闭的最后一句：客户端那条命令（`host.shutdown`）接的就是它。
+   *
+   * 次序与 {@link requestRestart} 同一套，只换了两处理由：pin 不在这里判（收尾的判据不变 ——
+   * 没有立起 {@link upgrading} 就是正常关闭，正常关闭清 pin），退出码是正常关闭的那个 0，而不是
+   * 升级专用的 {@link UPGRADE_EXIT_CODE}。
+   *
+   * 退出推后一拍（`setImmediate`）的理由与升级那一路同一个：此刻那次调用的答复还在写回的路上，
+   * 而收尾会先把这个进程的连接断掉、库关掉。答复没出去就断的话，客户端只看得到「连不上了」，
+   * 而它本来该拿到的是 `{ accepted: true }`。连着的客户端会被收尾断掉，这是一台机器一个宿主
+   * 的意思 —— 关的就是这一台。
+   */
+  requestShutdown(): void {
+    setImmediate(() => {
+      void this.stop().then(
+        () => this.exit(0),
+        (error: unknown) => {
+          // 收尾没做完也要退：留着这个进程只会占着端口，而它已经不服务了
+          this.log.error("Shutdown did not complete", { error });
+          this.exit(1);
         },
       );
     });

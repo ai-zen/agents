@@ -67,6 +67,11 @@ export interface HostApiDeps {
    * 宿主里，这个服务也只做到「写 pin、请退出」为止。
    */
   readonly updates: UpdateService;
+  /**
+   * 关掉宿主。收尾与退出都在装配根上（`HostApp.requestShutdown`），这里只留一句「请」——
+   * procedure 的答复先出去，收尾再开始。
+   */
+  readonly shutdown: () => void;
   readonly events: Bus<HostEvent>;
   readonly t: Translator;
   readonly onError: (error: unknown, what: string) => void;
