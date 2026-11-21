@@ -40,6 +40,14 @@ const wakeOutput = z.object({ sessionId: z.string() });
 /** 闸与中止这四个动作只认会话 id；活着才有效，没有活执行体时是空操作 */
 const controlInput = z.object({ sessionId: z.string() });
 const controlOutput = z.object({ sessionId: z.string() });
+/**
+ * 清排队区：认会话 id，回的是清掉几条。
+ *
+ * 回条数而不是回队列本身：客户端手里那条空队列自己拼得出来（清完就是空），它真正答不上来的是
+ * 「刚才那几条算不算被清掉了」—— 条数就是那一句答案。
+ */
+const clearInboxInput = z.object({ sessionId: z.string().min(1) });
+const clearInboxOutput = z.object({ cleared: z.number() });
 
 export function agentRouter(deps: HostApiDeps, api: Trpc) {
   return api.router({
@@ -130,6 +138,44 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .mutation(({ input }) => {
         deps.runtime.kill(input.sessionId);
         return { sessionId: input.sessionId };
+      }),
+
+    /**
+     * 作废这一段**还没被取走**的那些条目（`dev-docs/prd/04-session.md`「中断不是杀死」那张表里的
+     * 「作废，库里也删」）。它是**调用方的显式决定**：内核那一侧从不自己清队列（`Agent.clearInbox`
+     * 的注释里写着为什么），所以这条只由 `/free` 这样的用户动作翻过来 —— `/clear` 只管清屏，
+     * 两件事不合成一条命令。
+     *
+     * **排队区有两处，两处都要清**：内存里是执行体的队列，库里是 `inbox` 表的那几行（关掉再打开，
+     * 那几句还在等，靠的就是它）。用户看到的排队区**就是库里那几行**，所以只清内存会剩下一段
+     * 「界面上还排着、实际永远不跑」的条目。
+     *
+     * 于是分两条路，判据是「这一段有没有活执行体」：
+     *
+     * - **有**：`agent.clearInbox()` 作废队列、报 `inboxCleared`，观察者据此删库行、推一条空队列
+     *   —— 有内存可以为准时**以内存为事实**，这一层只借它返回的条数，不自己再数一遍库里那几行
+     *   （两处各有各的真相不是这个域该有的样子）；
+     * - **没有**：内存里根本没有队列可以说话，库就是它的全部 —— 那就直接数出来、直接删，再自己
+     *   推一条空的 `agent.inbox`。这条路上没有执行体，没有别人替它说这一句。
+     *
+     * 会话行不存在时是 `not_found`（与别的 procedure 同一句词）：没有这一段，就没有「它的排队区」。
+     */
+    clearInbox: api.procedure
+      .input(clearInboxInput)
+      .output(clearInboxOutput)
+      .mutation(({ input }) => {
+        const session = existingSession(deps, input.sessionId);
+        const agent = deps.runtime.get(session.id);
+
+        // 有活执行体：队列在它手上，作废与「推一条空队列」都由它那一条事实带出去
+        if (agent !== undefined) return { cleared: agent.clearInbox().length };
+
+        // 没有活执行体：库里那几行就是用户看到的排队区，清完自己说一句（没人替这一段说）
+        const pending = deps.inbox.listBySession(session.id);
+        deps.inbox.clearBySession(session.id);
+        deps.events.emit({ type: "agent.inbox", sessionId: session.id, inbox: [] });
+
+        return { cleared: pending.length };
       }),
   });
 }

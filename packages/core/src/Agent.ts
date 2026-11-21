@@ -1114,7 +1114,7 @@ export class Agent extends AgentContext {
    *
    * 走的是队列的 `clear()`，**不是 `takeAll()`**：清空是「作废」，不是「取件」。
    * 取件要看输出闸（不取件时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
-   * {@link pauseOutput} 期间调它照样清得掉，宿主那条 `/clear` 才不会在暂停中失效。
+   * {@link pauseOutput} 期间调它照样清得掉，宿主那条 `/free` 才不会在暂停中失效。
    *
    * 清空也是变化，所以报 `inboxCleared`（持久化挂在它上面，`CORE.md` §3）。事件仍由 agent 发：
    * 队列不认识事件。空队列清一次什么都不发 —— 没变化就没有「一有变化就入库」。
