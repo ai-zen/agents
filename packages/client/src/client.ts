@@ -272,7 +272,12 @@ function watchingSocket(
   };
 }
 
-/** 一帧 `{ id: null, error }` → 它的码与句子；别的（结果帧、`PING`、二进制）都不认领 */
+/**
+ * 一帧 `{ id: null, error }` → 它的码与句子；别的（结果帧、`PING`、二进制）都不认领。
+ *
+ * 码的取法与 `fromTRPCError` 同一个次序：先看宿主的 `data.hostCode`，再看 tRPC 的 `data.code`。
+ * 令牌那一帧的码是 `unauthorized`；没升级的宿主只写后者。
+ */
 function rejectionOf(raw: unknown): { code: string; message: string } | null {
   if (typeof raw !== "string") return null;
   let frame: unknown;
@@ -288,7 +293,8 @@ function rejectionOf(raw: unknown): { code: string; message: string } | null {
 
   const error = envelope.error as { code?: unknown; message?: unknown; data?: unknown };
   const data = error.data === null || typeof error.data !== "object" ? undefined : error.data;
-  const code = data === undefined ? undefined : (data as { code?: unknown }).code;
+  const written = data as { hostCode?: unknown; code?: unknown } | undefined;
+  const code = written?.hostCode ?? written?.code;
   const named = typeof code === "string" ? code : typeof error.code === "string" ? error.code : "";
   if (named === "") return null;
   return { code: named, message: typeof error.message === "string" ? error.message : "" };

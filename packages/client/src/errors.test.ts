@@ -1,6 +1,6 @@
 /**
- * 错误的验收：宿主那一套 tRPC 码能还原成能分支的东西、它渲染好的那句原样带出来、客户端自己那几句
- * 按语言给。
+ * 错误的验收：宿主那个码能还原成能分支的东西、它渲染好的那句原样带出来、没有 `hostCode` 时
+ * 退回 tRPC 那套码，客户端自己那几句按语言给。
  */
 
 import { TRPCClientError } from "@trpc/client";
@@ -10,6 +10,8 @@ import { ClientError, fromTRPCError, isClientError, localError } from "./errors.
 
 /** 一帧宿主回来的错误：形状照 `packages/host/src/modules/api/errors.ts` 那一份 */
 function hostError(input: {
+  /** 宿主自己的码（`data.hostCode`）；不给就是「还没升级的宿主」那种帧 */
+  hostCode?: string;
   code: string;
   message: string;
   details?: unknown;
@@ -19,6 +21,7 @@ function hostError(input: {
       code: -32603,
       message: input.message,
       data: {
+        ...(input.hostCode === undefined ? {} : { hostCode: input.hostCode }),
         code: input.code,
         path: "session.open",
         ...(input.details === undefined ? {} : { details: input.details }),
@@ -28,22 +31,42 @@ function hostError(input: {
 }
 
 describe("fromTRPCError：宿主回的那些码", () => {
-  it("把 data.code 还原成码、message 原样、details 进 detail", () => {
+  it("把 data.hostCode 还原成码、message 原样、details 进 detail", () => {
     const error = fromTRPCError(
       hostError({
+        hostCode: "not_found",
         code: "NOT_FOUND",
         message: "找不到 id 为 c1 的会话",
         details: { entity: "session", sessionId: "c1" },
       }),
     );
 
-    expect(error.code).toBe("NOT_FOUND");
+    expect(error.code).toBe("not_found");
     expect(error.message).toBe("找不到 id 为 c1 的会话");
     expect(error.detail).toEqual({ entity: "session", sessionId: "c1" });
   });
 
-  it("宿主那八个 ErrorCode 落到的七个 tRPC 码都能还原（busy/conflict、not_found/not_available 合成同一个）", () => {
-    const codes = [
+  it("宿主那八个码原样还原：`busy` 与 `conflict`、`not_found` 与 `not_available` 分得开", () => {
+    const hostCodes = [
+      "not_found",
+      "invalid_params",
+      "conflict",
+      "busy",
+      "unsupported",
+      "config_invalid",
+      "not_available",
+      "unauthorized",
+    ];
+    for (const hostCode of hostCodes) {
+      // 八个人一个 tRPC 码都可能（对应关系在宿主那一侧），客户端只认自己这一格
+      expect(fromTRPCError(hostError({ hostCode, code: "CONFLICT", message: "x" })).code).toBe(
+        hostCode,
+      );
+    }
+  });
+
+  it("没有 hostCode（还没升级的宿主）：退回 data.code 那套 tRPC 码", () => {
+    const trpcCodes = [
       "UNAUTHORIZED",
       "BAD_REQUEST",
       "NOT_FOUND",
@@ -52,15 +75,22 @@ describe("fromTRPCError：宿主回的那些码", () => {
       "PRECONDITION_FAILED",
       "INTERNAL_SERVER_ERROR",
     ];
-    for (const code of codes) {
+    for (const code of trpcCodes) {
       expect(fromTRPCError(hostError({ code, message: "x" })).code).toBe(code);
     }
   });
 
+  it("两格都在时以 hostCode 为准（它是语义层，code 是传输层）", () => {
+    const error = fromTRPCError(hostError({ hostCode: "busy", code: "CONFLICT", message: "x" }));
+
+    expect(error.code).toBe("busy");
+  });
+
   it("认不出的码照样递出去（宿主加了新码，客户端不必先认识它）", () => {
-    expect(fromTRPCError(hostError({ code: "PAYLOAD_TOO_LARGE", message: "x" })).code).toBe(
-      "PAYLOAD_TOO_LARGE",
-    );
+    expect(
+      fromTRPCError(hostError({ hostCode: "rate_limited", code: "BAD_REQUEST", message: "x" }))
+        .code,
+    ).toBe("rate_limited");
   });
 });
 
@@ -89,7 +119,7 @@ describe("fromTRPCError：不是宿主说的话", () => {
   });
 
   it("已经是 ClientError 的原样返回（不重复包一层）", () => {
-    const original = new ClientError("BAD_REQUEST", "x");
+    const original = new ClientError("invalid_params", "x");
     expect(fromTRPCError(original)).toBe(original);
     expect(isClientError(original)).toBe(true);
   });

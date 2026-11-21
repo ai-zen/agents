@@ -59,7 +59,7 @@ export type {
 } from "./connection.js";
 
 export { ClientError, fromTRPCError, isClientError, localError } from "./errors.js";
-export type { ClientErrorCode, HostErrorCode, LocalErrorCode } from "./errors.js";
+export type { ClientErrorCode, HostErrorCode, LocalErrorCode, TRPCErrorCode } from "./errors.js";
 
 export {
   reconnectUntilConnected,

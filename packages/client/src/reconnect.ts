@@ -12,9 +12,10 @@
  *
  * ## 哪些失败不值得重试
  *
- * 传输层的失败（连不上、断了、握手超时）重试有意义；**被宿主拒**（`UNAUTHORIZED` / `BAD_REQUEST`）
- * 与**地址不合法**重试一万次也是同一个结果，无限重试只会把一条该上屏的错误藏进一个转圈的界面里。
- * 判据在 {@link isRetryableByDefault}，按码而不是按错误文本 —— 文本会变，码是契约。
+ * 传输层的失败（连不上、断了、握手超时）重试有意义；**被宿主拒**（`unauthorized` / `invalid_params`，
+ * 以及还没升级的宿主说的 `UNAUTHORIZED` / `BAD_REQUEST`）与**地址不合法**重试一万次也是同一个结果，
+ * 无限重试只会把一条该上屏的错误藏进一个转圈的界面里。判据在 {@link isRetryableByDefault}，按码
+ * 而不是按错误文本 —— 文本会变，码是契约。
  */
 
 import { ClientError } from "./errors.js";
@@ -118,7 +119,10 @@ export function retryDelay(policy: ReconnectPolicy, attempt: number): number {
 export function isRetryableByDefault(error: unknown): boolean {
   if (!(error instanceof ClientError)) return true;
   switch (error.code) {
+    // 宿主的码，与还没升级的宿主说的 tRPC 码：同一件事的两种说法，都不重试
+    case "unauthorized":
     case "UNAUTHORIZED":
+    case "invalid_params":
     case "BAD_REQUEST":
     case "bad_address":
     case "closed":

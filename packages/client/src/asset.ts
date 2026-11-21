@@ -129,7 +129,7 @@ export async function uploadAssets(
 /**
  * 按素材 id 取回内容。
  *
- * 宿主找不到这个 id（或行在而文件不在）时报 `NOT_FOUND`，错误原样往上抛：这一层不猜原因。
+ * 宿主找不到这个 id（或行在而文件不在）时报 `not_found`，错误原样往上抛：这一层不猜原因。
  */
 export async function getAsset(
   client: ContractCaller,

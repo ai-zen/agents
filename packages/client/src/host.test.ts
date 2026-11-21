@@ -24,7 +24,7 @@ import { getAsset, uploadAsset } from "./asset.js";
 import { connect, type HostClient } from "./client.js";
 import { fromTRPCError, type ClientError } from "./errors.js";
 
-/** 假端点要说的话；切成几片发，于是流式那一侧真的有多条 `message.changed` */
+/** 假端点要说的话；切成几片发，且片间留 80ms —— 于是流式那几侧真的有一段中间态 */
 const REPLY = "The local endpoint received this line.";
 
 /** 发出去的那句话 */
@@ -37,20 +37,25 @@ const PNG = Buffer.from(
 );
 
 /**
- * 直接用 `api` 时拿到的是 tRPC 自己的错误：宿主写进去的码在 `data.code` 上。
+ * 直接用 `api` 时拿到的是 tRPC 自己的错误：宿主写进去的两格在 `data` 上。
  *
- * 要一个统一的 `ClientError` 就过一道 `fromTRPCError`（素材那两个入口已经过过了）。
+ * `data.hostCode` 是宿主自己的码（语义层，`fromTRPCError` 认它），`data.code` 是 tRPC 的码
+ * （传输层）。两格都验一次，是为了「两个码并存」这件事在真宿主上也看得见。
  */
+function hostCodeOf(error: unknown): unknown {
+  return (error as { data?: { hostCode?: unknown } }).data?.hostCode;
+}
+
 function codeOf(error: unknown): unknown {
   return (error as { data?: { code?: unknown } }).data?.code;
 }
 
-/** 收到的这些事件里有没有「转闲」那一条（一轮跑完的判据） */
-function idled(events: readonly unknown[]): boolean {
+/** 收到的这些事件里有没有这一条状态（`working` = 开跑了，`idle` = 这一轮跑完了） */
+function stated(events: readonly unknown[], status: "working" | "idle"): boolean {
   return events.some(
     (event) =>
       (event as { type?: unknown }).type === "agent.status" &&
-      (event as { status?: unknown }).status === "idle",
+      (event as { status?: unknown }).status === status,
   );
 }
 
@@ -69,7 +74,7 @@ let workspaceId: string;
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-client-host-"));
-  llm = await startFakeLlm({ reply: REPLY, chunks: 3 });
+  llm = await startFakeLlm({ reply: REPLY, chunks: 3, chunkDelayMs: 80 });
 
   writeFileSync(
     join(dataRoot, "config.json"),
@@ -160,13 +165,13 @@ describe("握手：令牌只从握手帧上来", () => {
     expect(version).toMatch(/^\d+\.\d+\.\d+/);
   }, 30_000);
 
-  it("同一台宿主、错令牌 → 失败，而且是宿主说的 UNAUTHORIZED", async () => {
+  it("同一台宿主、错令牌 → 失败，而且是宿主说的 unauthorized", async () => {
     const error = (await connect({ url: webSocketUrl(target), token: "forged-token" }).catch(
       (caught: unknown) => caught,
     )) as ClientError;
 
     expect(error).toBeInstanceOf(Error);
-    expect(error.code).toBe("UNAUTHORIZED");
+    expect(error.code).toBe("unauthorized");
     // 那句话是宿主按语言渲染好的那一句，客户端不改写
     expect(error.message.length).toBeGreaterThan(0);
   }, 30_000);
@@ -193,8 +198,10 @@ describe("调用：类型直达宿主", () => {
       .query({ sessionId: randomUUID() })
       .catch((caught: unknown) => caught);
 
+    expect(hostCodeOf(error)).toBe("not_found");
+    // tRPC 那一格照旧写着（传输层与没升级的客户端用它）
     expect(codeOf(error)).toBe("NOT_FOUND");
-    expect(fromTRPCError(error).code).toBe("NOT_FOUND");
+    expect(fromTRPCError(error).code).toBe("not_found");
   }, 30_000);
 });
 
@@ -211,7 +218,10 @@ describe("事件流", () => {
         messageId: randomUUID(),
       });
 
-      await vi.waitFor(() => expect(idled(events)).toBe(true), { timeout: 30_000, interval: 20 });
+      await vi.waitFor(() => expect(stated(events, "idle")).toBe(true), {
+        timeout: 30_000,
+        interval: 20,
+      });
 
       const added = events.filter(
         (event) => (event as { type: string }).type === "message.added",
@@ -248,7 +258,7 @@ describe("事件流", () => {
         content: "another line",
         messageId: randomUUID(),
       });
-      await vi.waitFor(() => expect(idled(witness)).toBe(true), {
+      await vi.waitFor(() => expect(stated(witness, "idle")).toBe(true), {
         timeout: 30_000,
         interval: 20,
       });
@@ -280,13 +290,58 @@ describe("素材：传上去再取回来", () => {
     expect(second.id).toBe(first.id);
   }, 30_000);
 
-  it("取一份不存在的素材：宿主的 NOT_FOUND 原样出来", async () => {
+  it("取一份不存在的素材：宿主的 not_found 原样出来", async () => {
     const error = (await getAsset(client, { assetId: randomUUID() }).catch(
       (caught: unknown) => caught,
     )) as ClientError;
 
-    expect(error.code).toBe("NOT_FOUND");
+    expect(error.code).toBe("not_found");
   }, 30_000);
+});
+
+describe("撤回：跑着的时候不许撤", () => {
+  it("正在跑的那一段：客户端拿到 busy，而不是被折成一个说不清的 CONFLICT", async () => {
+    const events: unknown[] = [];
+    const stop = client.subscribe((event) => events.push(event));
+
+    try {
+      const sent = await client.api.agent.send.mutate({
+        workspaceId,
+        agentId: "default",
+        content: "rewind me while it runs",
+        messageId: randomUUID(),
+      });
+
+      // 让那一轮真的在吐：假端点把答复切成三片、片间等 80ms，所以「在干」这一段有几百毫秒的窗口
+      await vi.waitFor(() => expect(stated(events, "working")).toBe(true), {
+        timeout: 30_000,
+        interval: 5,
+      });
+
+      const error = await client.api.session.rewind
+        .mutate({ sessionId: sent.sessionId, messageId: sent.messageId })
+        .catch((caught: unknown) => caught);
+
+      // 宿主那几个码里，`busy` 与 `conflict` 在 tRPC 那一格上是同一个 CONFLICT —— 分得开靠的是 hostCode
+      expect(hostCodeOf(error)).toBe("busy");
+      expect(codeOf(error)).toBe("CONFLICT");
+      expect(fromTRPCError(error).code).toBe("busy");
+      // 那句话是宿主按语言渲染好的那一句
+      expect(fromTRPCError(error).message.length).toBeGreaterThan(0);
+
+      // 收尾：那一轮照常跑完，不把它挂在半路
+      await vi.waitFor(() => expect(stated(events, "idle")).toBe(true), {
+        timeout: 30_000,
+        interval: 20,
+      });
+
+      // 撤回什么都没删掉：那段会话的历史还在（它被拒了，不是做了一半）
+      const opened = await client.api.session.open.query({ sessionId: sent.sessionId });
+      expect(opened.messages.map((message) => message.id)).toContain(sent.messageId);
+    } finally {
+      stop();
+    }
+  }, 60_000);
 });
 
 describe("重连的口子", () => {
@@ -314,7 +369,10 @@ describe("重连的口子", () => {
         content: `after restart ${randomUUID()}`,
         messageId: randomUUID(),
       });
-      await vi.waitFor(() => expect(idled(events)).toBe(true), { timeout: 30_000, interval: 50 });
+      await vi.waitFor(() => expect(stated(events, "idle")).toBe(true), {
+        timeout: 30_000,
+        interval: 50,
+      });
     } finally {
       stop();
     }

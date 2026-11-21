@@ -123,9 +123,9 @@ function harness(config: {
       connects.push(connectOptions);
       const outcome = config.onConnect?.(connectOptions) ?? { ok: true };
       if (!outcome.ok) {
-        // 两种失败分开造：连不上是本地码，被拒是宿主回的那个 tRPC 码
+        // 两种失败分开造：连不上是本地码，被拒是宿主回的那个码
         throw outcome.code === "unauthorized"
-          ? new ClientError("UNAUTHORIZED", "凭证没被接受")
+          ? new ClientError("unauthorized", "凭证没被接受")
           : localError("host_unavailable", { params: { endpoint: "x" } });
       }
       return fakeClient();
@@ -184,8 +184,8 @@ describe("显式地址：只连，绝不拉起", () => {
     const error = (await ensureHost(test.options).catch(
       (caught: unknown) => caught,
     )) as ClientError;
-    // `UNAUTHORIZED` 是「这样不行」（宿主在、话也说了），不是「现在不行」
-    expect(error.code).toBe("UNAUTHORIZED");
+    // `unauthorized` 是「这样不行」（宿主在、话也说了），不是「现在不行」
+    expect(error.code).toBe("unauthorized");
     expect(test.spawned).toEqual([]);
   });
 

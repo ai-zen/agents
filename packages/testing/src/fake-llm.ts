@@ -177,7 +177,13 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
         },
       ],
     });
-    for (const piece of splitReply(reply, options.chunks ?? 3)) {
+    const pieces = splitReply(reply, options.chunks ?? 3);
+    for (const [at, piece] of pieces.entries()) {
+      // 上一片之后先等一等：`chunkDelayMs` 就是「慢模型」那一个可测的中间态。写在这一头而不是
+      // 写在整个响应之后 —— `end()` 之后客户端已经拿到全文了，那之后再等只是拖住处理函数。
+      if (at > 0 && options.chunkDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.chunkDelayMs));
+      }
       send({
         choices: [{ index: 0, delta: { content: piece }, finish_reason: null }],
       });
@@ -199,11 +205,6 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
         ...payload,
       };
       response.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    }
-
-    if (options.chunkDelayMs) {
-      // 分片之间的延迟：让「慢模型」这件事可测（速率、阶段变化都靠它才有中间态）
-      await new Promise((resolve) => setTimeout(resolve, options.chunkDelayMs));
     }
   }
 
