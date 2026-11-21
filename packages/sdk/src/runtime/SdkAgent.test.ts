@@ -70,6 +70,38 @@ function createTestAgent(opts?: {
   });
 }
 
+/**
+ * 带配置的 Scope —— `useModel` 要经过 `createModel`，它会去 `config.models` / `config.endpoints`
+ * 里装配 client。这里给两份模型、一个端点：换过去之后能断言「换的确实是另一份」。
+ */
+function modelScope() {
+  return {
+    config: {
+      models: [
+        {
+          id: "model-a",
+          name: "模型甲",
+          endpointId: "endpoint-1",
+          modelName: "api-model-a",
+          tokenThresholds: { handoff: 100, guard: 150 },
+          defaultParams: { temperature: 0.7 },
+        },
+        {
+          id: "model-b",
+          name: "模型乙",
+          endpointId: "endpoint-1",
+          modelName: "api-model-b",
+          tokenThresholds: { handoff: 200, guard: 300 },
+          defaultParams: { temperature: 0.1 },
+        },
+      ],
+      endpoints: [
+        { id: "endpoint-1", name: "本地端点", baseUrl: "http://127.0.0.1:1/v1", apiKey: "test" },
+      ],
+    },
+  } as any;
+}
+
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
@@ -95,6 +127,38 @@ describe("SdkAgent", () => {
     expect(agent.definition.id).toBe("t");
     expect(agent.definition.permissions?.tools).toEqual({ allow: ["read"] });
     expect(agent.model).toBe("m");
+  });
+
+  /**
+   * 一次调用钉住三个字段都换了、定义上的 `modelId` 也换了，而记忆一个字节没动。
+   *
+   * 前两件事是「下一次请求按新的走」（请求体在发请求那一刻从这三格拼出来），第三件事是
+   * 「换模型不等于杀执行体」：真正被换掉的只有构造参议。
+   */
+  it("useModel 就地刷新：client / model / modelConfig 与定义上的 modelId 一起换，记忆不动", () => {
+    const agent = createTestAgent({ scope: modelScope() });
+    agent.messages.push(new Message({ role: AgentNS.Role.User, content: "重说一遍" }));
+    const before = JSON.stringify(agent.messages);
+    const previousClient = agent.client;
+    const sameDefinition = agent.definition;
+
+    agent.useModel("model-b", { reasoning_effort: "high" });
+
+    expect(agent.client).not.toBe(previousClient);
+    expect(agent.model).toBe("api-model-b");
+    // 模型出厂参数与传进来的那一份浅合并（与构造时同一个函数）
+    expect(agent.modelConfig).toEqual({ temperature: 0.1, reasoning_effort: "high" });
+    expect(agent.definition.modelId).toBe("model-b");
+    // 改的是对象里的字段，不是那一格本身
+    expect(agent.definition).toBe(sameDefinition);
+    // 记忆一个字节没动
+    expect(JSON.stringify(agent.messages)).toBe(before);
+
+    // 不给参数时也不留上一份：`modelConfig` 就是新模型自己的出厂参数
+    agent.useModel("model-a");
+    expect(agent.model).toBe("api-model-a");
+    expect(agent.modelConfig).toEqual({ temperature: 0.7 });
+    expect(agent.definition.modelId).toBe("model-a");
   });
 
   describe("use() / init()（继承 Core 插件机制）", () => {

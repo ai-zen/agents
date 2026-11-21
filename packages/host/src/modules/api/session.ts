@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { AgentNS } from "@ai-zen/agents-core";
 
 import { HostError } from "../../infra/errors.js";
+import { modelAndParamsFor } from "../agent/materials.js";
+import type { Session } from "../session/types.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
 
@@ -52,6 +54,16 @@ const sessionView = z.object({
   inbox: z.array(z.custom<AgentNS.InboxEntry>()),
 });
 
+/** 六条「改这一段」的动作共用这一格入参：它们认的都是会话 id */
+const sessionIdInput = z.object({ sessionId: z.string() });
+
+/**
+ * 改完返回新的一行，与 `open` 那一支同名（`session`）：客户端拿到的是**改完之后**的那一行，
+ * 不必自己把补丁叠到手里那份快照上 —— 那种叠法一旦漏掉一格（如 `updatedAt`、或被顺手清掉的
+ * `thinkingLevel`）就会安静地显示成旧值。
+ */
+const sessionResult = z.object({ session: sessionSchema });
+
 export function sessionRouter(deps: HostApiDeps, api: Trpc) {
   return api.router({
     list: api.procedure
@@ -100,5 +112,176 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
           inbox: [...agent.inboxPending],
         };
       }),
+
+    /**
+     * 改名。行不存在时是 `not_found` —— `deps.sessions.update` 抛的就是那一条（带 id、带
+     * `entity: "session"`），这一层不另判一次。
+     *
+     * `nameIsAuto: false` 是「人改过之后就不再自动改它」：自动命名只碰那一格还是真的行，
+     * 不置 false，用户刚改的名字下一次变闲就会被模型起的名字盖掉。
+     */
+    rename: api.procedure
+      .input(sessionIdInput.extend({ name: z.string() }))
+      .output(sessionResult)
+      .mutation(({ input }) => ({
+        session: deps.sessions.update(input.sessionId, { name: input.name, nameIsAuto: false }),
+      })),
+
+    /** 置顶。排序在库里（`pinned DESC, createdAt DESC`），所以写进去之后列表顺序当场就变 */
+    pin: api.procedure
+      .input(sessionIdInput.extend({ pinned: z.boolean() }))
+      .output(sessionResult)
+      .mutation(({ input }) => ({
+        session: deps.sessions.update(input.sessionId, { pinned: input.pinned }),
+      })),
+
+    /** 自动交接开关。越线那一刻由插件从会话行现读，所以改完下一次越线就按新的 */
+    setAutoHandoff: api.procedure
+      .input(sessionIdInput.extend({ autoHandoff: z.boolean() }))
+      .output(sessionResult)
+      .mutation(({ input }) => ({
+        session: deps.sessions.update(input.sessionId, { autoHandoff: input.autoHandoff }),
+      })),
+
+    /**
+     * 两条阈值。两个数各自可设：需求给的是「建议硬线 ≈ 软线 × 1.5」，不是约束，所以这里**不做**
+     * 「硬线必须大于软线」这类校验 —— 硬绑起来之后，用户想先把软线调到硬线之上试一下都做不到。
+     *
+     * 两个都写（而不是「传了哪个改哪个」）：`null` 是「跟随模型的配置」这个有意义的取值，
+     * 「没传」与「传了 null」在入参上分不出来，分开处理就会把清空读成不改。
+     */
+    setThresholds: api.procedure
+      .input(
+        sessionIdInput.extend({
+          handoffThreshold: z.number().nullable(),
+          guardThreshold: z.number().nullable(),
+        }),
+      )
+      .output(sessionResult)
+      .mutation(({ input }) => ({
+        session: deps.sessions.update(input.sessionId, {
+          handoffThreshold: input.handoffThreshold,
+          guardThreshold: input.guardThreshold,
+        }),
+      })),
+
+    /**
+     * 换模型。**就地刷新，不杀执行体**：模型是执行体的构造参数，而「重建」不等于「杀」——
+     * 参数挂在执行体上，刷新就是给字段赋值（`SdkAgent.useModel`）。杀掉会把排队区作废、把正在
+     * 写的那条掐成 aborted，而用户按的是「换模型」。
+     *
+     * `modelId` 是必填的 `string`（不可为 `null`）：会话指不到模型那条路是「配置里没这个模型」，
+     * 不是「清空」—— 清空之后这一段就没有可用的模型了，那不是用户能表达的意思。
+     */
+    setModel: api.procedure
+      .input(sessionIdInput.extend({ modelId: z.string() }))
+      .output(sessionResult)
+      .mutation(async ({ input }) => {
+        if (!deps.config.read().models.some((model) => model.id === input.modelId)) {
+          throw new HostError(
+            "config_invalid",
+            deps.t("配置里没有 id 为 {modelId} 的模型", { modelId: input.modelId }),
+            { entity: "model", modelId: input.modelId },
+          );
+        }
+
+        // `setModel` 顺手把 `thinkingLevel` 清成 `null`（档位是模型的参数，把一家的 thinking 参数
+        // 带到另一家会被直接拒），这里不重复清。
+        const session = deps.sessions.setModel(input.sessionId, input.modelId);
+
+        const agent = deps.runtime.get(session.id);
+        if (agent !== undefined) {
+          // 档位刚被清空，所以这一刻算出来的参数**就是**助手定义上的 `definition.modelParams`
+          //（`modelAndParamsFor` 在 `thinkingLevel === null` 时不叠任何补丁）。仍然走同一个函数，
+          // 不在这里另取一份：算「模型 + 档位补丁」的地方多一处，两处迟早不一致。
+          const { params } = await modelAndParamsFor(deps, session);
+          agent.useModel(input.modelId, params);
+        }
+
+        return { session };
+      }),
+
+    /**
+     * 换思考档位。档位名是客户端的选择，请求参数是厂商的方言，两者之间只有档位表能翻译 ——
+     * 表由**生效模型**的 `reasoningPreset` 指过来，所以校验要看生效模型，而不是会话行上那一格。
+     *
+     * `null` 是「跟随助手定义」，任何模型都接受；非 `null` 时它必须是那张表里的一个键。
+     * 改完同样就地刷新（`useModel`），不杀执行体。
+     */
+    setThinkingLevel: api.procedure
+      .input(sessionIdInput.extend({ level: z.string().nullable() }))
+      .output(sessionResult)
+      .mutation(async ({ input }) => {
+        const current = deps.sessions.get(input.sessionId);
+        // 校验要读会话行（会话级模型是三级里的第一级）。行不在时没有可校验的对象 —— 直接走到
+        // 下面 `update`，它抛的 `not_found` 就是这条路上唯一的那一句，这一层不另造一句。
+        if (current !== undefined) await assertLevelAllowed(deps, current, input.level);
+
+        const session = deps.sessions.update(input.sessionId, { thinkingLevel: input.level });
+
+        const agent = deps.runtime.get(session.id);
+        if (agent !== undefined) {
+          // 与装配时同一个算法（定义那份参数叠上新档位那一份），只在这一处实现。
+          const { resolved, params } = await modelAndParamsFor(deps, session);
+          // 三级都空 = 这段会话现在根本没有生效模型：没有可换的目标，这一格已经落库，等它有
+          // 模型时按它生效。
+          if (resolved !== null) agent.useModel(resolved.modelId, params);
+        }
+
+        return { session };
+      }),
   });
+}
+
+/**
+ * 这个档位名生效模型认不认。
+ *
+ * 判据是档位表：键集合就是那个模型能选的全部档位（表里没有 `off` 就不存在「关掉思考」这一档）。
+ * 表由生效模型的 `reasoningPreset` 指过来 —— 用助手定义上那个模型去查会读错表，那段会话换过
+ * 模型时两边不是同一个。
+ */
+async function assertLevelAllowed(
+  deps: HostApiDeps,
+  session: Session,
+  level: string | null,
+): Promise<void> {
+  // 「跟随助手定义」没有档位要翻译，也就没有表可查。
+  if (level === null) return;
+
+  const { resolved, model } = await modelAndParamsFor(deps, session);
+  if (resolved === null) {
+    throw new HostError(
+      "invalid_params",
+      deps.t("这段会话没有生效模型，思考档位只能跟随助手定义"),
+      { entity: "session", sessionId: session.id, level },
+    );
+  }
+
+  const presetName = model?.reasoningPreset;
+  if (presetName === undefined) {
+    throw new HostError(
+      "invalid_params",
+      deps.t("模型 {modelId} 没有思考档位，只能跟随助手定义", { modelId: resolved.modelId }),
+      { entity: "session", sessionId: session.id, modelId: resolved.modelId, level },
+    );
+  }
+
+  const levels = Object.keys((await deps.config.presets())[presetName]?.levels ?? {});
+  if (!levels.includes(level)) {
+    throw new HostError(
+      "invalid_params",
+      deps.t("模型 {modelId} 没有 {level} 这一档，可选：{levels}", {
+        modelId: resolved.modelId,
+        level,
+        levels: levels.join(" / "),
+      }),
+      {
+        entity: "session",
+        sessionId: session.id,
+        modelId: resolved.modelId,
+        level,
+        available: levels,
+      },
+    );
+  }
 }

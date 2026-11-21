@@ -9,7 +9,8 @@ export const en: Record<string, string> = {
   "找不到 id 为 {workspaceId} 的项目": 'Cannot find the workspace "{workspaceId}"',
   "目录 {cwd} 已经有项目了": 'A workspace already exists at "{cwd}"',
   "找不到 id 为 {modelId} 的模型": 'Cannot find the model "{modelId}"',
-  "找不到 id 为 {agentDefinitionId} 的助手": 'Cannot find the agent definition "{agentDefinitionId}"',
+  "找不到 id 为 {agentDefinitionId} 的助手":
+    'Cannot find the agent definition "{agentDefinitionId}"',
   "找不到 id 为 {endpointId} 的端点": 'Cannot find the endpoint "{endpointId}"',
   "交接阈值 {handoff} 必须小于防护阈值 {guard}":
     "Handoff threshold {handoff} must be less than the guard threshold {guard}",
@@ -23,14 +24,13 @@ export const en: Record<string, string> = {
   "会话 {sessionId} 没有运行中的执行体，先运行它再投递":
     'Session "{sessionId}" has no running agent; start the session before sending',
   "宿主内部出错，这次调用没有完成": "Internal host failure: the call did not complete",
-  "宿主访问令牌无效": "The host access token is not valid",
+  宿主访问令牌无效: "The host access token is not valid",
   "助手 {agentDefinitionId} 没有可用的模型":
     'The agent definition "{agentDefinitionId}" has no usable model',
   "找不到 id 为 {assetId} 的素材": 'Cannot find the asset "{assetId}"',
   "找不到 id 为 {credentialId} 的凭证": 'Cannot find the credential "{credentialId}"',
   "找不到 id 为 {questionId} 的题": 'Cannot find the question "{questionId}"',
-  "题 {questionId} 的候选项里没有 {value}":
-    'The question "{questionId}" has no choice "{value}"',
+  "题 {questionId} 的候选项里没有 {value}": 'The question "{questionId}" has no choice "{value}"',
   "会话 {sessionId} 正在交接": 'Session "{sessionId}" is being handed off',
   "已存档_{name}": "archived_{name}",
   "会话 {sessionId} 没有运行中的执行体，无法交接":
@@ -40,4 +40,11 @@ export const en: Record<string, string> = {
   "会话 {sessionId} 的输出已暂停，先恢复再交接":
     'Output for session "{sessionId}" is paused; resume it before handing off',
   "交接失败：{reason}": "Handoff failed: {reason}",
+  "配置里没有 id 为 {modelId} 的模型": 'The config has no model "{modelId}"',
+  "这段会话没有生效模型，思考档位只能跟随助手定义":
+    "This session has no effective model; the thinking level can only follow the agent definition",
+  "模型 {modelId} 没有思考档位，只能跟随助手定义":
+    'The model "{modelId}" has no thinking levels; the thinking level can only follow the agent definition',
+  "模型 {modelId} 没有 {level} 这一档，可选：{levels}":
+    'The model "{modelId}" has no level "{level}"; available: {levels}',
 };

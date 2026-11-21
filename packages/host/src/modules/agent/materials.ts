@@ -3,7 +3,9 @@ import {
   AutoMigratePlugin,
   resolveModel,
   type AgentDefinition,
+  type Model,
   type ModelParams,
+  type ResolvedModel,
   type WakeMaterials,
 } from "@ai-zen/agents-sdk";
 
@@ -61,23 +63,16 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
     );
   }
 
+  // 生效模型与请求参数（含档位补丁）只有 `modelAndParamsFor` 一处实现 —— 换模型、换档位那两个
+  // procedure 也调它，否则「哪一份参数发给哪个模型」就会在三条路上各写一遍。
+  //
   // 删助手不看还有几段会话在用它，所以这段会话的助手可能已经不在了。SDK 那一层只会抛出一句
-  // 英文的 `Agent "x" not found`，它带不上 `not_found` 这个码；先取一次，缺了就是一条客户端
-  // 认得出的失败。取到的这一份下面还要用：助手定义的 `modelParams` 是档位补丁叠在上面的那一层。
-  const definition = await deps.definitions.get(session.agentId);
-
-  const modelParams = await modelParamsFor(deps.config, session, definition);
-
-  const config = deps.config.read();
-  const resolved = resolveModel({
-    sessionModelId: session.modelId ?? undefined,
-    agentModelId: definition.modelId,
-    defaultModel: config.defaultModel,
-  });
+  // 英文的 `Agent "x" not found`，它带不上 `not_found` 这个码；`modelAndParamsFor` 里那次
+  // `definitions.get` 缺了就是一条客户端认得出的失败。
+  const { resolved, model, params: modelParams } = await modelAndParamsFor(deps, session);
 
   // 自动交接的阈值与上下文阈值都长在这个模型的配置上。缺了它 `createAgent` 也会拒掉同一件事，
   // 只是那一句话带不上是哪一段会话缺模型。
-  const model = config.models.find((item) => item.id === resolved?.modelId);
   if (model === undefined) {
     throw new Error(
       `Cannot assemble session "${session.id}": model "${resolved?.modelId}" is not in the config`,
@@ -130,7 +125,34 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
 }
 
 /**
- * 这一段会话的请求参数：助手定义上那份在下，思考档位的补丁在上。
+ * 算「这一段会话用哪个模型、带哪一份参数」要的那两样：配置给模型表与档位表，助手定义给三级
+ * 解析的第二级与那层参数。
+ *
+ * 只要这两格而不是整个 `MaterialsDeps`：换模型、换档位那两个 procedure 手上没有项目行、
+ * 排队区与交接服务，它们也不该为了读一次定义去凑齐一套。
+ */
+export interface ModelAndParamsDeps {
+  readonly definitions: AgentDefinitionService;
+  readonly config: GeneralConfig;
+}
+
+export interface ModelAndParams {
+  /** 助手定义（`definitions.get` 的那一份）：它的 `modelId` 是解析的第二级，`modelParams` 是档位补丁叠在上面的那层 */
+  readonly definition: AgentDefinition;
+  /** 三级解析的结果（唯一实现是 SDK 的 `resolveModel`）；三级都空时 `null` */
+  readonly resolved: ResolvedModel | null;
+  /** 配置里对应生效模型的那一行 —— 阈值与档位表名都长在它上面；配置里没有这个模型时 `undefined` */
+  readonly model: Model | undefined;
+  /** 请求参数（`undefined` 表示不带覆盖、让模型走自己的出厂参数） */
+  readonly params: ModelParams | undefined;
+}
+
+/**
+ * 这一段会话的生效模型与请求参数：助手定义上那份在下，思考档位的补丁在上。
+ *
+ * **「模型 + 档位补丁」全仓只有这一处实现**：装配（`materialsFor`）、换模型与换思考档位两个
+ * procedure 都调它。三处各写一遍的话，用户点了换档位而请求里带的是另一份参数这种事不会报错，
+ * 只会在某个厂商那里变成一句 400。
  *
  * 档位名是客户端的选择，请求参数是厂商的方言，两者之间只有档位表能翻译 —— 表由生效模型的
  * `reasoningPreset` 指过来（同一张表还决定客户端能选哪几档）。三种情况都不叠补丁、只留定义
@@ -139,30 +161,36 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
  *
  * 模型用 `resolveModel` 取：档位属于生效的那个模型，会话换过模型时拿定义上那个会读错表。
  */
-async function modelParamsFor(
-  config: GeneralConfig,
+export async function modelAndParamsFor(
+  deps: ModelAndParamsDeps,
   session: Session,
-  definition: AgentDefinition,
-): Promise<ModelParams | undefined> {
+): Promise<ModelAndParams> {
+  const definition = await deps.definitions.get(session.agentId);
+
+  const config = deps.config.read();
+  const resolved = resolveModel({
+    sessionModelId: session.modelId ?? undefined,
+    agentModelId: definition.modelId,
+    defaultModel: config.defaultModel,
+  });
+  const model = config.models.find((item) => item.id === resolved?.modelId);
+
   const params: ModelParams = { ...definition.modelParams };
   const level = session.thinkingLevel;
 
   if (level !== null) {
-    const current = config.read();
-    const resolved = resolveModel({
-      sessionModelId: session.modelId ?? undefined,
-      agentModelId: definition.modelId,
-      defaultModel: current.defaultModel,
-    });
-    const presetName = current.models?.find(
-      (model) => model.id === resolved?.modelId,
-    )?.reasoningPreset;
+    const presetName = model?.reasoningPreset;
 
     if (presetName !== undefined) {
-      const patch = (await config.presets())[presetName]?.levels[level];
+      const patch = (await deps.config.presets())[presetName]?.levels[level];
       if (patch !== undefined) Object.assign(params, patch);
     }
   }
 
-  return Object.keys(params).length > 0 ? params : undefined;
+  return {
+    definition,
+    resolved,
+    model,
+    params: Object.keys(params).length > 0 ? params : undefined,
+  };
 }
