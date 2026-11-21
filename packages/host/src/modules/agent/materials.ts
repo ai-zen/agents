@@ -2,6 +2,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import {
   AutoMigratePlugin,
   resolveModel,
+  resolveModelParams,
   type AgentDefinition,
   type Model,
   type ModelParams,
@@ -98,8 +99,9 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
     agentId: session.agentId,
     // 把解析出来的生效模型**显式**递下去，而不是让 `createAgent` 再按三级链算一遍：SDK 那一层
     // 「参数不跨级混合」—— `modelParams` 只在模型来自会话行时才被用上，模型来自助手定义或全局
-    // 兜底时整份会被忽略。而档位补丁正是叠在这份参数上的，不显式说明生效模型，用户只改档位、
-    // 没换过模型（最常见的那一种）就一点都不生效。解析本身仍然只有 `resolveModel` 一处实现。
+    // 兜底时整份会被忽略。而上面那份参数**已经**是按 `resolveModelParams` 判好、档位补丁叠好的
+    // 成品，必须让 SDK 原样用它；不显式说明生效模型，用户只改档位、没换过模型（最常见的那一种）
+    // 就一点都不生效。解析本身仍然只有 `resolveModel` 一处实现。
     modelId: resolved?.modelId,
     modelParams,
     lineage: session.lineage,
@@ -126,7 +128,7 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
 
 /**
  * 算「这一段会话用哪个模型、带哪一份参数」要的那两样：配置给模型表与档位表，助手定义给三级
- * 解析的第二级与那层参数。
+ * 解析的第二级与「模型来自定义」那一级的基础参数。
  *
  * 只要这两格而不是整个 `MaterialsDeps`：换模型、换档位那两个 procedure 手上没有项目行、
  * 排队区与交接服务，它们也不该为了读一次定义去凑齐一套。
@@ -137,7 +139,7 @@ export interface ModelAndParamsDeps {
 }
 
 export interface ModelAndParams {
-  /** 助手定义（`definitions.get` 的那一份）：它的 `modelId` 是解析的第二级，`modelParams` 是档位补丁叠在上面的那层 */
+  /** 助手定义（`definitions.get` 的那一份）：它的 `modelId` 是解析的第二级，`modelParams` 是模型来自定义那一级时的基础参数 */
   readonly definition: AgentDefinition;
   /** 三级解析的结果（唯一实现是 SDK 的 `resolveModel`）；三级都空时 `null` */
   readonly resolved: ResolvedModel | null;
@@ -148,16 +150,15 @@ export interface ModelAndParams {
 }
 
 /**
- * 这一段会话的生效模型与请求参数：助手定义上那份在下，思考档位的补丁在上。
+ * 这一段会话的生效模型与请求参数：基础参数取「模型来自哪一级」那一份，思考档位的补丁叠在上面。
  *
  * **「模型 + 档位补丁」全仓只有这一处实现**：装配（`materialsFor`）、换模型与换思考档位两个
  * procedure 都调它。三处各写一遍的话，用户点了换档位而请求里带的是另一份参数这种事不会报错，
  * 只会在某个厂商那里变成一句 400。
  *
  * 档位名是客户端的选择，请求参数是厂商的方言，两者之间只有档位表能翻译 —— 表由生效模型的
- * `reasoningPreset` 指过来（同一张表还决定客户端能选哪几档）。三种情况都不叠补丁、只留定义
- * 那份：会话没选档位（`null` 表示跟随定义）、模型没挂档位表、档位名不在表里（客户端与磁盘上
- * 那份表不是同一版）。
+ * `reasoningPreset` 指过来（同一张表还决定客户端能选哪几档）。三种情况都不叠补丁：会话没选档位
+ * （`null` 表示跟随定义）、模型没挂档位表、档位名不在表里（客户端与磁盘上那份表不是同一版）。
  *
  * 模型用 `resolveModel` 取：档位属于生效的那个模型，会话换过模型时拿定义上那个会读错表。
  */
@@ -175,15 +176,33 @@ export async function modelAndParamsFor(
   });
   const model = config.models.find((item) => item.id === resolved?.modelId);
 
-  const params: ModelParams = { ...definition.modelParams };
+  // 基础参数取「模型来自哪一级」那一份 —— 唯一实现是 SDK 的 `resolveModelParams`。
+  // 会话换过模型时基础参数是空的：定义那份配的是定义自己绑的那个模型，把旧模型的参数
+  // （比如另一家的 thinking 形状）发给新模型就是端点 400。
+  //
+  // `sessionModelParams` 永远是 `undefined`：**会话行上没有「会话级参数」这一格**（换模型时档位
+  // 也一并清掉，这一级从来没有过参数可放）。写出来是为了让读者看见这一格是**有意留空**的，
+  // 而不是去会话行上找一个不存在的字段。
+  //
+  // 模型三级都空（没有生效模型）时按 `global` 走：那一级没有放参数的地方，SDK 对它就返回
+  // `undefined` —— 与「没有模型」这件事对得上。
+  const base = resolveModelParams({
+    level: resolved?.level ?? "global",
+    sessionModelParams: undefined,
+    agentModelParams: definition.modelParams,
+  });
+
+  // 档位那一份：会话没选档位（`null` 表示跟随定义）、模型没挂档位表、档位名不在表里，这三种
+  // 都一个字段都不叠。
   const level = session.thinkingLevel;
+  const patch: ModelParams = {};
 
   if (level !== null) {
     const presetName = model?.reasoningPreset;
 
     if (presetName !== undefined) {
-      const patch = (await deps.config.presets())[presetName]?.levels[level];
-      if (patch !== undefined) Object.assign(params, patch);
+      const levelPatch = (await deps.config.presets())[presetName]?.levels[level];
+      if (levelPatch !== undefined) Object.assign(patch, levelPatch);
     }
   }
 
@@ -191,6 +210,6 @@ export async function modelAndParamsFor(
     definition,
     resolved,
     model,
-    params: Object.keys(params).length > 0 ? params : undefined,
+    params: Object.keys({ ...base, ...patch }).length > 0 ? { ...base, ...patch } : undefined,
   };
 }

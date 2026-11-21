@@ -7,6 +7,10 @@
  * 每一条的错法都是「不报错也不工作」：名字改完 `nameIsAuto` 还是真（下一次自动起名会把它盖掉）、
  * 换模型没清档位（把一家的 thinking 参数带到另一家，端点直接 400）、阈值只有一个数进了库
  * （另一个还是旧值）、换模型只改了库没改执行体（界面写着 A、请求发给 B）。
+ *
+ * 后两样（模型、思考档位）的每一条还同时验着**参数不跨级混合**：模型来自会话行时，助手定义
+ * 那份参数（配给定义自己绑的那个模型的）不许跟过来；模型来自定义时它才是基础参数，档位补丁
+ * 叠在它上面。
  */
 
 import type {
@@ -69,7 +73,7 @@ const PRESETS = {
   reasoning: { levels: { low: { reasoning_effort: "low" }, high: { reasoning_effort: "high" } } },
 } as unknown as ReasoningPresets;
 
-/** 助手定义：`modelParams` 是档位补丁叠在上面的那一层，换模型时它就应当是全部 */
+/** 助手定义：`modelParams` 是「模型来自定义」那一级的基础参数，换过模型之后它就该整份消失 */
 const DEFINITION: AgentDefinition = {
   id: "agent-1",
   name: "助手一",
@@ -81,13 +85,24 @@ const DEFINITION: AgentDefinition = {
 };
 
 /**
+ * 同一个助手，绑的是挂着思考档位表的那个模型（`modelParams` 照旧）。
+ *
+ * 只给「模型来自定义 **且** 有档位补丁」那一条用例用：`DEFINITION` 绑的 `model-plain` 没挂
+ * 档位表，凑不出那个组合。
+ */
+const THINKING_DEFINITION: AgentDefinition = { ...DEFINITION, modelId: "model-thinking" };
+
+/**
  * 一个真库加这一条路上的几个域。`runtime` 与 `definitions` 给替身：这些用例问的是「行上落了
  * 什么、执行体上被要求换成了什么」，造一个真的运行时只会让人以为它也在被验。
  *
  * `deps` 上缺的那些（项目、排队区、素材、交接、通知……）这六条 procedure 一处都不碰，所以
  * 直接转成 `HostApiDeps`：补齐它们得先编出六七个与本题无关的替身。
+ *
+ * 助手定义可以按用例换一份（默认 `DEFINITION`）：绑哪个模型决定了「模型来自定义」那一级是谁，
+ * 换掉它才能把「模型来自定义 + 有档位补丁」这个组合凑出来。
  */
-function newHost() {
+function newHost(definition: AgentDefinition = DEFINITION) {
   const db = openDatabase(":memory:");
   workspaceTable(db).put({ id: "ws-1", name: "项目一", cwd: "/tmp/ws-1", createdAt: 1 });
 
@@ -112,7 +127,7 @@ function newHost() {
     events: createBus<HostEvent>(),
     t,
     config: { read: () => CONFIG, presets: async () => PRESETS } as unknown as GeneralConfig,
-    definitions: { get: async () => DEFINITION } as unknown as AgentDefinitionService,
+    definitions: { get: async () => definition } as unknown as AgentDefinitionService,
   } as unknown as HostApiDeps;
 
   const api = createTrpc(t);
@@ -226,7 +241,7 @@ describe("会话上可改的那几样", () => {
     expect(host.sessions.get(session.id)?.guardThreshold).toBeNull();
   });
 
-  it("换模型：清掉档位、就地刷新执行体，参数就是助手定义那一份", async () => {
+  it("换模型：清掉档位、就地刷新执行体，参数里不带助手定义那一份", async () => {
     const host = newHost();
     const session = newSession(host);
     // 上一档思考：换模型必须把它清掉
@@ -242,8 +257,9 @@ describe("会话上可改的那几样", () => {
     // 档位是模型的参数：不清空就是把一家的 thinking 参数带给另一家
     expect(switched.thinkingLevel).toBeNull();
     expect(host.sessions.get(session.id)?.thinkingLevel).toBeNull();
-    // 就地刷新：不杀执行体，只换它手上的模型与参数；档位刚清空，所以这一刻的参数整份是定义那份
-    expect(agent.useModel).toHaveBeenCalledWith("model-thinking", DEFINITION.modelParams);
+    // 就地刷新：不杀执行体，只换它手上的模型与参数。模型这一刻来自会话行，而会话行上没有参数
+    // 这一格 —— 所以参数是空的一份，不是定义那份（那条是配给 `model-plain` 的）
+    expect(agent.useModel).toHaveBeenCalledWith("model-thinking", undefined);
   });
 
   it("换模型：配置里没有这个模型就是 `config_invalid`，文案带 id，行一个字不动", async () => {
@@ -261,6 +277,56 @@ describe("会话上可改的那几样", () => {
     expect(agent.useModel).not.toHaveBeenCalled();
   });
 
+  it("会话不存在 + 模型也不在配置里 → `not_found`，不是 `config_invalid`", async () => {
+    const host = newHost();
+
+    const error = await hostErrorOf(
+      host.caller.session.setModel({ sessionId: "没有这一段", modelId: "没有这个模型" }),
+    );
+
+    // 先认会话，再认模型：两个都不成立时该说的是「这段会话不存在」—— 说成 config_invalid 会让
+    // 客户端以为换个模型名就能成
+    expect(error.code).toBe("not_found");
+    // 与 `SessionService.update` 那一句同词：同一种失败在两条路上不能有两句话
+    expect(error.message).toBe("找不到 id 为 没有这一段 的会话");
+    expect(error.details).toEqual({ entity: "session", sessionId: "没有这一段" });
+  });
+
+  it("会话换过模型时，参数里没有助手定义那一份", async () => {
+    const host = newHost();
+    const session = newSession(host);
+    // 会话行上换成另一个模型：模型这一级的赢家是会话行
+    host.sessions.setModel(session.id, "model-thinking");
+    const agent = wake(host, session.id);
+
+    // 档位跟随定义（`null`）：这条路上除了档位补丁之外没有别的参数来源，补丁也不叠
+    await host.caller.session.setThinkingLevel({ sessionId: session.id, level: null });
+
+    const [modelId, params] = agent.useModel.mock.calls[0] ?? [];
+    expect(modelId).toBe("model-thinking");
+    // 定义那份（`temperature: 0.5`）配的是定义自己绑的 `model-plain`：整份不许跟过来，
+    // 否则换个模型就是把旧模型的参数发给新模型
+    expect(params).toBeUndefined();
+    expect(Object.keys(params ?? {})).toEqual([]);
+  });
+
+  it("模型来自定义时，定义那份 + 档位补丁都在", async () => {
+    // 定义绑在挂着档位表的那个模型上：只有这个组合才有「模型来自定义」加「有档位补丁」
+    const host = newHost(THINKING_DEFINITION);
+    const session = newSession(host);
+    // 会话行上不写模型 = 跟随定义（三级解析的第二级赢）
+    host.sessions.update(session.id, { modelId: null });
+    const agent = wake(host, session.id);
+
+    await host.caller.session.setThinkingLevel({ sessionId: session.id, level: "high" });
+
+    // 基础参数是定义那一份（模型来自定义），档位补丁叠在它上面
+    expect(agent.useModel).toHaveBeenCalledWith("model-thinking", {
+      temperature: 0.5,
+      reasoning_effort: "high",
+    });
+  });
+
   it("换思考档位：档位表认它才写得进去，写完就地刷新（模型 + 档位补丁）", async () => {
     const host = newHost();
     const session = newSession(host);
@@ -275,11 +341,9 @@ describe("会话上可改的那几样", () => {
 
     expect(leveled.thinkingLevel).toBe("high");
     expect(host.sessions.get(session.id)?.thinkingLevel).toBe("high");
-    // 生效模型是会话行上那个（不是定义上那个），参数是定义那份叠上档位补丁
-    expect(agent.useModel).toHaveBeenCalledWith("model-thinking", {
-      temperature: 0.5,
-      reasoning_effort: "high",
-    });
+    // 生效模型是会话行上那个（不是定义上那个）：基础参数取「会话那一级」的那一份 —— 会话行上
+    // 没有参数这一格，所以参数里只有档位补丁，定义那份 `temperature` 不跟过来
+    expect(agent.useModel).toHaveBeenCalledWith("model-thinking", { reasoning_effort: "high" });
   });
 
   it("换思考档位：表里没有这一档、或模型根本没挂档位表，都是 `invalid_params`", async () => {

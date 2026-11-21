@@ -173,11 +173,26 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      *
      * `modelId` 是必填的 `string`（不可为 `null`）：会话指不到模型那条路是「配置里没这个模型」，
      * 不是「清空」—— 清空之后这一段就没有可用的模型了，那不是用户能表达的意思。
+     *
+     * 两条报错的次序是**先会话、后模型**：会话不存在就是 `not_found`，模型不在配置里才是
+     * `config_invalid`。反过来先校验模型的话，两者同时不成立时客户端听到的是「换个模型名试试」，
+     * 而真正该做的是重新打开会话。
      */
     setModel: api.procedure
       .input(sessionIdInput.extend({ modelId: z.string() }))
       .output(sessionResult)
       .mutation(async ({ input }) => {
+        // 先认会话，再认模型：一段根本不存在的会话，第一句该说的是「这段会话不存在」，而不是
+        // 「配置里没有这个模型」—— 后者会让客户端以为换个模型名就好了。这一条与 `update` 里
+        // 那一句同词（同一个 `deps.t` 键、同样的 `details`），客户端只认一处文案。
+        if (deps.sessions.get(input.sessionId) === undefined) {
+          throw new HostError(
+            "not_found",
+            deps.t("找不到 id 为 {sessionId} 的会话", { sessionId: input.sessionId }),
+            { entity: "session", sessionId: input.sessionId },
+          );
+        }
+
         if (!deps.config.read().models.some((model) => model.id === input.modelId)) {
           throw new HostError(
             "config_invalid",
@@ -192,9 +207,11 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
 
         const agent = deps.runtime.get(session.id);
         if (agent !== undefined) {
-          // 档位刚被清空，所以这一刻算出来的参数**就是**助手定义上的 `definition.modelParams`
-          //（`modelAndParamsFor` 在 `thinkingLevel === null` 时不叠任何补丁）。仍然走同一个函数，
-          // 不在这里另取一份：算「模型 + 档位补丁」的地方多一处，两处迟早不一致。
+          // 档位刚被清空，所以这一刻算出来的参数里没有档位补丁；而基础参数按「生效模型来自
+          // 哪一级」取 —— 这里刚把模型写进会话行，那一级就是会话行，而会话行上没有参数这一格，
+          // 于是参数整份是**空的**（定义那份配的是定义自己绑的那个模型，不能发给新模型）。
+          // 仍然走同一个函数，不在这里另取一份：算「模型 + 档位补丁」的地方多一处，两处迟早
+          // 不一致。
           const { params } = await modelAndParamsFor(deps, session);
           agent.useModel(input.modelId, params);
         }
@@ -214,6 +231,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       .output(sessionResult)
       .mutation(async ({ input }) => {
         const current = deps.sessions.get(input.sessionId);
+        // 与 `setModel` 同一个次序：先认会话，再认模型（这里是「这个模型的档位表认不认它」）。
         // 校验要读会话行（会话级模型是三级里的第一级）。行不在时没有可校验的对象 —— 直接走到
         // 下面 `update`，它抛的 `not_found` 就是这条路上唯一的那一句，这一层不另造一句。
         if (current !== undefined) await assertLevelAllowed(deps, current, input.level);
@@ -222,7 +240,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
 
         const agent = deps.runtime.get(session.id);
         if (agent !== undefined) {
-          // 与装配时同一个算法（定义那份参数叠上新档位那一份），只在这一处实现。
+          // 与装配时同一个算法（基础参数按生效模型来自哪一级取，再叠新档位那一份），只在这一处实现。
           const { resolved, params } = await modelAndParamsFor(deps, session);
           // 三级都空 = 这段会话现在根本没有生效模型：没有可换的目标，这一格已经落库，等它有
           // 模型时按它生效。
