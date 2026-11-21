@@ -279,7 +279,8 @@ describe("宿主跑起来", () => {
       ),
     );
 
-    // 这一波还没有建项目的 procedure，项目行只能先写进去；会话挂在外键上，没有它插不进去
+    // 项目行直接写进表，不走 `workspace.create`：这条用例验的是投递与流式那一串事件，
+    // 从 procedure 建项目会让这一串里多绕一层与它无关的东西。
     const cwd = join(dataRoot, "project");
     mkdirSync(cwd, { recursive: true });
     const vacant = join(dataRoot, "vacant");
@@ -387,7 +388,8 @@ describe("宿主跑起来", () => {
     expect(reopened.messages.map(textOf)).toContain(REPLY.join(""));
   }, 60_000);
 
-  it("验不过的连接调不到任何 procedure，宿主照旧服务", async () => {    // 不送令牌：连的是没有查询串的那条地址，服务端在建上下文那一刻就把它拒了，握手帧无从送起
+  it("验不过的连接调不到任何 procedure，宿主照旧服务", async () => {
+    // 不送令牌：连的是没有查询串的那条地址，服务端在建上下文那一刻就把它拒了，握手帧无从送起
     const anonymous = await HostClient.connect(app.address.port);
     await expect(anonymous.query("session.list", { workspaceId })).rejects.toThrow(
       /UNAUTHORIZED|令牌/,

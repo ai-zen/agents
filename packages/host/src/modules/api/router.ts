@@ -8,6 +8,7 @@ import { questionRouter } from "./question.js";
 import { searchRouter } from "./search.js";
 import { sessionRouter } from "./session.js";
 import { createTrpc } from "./trpc.js";
+import { workspaceRouter } from "./workspace.js";
 
 /**
  * 契约。每个 procedure 的入参与出参都写在各自的 `.input()` / `.output()` 上，这里只合名字。
@@ -20,6 +21,7 @@ export function createAppRouter(deps: HostApiDeps) {
 
   return api.router({
     session: sessionRouter(deps, api),
+    workspace: workspaceRouter(deps, api),
     agent: agentRouter(deps, api),
     asset: assetRouter(deps, api),
     notice: noticeRouter(deps, api),
