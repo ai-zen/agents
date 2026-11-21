@@ -1,4 +1,5 @@
-import type { Agent, AgentNS } from "@ai-zen/agents-core";
+import type { AgentNS } from "@ai-zen/agents-core";
+import type { SdkAgent } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import type { AgentSubscription } from "../agent/subscription.js";
@@ -13,7 +14,7 @@ export interface AgentRegistryDeps {
 }
 
 interface AliveAgent {
-  readonly agent: Agent;
+  readonly agent: SdkAgent;
   readonly subscription: AgentSubscription;
 }
 
@@ -23,13 +24,17 @@ interface AliveAgent {
  *
  * 这是全仓唯一一份这样的登记表。`ScopeRegistry` 拆容器前问「这个目录上还有哪几段会话活着」，
  * 也问它 —— 各处自己记一份，迟早有一处先过期。
+ *
+ * 登记项的类型是 `SdkAgent` 而不是 core 的 `Agent`：造它的是 `assemble`，而 `assemble` 走的是
+ * `createAgent`，出来的本来就是 `SdkAgent`。写成 `Agent` 只是把 `scope` 与 `definition` 藏了
+ * 起来，交接那一侧要按定义上的模板算新记忆，拿不到它就得自己再猜一份。
  */
 export class AgentRegistry {
   private readonly alive = new Map<string, AliveAgent>();
 
   constructor(private readonly deps: AgentRegistryDeps) {}
 
-  get(sessionId: string): Agent | undefined {
+  get(sessionId: string): SdkAgent | undefined {
     return this.alive.get(sessionId)?.agent;
   }
 
@@ -39,7 +44,7 @@ export class AgentRegistry {
    * 起来放在这里，是因为一条永远不取件的执行体在登记表里毫无意义：外面看得见它活着，
    * 投进去的话却没人取。
    */
-  add(sessionId: string, agent: Agent, subscription: AgentSubscription): void {
+  add(sessionId: string, agent: SdkAgent, subscription: AgentSubscription): void {
     this.alive.set(sessionId, { agent, subscription });
     // 先报活、再让它跑：客户端可能在它跑起来之前就要把这一段挂到界面上
     this.deps.events.emit({ type: "agent.alive", sessionId, alive: true });
@@ -67,18 +72,6 @@ export class AgentRegistry {
     for (const sessionId of [...this.alive.keys()]) this.kill(sessionId);
   }
 
-  /**
-   * 这段会话此刻在干还是闲、输出闸是开是关。
-   *
-   * 现读，不在这里另记一份：执行体会整个被换掉（换模型就是换一个实例），记下来的那份随即过期。
-   * `null` = 这一段没有活执行体。
-   */
-  liveState(sessionId: string): { status: AgentNS.AgentState; outputPaused: boolean } | null {
-    const entry = this.alive.get(sessionId);
-    if (entry === undefined) return null;
-    return { status: entry.agent.state, outputPaused: entry.agent.isOutputPaused };
-  }
-
   /** 没有活执行体时是空操作：关闸与开闸可能落在执行体已经被杀之后 */
   pauseOutput(sessionId: string): void {
     this.alive.get(sessionId)?.agent.pauseOutput();
@@ -86,6 +79,18 @@ export class AgentRegistry {
 
   resumeOutput(sessionId: string): void {
     this.alive.get(sessionId)?.agent.resumeOutput();
+  }
+
+  /**
+   * 换掉这段会话执行体的记忆。没有活执行体时是空操作。
+   *
+   * 就地 `splice`，不给 `agent.messages` 整体赋值：那个数组是记忆的唯一真相，换掉它会让已经
+   * 拿到引用的地方（插件的钩子上下文、正在进行的那次请求）继续指着旧的那一份。
+   */
+  replaceMessages(sessionId: string, memory: readonly AgentNS.Message[]): void {
+    const agent = this.alive.get(sessionId)?.agent;
+    if (agent === undefined) return;
+    agent.messages.splice(0, agent.messages.length, ...memory);
   }
 
   /** 这个目录上还活着哪几段会话：`cwd` 不在执行体身上，只能经由会话行与项目行现算 */

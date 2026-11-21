@@ -1,9 +1,10 @@
-import { AgentNS, type Agent } from "@ai-zen/agents-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import {
   createAgent,
   resolveModel,
   type AgentDefinition,
   type ModelParams,
+  type SdkAgent,
 } from "@ai-zen/agents-sdk";
 
 import type { AgentDefinitionService } from "../config/agents.js";
@@ -27,12 +28,15 @@ export interface AssemblyDeps {
 /**
  * 按库里的事实把这段会话的执行体造出来。历史要先装好，再把还没取走的条目放回队列。
  *
+ * 返回的是 `SdkAgent` 而不是 core 的 `Agent`：`createAgent` 造的就是它，写宽了只是把 `scope`
+ * 与 `definition` 藏起来 —— 交接要在定义上的模板与这一段的能力容器上做事，拿不到就得去借。
+ *
  * 模型的三级解析（会话行 > 助手定义 > 全局兜底）不在这一层重做一遍：`createAgent` 里是唯一
  * 实现，这里只把会话行那一级的覆盖递进去。三级全空时它报错并带上助手 id，不静默挑一个。
  * 唯一一处例外在参数那边：要读档位表得先知道生效的是哪个模型，那里调的是同一个
  * `resolveModel`，不是另写一遍选择链。
  */
-export async function assemble(deps: AssemblyDeps, session: Session): Promise<Agent> {
+export async function assemble(deps: AssemblyDeps, session: Session): Promise<SdkAgent> {
   // 修与读是同一次读取：要判出「哪几条是上一个进程没写完的」，只能先把行拿出来。读一遍、
   // 就地改、只写回改过的那几行；读两遍的话，「库里那份」与「装进 agent 那份」会落在两次
   // 读取之间，整段历史也多读一遍。

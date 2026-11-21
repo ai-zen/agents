@@ -33,7 +33,7 @@ import { McpConfig } from "./modules/config/mcp.js";
 import { ModelService } from "./modules/config/models.js";
 import { Connections } from "./modules/connection/registry.js";
 import type { HostEvent } from "./modules/events.js";
-import { HandoffService } from "./modules/handoff/service.js";
+import { HandoffService, createSdkHandoff } from "./modules/handoff/service.js";
 import { createTranslator } from "./modules/i18n/index.js";
 import { ScopeRegistry } from "./modules/scope/registry.js";
 import { messageTable } from "./modules/session/messages.js";
@@ -133,13 +133,6 @@ export class HostApp {
     const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
     const sessions = new SessionService({ sessions: sessionRows, events, t });
     this.agents = new AgentRegistry({ sessions, workspaces, events });
-    const handoff = new HandoffService({
-      db: this.db,
-      sessions,
-      agents: this.agents,
-      events,
-      t,
-    });
 
     // `assets` 与 `session_assets` 的表引了 `messages`，所以只能在它之后建
     const assets = new AssetService({
@@ -153,6 +146,19 @@ export class HostApp {
     const questions = new QuestionRegistry({ events, t });
     // 全文索引的触发器指向 `messages`，所以只能在它之后建
     const search = new SearchService({ search: searchTable(this.db) });
+
+    // 交接排在通知之后：失败那条路上它要推通知。这里给的是那个工厂而不是一份实例 ——
+    // 文档落点与落库那一格都只对一段会话的一趟交接成立，实例由 `start` 每趟现造。
+    const handoff = new HandoffService({
+      db: this.db,
+      sessions,
+      workspaces,
+      agents: this.agents,
+      notices,
+      events,
+      t,
+      createSdk: createSdkHandoff,
+    });
 
     this.scopes = new ScopeRegistry({
       createScope: async (cwd) => {

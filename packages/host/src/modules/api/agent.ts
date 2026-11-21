@@ -1,7 +1,6 @@
 import { z } from "zod";
 
-import type { Agent } from "@ai-zen/agents-core";
-import { resolveModel } from "@ai-zen/agents-sdk";
+import { resolveModel, type SdkAgent } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import { assemble } from "../agent/assembly.js";
@@ -25,6 +24,9 @@ type SendInput = z.infer<typeof sendInput>;
 
 const wakeInput = z.object({ sessionId: z.string() });
 const wakeOutput = z.object({ sessionId: z.string() });
+/** 闸与中止这四个动作只认会话 id；活着才有效，没有活执行体时是空操作 */
+const controlInput = z.object({ sessionId: z.string() });
+const controlOutput = z.object({ sessionId: z.string() });
 
 export function agentRouter(deps: HostApiDeps, api: Trpc) {
   return api.router({
@@ -71,13 +73,53 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
         const session = await createSession(deps, input);
         return deliver(deps, session, await wakeSession(deps, session), input);
       }),
+
+    /**
+     * 闸与中止这四个动作：都只对活着的执行体有效，没有它时是空操作。
+     *
+     * `pause` / `resume` 两道闸缺一不可：`cancel` 交接时宿主会关掉输出闸且不自己开回来，
+     * 没有 `resume` 的话那一段会话从此不取件，界面上表现为「它不理我」而没有任何报错。
+     */
+    pause: api.procedure
+      .input(controlInput)
+      .output(controlOutput)
+      .mutation(({ input }) => {
+        deps.agents.pauseOutput(input.sessionId);
+        return { sessionId: input.sessionId };
+      }),
+
+    resume: api.procedure
+      .input(controlInput)
+      .output(controlOutput)
+      .mutation(({ input }) => {
+        deps.agents.resumeOutput(input.sessionId);
+        return { sessionId: input.sessionId };
+      }),
+
+    /** 中止进行中的请求，但不销毁执行体：掐完之后那一段是「闲 + 输出闸关」的状态 */
+    abort: api.procedure
+      .input(controlInput)
+      .output(controlOutput)
+      .mutation(({ input }) => {
+        deps.agents.get(input.sessionId)?.abort();
+        return { sessionId: input.sessionId };
+      }),
+
+    /** 杀死：执行体销毁，会话行与历史一个字都不动 */
+    kill: api.procedure
+      .input(controlInput)
+      .output(controlOutput)
+      .mutation(({ input }) => {
+        deps.agents.kill(input.sessionId);
+        return { sessionId: input.sessionId };
+      }),
   });
 }
 
 function deliver(
   deps: HostApiDeps,
   session: Session,
-  agent: Agent,
+  agent: SdkAgent,
   input: SendInput,
 ): { sessionId: string; messageId: string } {
   deps.delivery.hand(session.id, agent, {
@@ -133,7 +175,7 @@ function existingSession(deps: HostApiDeps, sessionId: string): Session {
   return session;
 }
 
-async function wakeSession(deps: HostApiDeps, session: Session): Promise<Agent> {
+async function wakeSession(deps: HostApiDeps, session: Session): Promise<SdkAgent> {
   const agent = await assemble(deps, session);
   deps.agents.add(
     session.id,

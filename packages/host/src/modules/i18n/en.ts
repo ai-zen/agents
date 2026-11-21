@@ -38,4 +38,7 @@ export const en: Record<string, string> = {
     'Session "{sessionId}" is still answering; hand off after it becomes idle',
   "会话 {sessionId} 的输出已暂停，先恢复再交接":
     'Output for session "{sessionId}" is paused; resume it before handing off',
+  "交接降级为摘要：这一趟没能由原会话自己写交接文档":
+    'Handoff fell back to a standalone summary: the session did not write its own handoff document',
+  "交接失败：{reason}": "Handoff failed: {reason}",
 };
