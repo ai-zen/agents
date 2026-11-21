@@ -195,6 +195,16 @@ export class HostApp {
       },
       aliveSessions: (cwd) => this.agents.aliveSessions(cwd),
       t,
+      log: this.log,
+    });
+
+    // 配置面改完之后，运行期要知道。没有这一条，用户在界面上停掉一个 MCP 服务器、
+    // 运行期照旧连着它，直到进程重启——「启停即时生效」就不成立。
+    //
+    // 助手定义的变动不走这里：它不进容器的配置，受影的是那几段会话的执行体。
+    configEvents.subscribe((event) => {
+      if (event.kind === "agentDefinition") return;
+      void this.scopes.refreshAll();
     });
 
     this.connections = new Connections();

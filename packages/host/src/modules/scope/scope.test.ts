@@ -22,6 +22,7 @@ describe("能力容器", () => {
       },
       aliveSessions: () => [],
       t: createTranslator(() => "zh"),
+      log: { info: () => {}, warn: () => {}, error: () => {} },
     });
 
     const [first, second] = await Promise.all([
@@ -47,6 +48,7 @@ describe("能力容器", () => {
       },
       aliveSessions: () => alive,
       t: createTranslator(() => "zh"),
+      log: { info: () => {}, warn: () => {}, error: () => {} },
     });
 
     const first = await registry.for("/tmp/一个目录");
@@ -61,5 +63,30 @@ describe("能力容器", () => {
     expect(disposed).toBe(1);
 
     expect(await registry.for("/tmp/一个目录")).not.toBe(first);
+  });
+
+  it("配置变了之后刷新已造好的容器，其中一个刷不动不挡其余的", async () => {
+    const refreshed: string[] = [];
+    const registry = new ScopeRegistry({
+      createScope: async (cwd) => {
+        return {
+          dispose: async () => {},
+          refresh: async () => {
+            refreshed.push(cwd);
+            // 一个容器刷不动（配置崩坏、磁盘出错）不该让其余容器也停在旧配置上
+            if (cwd === "/tmp/坏的") throw new Error("refresh failed");
+          },
+        } as unknown as Scope;
+      },
+      aliveSessions: () => [],
+      t: createTranslator(() => "zh"),
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    await registry.for("/tmp/坏的");
+    await registry.for("/tmp/另一个");
+    await registry.refreshAll();
+
+    expect(refreshed.sort()).toEqual(["/tmp/另一个", "/tmp/坏的"]);
   });
 });

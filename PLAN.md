@@ -15,8 +15,7 @@
 | 4 | 三处已知缺口：subagent 最后一片正文（core 不转发 `responseFinished`）、连接上的凭证校验（`credential/` 已建但 `createContext` 还没用它）、题挂着时挡不挡 `agent.send` | 每条要能说出具体可见的后果 |
 | 5 | 已建表的存量库不会自动长出 `searchText` 与 `hidden`（`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作） | 协议机上的旧库要删掉重建，或补一次 ALTER + `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')` |
 | 6 | 交接降级的根因看不见：宿主没给 SDK 传 `logger`，`supportsSelfHandoff` 为假时每一趟都降级、每趟堆一条警告，根因只在 SDK 的静默日志里 | 降级要有可追的原因，不只是结果 |
-| 7 | **改了 `mcp.json` 运行期不动**：`McpConfig.save` 发出 `ConfigEvent{kind:"mcp"}`，但没有订阅者；宿主没装 `AutoRefreshToolsPlugin`，`Scope.refresh()` 一次没被调过 | PRD 3.3 的「启停即时生效」现在不成立：用户停掉一个服务器，运行期照旧连着，直到进程重启 |
-| 8 | `effective()` 没有消费者，也表达不了「已停用」：停用条目与不存在的条目在返回值里长得一样 | 客户端要做开关列表只能自己读文件——那就是第三份读法 |
+| 7 | `effective()` 没有消费者，也表达不了「已停用」：停用条目与不存在的条目在返回值里长得一样 | 客户端要做开关列表只能自己读文件——那就是第三份读法 |
 
 ## 已经拍过、不要重开的
 

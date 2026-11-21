@@ -1,4 +1,4 @@
-import type { Scope } from "@ai-zen/agents-sdk";
+import type { LogSink, Scope } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
@@ -9,6 +9,8 @@ export interface ScopeRegistryDeps {
   /** 这个目录上还活着哪几段会话：问的是执行体那一侧，本模块不自己记账 */
   readonly aliveSessions: (cwd: string) => string[];
   readonly t: Translator;
+  /** 刷新失败的出口：一个容器刷不动不该让其余容器也不动，所以逐个收口，只记日志 */
+  readonly log: LogSink;
 }
 
 /**
@@ -64,6 +66,30 @@ export class ScopeRegistry {
     }
 
     await this.tearDown(cwd);
+  }
+
+  /**
+   * 配置改了之后让每个已造好的容器重读一次磁盘。
+   *
+   * 只刷**已经造出来的**：没人用过的目录没有容器，下一次 `for` 会按新配置造一个，现在去造
+   * 一个只是为了让它可以被刷一次。
+   *
+   * 逐个收口：一个容器刷不动不该让其余容器也不动。刷不动的那个留在原地用旧配置，
+   * 下一次它被真正用到之前还有机会再刷。
+   */
+  async refreshAll(): Promise<void> {
+    const resolved = await Promise.allSettled([...this.scopes.values()]);
+    const scopes = resolved
+      .filter((entry): entry is PromiseFulfilledResult<Scope> => entry.status === "fulfilled")
+      .map((entry) => entry.value);
+
+    for (const scope of scopes) {
+      try {
+        await scope.refresh({ silent: true });
+      } catch (error) {
+        this.deps.log.warn("Cannot refresh a scope after a config change", { error });
+      }
+    }
   }
 
   /** 进程收尾用，不拒绝：那时已经没有「稍后再拆」这回事 */
