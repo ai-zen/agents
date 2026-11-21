@@ -11,6 +11,7 @@ import type { ModelParams } from "../types/index.js";
 import { createAgent } from "./createAgent.js";
 import { RuntimePeerSessions } from "./RuntimePeerSessions.js";
 import { Scopes } from "./Scopes.js";
+import type { ScopeCapabilities } from "./Scopes.js";
 import type { SdkAgent } from "./SdkAgent.js";
 
 /**
@@ -91,6 +92,9 @@ interface Resident {
  * 三种来源，按 `type` 判别：
  * - 运行时自己知道的两格：一段会话出现了（`resident:appeared`）、没了（`resident:gone`）。
  *   这两件事只有运行时知道 —— 执行体自己说不出「我在这张登记表里」；
+ * - 能力容器的三格（`scope:` 前缀，与上面那一对并列）：这个目录的容器造起来了（`scope:appeared`）、
+ *   按新配置刷新完了（`scope:refreshed`）、拆掉了（`scope:gone`）。前两格带一份能力快照（四个
+ *   维度的候选名），于是第三方不必再摸容器就能说「现在能用什么能力」；
  * - 每个执行体的内核事件：名字与载荷**原样**转出（`started`、`messageAdded`、`state:idle` 等），
  *   只额外带上它属于哪一段会话。
  *
@@ -109,6 +113,9 @@ export type RuntimeFact =
       agent: SdkAgent;
     }
   | { type: "resident:gone"; sessionId: string }
+  | { type: "scope:appeared"; cwd: string; capabilities: ScopeCapabilities }
+  | { type: "scope:refreshed"; cwd: string; capabilities: ScopeCapabilities }
+  | { type: "scope:gone"; cwd: string }
   | {
       [K in keyof AgentEvents]: { type: K; sessionId: string } & AgentEvents[K];
     }[keyof AgentEvents];
@@ -209,6 +216,28 @@ export class AgentRuntime {
       aliveSessions: (cwd) => this.aliveOn(cwd),
       peers: this.peerSessions,
       log: ports.log ?? SILENT_LOG,
+      // 容器那一侧的三格事实原样翻成对外的事实流，一一对应（判别名加 `scope:` 前缀，与
+      // `resident:` 那一对并列）。这里不加、不减、不合并：容器说什么就是什么
+      onChange: (event) => {
+        switch (event.type) {
+          case "appeared":
+            this.broadcast({
+              type: "scope:appeared",
+              cwd: event.cwd,
+              capabilities: event.capabilities,
+            });
+            return;
+          case "refreshed":
+            this.broadcast({
+              type: "scope:refreshed",
+              cwd: event.cwd,
+              capabilities: event.capabilities,
+            });
+            return;
+          case "gone":
+            this.broadcast({ type: "scope:gone", cwd: event.cwd });
+        }
+      },
     });
   }
 

@@ -210,10 +210,17 @@ type Appeared = Extract<RuntimeFact, { type: "resident:appeared" }>;
 type Gone = Extract<RuntimeFact, { type: "resident:gone" }>;
 type Added = Extract<RuntimeFact, { type: "inboxAdded" }>;
 type Finished = Extract<RuntimeFact, { type: "responseFinished" }>;
+type ScopeAppeared = Extract<RuntimeFact, { type: "scope:appeared" }>;
+type ScopeRefreshed = Extract<RuntimeFact, { type: "scope:refreshed" }>;
+type ScopeGone = Extract<RuntimeFact, { type: "scope:gone" }>;
 
-/** 某一段会话收到的事实，按到达顺序 */
+/**
+ * 某一段会话收到的事实，按到达顺序。
+ *
+ * 能力容器那三格没有会话身份（判据是目录，不是会话），不在这一份里 —— 所以先看它有没有这一格。
+ */
 function factsOf(facts: readonly RuntimeFact[], sessionId: string): RuntimeFact[] {
-  return facts.filter((fact) => fact.sessionId === sessionId);
+  return facts.filter((fact) => "sessionId" in fact && fact.sessionId === sessionId);
 }
 
 /** 直接调一次工具（模型那一侧的位置：`ctx.agent` 就是调用它的那个执行体） */
@@ -513,6 +520,65 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     const ofB = factsOf(seen.slice(marked), "b").map((fact) => fact.type);
     expect(ofB).toContain("state:working");
     expect(ofB).toContain("state:idle");
+  });
+});
+
+describe("运行时的观察面：能力容器", () => {
+  it("容器造起来、刷新过、拆掉，三件事都听得见", async () => {
+    const h = await harness();
+    const seen: RuntimeFact[] = [];
+    h.runtime.observe((fact) => seen.push(fact));
+
+    // 出现：叫醒一段，容器随之造出来
+    await h.wake("a", "lead");
+
+    const appeared = seen.filter((fact): fact is ScopeAppeared => fact.type === "scope:appeared");
+    expect(appeared).toHaveLength(1);
+    expect(appeared[0]!.cwd).toBe(h.cwd);
+    // 能力快照：这个容器装了平级会话插件，那三个工具都在里面（不必再摸容器去问）
+    expect(appeared[0]!.capabilities.tools).toEqual(
+      expect.arrayContaining([CREATE_SESSION_TOOL, READ_SESSION_STATUS_TOOL, POST_MESSAGE_TOOL]),
+    );
+
+    // 刷新完：配置改了这一侧刷一遍，刷成功之后才报
+    await h.runtime.scopes.refreshAll();
+
+    const refreshed = seen.filter(
+      (fact): fact is ScopeRefreshed => fact.type === "scope:refreshed",
+    );
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0]!.cwd).toBe(appeared[0]!.cwd);
+    // 形状一致：四个维度都在，而且这一次拿到的还是同一份能力
+    expect(Object.keys(refreshed[0]!.capabilities).sort()).toEqual([
+      "mcps",
+      "skills",
+      "subagents",
+      "tools",
+    ]);
+    expect(refreshed[0]!.capabilities).toEqual(appeared[0]!.capabilities);
+
+    // 拆掉：先杀掉这一段（还有活执行体时拆会被拒），再拆
+    h.runtime.kill("a");
+    await h.runtime.scopes.dispose(h.cwd);
+
+    const gone = seen.filter((fact): fact is ScopeGone => fact.type === "scope:gone");
+    expect(gone).toHaveLength(1);
+    expect(gone[0]!.cwd).toBe(h.cwd);
+  });
+
+  it("同一个目录只报一次出现", async () => {
+    const h = await harness();
+    const seen: RuntimeFact[] = [];
+    h.runtime.observe((fact) => seen.push(fact));
+
+    // 同一个目录上两段会话：容器只有一份，于是「出现」也只有一条
+    await h.wake("a", "lead");
+    await h.wake("b", "helper");
+
+    expect(h.opened).toEqual([h.cwd]);
+    expect(
+      seen.filter((fact): fact is ScopeAppeared => fact.type === "scope:appeared"),
+    ).toHaveLength(1);
   });
 });
 

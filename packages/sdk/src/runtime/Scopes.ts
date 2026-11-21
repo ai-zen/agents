@@ -1,6 +1,36 @@
 import type { Scope } from "../scope/Scope.js";
 import type { PeerSessionPort } from "../scope/plugins/peers/peerSessionTools.js";
+import type { AgentDefinition } from "../types/index.js";
 import { SILENT_LOG, type LogSink } from "../shared/logger.js";
+
+/** 一个容器此刻能拿出什么（按插件候选聚合：还没过任何一段会话的权限） */
+export interface ScopeCapabilities {
+  tools: string[];
+  subagents: string[];
+  skills: string[];
+  mcps: string[];
+}
+
+/** 能力容器的三格事实（运行时把它转成对外的事实流，见 `RuntimeFact`） */
+export type ScopeEvent =
+  | { type: "appeared"; cwd: string; capabilities: ScopeCapabilities }
+  | { type: "refreshed"; cwd: string; capabilities: ScopeCapabilities }
+  | { type: "gone"; cwd: string };
+
+/**
+ * 算候选时喂给插件的那一份「会话定义」：空的那一份。
+ *
+ * 候选那一侧要一格会话定义（内置工具的可用性靠它判，如 `view_image` 看的是那一段会话绑的模型
+ * 是不是视觉模型）。容器不属于任何一段会话，所以这边给的是空的那一份：凡是「只在某一段会话上
+ * 才成立」的候选，在这个视角下都算这个目录拿不出来。
+ */
+const NO_SESSION_DEFINITION: AgentDefinition = {
+  id: "",
+  name: "",
+  messages: [],
+  createdAt: "",
+  updatedAt: "",
+};
 
 export interface ScopesDeps {
   /**
@@ -17,6 +47,13 @@ export interface ScopesDeps {
   readonly peers: PeerSessionPort;
   /** 刷新失败的出口：一个容器刷不动不该让其余容器也不动，所以逐个收口 */
   readonly log?: LogSink;
+  /**
+   * 容器这一侧的变化往外说的出口：出现了、刷新完了、拆掉了（{@link ScopeEvent}）。
+   *
+   * **旁路**：容器不靠它做任何判断 —— 它只在事情发生之后说一句，没有它容器照旧造、照旧刷、照旧拆
+   * （要不要造、刷成功了没有、拆得掉拆不掉，一个判据都不从这个回调读）。
+   */
+  readonly onChange: (event: ScopeEvent) => void;
 }
 
 /**
@@ -56,6 +93,22 @@ export class Scopes {
       throw error;
     });
 
+    // 「出现了」只在**真的造了一个**的那次发：走到这里就是这次调用造的那一个（上面那一格已经
+    // 返回了），记录也已经落好 —— 收到事实的人回头 `for` 一次，拿到的是同一个容器。
+    //
+    // 它排在上面那条 catch 之外：`onChange` 是旁路，它抛错不该被当成「造失败」把记录抹掉。
+    // 也不要 `await`：这个回调挂在同一个 promise 上、先于调用方那一次 `await` 跑，不必再等它一圈。
+    void created.then(
+      (scope) =>
+        this.deps.onChange({
+          type: "appeared",
+          cwd,
+          capabilities: this.capabilitiesOf(scope),
+        }),
+      // 造失败的那一路上面已经收过尾：不发事实（它没造出来）
+      () => undefined,
+    );
+
     this.containers.set(cwd, created);
     return created;
   }
@@ -92,7 +145,16 @@ export class Scopes {
         await scope.refresh({ silent: true });
       } catch (error) {
         this.log.warn("Cannot refresh a scope after a config change", { error });
+        // 刷不动的那个没刷成功：不发「刷新完了」，它留在原地用旧配置
+        continue;
       }
+
+      // 刷成功了才发：这一格说的是「现在按新配置能拿出什么」，不是「有人试过刷」
+      this.deps.onChange({
+        type: "refreshed",
+        cwd: scope.cwd,
+        capabilities: this.capabilitiesOf(scope),
+      });
     }
   }
 
@@ -101,6 +163,30 @@ export class Scopes {
     // 拆到一半的容器已经不在 `containers` 里，但还没有拆完：两个键集合并起来才是全部
     const cwds = new Set([...this.containers.keys(), ...this.tearing.keys()]);
     await Promise.all([...cwds].map((cwd) => this.tearDown(cwd)));
+  }
+
+  /**
+   * 一个容器此刻能拿出什么：按插件候选聚合，四个维度各自去重、保序（先注册的插件在前）。
+   *
+   * 为什么用候选而不是 `filter(definition)` 的结果：候选是「这个容器能拿出什么」，权限是「这一段
+   * 助手准不准用」，两件事。混在一起，第三方说「现在能用什么能力」时说的会是一段会话的权限，
+   * 而不是这个目录的能力。候选那一格会话定义用的是空的那一份（见 {@link NO_SESSION_DEFINITION}）。
+   */
+  private capabilitiesOf(scope: Scope): ScopeCapabilities {
+    const tools = new Set<string>();
+    const subagents = new Set<string>();
+    const skills = new Set<string>();
+    const mcps = new Set<string>();
+
+    for (const plugin of scope.plugins) {
+      const candidates = plugin.candidates(scope, NO_SESSION_DEFINITION);
+      candidates.tools?.forEach((name) => tools.add(name));
+      candidates.subagents?.forEach((name) => subagents.add(name));
+      candidates.skills?.forEach((name) => skills.add(name));
+      candidates.mcps?.forEach((name) => mcps.add(name));
+    }
+
+    return { tools: [...tools], subagents: [...subagents], skills: [...skills], mcps: [...mcps] };
   }
 
   private tearDown(cwd: string): Promise<void> {
@@ -118,6 +204,9 @@ export class Scopes {
 
       this.containers.delete(cwd);
       await scope.dispose();
+      // 拆完了才发：造失败（上面 `scope === undefined`）与本来就没人要过容器（`pending ===
+      // undefined`）这两条路径都提前返回了，这里发的每一次都对应一个真的拆掉的容器
+      this.deps.onChange({ type: "gone", cwd });
     })().finally(() => this.tearing.delete(cwd));
 
     this.tearing.set(cwd, tearing);

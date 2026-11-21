@@ -163,7 +163,7 @@ export type {
 } from "./runtime/AgentRuntime.js";
 // 能力容器按目录存活：什么时候造、什么时候拆
 export { Scopes } from "./runtime/Scopes.js";
-export type { ScopesDeps } from "./runtime/Scopes.js";
+export type { ScopesDeps, ScopeCapabilities, ScopeEvent } from "./runtime/Scopes.js";
 // 模型三级解析（唯一实现）：档位类型也导出，宿主与客户端按它渲染「当前生效档」
 export { resolveModel, resolveModelParams } from "./runtime/resolveModel.js";
 export type {
