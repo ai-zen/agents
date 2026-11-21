@@ -1,7 +1,14 @@
 import { AgentNS } from "@ai-zen/agents-core";
-import { completeOnce, type AgentModel, type AppConfig } from "@ai-zen/agents-sdk";
+import {
+  completeOnce,
+  type AgentModel,
+  type AgentRuntime,
+  type AppConfig,
+} from "@ai-zen/agents-sdk";
 
 import type { GeneralConfig } from "../config/general.js";
+import type { Translator } from "../i18n/index.js";
+import type { NoticeService } from "../notice/service.js";
 import type { messageTable } from "./messages.js";
 import type { SessionService } from "./service.js";
 
@@ -24,47 +31,81 @@ export interface AutoNamerDeps {
   readonly messages: ReturnType<typeof messageTable>;
   readonly config: GeneralConfig;
   /**
-   * 按配置造一次请求要的客户端（SDK 的 `createModelFromConfig`）。从外面递进来是为了让用例数
-   * 得清调用次数：起没起名只有一个可观察的后果，就是有没有发那次请求。
+   * 按配置造一次请求要的客户端（SDK 的 `createModelFromConfig`）。从外面递进来是为了让用例数得清
+   * 调用次数：起没起名只有一个可观察的后果，就是有没有发那次请求。
    */
   readonly createModel: (config: AppConfig, modelId: string) => AgentModel;
+  /** 失败那条路上唯一的用户出口：名字没换成，得有一句话说明（见 `reportFailure`） */
+  readonly notices: NoticeService;
+  /** 用户可见的那句话在产生处渲染（见 `reportFailure`） */
+  readonly t: Translator;
   readonly onError: (error: unknown, what: string) => void;
 }
 
 /**
- * 自动起名。判据两处：会话行上那一格 `nameIsAuto` —— 名字还是自动起的，就可以换，用户改过的
- * 名字一个字都不碰；以及配置里的 `autoTitle` —— 关掉就不发那次请求（没写这一格按开启算）。
+ * 自动起名。名字一开始是创建时那个时刻串，第一次答完之后换成模型给的一个短名字；用户自己改过
+ * 名字的那一段不再动它。
  *
- * 配置在动手之前现读，装配那一刻读到的那一份不留在实例上：用户改完这个开关，下一次变闲就按新值判，
- * 不必重建执行体。
+ * 四条判据，缺一条都不发那次请求，顺序就是它们在这里出现的顺序：
+ * 1. 这一段闲下来了 —— 由 {@link watch} 接在运行时的事实流上，只有 `state:idle` 那一拍进得来；
+ * 2. 名字还归自动 —— 会话行上的 `nameIsAuto` 是真；
+ * 3. 第一次答完 —— 这段记忆里由用户本人说的话恰好一条；
+ * 4. 开关开着 —— 配置里的 `autoTitle` 不是 `false`（缺省按开着算）。
  *
- * 不数消息 —— 「这段会话还没有几条消息，所以还没起过名」在交接之后会重新成立：交接把旧记忆整段
- * 搬去了存档会话，这段会话这边只剩系统提示与断点。
+ * 第 3 条读消息的 `source.kind`：那是 core 定的事实，「这句话是谁说的」只有它答得出。宿主注入的
+ * 隐藏消息（例如 cwd 那一条）填的是 `system`，于是不会被数成用户说的话。
  *
- * 写回时 `nameIsAuto` 仍然是真：自动起的名字还能被下一个名字换掉，所以这个方法不幂等 —— 挂在
- * 每一次变闲上，就是每一次变闲都发一次请求。
+ * 配置在动手之前现读，装配那一刻读到的那一份不留在实例上：用户改完这个开关，下一次闲下来就按
+ * 新值判，不必重建执行体。
+ *
+ * 写回时 `nameIsAuto` 仍然是真：自动起的名字还能被下一个名字换掉。不会一直换下去靠的正是第 3 条
+ * —— 用户说的第二句话进来之后就不止一条，此后不再进来。交接把旧记忆整段搬去存档会话之后，这一
+ * 段这边只剩系统提示与断点，第 3 条重新成立，于是新记忆也能有自己的名字。
  */
 export class AutoNamer {
   constructor(private readonly deps: AutoNamerDeps) {}
 
   /**
+   * 挂到运行时的事实流上：这一段闲下来了，就是该起名的那一拍。返回退订函数。
+   *
+   * 只认 `state:idle`：那一刻手上没活、队列也真空，刚答完的那一句已经在记忆里了。「谁活着、什么
+   * 时候闲下来」只有运行时知道，这里读它交出来的事实，不另记一份。
+   *
+   * 不 await：这一次请求要几秒，而这一拍之后这一段还要接着干活 —— 起名失败、超时、模型胡说都
+   * 不该让谁等它。{@link name} 自己接住全部失败，所以这里不必再接一层。
+   */
+  watch(runtime: AgentRuntime): () => void {
+    return runtime.observe((fact) => {
+      if (fact.type !== "state:idle") return;
+      void this.name(fact.sessionId);
+    });
+  }
+
+  /**
    * 给这一段起个名字并写回会话行。
    *
-   * 失败只进 `onError`，不抛给调用方：起名发生在一次回答结束之后，抛出去就等于把那次成功的
-   * 回答报成失败，而名字只是一个标签。它也不跨 wire，属于宿主自己的运行事故。
+   * 失败只进日志与一条会话内通知，不抛给调用方：起名发生在一次回答结束之后，抛出去就等于把那次
+   * 成功的回答报成失败，而名字只是一个标签。它也不跨 wire，属于宿主自己的运行事故。
    */
   async name(sessionId: string): Promise<void> {
     try {
       await this.rename(sessionId);
     } catch (error) {
       this.deps.onError(error, "auto-name");
+      this.reportFailure(sessionId);
     }
   }
 
   private async rename(sessionId: string): Promise<void> {
     const session = this.deps.sessions.get(sessionId);
-    // 会话可能刚被删掉：这是挂在「变闲」上的后台动作，没有东西可改名时沉默
+    // 会话可能刚被删掉：这是挂在「闲下来」上的后台动作，没有东西可改名时沉默
     if (session === undefined || !session.nameIsAuto) return;
+
+    const messages = this.deps.messages.listBySession(sessionId);
+    // 第一次答完：用户本人说的话恰好一条。答过第二句就有两条，此后不再改名 —— 它挡的是「每一次
+    // 闲下来都换一个名字」
+    const fromUser = messages.filter((message) => message.source?.kind === "user");
+    if (fromUser.length !== 1) return;
 
     const config = this.deps.config.read();
     // 关掉这一格就不发那次请求。只认 `false`：老配置里没有这一格，用户的意图是按出厂的样子跑，
@@ -74,7 +115,7 @@ export class AutoNamer {
     const modelId = config.namingModel ?? config.defaultModel;
     if (modelId === undefined) return;
 
-    const prompt = promptFor(this.deps.messages.listBySession(sessionId));
+    const prompt = promptFor(messages);
     if (prompt.length === 0) return;
 
     const { client, model, modelConfig } = this.deps.createModel(config, modelId);
@@ -94,6 +135,33 @@ export class AutoNamer {
     if (latest === undefined || !latest.nameIsAuto) return;
 
     this.deps.sessions.update(sessionId, { name, nameIsAuto: true });
+  }
+
+  /**
+   * 失败说给用户：一条会话内通知，挂在这一段名下。成功不发。
+   *
+   * 句子在这里渲染好再落库 —— 用户可见的文本在产生处本地化，库里存的就是那一刻的成品句子。
+   *
+   * 报这件事自己失败也不能抛出去：这条路上没有人接，抛出去就是一句没人处理的拒绝，而它要说的事
+   * （名字没换成）已经由上面那行日志说了。
+   */
+  private reportFailure(sessionId: string): void {
+    try {
+      // 会话可能在这几秒里被删掉：通知挂在一个不存在的会话名下会撞外键，而那段会话已经不在了，
+      // 也没有要告知的人
+      if (this.deps.sessions.get(sessionId) === undefined) return;
+
+      this.deps.notices.push({
+        level: "warning",
+        code: "auto_title_failed",
+        sessionId,
+        // 永久留到用户自己清：名字为什么还是那一串时刻，得有机会读到
+        durationMs: null,
+        message: this.deps.t("这一段会话自动起名失败，名字还是创建时的那一个"),
+      });
+    } catch (error) {
+      this.deps.onError(error, "auto-name-notice");
+    }
   }
 }
 

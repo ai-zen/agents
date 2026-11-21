@@ -11,6 +11,7 @@ import {
   PeerSessionsScopePlugin,
   Scope,
   allInOne,
+  createModelFromConfig,
   resolveModel,
 } from "@ai-zen/agents-sdk";
 import type { AppConfig, ToolEnvDeps } from "@ai-zen/agents-sdk";
@@ -53,6 +54,7 @@ import { noticeTable } from "./modules/notice/table.js";
 import { QuestionRegistry } from "./modules/question/registry.js";
 import { SearchService } from "./modules/search/service.js";
 import { searchTable } from "./modules/search/table.js";
+import { AutoNamer } from "./modules/session/auto-name.js";
 import { messageTable } from "./modules/session/messages.js";
 import { SessionService } from "./modules/session/service.js";
 import { sessionTable } from "./modules/session/table.js";
@@ -168,6 +170,8 @@ export class HostApp {
   private readonly observer: HostObserver;
   /** 收工时解掉观察者：它在运行时那条事实流上的一个订阅 */
   private readonly detachObserver: () => void;
+  /** 收工时解掉自动起名：它是同一条事实流上的另一个订阅 */
+  private readonly detachAutoNamer: () => void;
   /**
    * 监听这一侧。
    *
@@ -437,6 +441,24 @@ export class HostApp {
     });
     this.detachObserver = this.observer.attach(this.runtime);
 
+    /**
+     * 自动起名：挂在运行时的事实流上，这一段闲下来（`state:idle`）才动手。
+     *
+     * 排在观察者之后挂：那一刻这段记忆要先由观察者写进库，起名读到的才是刚答完的那一份。
+     * 判据（名字还归自动、用户说的话恰好一条、开关开着）全部在 `AutoNamer` 那一处，这里只负责
+     * 把它接上 —— 装配根不替任何一条判据说第二句。
+     */
+    this.detachAutoNamer = new AutoNamer({
+      sessions,
+      messages,
+      config: this.general,
+      // 与 Agent 那一侧同一套「模型 → 端点 → client」解析：起名只是不经 Scope 的一次性请求
+      createModel: createModelFromConfig,
+      notices,
+      t,
+      onError,
+    }).watch(this.runtime);
+
     // 配置面改完之后，运行期要知道。没有这一条，用户在界面上停掉一个 MCP 服务器、
     // 运行期照旧连着它，直到进程重启——「启停即时生效」就不成立。
     //
@@ -649,6 +671,8 @@ export class HostApp {
     // 也在其中），解早了客户端就收不到「这一段没了」。从上面那一刻起变的是另一件事 ——「作废排队
     // 区」那一格不再落库。
     this.detachObserver();
+    // 自动起名解在关库之前：解掉之后不会再有新的起名，晚一拍就要对着已经关掉的库读会话行
+    this.detachAutoNamer();
 
     const listening = this.listening;
     if (listening.on === "self") {

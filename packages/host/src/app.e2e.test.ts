@@ -29,6 +29,7 @@ import { readVersionPin, writeVersionPin } from "./infra/versionPin.js";
 import { inboxTable } from "./modules/agent/inbox.js";
 import { Discovery } from "./modules/config/discovery.js";
 import type { HostEvent } from "./modules/events.js";
+import type { Notice } from "./modules/notice/types.js";
 import { messageTable } from "./modules/session/messages.js";
 import type { Session } from "./modules/session/types.js";
 import { workspaceTable } from "./modules/workspace/table.js";
@@ -36,6 +37,12 @@ import { workspaceTable } from "./modules/workspace/table.js";
 /** 本地端点要说的话。分成几片，于是流式那一侧真的有多次 `message.changed` */
 const REPLY = ["本地端点", "收到了这句话。"];
 const SAID = "你好，本地端点";
+
+/** 本地端点给起名那一支回的名字（不流式的那一条路） */
+const TITLE = "本地端点起的名字";
+
+/** 递出去的这句话里带这几个字，起名那一支就回 500：起名失败那个处境要用例自己造 */
+const NAMING_FAILS_ON = "让起名失败";
 
 /** tRPC over WebSocket 的一帧。协议只有这么几格，`@trpc/client` 不在依赖里 */
 interface Envelope {
@@ -175,7 +182,13 @@ interface ModelCall {
   readonly path: string;
 }
 
-/** 本地的 OpenAI 兼容端点：只认流式补全那一条路 */
+/**
+ * 本地的 OpenAI 兼容端点，两条路：
+ * - 流式：执行体那一次请求（`stream: true`），按 SSE 一片一片吐同一个回答 —— 这几组用例验的是
+ *   「一句话真的走到了执行体、模型说的话真的流回来了」，不是把请求层整个打掉；
+ * - 不流式：起名那一次请求（`completeOnce` 不带 `stream`），回一份 JSON。正文里带
+ *   {@link NAMING_FAILS_ON} 时回 500，于是「起名失败」也是一个能造出来的处境。
+ */
 function startModelServer(): Promise<{
   origin: string;
   server: Server;
@@ -185,38 +198,65 @@ function startModelServer(): Promise<{
   const server = createServer((request, response) => {
     // 记在所有判断之前：这条用例问的是「有没有人来过」，不是「来的人是不是走对了路」
     requests.push({ method: request.method ?? "", path: request.url ?? "" });
-    request.resume();
     if (request.method !== "POST" || !request.url?.endsWith("/chat/completions")) {
+      request.resume();
       response.writeHead(404).end();
       return;
     }
 
-    response.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    });
+    // 先收完整份请求体：起名那一条要看正文里有没有那个标记，也靠 `stream` 分辨这是哪一条路
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const base = {
+        id: "chatcmpl-local",
+        created: Math.floor(Date.now() / 1000),
+        model: "local-model",
+      };
 
-    const base = {
-      id: "chatcmpl-local",
-      object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
-      model: "local-model",
-    };
-    const send = (payload: unknown) => response.write(`data: ${JSON.stringify(payload)}\n\n`);
+      if (!/"stream"\s*:\s*true/.test(raw)) {
+        if (raw.includes(NAMING_FAILS_ON)) {
+          response.writeHead(500, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "the endpoint is down" } }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            ...base,
+            object: "chat.completion",
+            choices: [
+              { index: 0, message: { role: "assistant", content: TITLE }, finish_reason: "stop" },
+            ],
+            usage: { prompt_tokens: 21, completion_tokens: 7, total_tokens: 28 },
+          }),
+        );
+        return;
+      }
 
-    send({ ...base, choices: [{ index: 0, delta: { role: "assistant", content: "" } }] });
-    for (const piece of REPLY) {
-      send({ ...base, choices: [{ index: 0, delta: { content: piece } }] });
-    }
-    send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
-    send({
-      ...base,
-      choices: [],
-      usage: { prompt_tokens: 21, completion_tokens: 7, total_tokens: 28 },
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+
+      const chunk = { ...base, object: "chat.completion.chunk" };
+      const send = (payload: unknown) => response.write(`data: ${JSON.stringify(payload)}\n\n`);
+
+      send({ ...chunk, choices: [{ index: 0, delta: { role: "assistant", content: "" } }] });
+      for (const piece of REPLY) {
+        send({ ...chunk, choices: [{ index: 0, delta: { content: piece } }] });
+      }
+      send({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+      send({
+        ...chunk,
+        choices: [],
+        usage: { prompt_tokens: 21, completion_tokens: 7, total_tokens: 28 },
+      });
+      response.write("data: [DONE]\n\n");
+      response.end();
     });
-    response.write("data: [DONE]\n\n");
-    response.end();
   });
 
   return new Promise((resolve) => {
@@ -953,5 +993,194 @@ describe("关掉宿主", () => {
 
     // 正常关闭清 pin。这一格与「答复先写回」是一体的：pin 的去留只听 stop 的判据，这里不自己判
     expect(existsSync(pinFile)).toBe(false);
+  }, 60_000);
+});
+
+/**
+ * 自动起名这一段只在装配根上验得了：判据与那一次请求都在 `AutoNamer` 里，而「谁在什么时候叫它」
+ * 是 `app.ts` 的一件事 —— 单测验得了前者，验不了「装配根到底接上没有」。
+ *
+ * 两句都用同一个假端点：流式那一支是执行体的请求，不流式那一支是起名。起手那份配置里没有
+ * `namingModel`，于是起名用的模型落回 `defaultModel` —— 与 SDK 那条一次性补全走的是同一套解析。
+ */
+describe("自动起名", () => {
+  const workspaceId = randomUUID();
+  let dataRoot: string;
+  let previousHome: string | undefined;
+  let model: { origin: string; server: Server };
+  let app: HostApp;
+  let client: HostClient;
+  /** 宿主推出来的每一条事件，按到达顺序 */
+  let events: HostEvent[];
+
+  beforeAll(async () => {
+    dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-autoname-"));
+    model = await startModelServer();
+
+    const projectDir = join(dataRoot, "project");
+    mkdirSync(projectDir, { recursive: true });
+
+    writeFileSync(
+      join(dataRoot, "config.json"),
+      JSON.stringify(
+        {
+          endpoints: [
+            {
+              id: "local",
+              name: "Local",
+              baseUrl: `${model.origin}/v1`,
+              apiKey: "local-test-key",
+            },
+          ],
+          models: [
+            {
+              id: "local-model",
+              name: "Local",
+              endpointId: "local",
+              modelName: "local-model",
+              tokenThresholds: { handoff: 250_000, guard: 375_000 },
+              // 出厂模型清单是托管清单，不标 custom 的条目会在启动时被替换掉
+              custom: true,
+            },
+          ],
+          // 只写全局兜底那一格：起名用的模型从它落过来
+          defaultModel: "local-model",
+          language: "zh",
+        },
+        null,
+        2,
+      ),
+    );
+
+    mkdirSync(join(dataRoot, "agents"), { recursive: true });
+    writeFileSync(
+      join(dataRoot, "agents", "default.json"),
+      JSON.stringify(
+        {
+          id: "default",
+          name: "Default Assistant",
+          modelId: "local-model",
+          messages: [Message.System("You are a test assistant.")],
+          permissions: {
+            tools: { allow: ["*"] },
+            skills: { allow: ["*"] },
+            mcps: { allow: ["*"] },
+            subagents: { allow: ["*"] },
+          },
+          custom: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    );
+
+    const db = openDatabase(join(dataRoot, "ai-zen.db"));
+    workspaceTable(db).put({
+      id: workspaceId,
+      name: "起名",
+      cwd: projectDir,
+      createdAt: Date.now(),
+    });
+    db.close();
+
+    process.env.AI_ZEN_DIR = dataRoot;
+    // 与另几组同口径：用户主目录也指到临时目录，别让用例去读开发机的 `~/.agents`
+    previousHome = process.env.HOME;
+    process.env.HOME = join(dataRoot, "home");
+
+    app = await HostApp.open({ port: 0 });
+    await app.start();
+    client = await HostClient.connect(
+      app.address.port,
+      readFileSync(join(dataRoot, "run", "token"), "utf8").trim(),
+    );
+    events = [];
+    await client.subscribe("events", (payload) => events.push(payload as HostEvent));
+  }, 60_000);
+
+  afterAll(async () => {
+    client?.close();
+    await app?.stop();
+    await new Promise<void>((resolve) => model?.server.close(() => resolve()));
+    delete process.env.AI_ZEN_DIR;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(dataRoot, { recursive: true, force: true });
+  }, 60_000);
+
+  /** 建一段会话递一句话，等这一段转闲 —— 起名就挂在这一拍上 */
+  async function say(content: string): Promise<string> {
+    // 从递出去那一刻往后看：上一句话也会让这一段闲一次，那样等到的就是上一次的那一拍
+    const before = events.length;
+    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+      workspaceId,
+      agentId: "default",
+      content,
+      messageId: randomUUID(),
+    });
+
+    const idled = () =>
+      events
+        .slice(before)
+        .some(
+          (event) =>
+            event.type === "agent.status" &&
+            event.sessionId === sent.sessionId &&
+            event.status === "idle",
+        );
+    await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
+
+    return sent.sessionId;
+  }
+
+  function rowOf(rows: readonly Session[], sessionId: string): Session | undefined {
+    return rows.find((row) => row.id === sessionId);
+  }
+
+  it("第一次答完之后名字换成模型给的那一个，nameIsAuto 仍为真", async () => {
+    const sessionId = await say("帮我把宿主的交接写出来");
+
+    await vi.waitFor(
+      async () => {
+        const rows = await client.query<Session[]>("session.list", { workspaceId });
+        // 名字换了，而那一格仍然归自动：下一个名字还能换掉它
+        expect(rowOf(rows, sessionId)).toMatchObject({ name: TITLE, nameIsAuto: true });
+      },
+      { timeout: 30_000, interval: 50 },
+    );
+  }, 60_000);
+
+  it("起名失败推一条会话内通知，而这一段照旧能说话", async () => {
+    const sessionId = await say(`帮我把这一段的名字换掉，${NAMING_FAILS_ON}`);
+
+    await vi.waitFor(
+      async () => {
+        const notices = await client.query<Notice[]>("notice.list", { sessionId });
+        expect(notices).toContainEqual(
+          expect.objectContaining({
+            level: "warning",
+            code: "auto_title_failed",
+            sessionId,
+            // 句子在产生处渲染好再落库：用户之后改了语言，这一条保留当时那一种
+            message: "这一段会话自动起名失败，名字还是创建时的那一个",
+          }),
+        );
+      },
+      { timeout: 30_000, interval: 50 },
+    );
+
+    // 名字仍是创建时那一串时刻：失败不是「换了个名字」
+    const rows = await client.query<Session[]>("session.list", { workspaceId });
+    expect(rowOf(rows, sessionId)?.name).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    // 照旧能说话：再递一句，模型的话照样流回来
+    const before = events.length;
+    await say("再说一句");
+    const said = events
+      .slice(before)
+      .flatMap((event) => (event.type === "message.changed" ? [event.message] : []));
+    expect(said.map(textOf)).toContain(REPLY.join(""));
   }, 60_000);
 });

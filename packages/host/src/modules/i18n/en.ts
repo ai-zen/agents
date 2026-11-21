@@ -62,6 +62,8 @@ export const en: Record<string, string> = {
   "会话 {sessionId} 的输出已暂停，先恢复再交接":
     'Output for session "{sessionId}" is paused; resume it before handing off',
   "交接失败：{reason}": "Handoff failed: {reason}",
+  "这一段会话自动起名失败，名字还是创建时的那一个":
+    "Automatic naming failed for this session; the name is still the one from creation time",
   "配置里没有 id 为 {modelId} 的模型": 'The config has no model "{modelId}"',
   "这段会话没有生效模型，思考档位只能跟随助手定义":
     "This session has no effective model; the thinking level can only follow the agent definition",
