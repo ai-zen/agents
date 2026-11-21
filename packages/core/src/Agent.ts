@@ -165,7 +165,8 @@ export interface StateEvent extends EventBase {
 /**
  * 输出闸动了：翻上（`output:paused`）/ 翻回（`output:resumed`）。
  *
- * 载荷只带 agent —— 「此刻还取不取件」现读 `agent.isOutputPaused`，不在这里再报一份。
+ * 载荷只带 agent 与每条的 `seq` / `at` —— 「此刻还取不取件」现读 `agent.isOutputPaused`，不在
+ * 这里再报一份。
  * 它与「在干 / 闲」是两处状态，所以它的变化**不冒充**「到了哪一格」：它只说自己动了。
  */
 export interface OutputEvent extends EventBase {}
@@ -173,7 +174,8 @@ export interface OutputEvent extends EventBase {}
 /**
  * 输入闸动了：关上（`input:paused`）/ 打开（`input:resumed`）。
  *
- * 载荷同样只带 agent（现读 `agent.isInputPaused`）。它与输出闸是两道闸，两条事件不互相冒充。
+ * 载荷同样只带 agent 与每条的 `seq` / `at`（现读 `agent.isInputPaused`）。它与输出闸是两道
+ * 闸，两条事件不互相冒充。
  */
 export interface InputEvent extends EventBase {}
 

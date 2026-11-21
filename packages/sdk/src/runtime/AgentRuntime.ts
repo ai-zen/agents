@@ -202,6 +202,13 @@ export class AgentRuntime {
    * 它自己那一组，别的执行体一个字都不动。
    */
   private readonly forwarders = new Map<string, Array<() => void>>();
+  /**
+   * 记日志的地方。缺省 {@link SILENT_LOG}（不注入就什么都不写）。
+   *
+   * 收成字段而不是在每个方法里现算 `ports.log ?? SILENT_LOG`：缺省值只在一处定，「不注入日志
+   * 时会发生什么」才答得上来。
+   */
+  private readonly log: LogSink;
 
   /** 能力容器：按目录一份，什么时候造、什么时候拆归它 */
   readonly scopes: Scopes;
@@ -210,12 +217,13 @@ export class AgentRuntime {
   readonly peerSessions: PeerSessionPort;
 
   constructor(private readonly ports: RuntimePorts) {
+    this.log = ports.log ?? SILENT_LOG;
     this.peerSessions = new RuntimePeerSessions(this);
     this.scopes = new Scopes({
       openScope: (cwd, peers) => this.ports.openScope(cwd, peers),
       aliveSessions: (cwd) => this.aliveOn(cwd),
       peers: this.peerSessions,
-      log: ports.log ?? SILENT_LOG,
+      log: this.log,
       // 容器那一侧的三格事实原样翻成对外的事实流，一一对应（判别名加 `scope:` 前缀，与
       // `resident:` 那一对并列）。这里不加、不减、不合并：容器说什么就是什么
       onChange: (event) => {
@@ -493,12 +501,31 @@ export class AgentRuntime {
   /**
    * 把一条事实交给每一个订阅者。
    *
-   * 这里**不 try/catch**：一个订阅者抛错不该连累别的订阅者、也不该打断这个执行体，而这件事的
-   * 实现只有一处 —— 内核发事件那里（`EventBus.emit`）。在这里再包一层就是两份实现，而且哪一份
-   * 先生效说不清。
+   * **这是「把事实交给每个订阅者」的唯一循环**：运行时的每一格事实（`resident:` 那两格、
+   * `scope:` 那三格、每个执行体转发上来的内核事件）都从这里出去，没有第二条路。所以隔离只需要
+   * 兜在这一处 —— 漏不出第二个循环去。
+   *
+   * 一个订阅者抛错：记一句日志，接着交给下一个。抛错既不该连累别的订阅者，也不该打断被观察的
+   * 执行体（更没有打断这一趟叫醒的道理）。
+   *
+   * **与内核那条 `observerFailed` 的分工**：内核报的是「某个执行体的订阅者炸了」，它有一个
+   * 执行体可以挂在上面（那条事实的 `agent` 一格）。这里没有「被观察的活物」可挂 ——
+   * `broadcast` 交出去的正是事实本身，来源可能只是一个目录。替它另造一种事实，就得回答
+   * 「这条事实的订阅者又炸了怎么办」，而那是一个死循环。
+   *
+   * **为什么必须兜**：`broadcast` 就在 `assemble()` 里（报「这一段出现了」那一下）。订阅者一
+   * 抛，`wake` 会以一个旁路者的错误失败 —— 而那时登记项已经写进 `residents`、`start()` 还没
+   * 调用，等于留下一段「登记着却永远不跑」的会话：`get` / `aliveOn` 都说它活着，它却一件事都
+   * 不会做。
    */
   private broadcast(fact: RuntimeFact): void {
-    for (const listener of this.listeners) listener(fact);
+    for (const listener of this.listeners) {
+      try {
+        listener(fact);
+      } catch (error) {
+        this.log.warn(`[runtime] a listener of "${fact.type}" threw; ignored`, error);
+      }
+    }
   }
 
   /** 解掉一段会话的转发订阅（整组解，只解这一段会话） */

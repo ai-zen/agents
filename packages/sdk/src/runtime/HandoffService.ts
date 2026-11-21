@@ -315,8 +315,9 @@ export class HandoffService {
    * **这三格为什么挂在 `HandoffService` 上而不是内核的事件表上**：交接是这一层的概念，内核不认识
    * 它。把它塞进内核的事件表，等于让内核认识一个它永远不参与的东西。
    *
-   * **订阅者抛错不在这里兜**：与内核那条 `observerFailed` 是同一件事，隔离只有一处实现（`Agent.on`
-   * 里那层包装函数）；在这里再包一层就是两份实现，而且哪一份先生效说不清。
+   * **订阅者抛错不影响这一趟交接**：事实是旁路，谁都可能在那里抛（写库、推送）；隔离兜在
+   * {@link HandoffService.emit} 那一个循环里 —— 一个订阅者炸了只记一句日志，这一趟该跑完照常
+   * 跑完、该报的 `finished` / `failed` 照常报。
    *
    * **晚到的订阅者**拿不到过去的事实：事实只报变化，「此刻在不在交接」那一格由 `handingOff`
    * 快照对齐，两者合起来才说得清「此刻」与「怎么走到这一刻」。
@@ -563,9 +564,18 @@ export class HandoffService {
     return params.mode ?? this.defaultMode;
   }
 
-  /** 把一格事实交给每一个订阅者（这里**不 try/catch**，理由见 {@link HandoffService.observe}） */
+  /**
+   * 把一格事实交给每一个订阅者（这里唯一的循环）：逐个接住，一个订阅者抛错只记一句日志，接着
+   * 交给下一个 —— 旁路炸了不打断这一趟交接。
+   */
   private emit(fact: HandoffFact): void {
-    for (const listener of this.listeners) listener(fact);
+    for (const listener of this.listeners) {
+      try {
+        listener(fact);
+      } catch (error) {
+        this.logger.warn(`[handoff] a listener of "${fact.type}" threw; ignored`, error);
+      }
+    }
   }
 
   /** 取消点检查：每跨过一个阶段就确认一次，避免取消后继续往下一步冲 */

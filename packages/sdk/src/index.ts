@@ -179,6 +179,7 @@ export type { SdkCallbackToolOptions } from "./scope/plugins/builtin/SdkCallback
 export { HandoffAbortedError, HandoffService } from "./runtime/HandoffService.js";
 export type {
   HandoffContext,
+  HandoffFact,
   HandoffMode,
   HandoffParams,
   HandoffServiceOptions,

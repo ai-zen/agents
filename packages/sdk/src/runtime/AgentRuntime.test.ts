@@ -521,6 +521,33 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     expect(ofB).toContain("state:working");
     expect(ofB).toContain("state:idle");
   });
+
+  it("订阅者抛错不影响叫醒，也不影响别的订阅者", async () => {
+    const h = await harness();
+    // 第一个订阅者：见到任何事实就抛。它炸在 `wake` 里面（「这一段出现了」也在同一条路上）
+    h.runtime.observe(() => {
+      throw new Error("旁路炸了");
+    });
+    // 第二个订阅者：只计数
+    let counted = 0;
+    h.runtime.observe(() => {
+      counted += 1;
+    });
+
+    // 叫醒照常返回：拿得到执行体，而不是一个旁路者的错误
+    const a = await h.wake("a", "lead");
+    expect(a).toBeDefined();
+
+    // 用户说的话也是一条投递，进执行体的队列 —— 它还活着，跑得完这一句
+    a.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    await until(() => a.state === "idle" && words(a, "收到").length > 0, 5000);
+
+    // 第二个订阅者照常收到事实（一个订阅者炸了不该让别人瞎）
+    expect(counted).toBeGreaterThan(0);
+    // 登记项就是那个执行体，而且它真的跑完了那一句
+    expect(h.runtime.get("a")).toBe(a);
+    expect(words(a, "收到").length).toBeGreaterThan(0);
+  });
 });
 
 describe("运行时的观察面：能力容器", () => {

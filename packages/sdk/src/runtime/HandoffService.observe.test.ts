@@ -318,6 +318,31 @@ describe("交接的事实：开始、结束与失败", () => {
     expect(facts[1]).toEqual({ type: "finished", mode: "self" });
   });
 
+  it("订阅者抛错不影响这一趟交接", async () => {
+    const { service } = await makeService();
+    const facts: HandoffFact[] = [];
+    // 第一个订阅者：在 `started` 那一下抛
+    service.observe((fact) => {
+      if (fact.type === "started") throw new Error("旁路炸了");
+    });
+    // 第二个订阅者：照常记
+    service.observe((fact) => facts.push(fact));
+
+    // 与上面那条成功用例同一套搭法：模型那一步真的把文档写出来
+    const agent = new FakeAgent({ onSend: writeScript() });
+    const ctx = await service.handoff({ agent: asAgent(agent) });
+
+    // 这一趟仍然返回：说得出来是哪一档
+    expect(ctx.mode).toBe("self");
+
+    // 而且它跑的是成功那一趟：`started` 之后没有 `failed`
+    const types = facts.map((fact) => fact.type);
+    const startedAt = types.indexOf("started");
+    expect(startedAt).toBeGreaterThanOrEqual(0);
+    expect(types.slice(startedAt + 1)).not.toContain("failed");
+    expect(types.slice(startedAt + 1)).toContain("finished");
+  });
+
   it("退订之后不再收到，退订两次不炸", async () => {
     const { service } = await makeService();
     const facts: HandoffFact[] = [];
