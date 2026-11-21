@@ -63,11 +63,6 @@ export class QuestionRegistry {
     return found;
   }
 
-  /** 这一段现在被哪几道题挡着：答过的题已经不在表里，所以这里的每一道都还等着人答 */
-  pending(sessionId: string): Question[] {
-    return this.list(sessionId).filter((question) => question.blocking);
-  }
-
   /**
    * 答一道题：它离开登记表，事件在这一拍发出去。
    *

@@ -26,7 +26,7 @@ function createRegistry(): QuestionRegistry {
 }
 
 describe("提问", () => {
-  it("答过一次之后再答会抛，答完 pending 里没有它", () => {
+  it("答过一次之后再答会抛，答完列表里没有它", () => {
     const questions = createRegistry();
     const question = questions.ask({
       sessionId: "s-1",
@@ -34,10 +34,10 @@ describe("提问", () => {
       choices: HANDOFF,
     });
 
-    expect(questions.pending("s-1")).toEqual([question]);
+    expect(questions.list("s-1")).toEqual([question]);
     expect(questions.answer(question.id, "self")).toEqual(question);
 
-    expect(questions.pending("s-1")).toEqual([]);
+    expect(questions.list("s-1")).toEqual([]);
     expect(questions.get(question.id)).toBeUndefined();
     expect(() => questions.answer(question.id, "decline")).toThrowError(HostError);
   });
