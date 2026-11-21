@@ -29,7 +29,12 @@ import type { NewSession } from "./types.js";
 const config: AppConfig = {
   endpoints: [{ id: "ep-1", name: "ep-1", baseUrl: "https://ep-1.example/v1", apiKey: "key" }],
   models: [
-    { id: "naming-1", name: "naming-1", endpointId: "ep-1", tokenThresholds: { handoff: 100, guard: 150 } },
+    {
+      id: "naming-1",
+      name: "naming-1",
+      endpointId: "ep-1",
+      tokenThresholds: { handoff: 100, guard: 150 },
+    },
   ],
   namingModel: "naming-1",
 };

@@ -56,10 +56,14 @@ export class SessionService {
   update(id: string, patch: Partial<Omit<Session, "id" | "createdAt">>): Session {
     const current = this.deps.sessions.get(id);
     if (current === undefined) {
-      throw new HostError("not_found", this.deps.t("找不到 id 为 {sessionId} 的会话", { sessionId: id }), {
-        entity: "session",
-        sessionId: id,
-      });
+      throw new HostError(
+        "not_found",
+        this.deps.t("找不到 id 为 {sessionId} 的会话", { sessionId: id }),
+        {
+          entity: "session",
+          sessionId: id,
+        },
+      );
     }
 
     const next: Session = { ...current, ...patch, updatedAt: Date.now() };

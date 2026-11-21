@@ -12,8 +12,16 @@ import type { Session } from "./session/types.js";
  * 接收方就得判断「这次来的是哪几件变了」。
  */
 export type HostEvent =
-  | { readonly type: "message.added"; readonly sessionId: string; readonly message: AgentNS.Message }
-  | { readonly type: "message.changed"; readonly sessionId: string; readonly message: AgentNS.Message }
+  | {
+      readonly type: "message.added";
+      readonly sessionId: string;
+      readonly message: AgentNS.Message;
+    }
+  | {
+      readonly type: "message.changed";
+      readonly sessionId: string;
+      readonly message: AgentNS.Message;
+    }
   | { readonly type: "message.removed"; readonly sessionId: string; readonly messageId: string }
   /**
    * subagent 说的话。它从不入库，所以单独一条：混进上面三条，客户端会把它当成主转录里的一句话。
@@ -25,7 +33,11 @@ export type HostEvent =
       readonly toolCallId: string;
       readonly message: AgentNS.Message;
     }
-  | { readonly type: "agent.status"; readonly sessionId: string; readonly status: AgentNS.AgentState }
+  | {
+      readonly type: "agent.status";
+      readonly sessionId: string;
+      readonly status: AgentNS.AgentState;
+    }
   | {
       readonly type: "agent.paused";
       readonly sessionId: string;

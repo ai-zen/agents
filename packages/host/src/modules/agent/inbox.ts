@@ -28,16 +28,8 @@ export function inboxTable(db: DatabaseSync) {
 
   return {
     /** `entry` 必须带 `messageId`：它就是这一行的身份，也是客户端拿去做乐观回显的那个 id */
-    insert(
-      sessionId: string,
-      entry: AgentNS.InboxEntryWithContent & { messageId: string },
-    ): void {
-      db.prepare(insertSql).run(
-        entry.messageId,
-        JSON.stringify(entry),
-        sessionId,
-        sessionId,
-      );
+    insert(sessionId: string, entry: AgentNS.InboxEntryWithContent & { messageId: string }): void {
+      db.prepare(insertSql).run(entry.messageId, JSON.stringify(entry), sessionId, sessionId);
     },
 
     /** 按入队顺序，就是放回 core 队列时的顺序 */
