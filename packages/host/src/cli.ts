@@ -1,10 +1,14 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import { HostApp } from "./app.js";
 import type { HostAppOpenOptions } from "./app.js";
 import { openDatabase } from "./infra/db.js";
 import { HostError } from "./infra/errors.js";
+import { isProcessAlive, readHostFile } from "./infra/hostFile.js";
 import { hostPaths, resolveDataRoot } from "./infra/paths.js";
 import { resolveHostVersion } from "./infra/version.js";
 import { CredentialService } from "./modules/credential/service.js";
@@ -22,6 +26,7 @@ const DATA_ROOT_FLAG = "--ai-zen-dir";
 
 const USAGE = [
   "Usage: agents-host [serve] [--port <n>] [--host <addr>] [--public] [--ai-zen-dir <dir>]",
+  "       agents-host stop [--yes] [--ai-zen-dir <dir>]",
   "       agents-host token create [--note <note>] [--ai-zen-dir <dir>]",
   "       agents-host token list [--ai-zen-dir <dir>]",
   "       agents-host token revoke <credential id> [--ai-zen-dir <dir>]",
@@ -34,6 +39,7 @@ type ListedCredential = ReturnType<CredentialService["list"]>[number];
 
 type ParsedCommand =
   | { readonly kind: "serve"; readonly options: HostAppOpenOptions }
+  | { readonly kind: "stop"; readonly yes: boolean }
   | { readonly kind: "token.create"; readonly note: string }
   | { readonly kind: "token.list" }
   | { readonly kind: "token.revoke"; readonly id: string }
@@ -45,7 +51,7 @@ function invalid(message: string): ParsedCommand {
   return { kind: "invalid", message };
 }
 
-function parseArgs(argv: readonly string[]): ParsedCommand {
+export function parseArgs(argv: readonly string[]): ParsedCommand {
   const [first, ...rest] = argv;
 
   // 不带子命令就是 `serve`：`agents-host --port 0` 与 `agents-host serve --port 0` 等价
@@ -58,6 +64,7 @@ function parseArgs(argv: readonly string[]): ParsedCommand {
 
   if (first === "token") return parseTokenCommand(rest);
   if (first === "serve") return parseServeOptions(rest);
+  if (first === "stop") return parseStopCommand(rest);
   if (first.startsWith("-")) return parseServeOptions(argv);
 
   return invalid(`Unknown command "${first}"`);
@@ -114,6 +121,28 @@ function parseServeOptions(argv: readonly string[]): ParsedCommand {
   }
 
   return { kind: "serve", options };
+}
+
+/**
+ * `stop` 只有两个词：`--yes` 与 `--ai-zen-dir`。没有别的选项可给 —— 杀谁由发现文件说，不是
+ * 参数选的（不按端口找、也不按进程名找）。
+ */
+function parseStopCommand(argv: readonly string[]): ParsedCommand {
+  const stripped = takeDataRootOption(argv);
+  if ("message" in stripped) return invalid(stripped.message);
+
+  let yes = false;
+
+  for (const arg of stripped.rest) {
+    if (arg === "--yes") {
+      yes = true;
+      continue;
+    }
+
+    return invalid(`Unknown option "${arg}"`);
+  }
+
+  return { kind: "stop", yes };
 }
 
 function parseTokenCreate(argv: readonly string[]): ParsedCommand {
@@ -264,6 +293,118 @@ function closeOnSignals(app: HostApp): void {
   process.on("SIGTERM", close);
 }
 
+/** 等它退出的看法：50ms 一次，最多 10 秒 */
+const STOP_POLL_MS = 50;
+const STOP_TIMEOUT_MS = 10_000;
+
+/**
+ * `stop` 的副作用全部从外面给：读发现文件、发信号、探活、等、问人。
+ *
+ * 所以用例能把「发现文件在不在 → 那个 pid 还在不在 → 问不问 → 发不发信号 → 等不等得到退出」这
+ * 一条路走完，而不用真的起一个宿主、也不用真去杀一个进程。
+ */
+export interface StopDeps {
+  /** 数据根：发现文件在它下面的 `run/host.json` */
+  readonly dataRoot: string;
+  /** `--yes`：不问了，直接动（给脚本用） */
+  readonly yes: boolean;
+  /** stdin 是不是终端。二次确认不能在一个没人能回答的地方问，这一格就是判据 */
+  readonly interactive: boolean;
+  /** 读一行答案；`undefined` 表示没读到（stdin 已经关了） */
+  readonly ask: () => Promise<string | undefined>;
+  readonly kill: (pid: number, signal: NodeJS.Signals) => void;
+  readonly isAlive: (pid: number) => boolean;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly out: (text: string) => void;
+  readonly err: (text: string) => void;
+}
+
+/**
+ * 关掉这台机器上正在服务的那个宿主：读发现文件找到它、问一次、发 `SIGTERM`、等它真的退出。
+ *
+ * **为什么走信号而不是加一条 procedure**：关宿主是命令这一侧的动作（需求：关闭宿主是显式动作，
+ * 客户端退出不自动关宿主），所以它不需要凭证、也不走 wire —— 那一串令牌是给客户端连进来用的，
+ * 不是给本机命令行关进程用的，也不该让任何一条连着宿主的连接顺手把进程关掉。
+ *
+ * **只认发现文件里那个 pid**：不按端口找、不按进程名找 —— 找错一次就是关掉别人的东西。
+ */
+export async function runStop(deps: StopDeps): Promise<number> {
+  const { hostFile } = hostPaths(deps.dataRoot);
+  const found = readHostFile(hostFile);
+
+  if (found === undefined) {
+    deps.err("No host is serving (missing run/host.json)\n");
+    return 1;
+  }
+
+  // 文件在、进程不在：那是上一次没收干净留下的，发现文件里没有可关的东西
+  if (!deps.isAlive(found.pid)) {
+    deps.err(`The host recorded in run/host.json (pid ${found.pid}) is not running\n`);
+    return 1;
+  }
+
+  if (!deps.yes) {
+    if (!deps.interactive) {
+      deps.err(
+        "Refusing to stop the host without confirmation: pass --yes in a non-interactive shell\n",
+      );
+      return 1;
+    }
+
+    deps.out(`Stop the host at ws://${found.host}:${found.port} (pid ${found.pid})? [y/N] `);
+    const answer = await deps.ask();
+    // 没关成就是没关成：答案不是 `y` / `yes`（包括直接回车、只按了 Ctrl-D）都算不答应
+    if (!isYes(answer)) {
+      deps.err("Cancelled\n");
+      return 1;
+    }
+  }
+
+  deps.kill(found.pid, "SIGTERM");
+
+  // 等它**真的**退出：`kill` 只把信号交出去，而宿主那一边收到之后还要关库、关日志、断连接
+  // （`SIGTERM` → `stop()`）。没退干净的 pid 随时会被系统回收给别的进程，那时说「已经关了」
+  // 就是一句假话。
+  for (let waited = 0; waited < STOP_TIMEOUT_MS; waited += STOP_POLL_MS) {
+    await deps.sleep(STOP_POLL_MS);
+    if (!deps.isAlive(found.pid)) {
+      deps.out("The host has stopped\n");
+      return 0;
+    }
+  }
+
+  deps.err(`The host did not stop within 10s (pid ${found.pid} is still alive)\n`);
+  return 1;
+}
+
+/** 只有 `y` / `yes` 算答应（大小写不敏感）；回车、`n`、EOF 都是不答应 */
+function isYes(answer: string | undefined): boolean {
+  if (answer === undefined) return false;
+  return /^y(es)?$/i.test(answer.trim());
+}
+
+/**
+ * 从 stdin 读一行。
+ *
+ * 调用方已经判过「stdin 是终端」：这里只负责读，读不到一行（EOF）就给 `undefined`，不替它决定
+ * 「没回答」算不算「关」。
+ */
+function readAnswerFromStdin(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const reader = createInterface({ input: process.stdin });
+    let answered = false;
+
+    reader.once("line", (line) => {
+      answered = true;
+      reader.close();
+      resolve(line);
+    });
+    reader.once("close", () => {
+      if (!answered) resolve(undefined);
+    });
+  });
+}
+
 function runTokenCreate(note: string): void {
   withCredentials((credentials) => {
     const { credential, token } = credentials.create(note);
@@ -368,6 +509,20 @@ async function main(): Promise<void> {
       case "serve":
         await runServe(parsed.options);
         break;
+      case "stop":
+        process.exitCode = await runStop({
+          dataRoot: resolveDataRoot(),
+          yes: parsed.yes,
+          // 非终端就是「没人能回答」：那一路上只有 `--yes` 能走
+          interactive: process.stdin.isTTY === true,
+          ask: readAnswerFromStdin,
+          kill: (pid, signal) => process.kill(pid, signal),
+          isAlive: isProcessAlive,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          out: (text) => process.stdout.write(text),
+          err: (text) => process.stderr.write(text),
+        });
+        break;
       case "token.create":
         runTokenCreate(parsed.note);
         break;
@@ -384,6 +539,22 @@ async function main(): Promise<void> {
   }
 }
 
-// 这是 bin 的入口：进程一启动就跑 `main`。不需要「被 import 时不执行」的判断 —— 没有别的模块
-// import 它，`HostApp` 在 `app.ts` 里，反过来也不引这里
-void main();
+/**
+ * 这个文件是不是被直接跑起来的那一个。
+ *
+ * 以前这里没有这一道：「没有别的模块 import 它」是那时的事实。现在有了 —— `cli.stop.test.ts`
+ * 要 import 这里的 `parseArgs` 与 `runStop`，而 bin 的副作用（起服务、读 stdin）不能跟着跑到用例
+ * 进程里。按真实路径比（软链起来的 bin 也一样）。
+ */
+function isEntryModule(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryModule()) void main();
