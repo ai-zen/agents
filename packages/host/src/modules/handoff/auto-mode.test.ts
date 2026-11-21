@@ -2,18 +2,18 @@
  * 软线越线那一刻：这一趟用哪个执行者，要不要问人（`dev-docs/prd/07-handoff.md`「谁建的会话，
  * 自动交接开不开」）。
  *
- * 五条分支各有一条用例，顺序就是判定顺序：会话没了 → 开着开关 → 答过「不交接」→ 没人在看 →
- * 问一道三选题。钉住的是几件看不出来的事：
+ * 四条分支各有一条用例，顺序就是判定顺序：会话没了 → 开着开关 → 答过「不交接」→ 问一道三选题。
+ * 钉住的是几件看不出来的事：
  *
  * - 「问一次」不是每次都问：答过「不交接」的那一段第二次直接回 `null`，题一道都不再出；
  * - 「同一段只挂一道题」：撞线连着来两次，第二次等的是第一次那道，而不是再问一道；
- * - 「没人在看就不问」不是「没人看就什么都不做」：默认执行者是自交接；
+ * - 「没有客户端照样问」：判据里没有「有没有人在场」这一格，题挂在内存里等人连上来拉；
  * - `undefined`（没人答它了）与「答了不交接」在返回值上合流（都是 `null`），但在调用方那里
  *   意思不同 —— 所以「题没了」这条得单独立一条，不能被误读成「用户说了不」。
  *
- * 题与连接用真的那两个（`QuestionRegistry` / `Connections`）：它们本来就是纯内存的活物，
- * 造一层替身只会把「问出去的那道题客户端能不能看见」这件事挪到替身里去证。交接的其余几格
- * （库、项目、运行时、通知、SDK 工厂）给不碰的替身 —— 这几条用例只问「问不问、回什么」。
+ * 题用真的那一个（`QuestionRegistry`）：它本来就是纯内存的活物，造一层替身只会把「问出去的那道
+ * 题客户端能不能看见」这件事挪到替身里去证。交接的其余几格（库、项目、运行时、通知、SDK 工厂）
+ * 给不碰的替身 —— 这几条用例只问「问不问、回什么」。
  */
 
 import { describe, expect, it } from "vitest";
@@ -22,7 +22,6 @@ import type { AgentRuntime } from "@ai-zen/agents-sdk";
 
 import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
-import { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { QuestionRegistry } from "../question/registry.js";
@@ -51,7 +50,6 @@ function newHost() {
   const events = createBus<HostEvent>();
   const sessions = new SessionService({ sessions: sessionTable(db), events, t });
   const questions = new QuestionRegistry({ events, t });
-  const connections = new Connections();
 
   const handoff = new HandoffService({
     db,
@@ -61,7 +59,6 @@ function newHost() {
     runtime: {} as AgentRuntime,
     notices: {} as never,
     questions,
-    connections,
     events,
     t,
     createSdk: () => {
@@ -69,7 +66,7 @@ function newHost() {
     },
   });
 
-  return { handoff, sessions, questions, connections };
+  return { handoff, sessions, questions };
 }
 
 type Host = ReturnType<typeof newHost>;
@@ -79,19 +76,16 @@ function newSession(host: Host, autoHandoff: boolean): Session {
 }
 
 describe("越线那一刻问不问", () => {
-  it("开着自动交接就直接自交接，不问：一道题都不出，连接在不在都一样", async () => {
+  it("开着自动交接就直接自交接，不问：一道题都不出", async () => {
     const host = newHost();
-    // 有人在看也照样不问：开关是用户自己打开的（平级会话默认为开）
-    host.connections.open();
     const session = newSession(host, true);
 
     await expect(host.handoff.automaticMode(session.id)).resolves.toBe("self");
     expect(host.questions.list(session.id)).toEqual([]);
   });
 
-  it("关着、有人连着 → 问一道三选题；答 self 回 self，答 summary 回 summary", async () => {
+  it("关着 → 问一道三选题；答 self 回 self，答 summary 回 summary", async () => {
     const host = newHost();
-    host.connections.open();
     const session = newSession(host, false);
 
     const asked = host.handoff.automaticMode(session.id);
@@ -115,7 +109,6 @@ describe("越线那一刻问不问", () => {
 
   it("答不交接：回 null、开关写成 false，第二次直接回 null 不再问", async () => {
     const host = newHost();
-    host.connections.open();
     const session = newSession(host, false);
 
     const asked = host.handoff.automaticMode(session.id);
@@ -131,18 +124,26 @@ describe("越线那一刻问不问", () => {
     expect(host.questions.list(session.id)).toEqual([]);
   });
 
-  it("没有客户端连着 → 不问，按默认执行者走（自交接）", async () => {
+  it("没有客户端连着也照样问：题挂在内存里等人连上来拉", async () => {
     const host = newHost();
     const session = newSession(host, false);
 
-    await expect(host.handoff.automaticMode(session.id)).resolves.toBe("self");
-    // 题发出去也没人看得见，所以一道都不出
-    expect(host.questions.list(session.id)).toEqual([]);
+    const asked = host.handoff.automaticMode(session.id);
+
+    // 没有人在场不是判据：题就挂在内存里，客户端连上来拉一次（`question.list`）就看得见。
+    // 回默认执行者就是宿主替用户决定了「要不要交接」
+    const question = host.questions.list(session.id)[0];
+    expect(question).toBeDefined();
+    expect(question.choices.map((choice) => choice.value)).toEqual(["self", "summary", "no"]);
+
+    // 题没被答就一直挂着；答了才往下走
+    expect(host.questions.list(session.id)).toHaveLength(1);
+    host.questions.answer(question.id, "summary");
+    await expect(asked).resolves.toBe("summary");
   });
 
   it("题没人答（那一段没了）→ 回 null：`undefined` 不是「用户说了不」", async () => {
     const host = newHost();
-    host.connections.open();
     const session = newSession(host, false);
 
     const asked = host.handoff.automaticMode(session.id);
@@ -160,7 +161,6 @@ describe("越线那一刻问不问", () => {
 
   it("同一段连着两次撞线只问一道题：两次等的是同一个答复", async () => {
     const host = newHost();
-    host.connections.open();
     const session = newSession(host, false);
 
     // 第一次撞线不 await：题还挂着。用户没答、接着说，agent 又闲下来又撞上软线 —— 第二次撞线
@@ -185,7 +185,6 @@ describe("越线那一刻问不问", () => {
 
   it("会话行不在 → null（没有可交的那一段）", async () => {
     const host = newHost();
-    host.connections.open();
 
     await expect(host.handoff.automaticMode("没有这一段")).resolves.toBeNull();
   });

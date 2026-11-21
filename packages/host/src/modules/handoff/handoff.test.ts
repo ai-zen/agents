@@ -41,7 +41,6 @@ import { inboxTable } from "../agent/inbox.js";
 import { HostObserver } from "../agent/observer.js";
 import { AssetService } from "../asset/service.js";
 import { assetTable, sessionAssetTable } from "../asset/table.js";
-import { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
@@ -195,12 +194,6 @@ function setup() {
   const fake = fakeRuntime();
   const notices = new NoticeService({ notices: noticeTable(db), events });
   const questions = new QuestionRegistry({ events, t });
-  /**
-   * 连接登记表：默认就有一个人连着 —— 这几条用例验的是交接态与闸，不是「该不该问」。
-   * 真到了越线那一刻，关着开关又没人在看时是直接自交接的（`auto-mode.test.ts` 那一边验）。
-   */
-  const connections = new Connections();
-  connections.open();
   const handoffs = fakeHandoffs();
   const handoff = new HandoffService({
     db,
@@ -209,7 +202,6 @@ function setup() {
     runtime: fake.runtime,
     notices,
     questions,
-    connections,
     events,
     t,
     createSdk: handoffs.create,
@@ -267,7 +259,6 @@ function setup() {
     handoffs,
     sessions,
     questions,
-    connections,
     runtime: fake.runtime,
     messages,
     notices,
@@ -615,7 +606,7 @@ describe("自动交接", () => {
     void plugin.onIdle();
     await settle();
 
-    // 问出去了一道题（关着、有人在看），这一趟就停在这里等人答
+    // 问出去了一道题（开关关着），这一趟就停在这里等人答
     expect(questions.list(session.id)).toHaveLength(1);
     expect(handoffs.runs).toEqual([]);
     expect(handoff.isHandingOff(session.id)).toBe(false);

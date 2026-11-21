@@ -14,7 +14,6 @@ import type {
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
-import type { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
@@ -101,11 +100,6 @@ export interface HandoffDeps {
    * 等的就是内存里那一格。
    */
   readonly questions: QuestionRegistry;
-  /**
-   * 此刻还连着几个人。**一个都没连就不问**（`dev-docs/prd/07-handoff.md`「没有交互通道就不问」）：
-   * 题发出去也不会有人看见，只能一直挂在内存里。
-   */
-  readonly connections: Connections;
   readonly events: Bus<HostEvent>;
   readonly t: Translator;
   readonly createSdk: CreateSdkHandoff;
@@ -347,14 +341,17 @@ export class HandoffService {
    * 现读而不是让调用方把值递进来：开关改了不重建执行体（`dev-docs/prd/05-control.md`），装配那
    * 一刻读到的值会让用户改完没反应。
    *
-   * 五条分支，顺序就是下面这几条（顺序本身就是口径）：
+   * 四条分支，顺序就是下面这几条（顺序本身就是口径）：
    *   1. 会话行不在 → `null`（这一段没了，没什么可交的）；
    *   2. 开着自动交接（平级会话默认开，或用户自己打开）→ `"self"`，**不问**；
    *   3. 这一段答过「不交接」→ `null`，**不再问**；
-   *   4. 一个客户端都没连 → `"self"`（没交互通道就不问，按默认执行者走，默认执行者就是自交接）；
-   *   5. 否则问一道三选题，等一个答复。
+   *   4. 否则问一道三选题，等一个答复。
    *
-   * 第 5 条问出去的那道题**一段上只挂一道**（{@link asking}）：撞线是可能连着来的，而用户没答时
+   * 判据只有开关，**与有没有客户端连着无关**：题只活在内存里，客户端断开再连回来照样看得到它，
+   * 进程没了才没 —— 没有客户端照样问，题挂着等人答。不拿「有没有人在场」替用户做「要不要交接」
+   * 的决定。
+   *
+   * 第 4 条问出去的那道题**一段上只挂一道**（{@link asking}）：撞线是可能连着来的，而用户没答时
    * 后来的人等的是同一道，不再新问一道 —— 同一段上摞着两道一模一样的题是缺陷，不是「只问一次」
    * 的口径。
    *
@@ -372,8 +369,6 @@ export class HandoffService {
     if (session === undefined) return null;
     if (session.autoHandoff === true) return "self";
     if (this.declined.has(sessionId)) return null;
-    // 没人在看就不问：题发出去只会挂在内存里，而默认执行者是自交接（需求里的「按默认执行者走」）
-    if (this.deps.connections.list().length === 0) return "self";
 
     // 同一段上同时只该有一道待答的题：已经有一道在等，就等**同一道**。撞线是可能连着来的（用户
     // 不答、接着说，agent 又闲下来又撞上软线），每撞一次问一道，同一段上就叠着两道一模一样的题。

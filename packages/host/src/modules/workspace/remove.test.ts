@@ -30,7 +30,6 @@ import { HostError } from "../../infra/errors.js";
 import { inboxTable } from "../agent/inbox.js";
 import { AssetService } from "../asset/service.js";
 import { assetTable, sessionAssetTable } from "../asset/table.js";
-import { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import { HandoffService } from "../handoff/service.js";
 import { createTranslator } from "../i18n/index.js";
@@ -69,7 +68,6 @@ function newHost() {
     t,
   });
   const questions = new QuestionRegistry({ events, t });
-  const connections = new Connections();
   const messages = messageTable(db);
   const inbox = inboxTable(db);
   const assets = new AssetService({
@@ -94,7 +92,6 @@ function newHost() {
     runtime,
     notices: {} as never,
     questions,
-    connections,
     events,
     t,
     createSdk: () => {
@@ -121,7 +118,6 @@ function newHost() {
     assets,
     questions,
     handoff,
-    connections,
     dataRoot,
     log,
     deps,
@@ -275,7 +271,6 @@ describe("删项目", () => {
 
   it("交接那侧的「不再问」也跟着忘：同一段 id 再撞线会重新问", async () => {
     const host = newHost();
-    host.connections.open();
     const workspace = host.workspaces.create("项目一", "/tmp/不再问跟着忘");
     const session = newSession(host, workspace.id);
 
