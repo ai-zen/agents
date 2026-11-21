@@ -32,8 +32,11 @@ export interface AutoNamerDeps {
 }
 
 /**
- * 自动起名。判据只有会话行上那一格 `nameIsAuto`：名字还是自动起的，就可以换；用户改过的名字
- * 一个字都不碰。
+ * 自动起名。判据两处：会话行上那一格 `nameIsAuto` —— 名字还是自动起的，就可以换，用户改过的
+ * 名字一个字都不碰；以及配置里的 `autoTitle` —— 关掉就不发那次请求（没写这一格按开启算）。
+ *
+ * 配置在动手之前现读，装配那一刻读到的那一份不留在实例上：用户改完这个开关，下一次变闲就按新值判，
+ * 不必重建执行体。
  *
  * 不数消息 —— 「这段会话还没有几条消息，所以还没起过名」在交接之后会重新成立：交接把旧记忆整段
  * 搬去了存档会话，这段会话这边只剩系统提示与断点。
@@ -64,6 +67,9 @@ export class AutoNamer {
     if (session === undefined || !session.nameIsAuto) return;
 
     const config = this.deps.config.read();
+    // 关掉这一格就不发那次请求。只认 `false`：老配置里没有这一格，用户的意图是按出厂的样子跑，
+    // 而不是关掉一个他不知道的功能
+    if (config.autoTitle === false) return;
     // 两格都指不到模型就是「不该起名」，不是一次失败
     const modelId = config.namingModel ?? config.defaultModel;
     if (modelId === undefined) return;

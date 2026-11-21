@@ -13,6 +13,7 @@
  *
  * 语言也是全局那几格之一（`setGlobal` 是它的写口，不另开一条 procedure）：写完宿主那份语言当场
  * 跟着变（`t` 在调用那一刻现读，不重建任何执行体），非法值在边界上被拒、文件一个字都不动。
+ * 自动命名开关同走这一条：它是配置项，写成非布尔值同样在边界上被拒。
  *
  * 落盘全用真的：临时目录 + 真的 `ConfigManager`（打桩磁盘只会验到桩）。只有执行体那一条给
  * `runtime` / `workspaces` / `sessions` 替身 —— 造一个真的运行时得先有一个能出网的模型，
@@ -365,6 +366,51 @@ describe("配置面：语言", () => {
     // 合法的值照样写得进去
     const { config } = await host.caller.config.setGlobal({ language: "zh" });
     expect(config.language).toBe("zh");
+  });
+});
+
+describe("配置面：自动命名开关", () => {
+  /**
+   * 自动命名那个开关是配置项，写口就是全局那几格这一条（不另开一条 procedure）。
+   *
+   * 起手那份不写这一格（老配置里没有它是常事）：两个方向都写得进去、都读得回来，才说明这一个
+   * 开关能关能开。
+   */
+  it("写 true / false 之后 config.get 读回来是新的，文件里也跟着落", async () => {
+    const host = await newHost();
+    // 起手那份没这一格：文件里就是不出现，缺省怎么算由自动命名那一侧判
+    expect("autoTitle" in (await onDisk())).toBe(false);
+
+    const on = await host.caller.config.setGlobal({ autoTitle: true });
+    expect(on.config.autoTitle).toBe(true);
+    expect((await host.caller.config.get()).config.autoTitle).toBe(true);
+    expect((await onDisk()).autoTitle).toBe(true);
+
+    const off = await host.caller.config.setGlobal({ autoTitle: false });
+    expect(off.config.autoTitle).toBe(false);
+    expect((await host.caller.config.get()).config.autoTitle).toBe(false);
+    expect((await onDisk()).autoTitle).toBe(false);
+  });
+
+  /**
+   * 非布尔值在边界上被拒：`"false"` 这种字符串一旦写进文件，自动命名那一侧只能把它当真值读，
+   * 用户在界面上关了一个开关而请求照旧每段新会话发一次。
+   */
+  it("给了布尔之外的值：边界上拒掉，文件一个字都不动，内存那份也不动", async () => {
+    const host = await newHost();
+    const beforeText = await readFile(configPath, "utf-8");
+    const beforeEvents = host.configEvents.length;
+
+    await expect(
+      host.caller.config.setGlobal({ autoTitle: "false" as unknown as boolean }),
+    ).rejects.toThrow();
+
+    expect(await readFile(configPath, "utf-8")).toBe(beforeText);
+    expect(host.deps.config.read().autoTitle).toBeUndefined();
+    expect(host.configEvents.length).toBe(beforeEvents);
+    // 合法的值照样写得进去：拒的是这一格的取值，不是「不让改」
+    const { config } = await host.caller.config.setGlobal({ autoTitle: false });
+    expect(config.autoTitle).toBe(false);
   });
 });
 

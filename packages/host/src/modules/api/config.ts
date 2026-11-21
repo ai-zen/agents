@@ -30,14 +30,18 @@ const defaultsInput = z.object({
 });
 
 /**
- * 全局那几格：语言、工具输出上限、中断策略两项。
+ * 全局那几格：语言、自动命名开关、工具输出上限、中断策略两项。
  *
  * 取值就是 `AppConfig` 里的那几种联合类型：写错了要在边界上被拒，而不是写进文件之后由
  * `normalizeConfig` 在下次启动时静默补成出厂值 —— 那时用户以为改成功了。语言尤其如此：
  * 这里放过一个 `fr`，宿主的 `t` 会一直照着回落到中文，而界面上写着「已保存」。
+ *
+ * `autoTitle` 只收布尔：这一格关掉只是省下每段新会话那一次几十 token 的请求。写进一个 `"false"`
+ * 字符串，自动命名那一侧只能把它当真值读，用户在界面上关了开关而请求照旧发。
  */
 const globalInput = z.object({
   language: z.enum(["en", "zh"]).optional(),
+  autoTitle: z.boolean().optional(),
   maxToolOutput: z.number().optional(),
   abortedMessageStrategy: z.enum(["drop", "keep"]).optional(),
   abortedToolRoundStrategy: z.enum(["drop", "fill"]).optional(),
@@ -79,11 +83,15 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
       .mutation(async ({ input }) => ({ config: await setDefaults(deps, input) })),
 
     /**
-     * 全局那几格：语言、工具输出上限、中断策略两项。
+     * 全局那几格：语言、自动命名开关、工具输出上限、中断策略两项。
      *
      * `language` 写完**不重建任何执行体**：宿主那份语言只有一个写口（`HostApp` 上的 `t`），它
      * 在调用那一刻现读配置，下一次渲染就是新语言。已经落库的通知也不回填 —— 那里存的是产生那
      * 一刻的成品句子，改语言不追认旧账。
+     *
+     * `autoTitle` 同样不重建执行体：自动命名在动手之前现读配置（`AutoNamer`），所以写完之后
+     * 下一次变闲就是新值。已经起过名的会话不受影响 —— 名字是会话行的格子，这一格只决定还要不要
+     * 发那次请求。
      *
      * 中断策略写完**就地刷新活着的执行体**（见 `applyInterruptStrategies`）；`maxToolOutput` 不
      * 在这条路上刷新，理由也写在那儿。
@@ -96,6 +104,7 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
         // 从配置里抹掉，而调用方只是没提它
         const change: Partial<AppConfig> = {};
         if (input.language !== undefined) change.language = input.language;
+        if (input.autoTitle !== undefined) change.autoTitle = input.autoTitle;
         if (input.maxToolOutput !== undefined) change.maxToolOutput = input.maxToolOutput;
         if (input.abortedMessageStrategy !== undefined) {
           change.abortedMessageStrategy = input.abortedMessageStrategy;
