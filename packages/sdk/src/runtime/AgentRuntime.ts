@@ -1,4 +1,4 @@
-import { AgentNS, type Agent, type AgentEvents } from "@ai-zen/agents-core";
+import { AgentNS, type Agent, type AgentEvents, type AgentPlugin } from "@ai-zen/agents-core";
 import type { Scope } from "../scope/Scope.js";
 import type {
   PeerSessionCreated,
@@ -40,6 +40,13 @@ export interface WakeMaterials {
   history: AgentNS.Message[];
   /** 还没被取走的条目（上次没来得及处理的那几句），按入队顺序 */
   waiting: AgentNS.InboxEntryWithContent[];
+  /**
+   * 这一段上要装的插件（比如越线自动交接）。
+   *
+   * 插件是**这一段会话的政策**：阈值与开关长在会话行上、配置在宿主的配置里，只有宿主说得清。
+   * 而「装」这一步是运行时的事 —— 材料从上往下给，装配由做装配的那一层做。
+   */
+  plugins?: AgentPlugin[];
 }
 
 /** 开一段新会话要的事实：运行时发身份，行由宿主写 */
@@ -429,13 +436,15 @@ export class AgentRuntime {
   }
 
   /**
-   * 装配：取容器、造执行体、把历史接在模板后面、把没取走的条目放回队列。
+   * 装配：取容器、造执行体、装材料里带的插件、把历史接在模板后面、把没取走的条目放回队列。
    *
    * 两处次序不是随手定的：
    * - 历史一条一条 `append`，**不给 `agent.messages` 整体赋值**：那个数组是记忆的唯一真相，
    *   换掉它会让已经拿到引用的地方继续指着旧的那一份；
    * - 放回队列排在装历史之后：一条条目落过地没有，判据是它那条消息在不在已经装好的历史里。
    *   反过来排，这个判据就得另找一份账。
+   *
+   * 插件与「报出现」都排在 `start()` 之前，理由各自写在那两处。
    */
   private async assemble(sessionId: string, materials: WakeMaterials): Promise<SdkAgent> {
     const scope = await this.scopes.for(materials.cwd);
@@ -445,7 +454,12 @@ export class AgentRuntime {
       modelParams: materials.modelParams,
     });
 
-    const history = recovered(materials.history);
+    // 插件必须排在 `start()` 之前装上：装晚了的代价不是「晚一点生效」—— 第一批取件可能已经
+    // 发生，那一段就有一段活在「插件还没装」的状态里跑完了（越线自动交接这种看用量做决定的
+    // 插件，漏掉的那一批就没人判）。材料从上往下给，「装」由做装配的这一层做。
+    for (const plugin of materials.plugins ?? []) agent.use(plugin);
+
+    const { history, normalized } = recovered(materials.history);
     for (const message of history) agent.append(message);
 
     const landed = new Set(history.map((message) => message.id));
@@ -474,6 +488,16 @@ export class AgentRuntime {
       lineage: materials.lineage,
       agent,
     });
+
+    // 装载时归一过的那几条，补报一条「变了」。转发订阅挂在这一步之前（上面那一组），所以这条
+    // 事实走的是和内核自己发的一模一样的那条路 —— 宿主那份唯一的观察者照旧只听事实写库。
+    //
+    // - 报的是**变了**而不是**出现**：这几条本来就存在，装载不是新增；
+    // - 为什么必须报：宿主是这个库唯一的写者，它靠事实写库 —— 不报，那一行就停在上一个进程
+    //   写它的那一刻（`writing`），而这一段其实已经归成 `aborted`；
+    // - 为什么排在 `resident:appeared` 之后：先有「这一段回来了」，才有「它里面有一条变了」。
+    for (const message of normalized) agent.emit("messageChanged", { agent, message });
+
     void agent.start();
 
     return agent;
@@ -550,14 +574,30 @@ export class AgentRuntime {
  * 开头那一步的事，这里再修一遍就是两份实现。
  *
  * 给的是新对象：交进来的那一批是别人的（宿主从库里读出来的），就地改它等于替它改库。
+ *
+ * `normalized` 是**状态真的被改过**的那几条（还是那一批里的同一批对象，改完之后装进历史的就是
+ * 它们）。交回来是因为归一这件事在事实流上本来是无声的：`agent.append` 排在挂转发之前，那几条
+ * 的 `messageAdded` / `messageFinished` 谁也听不到。
  */
-function recovered(history: readonly AgentNS.Message[]): AgentNS.Message[] {
-  return history.map((message) =>
-    message.status === AgentNS.MessageStatus.Pending ||
-    message.status === AgentNS.MessageStatus.Writing
-      ? { ...message, status: AgentNS.MessageStatus.Aborted }
-      : message,
-  );
+function recovered(history: readonly AgentNS.Message[]): {
+  history: AgentNS.Message[];
+  normalized: AgentNS.Message[];
+} {
+  const normalized: AgentNS.Message[] = [];
+  const repaired = history.map((message) => {
+    if (
+      message.status !== AgentNS.MessageStatus.Pending &&
+      message.status !== AgentNS.MessageStatus.Writing
+    ) {
+      return message;
+    }
+
+    const fixed = { ...message, status: AgentNS.MessageStatus.Aborted };
+    normalized.push(fixed);
+    return fixed;
+  });
+
+  return { history: repaired, normalized };
 }
 
 /** 最近一条助手消息的正文摘要（`null` = 它还没说过话） */

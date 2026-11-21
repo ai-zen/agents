@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { AgentError, type AgentNS } from "@ai-zen/agents-core";
 import { HandoffAbortedError, HandoffService as SdkHandoffService } from "@ai-zen/agents-sdk";
 import type {
+  AgentRuntime,
   HandoffContext,
   HandoffMode,
   MemoryCommit,
@@ -13,7 +14,6 @@ import type {
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
-import type { AgentRegistry } from "../agent/registry.js";
 import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
@@ -85,7 +85,11 @@ export interface HandoffDeps {
   readonly sessions: SessionService;
   /** 文档落在项目里，得按会话所属项目的 `cwd` 现算 */
   readonly workspaces: WorkspaceService;
-  readonly agents: AgentRegistry;
+  /**
+   * 这一段此刻活着的执行体：问运行时（谁活着只有它知道）。闸、记忆、取消口都落在那个执行体上，
+   * 没有它时每一处都是空操作。
+   */
+  readonly runtime: AgentRuntime;
   /** 失败那条路上没有别的出口：`start` 早就返回了，用户只能从通知里知道 */
   readonly notices: NoticeService;
   readonly events: Bus<HostEvent>;
@@ -136,7 +140,7 @@ export class HandoffService {
       );
     }
 
-    const agent = this.deps.agents.get(sessionId);
+    const agent = this.deps.runtime.get(sessionId);
     if (agent === undefined) {
       throw new HostError(
         "conflict",
@@ -190,7 +194,7 @@ export class HandoffService {
    */
   finish(sessionId: string, outcome?: { readonly error: unknown }): void {
     if (!this.handingOff.delete(sessionId)) return;
-    this.deps.agents.resumeOutput(sessionId);
+    this.deps.runtime.get(sessionId)?.resumeOutput();
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: false });
 
     // 会话可能已经被删掉（这一趟正好撞上）：那条通知挂在它名下会撞外键，而那段会话已经不在了，
@@ -231,7 +235,7 @@ export class HandoffService {
   cancel(sessionId: string): void {
     this.aborters.get(sessionId)?.abort();
     if (!this.handingOff.has(sessionId)) return;
-    this.deps.agents.pauseOutput(sessionId);
+    this.deps.runtime.get(sessionId)?.pauseOutput();
     this.handingOff.delete(sessionId);
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: false });
   }
@@ -283,7 +287,11 @@ export class HandoffService {
     // 落库在前、换内存在后：`replaceMemory` 是一个事务，它失败时整批退回、内存这时还没动，
     // 两处一致地停在交接前。反过来先换内存，落库一旦失败就留下「内存是新的、库是旧的」，
     // 而进程重启读回来的是库那一份 —— 用户看到的是记忆复活。
-    this.deps.agents.replaceMessages(sessionId, memory);
+    //
+    // 就地 `splice`，不给 `agent.messages` 整体赋值：那个数组是记忆的唯一真相，换掉它会让已经
+    // 拿到引用的地方（插件的钩子上下文、正在进行的那次请求）继续指着旧的那一份。
+    const agent = this.deps.runtime.get(sessionId);
+    if (agent !== undefined) agent.messages.splice(0, agent.messages.length, ...memory);
 
     this.deps.events.emit({ type: "session.changed", session: archived });
     // 原会话这一行只有更新时间会动（记忆不在一行里），所以补丁是空的；`session.changed`

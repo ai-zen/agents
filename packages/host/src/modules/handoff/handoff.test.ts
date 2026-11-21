@@ -19,19 +19,20 @@
 
 import { describe, expect, it } from "vitest";
 
-import { AgentNS, Message, type OuterLoopContext } from "@ai-zen/agents-core";
+import { AgentNS, Message, type Agent, type OuterLoopContext } from "@ai-zen/agents-core";
 import {
+  AgentRuntime,
   AutoMigratePlugin,
   HandoffAbortedError,
   type HandoffContext,
+  type RuntimeFact,
   type SdkAgent,
 } from "@ai-zen/agents-sdk";
 
 import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
-import { AgentSubscription } from "../agent/subscription.js";
 import { inboxTable } from "../agent/inbox.js";
-import { AgentRegistry } from "../agent/registry.js";
+import { HostObserver } from "../agent/observer.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
@@ -88,6 +89,44 @@ function fakeAgent() {
 }
 
 /**
+ * 运行时的替身：交接只问它「这一段有没有活执行体」（`get`），观察者只从它的那条事实流上收事实
+ * （`observe`）。这两格由用例喂。
+ *
+ * 它是一个**真的** `AgentRuntime` 实例（端口给空实现，一条路径都走不到），只把上面那两格换成
+ * 用例喂的 —— 真的那一套会去造容器、读定义、建模型客户端，而这几条要证的只有「交接态落在谁
+ * 身上、闸开没开、记忆落在哪、失败收没收口」。
+ */
+function fakeRuntime() {
+  const alive = new Map<string, SdkAgent>();
+  const listeners = new Set<(fact: RuntimeFact) => void>();
+
+  const runtime = new AgentRuntime({
+    openScope: () => Promise.reject(new Error("替身不造容器")),
+    open: async () => ({ ok: false, reason: "model_unresolved" }),
+    nameOf: async () => undefined,
+  });
+
+  // 两格换成用例喂的：登记表由 `wake` 填、事实流由 `emit` 推
+  runtime.get = (sessionId) => alive.get(sessionId);
+  runtime.observe = (listener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+
+  return {
+    runtime,
+    place(sessionId: string, agent: SdkAgent): void {
+      alive.set(sessionId, agent);
+    },
+    emit(fact: RuntimeFact): void {
+      for (const listener of [...listeners]) listener(fact);
+    },
+  };
+}
+
+/**
  * 一趟交接的替身：接住宿主造实例时递给 SDK 的那几格，结论由用例给。
  *
  * 「失败也开闸」那条要的就是一个会抛的替身；其余几条要的是「后台那一趟还没跑完时状态是什么」，
@@ -137,14 +176,14 @@ function setup() {
   const inbox = inboxTable(db);
   const sessions = new SessionService({ sessions: sessionTable(db), events, t });
   const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
-  const agents = new AgentRegistry({ sessions, workspaces, events });
+  const fake = fakeRuntime();
   const notices = new NoticeService({ notices: noticeTable(db), events });
   const handoffs = fakeHandoffs();
   const handoff = new HandoffService({
     db,
     sessions,
     workspaces,
-    agents,
+    runtime: fake.runtime,
     notices,
     events,
     t,
@@ -153,29 +192,55 @@ function setup() {
 
   const errors: unknown[] = [];
 
-  /** 造一个活着的执行体，并把真的那条订阅接在它上面 */
+  // 观察者与装配根上的那一个同形：全进程一份、挂在事实流上。它必须在第一次 `wake` 之前挂好
+  // （事实只报变化，晚一步就漏掉前面那几条）—— 用例里没有真装载，但这根线的接法不变
+  new HostObserver({
+    messages,
+    inbox,
+    events,
+    onError: (error) => errors.push(error),
+    isHandingOff: (id) => handoff.isHandingOff(id),
+  }).attach(fake.runtime);
+
+  /** 造一个活着的执行体，并把它放进运行时那张登记表（`get` 取到的就是它） */
   function wake(sessionId: string) {
     const agent = fakeAgent();
-    const sdk = agent as unknown as SdkAgent;
-    agents.add(
-      sessionId,
-      sdk,
-      new AgentSubscription(
-        {
-          messages,
-          inbox,
-          events,
-          onError: (error) => errors.push(error),
-          isHandingOff: (id) => handoff.isHandingOff(id),
-        },
-        sessionId,
-        sdk,
-      ),
-    );
+    fake.place(sessionId, agent as unknown as SdkAgent);
     return agent;
   }
 
-  return { handoff, handoffs, sessions, agents, messages, notices, seen, errors, wake };
+  /**
+   * 报一条「这段会话多了一条消息」。观察者听的是运行时交出来的那一條事实流（一条消息的内核事件
+   * 只是其中一格），所以用例直接造那一条事实递给它 —— 与运行时转发时造的那一条同形。
+   */
+  function messageAdded(
+    sessionId: string,
+    agent: ReturnType<typeof fakeAgent>,
+    id: string,
+    text: string,
+  ): void {
+    fake.emit({
+      type: "messageAdded",
+      sessionId,
+      agent: agent as unknown as Agent,
+      seq: 1,
+      at: new Date().toISOString(),
+      message: message(id, text),
+    });
+  }
+
+  return {
+    handoff,
+    handoffs,
+    sessions,
+    runtime: fake.runtime,
+    messages,
+    notices,
+    seen,
+    errors,
+    wake,
+    messageAdded,
+  };
 }
 
 /** 后台那一趟是 fire-and-forget：用例得等它把状态改完，才断言得到东西 */
@@ -198,7 +263,7 @@ function message(id: string, text: string): AgentNS.Message {
 
 describe("交接态", () => {
   it("只落在进入的那一段上；`start` 不碰闸、收口开、取消关；事件一进一出", async () => {
-    const { handoff, handoffs, sessions, agents, seen, wake } = setup();
+    const { handoff, handoffs, sessions, runtime, seen, wake } = setup();
     const first = sessions.create(input);
     const second = sessions.create(input);
     wake(first.id);
@@ -210,18 +275,18 @@ describe("交接态", () => {
     expect(handoff.isHandingOff(second.id)).toBe(false);
     // 闸不归 `start` 管：关闸是 `HandoffGuardPlugin.onOuterLoopStart` 在指令被取走那一拍做的。
     // 这里先关上，`runSelfHandoff` 第一句就判「会话不收件」—— 那一趟整个失败（不会换成摘要）
-    expect(agents.get(first.id)?.isOutputPaused).toBe(false);
-    expect(agents.get(second.id)?.isOutputPaused).toBe(false);
+    expect(runtime.get(first.id)?.isOutputPaused).toBe(false);
+    expect(runtime.get(second.id)?.isOutputPaused).toBe(false);
     // 交接文档落在这一段所属项目里，不是宿主的 cwd：多项目共用一个目录，文档就跟代码分家了
     expect(handoffs.runs[0].options.handoffDir).toBe("/tmp/ws-1/.ai-zen/handoffs");
     expect(handoffs.runs[0].options.strategy).toBe("prune");
-    expect(handoffs.runs[0].agent).toBe(agents.get(first.id));
+    expect(handoffs.runs[0].agent).toBe(runtime.get(first.id));
 
     // 后台那一趟跑完：闸开回来、退出交接态
     handoffs.runs[0].succeed();
     await settle();
     expect(handoff.isHandingOff(first.id)).toBe(false);
-    expect(agents.get(first.id)?.isOutputPaused).toBe(false);
+    expect(runtime.get(first.id)?.isOutputPaused).toBe(false);
 
     // 用户按了停：闸关上、退出交接态 —— 取消之后这一段保持暂停（回滚了就不该再取件）。
     // 这一下是取消自己关的：取消可能发生在批头关闸之前，那时闸还开着
@@ -229,7 +294,7 @@ describe("交接态", () => {
     handoff.cancel(first.id);
     await settle();
     expect(handoff.isHandingOff(first.id)).toBe(false);
-    expect(agents.get(first.id)?.isOutputPaused).toBe(true);
+    expect(runtime.get(first.id)?.isOutputPaused).toBe(true);
 
     expect(handoffEvents(seen)).toEqual([
       { type: "session.handoff", sessionId: first.id, handingOff: true },
@@ -246,7 +311,7 @@ describe("后台那一趟失败", () => {
    * 来的话一直排在队列里，谁也不知道为什么。
    */
   it("开闸、退出交接态，并推一条通知", async () => {
-    const { handoff, handoffs, sessions, agents, notices, seen, wake } = setup();
+    const { handoff, handoffs, sessions, runtime, notices, seen, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
 
@@ -254,7 +319,7 @@ describe("后台那一趟失败", () => {
     handoffs.runs[0].fail(new Error("端点 4xx"));
     await settle();
 
-    expect(agents.get(session.id)?.isOutputPaused).toBe(false);
+    expect(runtime.get(session.id)?.isOutputPaused).toBe(false);
     expect(handoff.isHandingOff(session.id)).toBe(false);
 
     const pushed = notices.listBySession(session.id);
@@ -271,7 +336,7 @@ describe("后台那一趟失败", () => {
 
   /** 取消不是失败：不推「交接失败」，闸也不开 —— 回滚之后就该停在那一段 */
   it("取消不推通知", async () => {
-    const { handoff, handoffs, sessions, agents, notices, wake } = setup();
+    const { handoff, handoffs, sessions, runtime, notices, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
 
@@ -279,7 +344,7 @@ describe("后台那一趟失败", () => {
     handoff.cancel(session.id);
     await settle();
 
-    expect(agents.get(session.id)?.isOutputPaused).toBe(true);
+    expect(runtime.get(session.id)?.isOutputPaused).toBe(true);
     expect(notices.listBySession(session.id)).toEqual([]);
     expect(handoffs.runs[0].signal.aborted).toBe(true);
   });
@@ -291,7 +356,7 @@ describe("收口", () => {
    * 现在没有降级了 —— 换执行者那件事不存在，也就没有什么要告知的（`PRD.md` 3.6）。
    */
   it("成功收口不推任何通知，闸开回来、交接态摘掉", async () => {
-    const { handoff, handoffs, sessions, agents, notices, wake } = setup();
+    const { handoff, handoffs, sessions, runtime, notices, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
 
@@ -300,7 +365,7 @@ describe("收口", () => {
     await settle();
 
     expect(notices.listBySession(session.id)).toEqual([]);
-    expect(agents.get(session.id)?.isOutputPaused).toBe(false);
+    expect(runtime.get(session.id)?.isOutputPaused).toBe(false);
     expect(handoff.isHandingOff(session.id)).toBe(false);
   });
 
@@ -309,7 +374,7 @@ describe("收口", () => {
    * 没写出可用的文档）走的是同一条：失败通知里就是它那一句原因，一字不改。
    */
   it("做不成就是失败：原因原样进通知，没有第二种收口", async () => {
-    const { handoff, handoffs, sessions, agents, notices, wake } = setup();
+    const { handoff, handoffs, sessions, runtime, notices, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
 
@@ -328,7 +393,7 @@ describe("收口", () => {
     expect(pushed[0].message).toContain("it no longer exists");
     expect(pushed[0].durationMs).toBeNull();
     // 失败也开闸、也退交接态 —— 两者是失败那条路的一部分，不是降级
-    expect(agents.get(session.id)?.isOutputPaused).toBe(false);
+    expect(runtime.get(session.id)?.isOutputPaused).toBe(false);
     expect(handoff.isHandingOff(session.id)).toBe(false);
   });
 });
@@ -388,29 +453,19 @@ describe("换记忆", () => {
 
 describe("交接期间不落库", () => {
   it("消息照样推给客户端，一行都不进库；收口之后恢复", async () => {
-    const { handoff, handoffs, sessions, messages, seen, errors, wake } = setup();
+    const { handoff, handoffs, sessions, messages, seen, errors, wake, messageAdded } = setup();
     const session = sessions.create(input);
     const agent = wake(session.id);
 
     handoff.start(session.id);
-    agent.fire("messageAdded", {
-      agent,
-      message: message("m-1", "这一任最后说的"),
-      subAgent: undefined,
-      via: undefined,
-    });
+    messageAdded(session.id, agent, "m-1", "这一任最后说的");
 
     expect(messages.get("m-1")).toBeUndefined();
     expect(seen.filter((event) => event.type === "message.added")).toHaveLength(1);
 
     handoffs.runs[0].succeed();
     await settle();
-    agent.fire("messageAdded", {
-      agent,
-      message: message("m-2", "收口之后说的"),
-      subAgent: undefined,
-      via: undefined,
-    });
+    messageAdded(session.id, agent, "m-2", "收口之后说的");
 
     expect(messages.get("m-2")?.content).toBe("收口之后说的");
     expect(errors).toEqual([]);
@@ -448,7 +503,7 @@ describe("自动交接", () => {
    * 掉 —— 库里留下的是永远读不回来的残渣。
    */
   it("自动那一趟期间消息不落库，收口之后恢复", async () => {
-    const { handoff, handoffs, sessions, messages, errors, wake } = setup();
+    const { handoff, handoffs, sessions, messages, errors, wake, messageAdded } = setup();
     const session = sessions.create({ ...input, autoHandoff: true });
     const agent = wake(session.id);
     agent.messages.push(answered(200));
@@ -459,12 +514,7 @@ describe("自动交接", () => {
     await settle();
 
     expect(handoff.isHandingOff(session.id)).toBe(true);
-    agent.fire("messageAdded", {
-      agent,
-      message: message("m-1", "这一任最后说的"),
-      subAgent: undefined,
-      via: undefined,
-    });
+    messageAdded(session.id, agent, "m-1", "这一任最后说的");
     expect(messages.get("m-1")).toBeUndefined();
 
     // 关闸那一半在 SDK 的 `HandoffGuardPlugin`（指令被取走那一拍）：这里照那一拍按住
@@ -475,12 +525,7 @@ describe("自动交接", () => {
     expect(handoff.isHandingOff(session.id)).toBe(false);
     expect(agent.isOutputPaused).toBe(false);
 
-    agent.fire("messageAdded", {
-      agent,
-      message: message("m-2", "收口之后说的"),
-      subAgent: undefined,
-      via: undefined,
-    });
+    messageAdded(session.id, agent, "m-2", "收口之后说的");
     expect(messages.get("m-2")?.content).toBe("收口之后说的");
     expect(errors).toEqual([]);
   });

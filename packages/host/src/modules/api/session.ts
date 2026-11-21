@@ -78,7 +78,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
           );
         }
 
-        const agent = deps.agents.get(session.id);
+        const agent = deps.runtime.get(session.id);
         if (agent === undefined) {
           return {
             session,

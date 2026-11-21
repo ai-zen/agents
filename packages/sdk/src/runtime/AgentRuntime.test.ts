@@ -14,7 +14,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentNS, Message, ToolCallContext, type Agent, type Tool } from "@ai-zen/agents-core";
+import {
+  AgentNS,
+  Message,
+  ToolCallContext,
+  type Agent,
+  type AgentPlugin,
+  type Tool,
+} from "@ai-zen/agents-core";
 import { startFakeLlm, type FakeLlmOptions, type FakeLlmRequest } from "@ai-zen/agents-testing";
 import { Scope } from "../scope/Scope.js";
 import { PeerSessionsScopePlugin } from "../scope/plugins/peers/PeerSessionsScopePlugin.js";
@@ -209,6 +216,7 @@ function toolOf(agent: Agent, name: string): Tool {
 type Appeared = Extract<RuntimeFact, { type: "resident:appeared" }>;
 type Gone = Extract<RuntimeFact, { type: "resident:gone" }>;
 type Added = Extract<RuntimeFact, { type: "inboxAdded" }>;
+type AddedMessage = Extract<RuntimeFact, { type: "messageAdded" }>;
 type Finished = Extract<RuntimeFact, { type: "responseFinished" }>;
 type ScopeAppeared = Extract<RuntimeFact, { type: "scope:appeared" }>;
 type ScopeRefreshed = Extract<RuntimeFact, { type: "scope:refreshed" }>;
@@ -428,9 +436,77 @@ describe("运行时：常驻与互相说话", () => {
     await h.runtime.scopes.for(h.cwd);
     expect(h.opened).toEqual([h.cwd, h.cwd]);
   });
+
+  it("材料里带的插件在开跑之前就装上了", async () => {
+    const h = await harness();
+    /** 被叫到几次（`onOuterLoopStart` 只在一批活的开头派发） */
+    let entered = 0;
+    const plugin: AgentPlugin = {
+      onOuterLoopStart: () => {
+        entered += 1;
+      },
+    };
+
+    const a = await h.wake("a", "lead", { plugins: [plugin] });
+    // 还没投过话，这一拍理应还没到：底下那一下才说明它真被挂在了这个执行体上
+    expect(entered).toBe(0);
+
+    // 用户说的话也是一条投递，进执行体的队列
+    a.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    await until(() => a.state === "idle" && words(a, "收到").length > 0, 5000);
+
+    // 装晚了的后果就是这里恒为 0：第一批取件在插件装上之前就跑了
+    expect(entered).toBeGreaterThan(0);
+  });
 });
 
 describe("运行时：观察面（只订阅、不介入）", () => {
+  it("装载时归一的那些条目会报一条 messageChanged", async () => {
+    const h = await harness();
+
+    /**
+     * 收到那一刻这条消息长什么样。
+     *
+     * 拷的是**当下的状态**而不是那条消息的引用：内核后面还会动它（`drop` 策略会把归成
+     * `aborted` 的那条删掉），而这里要验的正是「报的那一刻它是 `aborted`」。
+     */
+    const reported: Array<{ id: string; status: AgentNS.MessageStatus | undefined }> = [];
+    const seen: RuntimeFact[] = [];
+    h.runtime.observe((fact) => {
+      seen.push(fact);
+      if (fact.type === "messageChanged") {
+        reported.push({ id: fact.message.id, status: fact.message.status });
+      }
+    });
+
+    // 上一个进程是在写这一条的时候没的：库里留下的状态是 `writing`
+    const interrupted: AgentNS.Message = {
+      ...Message.Assistant("写到一半的那句"),
+      id: "m-writing",
+      status: AgentNS.MessageStatus.Writing,
+    };
+
+    const a = await h.wake("a", "lead", { history: [interrupted] });
+
+    // 它报了一条「变了」，那一刻的状态是归一之后的 `aborted`
+    const normalized = reported.filter((item) => item.id === "m-writing");
+    expect(normalized).toHaveLength(1);
+    expect(normalized[0]!.status).toBe(AgentNS.MessageStatus.Aborted);
+
+    // 装载不是新增：这一条从来没以 `messageAdded` 的身份重推给订阅者
+    const added = factsOf(seen, "a").filter(
+      (fact): fact is AddedMessage => fact.type === "messageAdded",
+    );
+    expect(added.map((fact) => fact.message.id)).not.toContain("m-writing");
+    // 对照：这一段确实在报事实（否则上面那条断言可能只是因为整条流都是空的）
+    expect(factsOf(seen, "a")[0]?.type).toBe("resident:appeared");
+
+    // 装进记忆的就是归一之后那一份
+    expect(a.messages.find((message) => message.id === "m-writing")?.status).toBe(
+      AgentNS.MessageStatus.Aborted,
+    );
+  });
+
   it("第三方只订阅就能说清谁活着、谁在干、谁没了", async () => {
     const h = await harness({ reply: "假端点说的那句" });
     const seen: RuntimeFact[] = [];

@@ -1,10 +1,10 @@
 import { z } from "zod";
 
+import type { AgentNS } from "@ai-zen/agents-core";
 import { resolveModel, type SdkAgent } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
-import { assemble } from "../agent/assembly.js";
-import { AgentSubscription } from "../agent/subscription.js";
+import { materialsFor } from "../agent/materials.js";
 import type { Session } from "../session/types.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
@@ -31,7 +31,7 @@ const controlOutput = z.object({ sessionId: z.string() });
 export function agentRouter(deps: HostApiDeps, api: Trpc) {
   return api.router({
     /**
-     * 让这段会话现在有执行体：按库里的事实装配一个并登记。
+     * 让这段会话现在有执行体：把材料从库里读出来交给运行时，由它装起来、登记、开跑。
      *
      * 不投递任何东西。会话行已经存在 —— 唤醒不创建会话，它只填补「行在、执行体不在」这一格。
      * 已经有执行体时是空操作：重建会把一段正在跑的会话换掉，而调用方要的只是「它活着」。
@@ -41,7 +41,9 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .output(wakeOutput)
       .mutation(async ({ input }) => {
         const session = existingSession(deps, input.sessionId);
-        if (deps.agents.get(session.id) === undefined) await wakeSession(deps, session);
+        if (deps.runtime.get(session.id) === undefined) {
+          await deps.runtime.wake(session.id, await materialsFor(deps, session));
+        }
 
         return { sessionId: session.id };
       }),
@@ -54,7 +56,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
         // 的执行体就直接报错，「先唤醒再投递」是客户端的编排（先调 `wake`），不是宿主的兜底。
         if (input.sessionId !== undefined) {
           const session = existingSession(deps, input.sessionId);
-          const agent = deps.agents.get(session.id);
+          const agent = deps.runtime.get(session.id);
           if (agent === undefined) {
             throw new HostError(
               "not_found",
@@ -68,8 +70,8 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
           return deliver(deps, session, agent, input);
         }
 
-        // 不给 sessionId：会话是由这一次发送产生的，建行、装配、登记、投递都是这次发送的
-        // 一部分 —— 它没有「复活一段已有的会话」这层含义。
+        // 不给 sessionId：会话是由这一次发送产生的，建行、叫醒、投递都是这次发送的一部分
+        // —— 它没有「复活一段已有的会话」这层含义。
         const session = await createSession(deps, input);
         return deliver(deps, session, await wakeSession(deps, session), input);
       }),
@@ -84,7 +86,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .input(controlInput)
       .output(controlOutput)
       .mutation(({ input }) => {
-        deps.agents.pauseOutput(input.sessionId);
+        deps.runtime.get(input.sessionId)?.pauseOutput();
         return { sessionId: input.sessionId };
       }),
 
@@ -92,7 +94,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .input(controlInput)
       .output(controlOutput)
       .mutation(({ input }) => {
-        deps.agents.resumeOutput(input.sessionId);
+        deps.runtime.get(input.sessionId)?.resumeOutput();
         return { sessionId: input.sessionId };
       }),
 
@@ -101,7 +103,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .input(controlInput)
       .output(controlOutput)
       .mutation(({ input }) => {
-        deps.agents.get(input.sessionId)?.abort();
+        deps.runtime.get(input.sessionId)?.abort();
         return { sessionId: input.sessionId };
       }),
 
@@ -110,24 +112,40 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .input(controlInput)
       .output(controlOutput)
       .mutation(({ input }) => {
-        deps.agents.kill(input.sessionId);
+        deps.runtime.kill(input.sessionId);
         return { sessionId: input.sessionId };
       }),
   });
 }
 
+/**
+ * 递一条话给这段会话的执行体。
+ *
+ * 投递留在这里，是因为它是**客户端的动作翻进队列**：一句客户端的原话进 core 的队列，没有第二件
+ * 事要做（唤醒是另一件事，`send` 的两支各自先把它做掉）。运行时那一侧的 `post` 是「一段会话
+ * 寄给另一段会话」，不是这个动作。
+ */
 function deliver(
   deps: HostApiDeps,
   session: Session,
   agent: SdkAgent,
   input: SendInput,
 ): { sessionId: string; messageId: string } {
-  deps.delivery.hand(session.id, agent, {
-    content: input.content,
+  const entry: AgentNS.InboxEntryWithContent & { messageId: string } = {
+    messageId: input.messageId,
+    createdAt: new Date().toISOString(),
+    // 高：内循环在工具跑完那个边界取一次件，所以它不必等到这一批彻底跑完；它也不打断
+    // 正在吐的回答 —— 取件只发生在两次请求之间。
+    priority: "high",
     // 来源不是准入判断（宿主不判来路），它只是让模型知道这句话是谁说的
     source: { kind: "user" },
-    messageId: input.messageId,
-  });
+    content: input.content,
+  };
+
+  // 先落库再入队。反过来的话，崩在这两步之间时这一条只剩在内存里，进程一没就没发生过；
+  // 而先落库最坏的代价是同一条被再取一次 —— 那一种重复认得出（它的 `messageId` 会在历史里）。
+  deps.inbox.insert(session.id, entry);
+  agent.push(entry);
 
   return { sessionId: session.id, messageId: input.messageId };
 }
@@ -175,22 +193,12 @@ function existingSession(deps: HostApiDeps, sessionId: string): Session {
   return session;
 }
 
+/**
+ * 叫醒这一段：材料由宿主从库里读出来，装起来与开跑交给运行时。
+ *
+ * 观察者不在这里挂：它是全进程一份、装配根在第一次 `wake` 之前就挂好的（装载归一的那几条消息
+ * 由运行时在唤醒过程中补报 `messageChanged`，靠那一条落库）。
+ */
 async function wakeSession(deps: HostApiDeps, session: Session): Promise<SdkAgent> {
-  const agent = await assemble(deps, session);
-  deps.agents.add(
-    session.id,
-    agent,
-    new AgentSubscription(
-      {
-        messages: deps.messages,
-        inbox: deps.inbox,
-        events: deps.events,
-        onError: deps.onError,
-        isHandingOff: (sessionId) => deps.handoff.isHandingOff(sessionId),
-      },
-      session.id,
-      agent,
-    ),
-  );
-  return agent;
+  return deps.runtime.wake(session.id, await materialsFor(deps, session));
 }

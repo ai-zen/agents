@@ -4,7 +4,15 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
 import { FileLogger } from "@ai-zen/agents-logger";
-import { AgentRepository, ConfigManager, Scope, allInOne } from "@ai-zen/agents-sdk";
+import {
+  AgentRepository,
+  AgentRuntime,
+  ConfigManager,
+  PeerSessionsScopePlugin,
+  Scope,
+  allInOne,
+  resolveModel,
+} from "@ai-zen/agents-sdk";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 import { applyWSSHandler } from "@trpc/server/adapters/ws";
 import { WebSocketServer } from "ws";
@@ -15,9 +23,9 @@ import { HostError } from "./infra/errors.js";
 import { clearHostFile, isProcessAlive, readHostFile, writeHostFile } from "./infra/hostFile.js";
 import { hostPaths, resolveDataRoot, type HostPaths } from "./infra/paths.js";
 import { resolveHostVersion } from "./infra/version.js";
-import { Delivery } from "./modules/agent/delivery.js";
 import { inboxTable } from "./modules/agent/inbox.js";
-import { AgentRegistry } from "./modules/agent/registry.js";
+import { materialsFor } from "./modules/agent/materials.js";
+import { HostObserver } from "./modules/agent/observer.js";
 import type { HostApiDeps } from "./modules/api/deps.js";
 import { createAppRouter } from "./modules/api/router.js";
 import { connectionParams } from "./modules/api/trpc.js";
@@ -40,7 +48,6 @@ import { createTranslator } from "./modules/i18n/index.js";
 import { NoticeService } from "./modules/notice/service.js";
 import { noticeTable } from "./modules/notice/table.js";
 import { QuestionRegistry } from "./modules/question/registry.js";
-import { ScopeRegistry } from "./modules/scope/registry.js";
 import { SearchService } from "./modules/search/service.js";
 import { searchTable } from "./modules/search/table.js";
 import { messageTable } from "./modules/session/messages.js";
@@ -123,8 +130,17 @@ export class HostApp {
   private readonly log: FileLogger;
   private readonly general: GeneralConfig;
   private readonly credentials: CredentialService;
-  private readonly agents: AgentRegistry;
-  private readonly scopes: ScopeRegistry;
+  /**
+   * 谁活着、怎么装起来、容器什么时候拆：全在这一处（宿主不再自己留一份）。
+   *
+   * 它是个薄壳与运行时之间唯一的接面：宿主给四格端口（造容器、开平级会话的行、现读会话名、日志），
+   * 其余全部问它。
+   */
+  private readonly runtime: AgentRuntime;
+  /** 全进程一份的观察者：把运行时的事实翻译成写库与推送 */
+  private readonly observer: HostObserver;
+  /** 收工时解掉观察者：它在运行时那条事实流上的一个订阅 */
+  private readonly detachObserver: () => void;
   private readonly connections: Connections;
   /**
    * 监听这一侧。
@@ -181,7 +197,7 @@ export class HostApp {
     // 模型这一版还没有 procedure 用它：先按依赖顺序接上，免得下一波以为这里没装配过而另立一份
     // 配置读法。
     new ModelService({ config: deps.manager, events: configEvents, t });
-    // MCP 现在有运行期的消费者（`createScope` 里的发现），配置面那一路（`effective()`）还没有
+    // MCP 现在有运行期的消费者（`openScope` 里的发现），配置面那一路（`effective()`）还没有
     // procedure 用它。两者看的是同一批文件、问的是不同的问题。
     const mcp = new McpConfig({
       dataRoot: deps.dataRoot,
@@ -198,7 +214,6 @@ export class HostApp {
 
     const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
     const sessions = new SessionService({ sessions: sessionRows, events, t });
-    this.agents = new AgentRegistry({ sessions, workspaces, events });
 
     // `assets` 与 `session_assets` 的表引了 `messages`，所以只能在它之后建
     const assets = new AssetService({
@@ -218,21 +233,18 @@ export class HostApp {
     // 全文索引的触发器指向 `messages`，所以只能在它之后建
     const search = new SearchService({ search: searchTable(this.db) });
 
-    // 交接排在通知之后：失败那条路上它要推通知。这里给的是那个工厂而不是一份实例 ——
-    // 文档落点与落库那一格都只对一段会话的一趟交接成立，实例由 `start` 每趟现造。
-    const handoff = new HandoffService({
-      db: this.db,
-      sessions,
-      workspaces,
-      agents: this.agents,
-      notices,
-      events,
-      t,
-      createSdk: createSdkHandoff,
-    });
-
-    this.scopes = new ScopeRegistry({
-      createScope: async (cwd) => {
+    // 运行时：装起来、登记、开跑、发话、拆容器全在它那一侧。宿主给它四格端口，每一格都是
+    // 「只有宿主答得出」的事（怎么装配能力、怎么开一行会话、一段会话此刻叫什么、日志往哪写）。
+    //
+    // 建在交接之前：交接的编排要问它「这一段有没有活执行体」。
+    this.runtime = new AgentRuntime({
+      /**
+       * 造一个能力容器。什么时候造、造几个、什么时候拆不归这里（归运行时），这里只回答
+       * 「这个目录上怎么把能力装起来」。
+       *
+       * 平级会话那三个工具随本次装配一起下去：端口由运行时给，容器在同一次装配里把它装成工具。
+       */
+      openScope: async (cwd, peers) => {
         const scope = new Scope({
           getConfig: () => this.general.read(),
           agentsDir,
@@ -246,14 +258,99 @@ export class HostApp {
             mcpPaths: mcp.paths(cwd),
             logger: this.log,
           }),
+          // 平级会话的三个工具：能力不在这里，它们只认这一个端口
+          new PeerSessionsScopePlugin(peers),
         );
         await scope.init();
         return scope;
       },
-      aliveSessions: (cwd) => this.agents.aliveSessions(cwd),
-      t,
+
+      /**
+       * 开一段平级会话：写行、定身份，把装它的材料交回去（装起来由运行时自己接着做）。
+       *
+       * 新会话挂在**开出它的那一段**的项目下：会话是项目里的东西，一段会话开出来的那一段
+       * 当然也在同一个项目里干活。模型先解析、解析不出来直接回一句结构化的拒绝 —— 不先写行，
+       * 一条指不到模型的半成品行没有任何用处。
+       */
+      open: async (input) => {
+        const opener = sessions.get(input.lineage);
+        if (opener === undefined) {
+          // 运行时只会从活着的执行体那一段进来，走到这里说明行刚好被删了。开不出来就是开不出来，
+          // 不假装成功
+          throw new Error(
+            `Cannot open a peer session from "${input.lineage}": that session does not exist`,
+          );
+        }
+
+        const definition = await definitions.get(input.agentId);
+        const resolved = resolveModel({
+          sessionModelId: input.modelId,
+          agentModelId: definition.modelId,
+          defaultModel: this.general.read().defaultModel,
+        });
+        // 模型解析不出来是**结构化的拒绝**：模型读得懂，可以换一个助手或自己干
+        if (resolved === null) return { ok: false, reason: "model_unresolved" };
+
+        const session = sessions.create({
+          workspaceId: opener.workspaceId,
+          // 名字是模型给的那一个；没给就先用一个时刻串顶上（与「自动起的名字」同一套，
+          // 此后由自动命名或用户改名接管）
+          name: input.label ?? new Date().toISOString(),
+          nameIsAuto: input.label === undefined,
+          agentId: input.agentId,
+          modelId: resolved.modelId,
+          // 平级会话默认自动交接：撞线自己交班、不问（`dev-docs/prd/01-decisions.md` 第 45 行：
+          // 用户建的会话默认关、平级会话反过来默认开）。血缘就是开出它的那一段
+          //（「只许开一层」那条判据在运行时那边）
+          autoHandoff: true,
+          lineage: input.lineage,
+        });
+
+        return {
+          ok: true,
+          sessionId: session.id,
+          materials: await materialsFor(
+            { workspaces, definitions, config: this.general, messages, inbox, sessions, handoff },
+            session,
+          ),
+        };
+      },
+
+      // 一段会话此刻叫什么：名字长在会话行上，只有宿主认得出它
+      nameOf: async (sessionId) => sessions.get(sessionId)?.name,
       log: this.log,
     });
+
+    // 交接排在通知之后：失败那条路上它要推通知。这里给的是那个工厂而不是一份实例 ——
+    // 文档落点与落库那一格都只对一段会话的一趟交接成立，实例由 `start` 每趟现造。
+    const handoff = new HandoffService({
+      db: this.db,
+      sessions,
+      workspaces,
+      runtime: this.runtime,
+      notices,
+      events,
+      t,
+      createSdk: createSdkHandoff,
+    });
+
+    /**
+     * 观察者：全进程一份，**挂在第一次 `wake` 之前**。
+     *
+     * 它是这个进程里所有会话「消息与状态落库、再推给客户端」的唯一出口。`wake` 一返回，那段会话
+     * 的执行体就已经在跑了（运行时那边 `void agent.start()`），它发出来的每一条事实都要有人接；
+     * 而事实只报变化、没有回放 —— 晚一步挂，从装载到挂上之间那几条就永远丢了。
+     */
+    const onError = (error: unknown, what: string): void => this.log.error(what, { error });
+    this.observer = new HostObserver({
+      messages,
+      inbox,
+      events,
+      onError,
+      // 交接态会在一个执行体的寿命里变好几次，所以传函数不传值
+      isHandingOff: (sessionId) => handoff.isHandingOff(sessionId),
+    });
+    this.detachObserver = this.observer.attach(this.runtime);
 
     // 配置面改完之后，运行期要知道。没有这一条，用户在界面上停掉一个 MCP 服务器、
     // 运行期照旧连着它，直到进程重启——「启停即时生效」就不成立。
@@ -261,7 +358,7 @@ export class HostApp {
     // 助手定义的变动不走这里：它不进容器的配置，受影的是那几段会话的执行体。
     configEvents.subscribe((event) => {
       if (event.kind === "agentDefinition") return;
-      void this.scopes.refreshAll();
+      void this.runtime.scopes.refreshAll();
     });
 
     this.connections = new Connections();
@@ -269,13 +366,11 @@ export class HostApp {
     const api: HostApiDeps = {
       sessions,
       workspaces,
-      scopes: this.scopes,
+      runtime: this.runtime,
       definitions,
       config: this.general,
       messages,
       inbox,
-      delivery: new Delivery({ inbox }),
-      agents: this.agents,
       assets,
       notices,
       questions,
@@ -283,7 +378,7 @@ export class HostApp {
       handoff,
       events,
       t,
-      onError: (error, what) => this.log.error(what, { error }),
+      onError,
     };
 
     if (attached !== undefined) {
@@ -338,9 +433,18 @@ export class HostApp {
     });
   }
 
-  /** 收尾：先杀执行体（它们还会写库），再断连接、拆能力容器，最后关库与日志 */
+  /**
+   * 收尾：先把执行体杀光、把能力容器拆光（它们在拆之前还会写库），再解观察者那条订阅，
+   * 然后断连接，最后关库与日志。
+   *
+   * `runtime.close()` 与老的两步同次序：先 `kill` 再 `disposeAll` —— 反过来的话，拆容器会遇到
+   * 还活着的执行体，而那时已经没有「稍后再拆」这回事。
+   */
   async stop(): Promise<void> {
-    this.agents.killAll();
+    await this.runtime.close();
+    // 观察者排在 close 之后：那里面每一次 `kill` 都还会发最后几条事实（`resident:gone` 也在其中），
+    // 解早了客户端就收不到「这一段没了」。
+    this.detachObserver();
 
     const listening = this.listening;
     if (listening.on === "self") {
@@ -350,7 +454,6 @@ export class HostApp {
       clearHostFile(this.paths.hostFile);
     }
 
-    await this.scopes.disposeAll();
     this.connections.closeAll();
     this.db.close();
     await this.log.close();
