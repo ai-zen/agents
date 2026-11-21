@@ -3,6 +3,7 @@ import { assetRouter } from "./asset.js";
 import { credentialRouter } from "./credential.js";
 import type { HostApiDeps } from "./deps.js";
 import { eventsProcedure } from "./events.js";
+import { handoffRouter } from "./handoff.js";
 import { noticeRouter } from "./notice.js";
 import { questionRouter } from "./question.js";
 import { searchRouter } from "./search.js";
@@ -25,6 +26,7 @@ export function createAppRouter(deps: HostApiDeps) {
     notice: noticeRouter(deps, api),
     credential: credentialRouter(deps, api),
     question: questionRouter(deps, api),
+    handoff: handoffRouter(deps, api),
     search: searchRouter(deps, api),
     events: eventsProcedure(deps, api),
   });

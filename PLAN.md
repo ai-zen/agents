@@ -10,11 +10,11 @@
 
 | # | 做什么 | 过关标准 |
 |---|---|---|
-| 1 | `modules/config/discovery.ts`（Skill、工具、subagent 的分层目录扫描） | 按优先级合并成一份有效清单；只发现真实存在的目录 |
-| 2 | `modules/session/auto-name.ts` | 变闲那一刻给名字还是自动起的会话起一次名，用户改过的不动 |
-| 3 | `modules/handoff/`（交接与压缩：换记忆、断点消息、待交接标记兑现） | 交接期间不落库；收口时一条 memory_replaced |
-| 4 | `modules/search/`（全文检索） | messages 表上的 FTS 与 trigram 分词；短查询退化到 LIKE |
-| 5 | 三处已知缺口：subagent 最后一片正文（core 不转发 `responseFinished`）、连接上的凭证校验（`credential/` 已建但 `createContext` 还没用它）、题挂着时挡不挡 `agent.send` | 每条要能说出具体可见的后果 |
+| 1 | 交接接上 SDK：装配 SDK 的 `HandoffService`，注入 `commitMemory`，把 `migrate` 算出的记忆交给 `HandoffService.commit` | 库里换了、内存也换了（`agent.messages` 同步 `splice`）；否则模型会拎着旧记忆跑到重启 |
+| 2 | `AgentRegistry` 搬进 `modules/agent/` | 域只向下依赖 `infra`。它现在在 `modules/api/` 里，而 `handoff/` 反过来 import 它，方向是反的 |
+| 3 | `Discovery.abilityPaths(cwd)`（三个目录列表），接进 `allInOne` | 运行期的 Skill / 用户工具 / subagent 现在一层都发现不到：`app.ts` 的 `allInOne()` 三个路径参数全空 |
+| 4 | 三处已知缺口：subagent 最后一片正文（core 不转发 `responseFinished`）、连接上的凭证校验（`credential/` 已建但 `createContext` 还没用它）、题挂着时挡不挡 `agent.send` | 每条要能说出具体可见的后果 |
+| 5 | 已建表的存量库不会自动长出 `searchText` 与 `hidden`（`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作） | 协议机上的旧库要删掉重建，或补一次 ALTER + `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')` |
 
 ## 门禁
 

@@ -30,4 +30,12 @@ export const en: Record<string, string> = {
   "找不到 id 为 {questionId} 的题": 'Cannot find the question "{questionId}"',
   "题 {questionId} 的候选项里没有 {value}":
     'The question "{questionId}" has no choice "{value}"',
+  "会话 {sessionId} 正在交接": 'Session "{sessionId}" is being handed off',
+  "已存档_{name}": "archived_{name}",
+  "会话 {sessionId} 没有运行中的执行体，无法交接":
+    'Session "{sessionId}" has no running agent; handoff requires one',
+  "会话 {sessionId} 还在回答，等它答完再交接":
+    'Session "{sessionId}" is still answering; hand off after it becomes idle',
+  "会话 {sessionId} 的输出已暂停，先恢复再交接":
+    'Output for session "{sessionId}" is paused; resume it before handing off',
 };
