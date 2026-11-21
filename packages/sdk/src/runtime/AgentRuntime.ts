@@ -145,6 +145,7 @@ const AGENT_EVENT_NAMES: { readonly [K in keyof AgentEvents]: K } = {
   subAgentFinished: "subAgentFinished",
   denied: "denied",
   failed: "failed",
+  observerFailed: "observerFailed",
 };
 
 /** 上面那张表的值：挂转发要按名字逐个挂，键与值是同一个字，取哪一边都一样 */

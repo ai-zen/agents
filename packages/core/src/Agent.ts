@@ -288,6 +288,27 @@ export interface FailedEvent {
 }
 
 /**
+ * 旁观的人自己炸了：{@link Agent.on} 的那一个订阅者抛了错。
+ *
+ * 它与 `failed` 的区别写清在这里，因为两条都在说「出错了」：
+ * - `failed` 是**这次请求 / 这次工具失败了**，那是执行体自己的事，这条消息的 `status`、
+ *   `error` 会跟着变；
+ * - `observerFailed` 是**旁观的人自己炸了**：订阅者只是看，被观察的执行体照常跑，
+ *   消息、状态、队列一处都不因此改变。
+ *
+ * 为什么非要有这一条：观察是旁路，不是执行体的一部分。宿主写库、推送、运行时转发，任何一处
+ * 抛错都只该记在它自己头上，不该顺着 `emit` 走进外循环 / 内循环 —— 磁盘满了不能把推理一起
+ * 打死。收成事件之后这条事实也仍然是「听得见」的：别的订阅者照样能收到它去记日志。
+ */
+export interface ObserverFailedEvent {
+  agent: Agent;
+  /** 炸掉的那一条事件的名字（订阅的是哪一个） */
+  event: keyof AgentEvents;
+  /** 订阅者抛出来的那个错；不是 `Error` 的已经收成 `Error` */
+  error: Error;
+}
+
+/**
  * 事件表。**带出去的是活对象本身，不是拷贝** —— 收到事件的人手里攥着的就是那条消息、
  * 那条条目、那片原片。拷贝 = 第二份事实，交出去那一刻就开始过期。
  *
@@ -319,6 +340,8 @@ export interface AgentEvents {
   subAgentFinished: SubAgentEvent;
   denied: DeniedEvent;
   failed: FailedEvent;
+  /** 订阅者自己抛的错（报的是「谁在看的那一条炸了」，不是执行体失败） */
+  observerFailed: ObserverFailedEvent;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +465,14 @@ export class Agent extends AgentContext {
   private deathSaid = false;
   /** 一次性 agent 已经吃过一次投递了（自此关收） */
   private fed = false;
+  /**
+   * 正在报一条 `observerFailed` —— **防递归**的那一格。
+   *
+   * 为什么需要它：订阅 `observerFailed` 的那个订阅者，本身也可能是坏的那一个。不立这个标志，
+   * 「报失败」这一步自己失败就会再去报一次失败，一路递归到栈溢出；而那次栈溢出又会穿过
+   * `emit` 打进循环里 —— 恰好是这里要挡住的那件事。立起来期间再炸就咽下去，不再报。
+   */
+  private reportingObserverFailure = false;
 
   /** `start()` 的那句 promise：到死才 resolve，且不 reject */
   private runPromise?: Promise<void>;
@@ -456,10 +487,49 @@ export class Agent extends AgentContext {
   // 事件与插件
   // -------------------------------------------------------------------------
 
-  /** 订阅一个事件，返回取消函数（订阅者自己管生命周期） */
+  /**
+   * 订阅一个事件，返回取消函数（订阅者自己管生命周期）。
+   *
+   * **观察是旁路**：订阅者抛错就地接住，转成 `observerFailed` 报出去，不打断被观察的执行体。
+   * 底下的 `EventBus.emit` 只是一路 `forEach` 过去，没有 try/catch（它是外部包，不在这里改），
+   * 所以隔离只能落在这一侧：注册到 bus 上的是下面这层包装函数，而**退订仍按它解** ——
+   * 谁订的那一个就是谁的那一个，一对一。
+   *
+   * 炸过一次**不把订阅者摘掉**：下一次也许就好了（磁盘满是一阵一阵的），摘掉等于替它做了决定。
+   * 同一事件上的其它订阅者照常收到 —— 一个人炸了不该让别人瞎。
+   */
   on<K extends keyof AgentEvents>(type: K, handler: (payload: AgentEvents[K]) => void): () => void {
-    const subscription = this.bus.on(type as string, handler as (...args: any[]) => any);
+    const wrapped = (payload: AgentEvents[K]) => {
+      try {
+        handler(payload);
+      } catch (error) {
+        this.reportObserverFailure(type, error);
+      }
+    };
+    const subscription = this.bus.on(type as string, wrapped as (...args: any[]) => any);
     return () => subscription.dispose();
+  }
+
+  /**
+   * 一条订阅者抛错的事实：收成 `Error` 之后当 `observerFailed` 发出去。
+   *
+   * 非 `Error` 的抛出物收成 `Error`，与 {@link dispatchHook} 里那一处同一个口径 ——
+   * 拿到事件的人不必再分「这次是 Error 还是一个字符串」。
+   *
+   * 走 `this.emit` 而不是直接写 `bus`：这条事实别的订阅者也该听得见（宿主以后拿它记日志），
+   * 而且它自己也要过一遍同样的包装函数，于是坏了的那一个即使订的正是它，也只在
+   * `reportingObserverFailure` 那一道上被咽掉一次。
+   */
+  private reportObserverFailure(event: keyof AgentEvents, thrown: unknown): void {
+    if (this.reportingObserverFailure) return;
+
+    this.reportingObserverFailure = true;
+    try {
+      const error = thrown instanceof Error ? thrown : new Error(String(thrown));
+      this.emit("observerFailed", { agent: this, event, error });
+    } finally {
+      this.reportingObserverFailure = false;
+    }
   }
 
   /**
@@ -1471,6 +1541,9 @@ export class Agent extends AgentContext {
    *
    * 先看当前值再等事件：`once` 型等待在「注册前已经满足」时会永远等不到。
    * `signal` 一响立刻返回 —— 取消不该被一个可能永远不变的状态卡住。
+   *
+   * 下面这几个订阅直接压在 `this.bus` 上、**不走 {@link on}**：它们是内核自己的（只做 resolve），
+   * 不会抛错；隔离只落在公开的订阅口上，是给外面的观察者用的。
    */
   private waitForState(target: AgentNS.AgentState, signal?: AbortSignal): Promise<void> {
     const reached = () => this.state === target && (target !== "idle" || this.inbox.size === 0);
