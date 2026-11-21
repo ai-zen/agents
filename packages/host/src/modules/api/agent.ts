@@ -135,6 +135,20 @@ function existingSession(deps: HostApiDeps, sessionId: string): Session {
 
 async function wakeSession(deps: HostApiDeps, session: Session): Promise<Agent> {
   const agent = await assemble(deps, session);
-  deps.agents.add(session.id, agent, new AgentSubscription(deps, session.id, agent));
+  deps.agents.add(
+    session.id,
+    agent,
+    new AgentSubscription(
+      {
+        messages: deps.messages,
+        inbox: deps.inbox,
+        events: deps.events,
+        onError: deps.onError,
+        isHandingOff: (sessionId) => deps.handoff.isHandingOff(sessionId),
+      },
+      session.id,
+      agent,
+    ),
+  );
   return agent;
 }

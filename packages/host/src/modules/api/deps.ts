@@ -11,6 +11,7 @@ import type { SearchService } from "../search/service.js";
 import type { Delivery } from "../agent/delivery.js";
 import type { inboxTable } from "../agent/inbox.js";
 import type { HostEvent } from "../events.js";
+import type { HandoffService } from "../handoff/service.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { WorkspaceService } from "../workspace/service.js";
@@ -38,6 +39,7 @@ export interface HostApiDeps {
   readonly credentials: CredentialService;
   readonly questions: QuestionRegistry;
   readonly search: SearchService;
+  readonly handoff: HandoffService;
   readonly events: Bus<HostEvent>;
   readonly t: Translator;
   readonly onError: (error: unknown, what: string) => void;

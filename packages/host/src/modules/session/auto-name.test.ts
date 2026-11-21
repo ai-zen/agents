@@ -17,6 +17,7 @@ import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
 import type { ConfigEvent } from "../config/events.js";
 import { GeneralConfig } from "../config/general.js";
+import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { workspaceTable } from "../workspace/table.js";
 import { AutoNamer } from "./auto-name.js";
@@ -49,6 +50,7 @@ function setup() {
 
   const sessions = new SessionService({
     sessions: sessionTable(db),
+    events: createBus<HostEvent>(),
     t: createTranslator(() => "zh"),
   });
   const messages = messageTable(db);

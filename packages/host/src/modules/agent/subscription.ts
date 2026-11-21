@@ -10,6 +10,8 @@ export interface AgentSubscriptionDeps {
   readonly inbox: ReturnType<typeof inboxTable>;
   readonly events: Bus<HostEvent>;
   readonly onError: (error: unknown, what: string) => void;
+  /** 这一段此刻是否在交接。传函数不传值：交接态会在一个执行体的寿命里变两次以上 */
+  readonly isHandingOff: (sessionId: string) => boolean;
 }
 
 /**
@@ -196,7 +198,14 @@ export class AgentSubscription {
     return { type: "agent.inbox", sessionId: this.sessionId, inbox: agent.inboxPending };
   }
 
+  /**
+   * 交接期间不落库：这一任写下的东西属于即将被换掉的那份记忆，落进去就跟着新记忆一起活着，
+   * 而用户看到的历史里会多出一段「上一代在想什么」。推给客户端照旧 —— 用户要看得见它在写。
+   *
+   * 判在写之前、而推送在写之后：两半共用一个入口，拆开写就会有人只给其中一半加这道判断。
+   */
   private writeMessage(message: AgentNS.Message): void {
+    if (this.deps.isHandingOff(this.sessionId)) return;
     try {
       this.deps.messages.upsert(this.sessionId, message);
     } catch (error) {

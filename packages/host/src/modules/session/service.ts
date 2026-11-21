@@ -1,16 +1,22 @@
+import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
+import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { sessionTable } from "./table.js";
 import type { NewSession, Session } from "./types.js";
 
 export interface SessionDeps {
   readonly sessions: ReturnType<typeof sessionTable>;
+  readonly events: Bus<HostEvent>;
   readonly t: Translator;
 }
 
 /**
  * 会话行上的写入口只有 `update` 一个：需要改哪一格就合并哪一格，不按字段各开一个方法
  * —— 每多一个单列方法，行上的字段就在两处各有一份定义。
+ *
+ * 建行与改行都在落库之后推 `session.changed`：订阅者收到这条时会按 id 回读那一行，
+ * 推在前面就读不到自己刚被通知的那个值。
  */
 export class SessionService {
   constructor(private readonly deps: SessionDeps) {}
@@ -35,6 +41,7 @@ export class SessionService {
       updatedAt: now,
     };
     this.deps.sessions.put(session);
+    this.deps.events.emit({ type: "session.changed", session });
     return session;
   }
 
@@ -57,6 +64,7 @@ export class SessionService {
 
     const next: Session = { ...current, ...patch, updatedAt: Date.now() };
     this.deps.sessions.put(next);
+    this.deps.events.emit({ type: "session.changed", session: next });
     return next;
   }
 

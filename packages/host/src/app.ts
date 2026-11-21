@@ -33,6 +33,7 @@ import { McpConfig } from "./modules/config/mcp.js";
 import { ModelService } from "./modules/config/models.js";
 import { Connections } from "./modules/connection/registry.js";
 import type { HostEvent } from "./modules/events.js";
+import { HandoffService } from "./modules/handoff/service.js";
 import { createTranslator } from "./modules/i18n/index.js";
 import { ScopeRegistry } from "./modules/scope/registry.js";
 import { messageTable } from "./modules/session/messages.js";
@@ -130,8 +131,15 @@ export class HostApp {
     new McpConfig({ dataRoot: deps.dataRoot, homeDir: homedir(), events: configEvents, t });
 
     const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
-    const sessions = new SessionService({ sessions: sessionRows, t });
+    const sessions = new SessionService({ sessions: sessionRows, events, t });
     this.agents = new AgentRegistry({ sessions, workspaces, events });
+    const handoff = new HandoffService({
+      db: this.db,
+      sessions,
+      agents: this.agents,
+      events,
+      t,
+    });
 
     // `assets` 与 `session_assets` 的表引了 `messages`，所以只能在它之后建
     const assets = new AssetService({
@@ -177,6 +185,7 @@ export class HostApp {
       credentials,
       questions,
       search,
+      handoff,
       events,
       t,
       onError: (error, what) => this.log.error(what, { error }),

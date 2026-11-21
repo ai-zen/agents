@@ -1,4 +1,4 @@
-import type { Agent } from "@ai-zen/agents-core";
+import type { Agent, AgentNS } from "@ai-zen/agents-core";
 
 import type { Bus } from "../../infra/bus.js";
 import type { AgentSubscription } from "../agent/subscription.js";
@@ -65,6 +65,27 @@ export class AgentRegistry {
 
   killAll(): void {
     for (const sessionId of [...this.alive.keys()]) this.kill(sessionId);
+  }
+
+  /**
+   * 这段会话此刻在干还是闲、输出闸是开是关。
+   *
+   * 现读，不在这里另记一份：执行体会整个被换掉（换模型就是换一个实例），记下来的那份随即过期。
+   * `null` = 这一段没有活执行体。
+   */
+  liveState(sessionId: string): { status: AgentNS.AgentState; outputPaused: boolean } | null {
+    const entry = this.alive.get(sessionId);
+    if (entry === undefined) return null;
+    return { status: entry.agent.state, outputPaused: entry.agent.isOutputPaused };
+  }
+
+  /** 没有活执行体时是空操作：关闸与开闸可能落在执行体已经被杀之后 */
+  pauseOutput(sessionId: string): void {
+    this.alive.get(sessionId)?.agent.pauseOutput();
+  }
+
+  resumeOutput(sessionId: string): void {
+    this.alive.get(sessionId)?.agent.resumeOutput();
   }
 
   /** 这个目录上还活着哪几段会话：`cwd` 不在执行体身上，只能经由会话行与项目行现算 */

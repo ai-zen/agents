@@ -2,6 +2,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 
 import type { Notice } from "./notice/types.js";
 import type { Question } from "./question/types.js";
+import type { Session } from "./session/types.js";
 
 /**
  * 推给客户端的事实。全部是「事实变了」，不是「阶段到了」——所以这里没有「这一轮跑完了」这种东西，
@@ -37,6 +38,17 @@ export type HostEvent =
       readonly sessionId: string;
       readonly inbox: readonly AgentNS.InboxEntry[];
     }
+  /**
+   * 会话行变了。整个一行带走，不说哪几格动过：新建与改动对客户端是同一个动作 —— 拿这一份
+   * 替换掉它手里那一行，要说「变了哪些格」就得让客户端知道宿主每次改了哪几处。
+   */
+  | { readonly type: "session.changed"; readonly session: Session }
+  /**
+   * 这段会话在交接。输入框能不能发、界面上要不要直说「正在交接」都看它。
+   *
+   * 不并进 `session.changed`：交接态不落在会话行上，混进那一行就得给它编一个并不存在的字段。
+   */
+  | { readonly type: "session.handoff"; readonly sessionId: string; readonly handingOff: boolean }
   | { readonly type: "notice"; readonly notice: Notice }
   /** 不给 `sessionId` 的意思是清掉了全部，所以这一格可缺省，不是 `string | null` */
   | { readonly type: "notice.cleared"; readonly sessionId?: string }
