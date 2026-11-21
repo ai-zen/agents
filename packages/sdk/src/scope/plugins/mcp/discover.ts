@@ -61,7 +61,8 @@ function normalizeTransport(
  * { "mcpServers": { "server-id": { "type": "stdio", "command": "npx", ... } } }
  * ```
  *
- * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。
+ * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。靠前的文件里
+ * **任何一条**占住这个名字的条目都算数，包括 `disabled: true` 的那一条：近层停用即取消远层。
  */
 /** 发现 MCP 配置时的选项 */
 export interface DiscoverMcpServersOptions {
@@ -97,10 +98,13 @@ export async function discoverMcpServers(
         const rawServer = servers[id] as Record<string, unknown> | undefined;
         if (!rawServer || typeof rawServer !== "object") continue;
 
+        // 名字先认领，再决定收不收：写成 `disabled: true` 的那一条也是这一层对这个名字的
+        // 发言，远处同名的定义不该越过它生效。放到收进结果之后再认领，停用条目就不占名字
+        // —— 人写「别用」，合并出来的却是一条能用的。
+        seen.add(id);
         const normalized = normalizeConfig(id, rawServer);
         if (!normalized) continue;
 
-        seen.add(id);
         items.push(normalized);
       }
     } catch (err: unknown) {

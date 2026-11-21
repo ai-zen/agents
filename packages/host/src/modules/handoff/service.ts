@@ -228,7 +228,7 @@ export class HandoffService {
    * 换记忆成功之后推两条 `session.changed`，顺序不能换：客户端先看到列表里多了一段，再去重拉
    * 原会话的消息。反过来，先到的那一条会让它去重拉一段还没有新记忆的会话。
    */
-  commit(sessionId: string, memory: readonly AgentNS.Message[]): void {
+  commit(sessionId: string, memory: readonly AgentNS.Message[], templateCount: number): void {
     const session = this.deps.sessions.get(sessionId);
     if (session === undefined) {
       throw new HostError(
@@ -260,7 +260,7 @@ export class HandoffService {
       updatedAt: at,
     };
 
-    replaceMemory(this.deps.db, { sessionId, archived, memory });
+    replaceMemory(this.deps.db, { sessionId, archived, memory, templateCount });
     // 落库在前、换内存在后：`replaceMemory` 是一个事务，它失败时整批退回、内存这时还没动，
     // 两处一致地停在交接前。反过来先换内存，落库一旦失败就留下「内存是新的、库是旧的」，
     // 而进程重启读回来的是库那一份 —— 用户看到的是记忆复活。
@@ -303,7 +303,8 @@ export class HandoffService {
       const sdk = this.deps.createSdk({
         handoffDir,
         strategy: "prune",
-        commitMemory: (commit) => this.commit(sessionId, commit.memory),
+        commitMemory: (commit) =>
+          this.commit(sessionId, commit.memory, agent.definition.messages?.length ?? 0),
       });
       const { mode } = await sdk.migrate({ agent, signal });
       this.finish(sessionId);

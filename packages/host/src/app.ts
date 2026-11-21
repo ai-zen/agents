@@ -126,10 +126,12 @@ export class HostApp {
       general: this.general,
     });
     this.hostSettings = new HostSettings({ path: join(deps.dataRoot, "host.json") });
-    // 模型与 MCP 这一版还没有 procedure 用它们：先按依赖顺序接上，免得下一波以为这里没装配过
-    // 而另立一份配置读法。
+    // 模型这一版还没有 procedure 用它：先按依赖顺序接上，免得下一波以为这里没装配过而另立一份
+    // 配置读法。
     new ModelService({ config: deps.manager, events: configEvents, t });
-    new McpConfig({
+    // MCP 现在有运行期的消费者（`createScope` 里的发现），配置面那一路（`effective()`）还没有
+    // procedure 用它。两者看的是同一批文件、问的是不同的问题。
+    const mcp = new McpConfig({
       dataRoot: deps.dataRoot,
       homeDir: homedir(),
       events: configEvents,
@@ -178,7 +180,16 @@ export class HostApp {
           getConfig: () => this.general.read(),
           agentsDir,
           cwd,
-        }).use(...allInOne(discovery.abilityPaths(cwd)));
+        }).use(
+          ...allInOne({
+            ...discovery.abilityPaths(cwd),
+            // 运行期要知道「这些服务器怎么连」，与 `McpConfig.effective` 看的是同一批文件。
+            // 路径只能问它要：`mcpPaths` 空着时插件连连接管理器都不建，用户写了 `mcp.json`
+            // 也一个服务器都连不上，而且不报错。
+            mcpPaths: mcp.paths(cwd),
+            logger: this.log,
+          }),
+        );
         await scope.init();
         return scope;
       },

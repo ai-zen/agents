@@ -1,9 +1,9 @@
 /**
  * 两条验收，都针对会安静出错的地方：
  *
- * 1. 近层写 `disabled: true` 取消远处同名的定义 —— SDK 的合并没有这条规则（停用的条目不进
- *    `seen`，远处那份反而赢），只能由这一层补。补齐之后不再有人重做归一化：别名、推断、坏文件
- *    都归 SDK，抄回来就又有两份。
+ * 1. 近层写 `disabled: true` 确实取消了远处同名的定义 —— 这条规则现在在 SDK 的发现里（停用的
+ *    条目也占住名字），这一层只把五个路径交过去。它排在这里是因为「不报错、只是多连了一个
+ *    用户明确停掉的服务器」正是这一层交路径时最容易漏的那一条。
  * 2. 写回一条不洗掉文件里其他键 —— 洗掉之后没有任何报错，只在用户下次打开文件时发现字段没了。
  */
 
@@ -40,23 +40,21 @@ function configOf(dirs: { dataRoot: string; homeDir: string; cwd: string }): Mcp
 describe("MCP 配置", () => {
   it("近层的 disabled 取消远处同名的定义", async () => {
     const dirs = setup();
-    mkdirSync(join(dirs.cwd, ".ai-zen"), { recursive: true });
+    // 近的那一层（项目根）只写停用与另一条完好的；能用的那份同名定义在远的数据根那一层
     writeFileSync(
       join(dirs.cwd, ".mcp.json"),
       JSON.stringify({
         mcpServers: {
-          files: { type: "stdio", command: "npx", args: ["-y", "server-files"] },
+          files: { disabled: true },
           kept: { command: "npx", args: ["-y", "server-kept"] },
         },
       }),
     );
     writeFileSync(
-      join(dirs.cwd, ".ai-zen", "mcp.json"),
-      JSON.stringify({ mcpServers: { files: { disabled: true } } }),
-    );
-    writeFileSync(
       join(dirs.dataRoot, "mcp.json"),
-      JSON.stringify({ mcpServers: { files: { type: "stdio", command: "another" } } }),
+      JSON.stringify({
+        mcpServers: { files: { type: "stdio", command: "npx", args: ["-y", "server-files"] } },
+      }),
     );
 
     const servers = await configOf(dirs).effective(dirs.cwd);

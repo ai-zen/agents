@@ -155,7 +155,12 @@ describe("换记忆", () => {
       hidden: true,
     });
 
-    replaceMemory(db, { sessionId: original.id, archived, memory: [prompt, breakpoint] });
+    replaceMemory(db, {
+      sessionId: original.id,
+      archived,
+      memory: [prompt, breakpoint],
+      templateCount: 1,
+    });
 
     expect(sessions.get("archived-1")).toEqual(archived);
     // 旧记忆整段搬过去：归属变了，`seq` 一个字不动
@@ -175,6 +180,7 @@ describe("换记忆", () => {
         sessionId: original.id,
         archived: secondArchived,
         memory: [message("m-4", "新的第一句"), broken],
+        templateCount: 0,
       }),
     ).toThrow();
 

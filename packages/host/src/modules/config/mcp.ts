@@ -47,8 +47,8 @@ export interface McpConfigDeps {
  * MCP 服务器的配置。五层文件合并成一份有效清单，同名以离项目近的为准。
  *
  * 合并本身不在这里：`discoverMcpServers` 做的就是这件事，它认识的写法比这一层多（`transport`
- * 与 `transportType` 两个别名、停用、解析失败记日志）。这一层只剩 SDK 不知道的两件事 ——
- * 哪五个文件，以及哪两层可以写。
+ * 与 `transportType` 两个别名、停用与「近层停用取消远层」、解析失败记日志）。这一层只剩 SDK
+ * 不知道的两件事 —— 哪五个文件，以及哪两层可以写。
  *
  * 每次调用都重新读文件，不留缓存：缓存一份就要回答「什么时候让它失效」，而这几份文件用户
  * 随时会手改，命令行工具也可能在宿主运行期间写它们。
@@ -57,15 +57,11 @@ export class McpConfig {
   constructor(private readonly deps: McpConfigDeps) {}
 
   /**
-   * 合并后的有效清单。停用的条目自己也不在里面：SDK 归一化时就把它们丢了。所以「把一条停用的
-   * 配置重新启用」读的是它所在的那层文件，不是这份清单。
+   * 合并后的有效清单。停用的条目自己也不在里面，而且它取消了远处同名的定义 —— 都是 SDK 的
+   * 发现做的。所以「把一条停用的配置重新启用」读的是它所在的那层文件，不是这份清单。
    */
   async effective(cwd: string): Promise<McpServerConfig[]> {
-    // 不传 `logger`：配置面还没有可接的日志口，SDK 的发现不注入就什么都不记 —— 某个文件
-    // 解析失败时，清单里那一条会安静地少掉。
-    const servers = await discoverMcpServers(this.layerPaths(cwd), { logger: this.deps.log });
-    const disabled = this.disabledNames(cwd);
-    return servers.filter((server) => !disabled.has(server.id));
+    return discoverMcpServers(this.paths(cwd), { logger: this.deps.log });
   }
 
   async save(scope: McpScope, cwd: string, server: McpServerConfig): Promise<void> {
@@ -110,8 +106,14 @@ export class McpConfig {
     }
   }
 
-  /** 交给 SDK 的就是这五个路径，近的在前：它的合并按这个顺序先到先得 */
-  private layerPaths(cwd: string): string[] {
+  /**
+   * 交给 SDK 的就是这五个路径，近的在前：它的合并按这个顺序先到先得。
+   *
+   * 公开是因为运行期要的就是它：`Scope` 里的 MCP 插件拿同一批文件自己去发现，与
+   * {@link effective} 是「同一批文件的两个问题」——一个有界面要看的清单，一个要知道怎么连。
+   * 让调用方另拼一份，层表就有了第二处。
+   */
+  paths(cwd: string): string[] {
     return LAYER_ORDER.map((scope) => this.pathOf(scope, cwd));
   }
 
@@ -123,31 +125,6 @@ export class McpConfig {
       });
     }
     return path;
-  }
-
-  /**
-   * 按层序读一遍各文件，收 `disabled: true` 的名字。
-   *
-   * 这是产品的规则，SDK 的合并没有它：`discoverMcpServers` 把停用的条目归一化成 `null` 之后
-   * 直接 `continue`，名字因此不进它的 `seen`，远处同名的定义照样被收进结果 —— 人写「别用」，
-   * 合出来的却是一条能用的。过滤排在 SDK 之后，归一化一行都没有抄回来。
-   *
-   * 坏文件在这里不报：同一趟 `effective()` 里 `discoverMcpServers` 已经为它记过一条日志，
-   * 这里再抛一次会把整份清单变成一条失败，而 SDK 的合并没有这个失败面。
-   *
-   * 这是同一批文件的第二遍读：SDK 只交出合并结果，不交出每个文件里有哪些名字被它丢掉了。
-   * 少读这一遍就得让 SDK 那边多一个返回值，而那属于 SDK 的接口，不属于这一层。
-   */
-  private disabledNames(cwd: string): Set<string> {
-    const names = new Set<string>();
-    for (const path of this.layerPaths(cwd)) {
-      const file = parseRawFile(readTextFile(path));
-      if (file === undefined) continue;
-      for (const [name, entry] of Object.entries(file.mcpServers ?? {})) {
-        if (entry?.disabled === true) names.add(name);
-      }
-    }
-    return names;
   }
 
   /**

@@ -24,6 +24,15 @@ export interface MemoryReplacement {
    * 这一波没有外部调用者：下一波由 SDK 的 `commitMemory` 接缝把 `migrate()` 算好的那一份递进来。
    */
   readonly memory: readonly AgentNS.Message[];
+  /**
+   * `memory` 开头有几条是助手定义带来的系统提示（`agent.definition.messages.length`）。
+   *
+   * 这几条不落行：装载时由 `createAgent` 装上，行接在它们后面；落成行，下一次装载就会多一份。
+   * 由一个数字说清，而不是在这里按形状猜——模板不一定是「连续的非 hidden system」
+   *（出厂 subagent 定义就是 `[System, User("{{task}}")]`），按形状猜会把模板剩下的那一半
+   * 当消息行写库，下一次装载提示词就翻倍，而且不报错。
+   */
+  readonly templateCount: number;
 }
 
 /**
@@ -51,17 +60,9 @@ export function replaceMemory(db: DatabaseSync, input: MemoryReplacement): void 
       input.sessionId,
     );
 
-    // 开头连续的、不隐藏的 system 消息是助手定义带来的系统提示：装载时由 `createAgent` 装上，
-    // 行接在它们后面。落成行，下一次装载就会多出一份。断点也是 system，但它 `hidden` ——
-    // 它不是提示，是上一代留下的路标，得是行。
-    let firstRow = 0;
-    while (
-      firstRow < input.memory.length &&
-      input.memory[firstRow].role === AgentNS.Role.System &&
-      input.memory[firstRow].hidden !== true
-    ) {
-      firstRow += 1;
-    }
-    for (const message of input.memory.slice(firstRow)) messages.upsert(input.sessionId, message);
+    // 开头那几条是助手定义带来的系统提示，避开它们；断点也是 system，但它 `hidden`——
+    // 它不是模板，是上一代留下的路标，得是行。
+    for (const message of input.memory.slice(input.templateCount))
+      messages.upsert(input.sessionId, message);
   });
 }

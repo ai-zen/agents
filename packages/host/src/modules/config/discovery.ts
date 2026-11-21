@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import {
+  CONFIG_SUB_DIRS,
   discoverSkills,
   discoverSubAgents,
   discoverUserToolFiles,
@@ -23,16 +24,15 @@ export interface DiscoveryDeps {
 }
 
 /**
- * 一种能力。值就是它在各层目录下的子目录名：目录名与 SDK 选项名对不上的只有 subagent 那一种
- * （`sub-agents` 对着 `subAgentsPaths`），那个对不上的地方只在 {@link Discovery.abilityPaths} 里写一次。
+ * 一种能力。值就是它在各层目录下的子目录名，取自 SDK 的 `CONFIG_SUB_DIRS`：那一份里另外两个
+ * 目录不是能力（`agents` 只在数据根一处放助手定义，`mcp-oauth` 是凭据），剩下的正是这三种。
  */
-type Ability = "skills" | "tools" | "sub-agents";
+type Ability = Exclude<(typeof CONFIG_SUB_DIRS)[number], "agents" | "mcp-oauth">;
 
 /**
  * 三种能力的来源目录，键名就是 `allInOne` 的选项名：这份值直接交给它，中间不再转一次。
  *
- * 没有 `mcpPaths`：MCP 要的是五个配置文件路径，而 `McpConfig` 合并出来的是一份清单，两者
- * 怎么接还没定。不传这一格，运行期一个 MCP 服务器都连不上。
+ * 没有 `mcpPaths`：MCP 那五层的路径属于 `McpConfig.paths`，与能力目录不是同一张层表。
  */
 export interface AbilityPaths {
   readonly skillsPaths: string[];
@@ -73,6 +73,9 @@ export class Discovery {
 
   /**
    * 喂给 `allInOne` 的那三格。近的在前。
+   *
+   * 目录名与选项名对不上的只有 subagent 那一种（`sub-agents` 对着 `subAgentsPaths`），
+   * 那个对不上的地方只在这一个方法里写一次。
    *
    * `agentsDir` 不在这里：助手定义只有数据根下一处，与项目无关，`Scope` 自己收它。
    */

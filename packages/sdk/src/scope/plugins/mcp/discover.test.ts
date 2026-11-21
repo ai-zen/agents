@@ -213,6 +213,25 @@ describe("discoverMcpServers", () => {
     expect(result[0].id).toBe("active");
   });
 
+  it("近层停用取消远层同名定义：停用的条目也占住名字", async () => {
+    writeMcpConfig("near.json", {
+      files: { disabled: true },
+      kept: { type: "stdio", command: "kept-mcp" },
+    });
+    writeMcpConfig("far.json", {
+      files: { type: "stdio", command: "server-files" },
+    });
+
+    const result = await discoverMcpServers([join(dir, "near.json"), join(dir, "far.json")]);
+
+    // 近层说的是「别用 files」；远层的定义再完整也是同一个名字，不该绕过它生效
+    expect(result.map((server) => server.id)).toEqual(["kept"]);
+
+    // 反过来：远层的停用取消不了近层的定义 —— 远近只有一条规则，停用不是一条独立的优先级
+    const reversed = await discoverMcpServers([join(dir, "far.json"), join(dir, "near.json")]);
+    expect(reversed.map((server) => server.id)).toEqual(["files", "kept"]);
+  });
+
   it("空 mcpServers 返回空数组", async () => {
     writeMcpConfig("mcp.json", {});
     await expect(discoverMcpServers([join(dir, "mcp.json")])).resolves.toEqual([]);

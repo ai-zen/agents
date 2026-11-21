@@ -333,7 +333,7 @@ describe("换记忆", () => {
       content: "/tmp/handoff.md",
       hidden: true,
     });
-    handoff.commit(session.id, [prompt, breakpoint]);
+    handoff.commit(session.id, [prompt, breakpoint], 1);
 
     // 库里：原会话只剩断点那一条（开头那条系统提示不落成行，装载时由助手定义装上）
     expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([breakpoint.id]);
@@ -358,7 +358,7 @@ describe("换记忆", () => {
       content: "/tmp/handoff.md",
       hidden: true,
     });
-    handoff.commit(session.id, [breakpoint]);
+    handoff.commit(session.id, [breakpoint], 0);
 
     expect(held).toBe(agent.messages);
     expect(held.map((item) => item.id)).toEqual([breakpoint.id]);
