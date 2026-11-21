@@ -258,6 +258,9 @@ export class HostApp {
       ensureLocalToken(this.credentials, this.paths.tokenFile);
     }
     const questions = new QuestionRegistry({ events, t });
+    // 连接登记表建在交接之前：交接的 `automaticMode` 要问它「此刻还有没有人连着」（没人连就不问，
+    // 按默认执行者走）。先建它、再建交接，构造顺序就是依赖顺序（交接那一格拿的是同一个对象）。
+    this.connections = new Connections();
     // 全文索引的触发器指向 `messages`，所以只能在它之后建
     const search = new SearchService({ search: searchTable(this.db) });
 
@@ -368,6 +371,8 @@ export class HostApp {
       workspaces,
       runtime: this.runtime,
       notices,
+      questions,
+      connections: this.connections,
       events,
       t,
       createSdk: createSdkHandoff,
@@ -400,8 +405,6 @@ export class HostApp {
       if (event.kind === "agentDefinition") return;
       void this.runtime.scopes.refreshAll();
     });
-
-    this.connections = new Connections();
 
     const api: HostApiDeps = {
       sessions,

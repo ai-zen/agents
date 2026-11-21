@@ -14,9 +14,11 @@ import type {
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
+import type { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
+import type { QuestionRegistry } from "../question/registry.js";
 import { replaceMemory } from "../session/memory.js";
 import type { SessionService } from "../session/service.js";
 import type { Session } from "../session/types.js";
@@ -92,6 +94,18 @@ export interface HandoffDeps {
   readonly runtime: AgentRuntime;
   /** 失败那条路上没有别的出口：`start` 早就返回了，用户只能从通知里知道 */
   readonly notices: NoticeService;
+  /**
+   * 软线越线时的那道三选题：装着问出去、并等一个答复（`askAwaitable`）。
+   *
+   * 题只做实时、不落库（`dev-docs/prd/01-decisions.md` 第 107–111 行）：谁也没有两张表，
+   * 等的就是内存里那一格。
+   */
+  readonly questions: QuestionRegistry;
+  /**
+   * 此刻还连着几个人。**一个都没连就不问**（`dev-docs/prd/07-handoff.md`「没有交互通道就不问」）：
+   * 题发出去也不会有人看见，只能一直挂在内存里。
+   */
+  readonly connections: Connections;
   readonly events: Bus<HostEvent>;
   readonly t: Translator;
   readonly createSdk: CreateSdkHandoff;
@@ -111,6 +125,24 @@ export class HandoffService {
    * 因此也包括插件自己发起的那一趟。一趟结束在 `finally` 里摘掉。
    */
   private readonly aborters = new Map<string, AbortController>();
+  /**
+   * 答过「不交接」的那几段：这段会话就按这个处置策略走，**不再问**。
+   *
+   * 内存里的一格，不落库：PRD 明写题只做实时、答案也不持久化（`dev-docs/prd/07-handoff.md`
+   * 「谁建的会话，自动交接开不开」）——**重启之后还会问一次**，这是认下的代价。
+   */
+  private readonly declined = new Set<string>();
+  /**
+   * 这一段此刻挂着、正在等答复的那道交接题。
+   *
+   * 一段会话上同时只该有**一道**待答的交接题：撞线是可能连着来的 —— 题问出去用户不答、接着
+   * 说话，agent 又闲下来又撞上软线 —— 每撞一次问一道，同一段上就叠着两道一模一样的题，那是
+   * 缺陷，不是「只问一次」的口径。所以这里有这一格：已经有一道在等，后来的人等的是同一句。
+   *
+   * 与 `declined` 一样只在内存里：题只做实时（`dev-docs/prd/01-decisions.md` 第 107–111 行）。
+   * 答复到手（含 `undefined`：那一段没了、或题被收掉）就把这一格摘掉，下一道题才有位置。
+   */
+  private readonly asking = new Map<string, Promise<string | undefined>>();
 
   constructor(private readonly deps: HandoffDeps) {}
 
@@ -305,16 +337,90 @@ export class HandoffService {
   }
 
   /**
-   * 越线那一刻这一趟要不要交班：只看会话行上的开关（`PRD.md` 4.5）。
+   * 越线那一刻这一趟要不要交班，用哪个执行者（`dev-docs/prd/07-handoff.md`「谁建的会话，自动交接
+   * 开不开」那一张表）。
    *
-   * 现读而不是让调用方把值递进来：开关改了不重建执行体（`PRD.md` 4.7），装配那一刻读到的值
-   * 会让用户改完没反应。
+   * 现读而不是让调用方把值递进来：开关改了不重建执行体（`dev-docs/prd/05-control.md`），装配那
+   * 一刻读到的值会让用户改完没反应。
    *
-   * 开关关着的那一段装不下时该问用户一次（`PRD.md` 4.5），而这条提问路径还没有：`null` 在
-   * `AutoMigratePlugin` 那里是「这一趟不迁移」，不是「用户说了不交班」。
+   * 五条分支，顺序就是下面这几条（顺序本身就是口径）：
+   *   1. 会话行不在 → `null`（这一段没了，没什么可交的）；
+   *   2. 开着自动交接（平级会话默认开，或用户自己打开）→ `"self"`，**不问**；
+   *   3. 这一段答过「不交接」→ `null`，**不再问**；
+   *   4. 一个客户端都没连 → `"self"`（没交互通道就不问，按默认执行者走，默认执行者就是自交接）；
+   *   5. 否则问一道三选题，等一个答复。
+   *
+   * 第 5 条问出去的那道题**一段上只挂一道**（{@link asking}）：撞线是可能连着来的，而用户没答时
+   * 后来的人等的是同一道，不再新问一道 —— 同一段上摞着两道一模一样的题是缺陷，不是「只问一次」
+   * 的口径。
+   *
+   * 题是 `blocking: false`：PRD 原话是「题挂着时不挡发送」——要不要因为一道没答的题把发送按住是
+   * 客户端的事，它手上就有那道题，而宿主只知道有这么一道题（`blocking` 仍进载荷）。
+   *
+   * 答复是 `undefined` 的意思是「没人答它了」（那段没了、或被 `forget` 掉），不是「用户说了不」——
+   * 按默认执行者走。
+   *
+   * 这个方法是被 `AutoMigratePlugin` 的 `resolveMode` 调的，那个类型本来就允许 `Promise`
+   * （`AutoMigrateModeResolver`），所以这里等用户答复就是等这一趟，不阻塞别的。
    */
-  automaticMode(sessionId: string): HandoffMode | null {
-    return this.deps.sessions.get(sessionId)?.autoHandoff === true ? "self" : null;
+  async automaticMode(sessionId: string): Promise<HandoffMode | null> {
+    const session = this.deps.sessions.get(sessionId);
+    if (session === undefined) return null;
+    if (session.autoHandoff === true) return "self";
+    if (this.declined.has(sessionId)) return null;
+    // 没人在看就不问：题发出去只会挂在内存里，而默认执行者是自交接（需求里的「按默认执行者走」）
+    if (this.deps.connections.list().length === 0) return "self";
+
+    // 同一段上同时只该有一道待答的题：已经有一道在等，就等**同一道**。撞线是可能连着来的（用户
+    // 不答、接着说，agent 又闲下来又撞上软线），每撞一次问一道，同一段上就叠着两道一模一样的题。
+    let answer = this.asking.get(sessionId);
+    if (answer === undefined) {
+      const asked = this.deps.questions.askAwaitable({
+        sessionId,
+        message: this.deps.t("这段会话装不下时，用哪种方式交接？"),
+        choices: [
+          { value: "self", label: this.deps.t("自交接：在这段会话里接着写交接文档") },
+          { value: "summary", label: this.deps.t("独立交接：另起一次调用写交接文档") },
+          { value: "no", label: this.deps.t("不交接：接着聊，撞上硬线为止") },
+        ],
+        // 题挂着不挡发送：按不按发送是客户端拿着这一格自己决定的事
+        blocking: false,
+      }).answer;
+
+      answer = asked;
+      this.asking.set(sessionId, asked);
+      // 答复到手就摘掉这一格 —— 拿到 `undefined`（那一段没了、或题被 `forget` 掉）也算答复，
+      // 抛错也摘：留着它，这一段从此永远在等一个已经结束的答复，下一道题再也问不出去。
+      // 摘之前认一次身份：这一格可能已经被 `forget` 清掉、又被下一道题填上。
+      void asked.finally(() => {
+        if (this.asking.get(sessionId) === asked) this.asking.delete(sessionId);
+      });
+    }
+
+    const value = await answer;
+    if (value === "self" || value === "summary") return value;
+    if (value === "no") {
+      // 答不要就记成这段的处理策略：开关关掉、这一段不再问（答案不持久化，重启之后还会问一次）
+      this.declined.add(sessionId);
+      this.deps.sessions.update(sessionId, { autoHandoff: false });
+    }
+    // `undefined`（没人答它了）与「不交接」都是 `null`：这一趟不迁移
+    return null;
+  }
+
+  /**
+   * 这一段没了：把交接这一侧按会话记的两格一起忘掉。
+   *
+   * 两格都是「按会话 id 记住这件事」的内存格（`declined` 是「答过不交接、这一段不再问」，
+   * `asking` 是此刻挂着的那道题），会话行被删掉时它们不会跟着消失 —— 留着只会一直长大，而同一段
+   * id 万一再出现，它会带着上一段的答案接着不说话：一撞线就不问，而那段其实从没被问过。
+   *
+   * 题本身由 `QuestionRegistry.forget` 收（还等在那里的那一句解出 `undefined`）；这里只管交接
+   * 这一侧记的事。
+   */
+  forget(sessionId: string): void {
+    this.declined.delete(sessionId);
+    this.asking.delete(sessionId);
   }
 
   /**

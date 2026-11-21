@@ -2,18 +2,32 @@ import type { AgentRuntime } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { AssetService } from "../asset/service.js";
+import type { HandoffService } from "../handoff/service.js";
 import type { Translator } from "../i18n/index.js";
+import type { QuestionRegistry } from "../question/registry.js";
 import type { SessionService } from "../session/service.js";
 import type { WorkspaceService } from "./service.js";
 
 /**
- * 删一个项目要经过的四个域。四样都是域服务而不是表：这条路的每一步都要先读出事实、再动库。
+ * 删一个项目要经过的那六个域。都是域服务而不是表：这条路的每一步都要先读出事实、再动库。
  */
 export interface RemoveWorkspaceDeps {
   readonly workspaces: WorkspaceService;
   readonly sessions: SessionService;
   readonly assets: AssetService;
   readonly runtime: AgentRuntime;
+  /**
+   * 这一段上挂着的题。题没有表，它只活在内存里（「题只在内存里挂着，挂到被答了或这段会话没了
+   * 为止」，`dev-docs/prd/01-decisions.md` 第 107–111 行）—— 那一段没了，就得由删那一段的人去收。
+   */
+  readonly questions: QuestionRegistry;
+  /**
+   * 交接那一侧按会话记的两格：「此刻挂着的那道题」与「这一段答过不交接、不再问」。
+   *
+   * 题本身由 `questions` 收（还等在那里的那一句解出 `undefined`），而那两格得由交接自己忘 ——
+   * 它们也是按会话存在的内存格，会话行没了不会自己消失。
+   */
+  readonly handoff: HandoffService;
   readonly t: Translator;
 }
 
@@ -48,6 +62,15 @@ export function removeWorkspace(
   // 那一行已经没了，这些写要么落进一段不存在的会话，要么被外键拦住。没有活执行体时 `kill`
   // 是空操作，所以不必先问它在不在。
   for (const sessionId of sessionIds) deps.runtime.kill(sessionId);
+
+  // 题跟着它那一段一起消失。题没有表，它不会随会话行被外键级联掉 —— 不在这里收，这几段上挂着的
+  // 题就再没人认得（题挂到「这段没了」为止，`dev-docs/prd/01-decisions.md` 第 107–111 行）。等题的
+  // 人拿到的是 `undefined`（没人答它了），不是「用户说了不」—— 交接那条路上据此按默认执行者走。
+  for (const sessionId of sessionIds) deps.questions.forget(sessionId);
+
+  // 交接那一侧的记忆也跟着一起忘：`declined` 是「这一段答过不交接、不再问」，`asking` 是此刻挂着
+  // 的那道题。两格都按会话 id 存 —— 这一段都没了，留着它们只会一直长大。
+  for (const sessionId of sessionIds) deps.handoff.forget(sessionId);
 
   // 素材 id 也必须在删之前收：消息与素材关联行会随外键一起消失，删完再问「这几段引用过什么」
   // 只会得到空。同一个素材被两段会话引用时会收进来两次，所以用集合去重。

@@ -37,7 +37,11 @@ import type { AgentPlugin, SubAgentHookContext } from "@ai-zen/agents-core";
 import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
 
 export interface SubAgentGuardOptions {
-  /** 强行阻断阈值；与主 Agent 同源（当前模型的 `tokenThresholds.guard`，会话行上有覆盖时取那一格） */
+  /**
+   * 强行阻断阈值；与主 Agent 同源（当前模型的 `tokenThresholds.guard`，会话行上有覆盖时取那一格）。
+   *
+   * 可以是一个 getter：那样每次委派都现读，改阈值不必重建执行体。
+   */
   guardTokens: number;
 }
 
@@ -49,25 +53,14 @@ export interface SubAgentGuardOptions {
  * ——是否中断由 `ContextGuardPlugin` 按阈值决定。
  */
 export class SubAgentGuardInstallerPlugin implements AgentPlugin {
-  private readonly guardTokens: number;
-
-  constructor(options: SubAgentGuardOptions) {
-    this.guardTokens = options.guardTokens;
-  }
+  /** 选项按**引用**存下：阈值每次委派现读（它可能是一个 getter），不存装配那一刻的快照 */
+  constructor(private readonly options: SubAgentGuardOptions) {}
 
   onSubAgentStart({ subAgent }: SubAgentHookContext): void {
     // 与主 Agent 完全同款：同一个 guardTokens 绝对阈值
-    subAgent.use(
-      new ContextGuardPlugin({
-        guardTokens: this.guardTokens,
-      }),
-    );
+    subAgent.use(new ContextGuardPlugin({ guardTokens: this.options.guardTokens }));
 
     // 传染到孙级：subagent 若再委派，其 subagent 同样被安插。
-    subAgent.use(
-      new SubAgentGuardInstallerPlugin({
-        guardTokens: this.guardTokens,
-      }),
-    );
+    subAgent.use(new SubAgentGuardInstallerPlugin({ guardTokens: this.options.guardTokens }));
   }
 }

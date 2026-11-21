@@ -37,10 +37,12 @@ import { inboxTable } from "../agent/inbox.js";
 import { HostObserver } from "../agent/observer.js";
 import { AssetService } from "../asset/service.js";
 import { assetTable, sessionAssetTable } from "../asset/table.js";
+import { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
 import { noticeTable } from "../notice/table.js";
+import { QuestionRegistry } from "../question/registry.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
@@ -182,6 +184,13 @@ function setup() {
   const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
   const fake = fakeRuntime();
   const notices = new NoticeService({ notices: noticeTable(db), events });
+  const questions = new QuestionRegistry({ events, t });
+  /**
+   * 连接登记表：默认就有一个人连着 —— 这几条用例验的是交接态与闸，不是「该不该问」。
+   * 真到了越线那一刻，关着开关又没人在看时是直接自交接的（`auto-mode.test.ts` 那一边验）。
+   */
+  const connections = new Connections();
+  connections.open();
   const handoffs = fakeHandoffs();
   const handoff = new HandoffService({
     db,
@@ -189,6 +198,8 @@ function setup() {
     workspaces,
     runtime: fake.runtime,
     notices,
+    questions,
+    connections,
     events,
     t,
     createSdk: handoffs.create,
@@ -245,6 +256,8 @@ function setup() {
     handoff,
     handoffs,
     sessions,
+    questions,
+    connections,
     runtime: fake.runtime,
     messages,
     notices,
@@ -542,9 +555,12 @@ describe("自动交接", () => {
     expect(errors).toEqual([]);
   });
 
-  /** 用户建的会话默认关（`PRD.md` 4.5）：关着就不动手 —— 那一趟既不进交接态，也不碰模型 */
-  it("`autoHandoff` 关着时这一趟什么都不做", async () => {
-    const { handoff, handoffs, sessions, wake } = setup();
+  /**
+   * 用户建的会话默认关（`dev-docs/prd/07-handoff.md`）：关着就不背着人动手 —— 题已经问出去了，
+   * 人还没答，这一趟就不停在那里（不等一个没人答的题）。
+   */
+  it("`autoHandoff` 关着时这一趟等用户答复，自己不交班", async () => {
+    const { handoff, handoffs, sessions, questions, wake } = setup();
     const session = sessions.create(input);
     const agent = wake(session.id);
     agent.messages.push(answered(200));
@@ -554,11 +570,13 @@ describe("自动交接", () => {
     void plugin.onIdle();
     await settle();
 
+    // 问出去了一道题（关着、有人在看），这一趟就停在这里等人答
+    expect(questions.list(session.id)).toHaveLength(1);
     expect(handoffs.runs).toEqual([]);
     expect(handoff.isHandingOff(session.id)).toBe(false);
 
     // 开关是现读的：同一个插件还挂在同一条会话上，开关一开它就自己交班
     sessions.update(session.id, { autoHandoff: true });
-    expect(handoff.automaticMode(session.id)).toBe("self");
+    await expect(handoff.automaticMode(session.id)).resolves.toBe("self");
   });
 });

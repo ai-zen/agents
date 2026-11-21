@@ -2,6 +2,8 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import {
   AssetTransportPlugin,
   AutoMigratePlugin,
+  ContextGuardPlugin,
+  SubAgentGuardInstallerPlugin,
   resolveModel,
   resolveModelParams,
   type AgentDefinition,
@@ -102,6 +104,19 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
 
   deps.inbox.deleteMany(consumed);
 
+  /**
+   * 硬线阈值：会话行上的 `guardThreshold` 优先，否则生效模型的 `tokenThresholds.guard`。
+   *
+   * 取值函数而不是装配时算好的数：两条阈值改了不重建执行体（`dev-docs/prd/05-control.md`），装一次
+   * 就等于把用户之后改的数字钉死在装配那一刻。两颗插件拿到的是**同一个**对象 —— 主 Agent 与
+   * subagent 必须同源，各算一份就会在「改完阈值之后主 Agent 按新的、subagent 按旧的」上分家。
+   */
+  const guardThreshold = {
+    get guardTokens(): number {
+      return deps.sessions.get(session.id)?.guardThreshold ?? model.tokenThresholds.guard;
+    },
+  };
+
   return {
     cwd: workspace.cwd,
     agentId: session.agentId,
@@ -130,6 +145,11 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
         onMigrated: () => deps.handoff.finish(session.id),
         onFailed: ({ error }) => deps.handoff.finish(session.id, { error }),
       }),
+      // 硬线：越线就拒这一次请求（不发、不兜底），交接那一次也不让路。装在这一段上，阈值取值
+      // 函数与上面那条同一个口径
+      new ContextGuardPlugin(guardThreshold),
+      // 硬线要罩住 subagent 与孙级：委派边界上把同一颗护栏装到它们身上，阈值与主 Agent 同源
+      new SubAgentGuardInstallerPlugin(guardThreshold),
       // 发出去之前把带 `__asset_id` 的段按当下生效的模型与端点重建：内容在库里只有一份（原样
       // 落库），出网那一份每次现造。端口就是 `Scope` 那一份 —— 素材库是宿主的财产，SDK 只认
       // `readAsset` 这一个函数。

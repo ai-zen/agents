@@ -8,6 +8,9 @@ export interface ContextGuardOptions {
    *
    * 语义只有一条：请求前上一次回答的用量超过它 → 中断这一次请求。没有倍数、没有放宽档——
    * 想调松就把它调大，「安全边界写多少就是多少」比「隐式乘以某个系数」可预测得多。
+   *
+   * 这一格可以是一个 getter（`get guardTokens(): number`）：那样每次判定都现读，改阈值不必
+   * 重建执行体（两条阈值改了不重建 agent，见 `dev-docs/prd/05-control.md`）。
    */
   guardTokens: number;
 }
@@ -47,25 +50,23 @@ export interface ContextGuardOptions {
  * `denied` 事件和 `message` 的历史里看到同一件事，不需要一个把 agent 弄死的异常。
  */
 export class ContextGuardPlugin implements AgentPlugin {
-  private readonly guardTokens: number;
-
-  constructor(options: ContextGuardOptions) {
-    this.guardTokens = options.guardTokens;
-  }
+  /** 选项按**引用**存下：阈值每次判定现读（它可能是一个 getter），不存装配那一刻的快照 */
+  constructor(private readonly options: ContextGuardOptions) {}
 
   /** 返回 string = 拒这一次请求（这一次不会发出去，历史里一个字都不多） */
   async onInnerLoopStart(ctx: InnerLoopContext): Promise<string | undefined> {
     // 不看「此刻在不在交接」：交接那一趟也不让路，任何时刻都只看用量
+    const guardTokens = this.options.guardTokens;
 
     // 上一次回答的 prompt 用量：只从消息上读（同一份事实、不另立快照，见 `lastPromptTokens`）
     const promptTokens = lastPromptTokens(ctx.agent);
     // 第一条请求之前尚无用量数据，跳过（只能在发出第一条请求、拿到 usage 后才有据可查）
     if (promptTokens == null) return;
 
-    if (promptTokens > this.guardTokens) {
+    if (promptTokens > guardTokens) {
       // 理由就是给用户看的那句话：`denied` 事件里只有字符串这一个通道，
       // 所以用量与阈值一并写进去（`ContextOverflowError` 只用来拼这句话，不往外抛）
-      return new ContextOverflowError(promptTokens, this.guardTokens).message;
+      return new ContextOverflowError(promptTokens, guardTokens).message;
     }
   }
 }

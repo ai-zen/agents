@@ -1,11 +1,19 @@
 /**
- * 四条验收：删项目连带删掉名下的会话（连消息与 inbox 行）、活着的执行体先被杀掉再删行、
- * 素材只扫这几段会话引用过的那些、项目不存在时是 `not_found`。
+ * 六条验收：删项目连带删掉名下的会话（连消息与 inbox 行）、活着的执行体先被杀掉再删行、
+ * 素材只扫这几段会话引用过的那些、项目不存在时是 `not_found`、那几段上挂着的题跟着一起收。
+ * 第六条是交接那一侧按会话记的两格（「这一段答过不交接、不再问」）跟着一起忘。
  *
  * 第一条与第三条都是「不报错也不工作」的那种错：外键没级联时，界面上只会剩下几段挂在不存在的
  * 项目下的会话；素材没人收时，行与盘上的字节就这么漏着，谁也不报。
  *
  * 第二条的理由是次序而不是结果：杀晚一步，那段会话的行已经没了，执行体还在往它上面写。
+ *
+ * 第五条是题的**第二条**去处（`dev-docs/prd/01-decisions.md` 第 107–111 行：题挂到「被答了」或
+ * 「这段会话没了」为止）：题没有表、不随外键级联，所以「这一段没了」这件事只能由删它的人去说。
+ * 等那个答复的人拿到的 `undefined` 是「没人答它了」，不是「用户说了不」。
+ *
+ * 第六条跟第五条是同一件事的两半：「不再问」那一格也在交接那一侧的内存里，会话行没了它不会自己
+ * 消失。留着它，同一段 id 再出现时一撞线就闭嘴，而那段其实从没被问过。
  */
 
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -22,8 +30,11 @@ import { HostError } from "../../infra/errors.js";
 import { inboxTable } from "../agent/inbox.js";
 import { AssetService } from "../asset/service.js";
 import { assetTable, sessionAssetTable } from "../asset/table.js";
+import { Connections } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
+import { HandoffService } from "../handoff/service.js";
 import { createTranslator } from "../i18n/index.js";
+import { QuestionRegistry } from "../question/registry.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
@@ -40,7 +51,7 @@ afterEach(() => {
 });
 
 /**
- * 一个真库加这一条路上的四个域。执行体给替身：这些用例问的是次序与连带，不是运行时自己的行为，
+ * 一个真库加这一条路上的五个域。执行体给替身：这些用例问的是次序与连带，不是运行时自己的行为，
  * 造一个真的 `AgentRuntime` 只会让人以为它也在被验。
  */
 function newHost() {
@@ -49,12 +60,16 @@ function newHost() {
 
   const db = openDatabase(":memory:");
   const t = createTranslator(() => "zh");
+  const events = createBus<HostEvent>();
   const workspaces = new WorkspaceService({ workspaces: workspaceTable(db), t });
+  const sessionRows = sessionTable(db);
   const sessions = new SessionService({
-    sessions: sessionTable(db),
-    events: createBus<HostEvent>(),
+    sessions: sessionRows,
+    events,
     t,
   });
+  const questions = new QuestionRegistry({ events, t });
+  const connections = new Connections();
   const messages = messageTable(db);
   const inbox = inboxTable(db);
   const assets = new AssetService({
@@ -70,9 +85,47 @@ function newHost() {
     kill: (sessionId: string) => void log.push(`kill ${sessionId}`),
   } as unknown as AgentRuntime;
 
-  const deps: RemoveWorkspaceDeps = { workspaces, sessions, assets, runtime, t };
+  // 交接也是真的要：第六条验的就是它按会话记下的「不再问」那一格会不会跟着这一段一起消失。
+  // 它不真的跑交接（`createSdk` 一叫就抛），这几条用例也走不到那一步。
+  const handoff = new HandoffService({
+    db,
+    sessions,
+    workspaces,
+    runtime,
+    notices: {} as never,
+    questions,
+    connections,
+    events,
+    t,
+    createSdk: () => {
+      throw new Error("替身不跑交接");
+    },
+  });
 
-  return { workspaces, sessions, messages, inbox, assets, dataRoot, log, deps };
+  const deps: RemoveWorkspaceDeps = {
+    workspaces,
+    sessions,
+    assets,
+    runtime,
+    questions,
+    handoff,
+    t,
+  };
+
+  return {
+    workspaces,
+    sessions,
+    sessionRows,
+    messages,
+    inbox,
+    assets,
+    questions,
+    handoff,
+    connections,
+    dataRoot,
+    log,
+    deps,
+  };
 }
 
 type Host = ReturnType<typeof newHost>;
@@ -197,5 +250,53 @@ describe("删项目", () => {
 
     expect(thrown).toBeInstanceOf(HostError);
     expect((thrown as HostError).code).toBe("not_found");
+  });
+
+  it("那几段上挂着的题跟着一起收：等它的人拿到 undefined", async () => {
+    const host = newHost();
+    const workspace = host.workspaces.create("项目一", "/tmp/题跟着收");
+    const session = newSession(host, workspace.id);
+    const { answer } = host.questions.askAwaitable({
+      sessionId: session.id,
+      message: "这段会话装不下时，用哪种方式交接？",
+      choices: [
+        { value: "self", label: "自交接" },
+        { value: "no", label: "不交接" },
+      ],
+      blocking: false,
+    });
+
+    removeWorkspace(host.deps, workspace.id);
+
+    // 题没有表，不会随会话行被级联掉：不在这里收，这道题就再没人认得
+    await expect(answer).resolves.toBeUndefined();
+    expect(host.questions.list(session.id)).toEqual([]);
+  });
+
+  it("交接那侧的「不再问」也跟着忘：同一段 id 再撞线会重新问", async () => {
+    const host = newHost();
+    host.connections.open();
+    const workspace = host.workspaces.create("项目一", "/tmp/不再问跟着忘");
+    const session = newSession(host, workspace.id);
+
+    // 先答一次「不交接」：这一段被记进「不再问」那一格，再撞线一道题都不出
+    const asked = host.handoff.automaticMode(session.id);
+    host.questions.answer(host.questions.list(session.id)[0].id, "no");
+    await expect(asked).resolves.toBeNull();
+    await expect(host.handoff.automaticMode(session.id)).resolves.toBeNull();
+    expect(host.questions.list(session.id)).toEqual([]);
+
+    removeWorkspace(host.deps, workspace.id);
+
+    // 会话行随项目一起没了（第一格判据先把它拦在 `null` 上），所以「不再问」那一格清没清，
+    // 只有同一段 id 再回到库里才看得见：放一行同 id 的会话回去，撞线应当重新问，而不是闭嘴
+    const again = host.workspaces.create("另一个项目", "/tmp/不再问跟着忘-2");
+    host.sessionRows.put({ ...session, workspaceId: again.id, autoHandoff: false });
+
+    const reopened = host.handoff.automaticMode(session.id);
+    const question = host.questions.list(session.id)[0];
+    expect(question).toBeDefined();
+    host.questions.answer(question.id, "self");
+    await expect(reopened).resolves.toBe("self");
   });
 });
