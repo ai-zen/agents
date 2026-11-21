@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { Agent, AgentToolLazy, CallbackTool, Message, ToolCallContext } from "@ai-zen/agents-core";
 import { createLoadSkillTool, createCallSkillSubAgentTool } from "./skillTools.js";
 import type { SkillInfo } from "./discover.js";
+import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
 
 let tmpDir: string;
 let skillDirs: string[];
@@ -241,5 +242,50 @@ describe("createCallSkillSubAgentTool", () => {
     expect(captured!.lifetime).toBe("one-shot");
     // 注入的那条 user 消息由委派工具补 `source`（谁注入谁填）
     expect(captured!.messages[1].source).toEqual({ kind: "agent", label: "call_skill_sub_agent" });
+  });
+
+  it("被派出去的执行体没有平级会话那三个工具，别的工具还在", async () => {
+    writeSkill("git", "# Git operations guide", { subAgent: true });
+    const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
+
+    /** 照 `read` 的写法造一个只回占位值的工具（本用例只关心工具名字） */
+    const stubTool = (name: string) =>
+      new CallbackTool({
+        function: {
+          name,
+          description: `工具 ${name}`,
+          parameters: { type: "object", properties: {}, required: [] },
+        },
+        callback: () => "ok",
+      });
+
+    // 父 Agent 手上有 `read`，也有平级会话那三个
+    const host = new Agent({
+      client: createMockClient(),
+      model: "gpt-4",
+      messages: [Message.System("父 Agent")],
+      tools: [stubTool("read"), ...PEER_SESSION_TOOL_NAMES.map(stubTool), tool],
+    });
+
+    let captured: Agent | undefined;
+    host.use({
+      onSubAgentStart: (c) => {
+        captured = c.subAgent;
+      },
+    });
+
+    const result = await tool.exec(
+      buildCtx(host, { skill_id: "git", task: "commit these changes" }),
+    );
+
+    expect(result).toBe("sub-agent result");
+    expect(captured).toBeDefined();
+    const subAgentNames = captured!.tools.map((t) => t.function.name);
+    // 平级会话是会话级能力：父会话的执行体可以有，被派出去的没有
+    for (const name of PEER_SESSION_TOOL_NAMES) {
+      expect(subAgentNames).not.toContain(name);
+    }
+    // 剔除只掐那三个名字：其它工具照旧沿用
+    expect(subAgentNames).toContain("read");
   });
 });

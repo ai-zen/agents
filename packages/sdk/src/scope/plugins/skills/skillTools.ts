@@ -8,6 +8,7 @@ import {
 import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
+import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
 import type { LogSink } from "../../../shared/logger.js";
 import { promises as fs } from "node:fs";
 
@@ -168,7 +169,14 @@ export function createCallSkillSubAgentTool(
 
       // 沿用父 Agent 的工具能力（不做权限过滤），剔除自身以防自递归
       const parentAgent = ctx.agent;
-      const tools = parentAgent.tools.filter((t) => t.function.name !== "call_skill_sub_agent");
+      // 一并排掉平级会话那三个工具：它们是会话级能力，父会话的执行体可以有，被派出去的执行体
+      // 不该有 —— 委派出来的执行体不属于任何一段会话，没有可以署名的身份（发话要写「来自哪
+      // 一段会话」），也开不出有人认领的新会话，留着这三个只会在调用时必错。
+      const peerSessionToolNames = new Set<string>(PEER_SESSION_TOOL_NAMES);
+      const tools = parentAgent.tools.filter(
+        (t) =>
+          t.function.name !== "call_skill_sub_agent" && !peerSessionToolNames.has(t.function.name),
+      );
 
       return new Agent({
         client: parentAgent.client,

@@ -1,8 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { Agent, AgentNS, Message, ToolCallContext } from "@ai-zen/agents-core";
+import { Agent, AgentNS, CallbackTool, Message, ToolCallContext } from "@ai-zen/agents-core";
 import { createSubAgentTool } from "./subAgentTools.js";
-import type { Scope } from "../../Scope.js";
-import type { AgentDefinition } from "../../../types/index.js";
+import { Scope, type FilterOutput } from "../../Scope.js";
+import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
+import { PeerSessionsScopePlugin } from "../peers/PeerSessionsScopePlugin.js";
+import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
+import type { PeerSessionPort } from "../peers/peerSessionTools.js";
+import type { AgentDefinition, AppConfig } from "../../../types/index.js";
 
 // 不需要 mock `runtime/createModel.js`：`buildAgent` 是惰性的，构造阶段不会真的建模型；
 // 而模块级 mock 在 `isolate: false` 下会因模块缓存共享而时灵时不灵。
@@ -40,6 +44,48 @@ function sampleDef(id: string, functionName: string): AgentDefinition {
     },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+  };
+}
+
+/** 假端口：本用例只关心工具名单，三个端口方法都不会被调到 */
+function fakePeerSessionPort(): PeerSessionPort {
+  return {
+    async create() {
+      return { ok: true, sessionId: "session-1", label: "占位会话" };
+    },
+    async status() {
+      return { found: false, status: null };
+    },
+    async send() {
+      return { ok: true };
+    },
+  };
+}
+
+/**
+ * 桩插件：只贡献一个 `ordinary_tool`。
+ *
+ * 它就是「别的工具」：用来证明剔除只掐掉平级会话那三个名字，普通回调工具照旧进得了执行体。
+ */
+function ordinaryToolPlugin(): ScopePlugin {
+  return {
+    id: "ordinary-tool-test",
+    candidates(): ScopeCandidates {
+      return { tools: ["ordinary_tool"] };
+    },
+    instantiate(_scope: Scope, filtered: FilterOutput) {
+      if (!filtered.tools.includes("ordinary_tool")) return [];
+      return [
+        new CallbackTool({
+          function: {
+            name: "ordinary_tool",
+            description: "占位工具",
+            parameters: { type: "object", properties: {}, required: [] },
+          },
+          callback: () => "ok",
+        }),
+      ];
+    },
   };
 }
 
@@ -120,5 +166,57 @@ describe("createSubAgentTool", () => {
     const userMessage = captured!.messages.find((m) => m.role === AgentNS.Role.User)!;
     expect(userMessage.source).toEqual({ kind: "agent", label: "agent_one" });
     expect(userMessage.content).toBe("do it");
+  });
+
+  it("被派出去的执行体没有平级会话那三个工具，别的工具还在", async () => {
+    // 这里要一个**真实**的 Scope：`mockScope()` 的 filter 与 instantiate 都是桩，会把 exclude 吃掉，
+    // 那样这条用例就证明不了剔除真的发生了。
+    const scope = new Scope({
+      getConfig: () => ({}) as AppConfig,
+      agentsDir: "test-agents-dir",
+    }).use(new PeerSessionsScopePlugin(fakePeerSessionPort()), ordinaryToolPlugin());
+    await scope.init();
+
+    const def = sampleDef("sa1", "agent_one");
+    // 工具维度写全放行：剔除要能与 `allow: ["*"]` 叠加（filter 先按 exclude 剔、再按权限过滤）
+    def.permissions = { tools: { allow: ["*"] } };
+
+    const tool = createSubAgentTool(def, scope);
+    const host = new Agent({ client: {} as never, model: "parent-model", tools: [tool] });
+
+    let captured: Agent | undefined;
+    host.use({
+      onSubAgentStart: ({ subAgent }) => {
+        captured = subAgent;
+        // 拒掉这次委派：本用例只关心造出来的执行体手上有什么工具，不跑请求
+        return "denied by test";
+      },
+    });
+
+    const result = await tool.exec(
+      new ToolCallContext({
+        agent: host,
+        tool_call: {
+          id: "1",
+          type: "function",
+          function: { name: "agent_one", arguments: JSON.stringify({ task: "do it" }) },
+        },
+        resultMessage: Message.Tool({ id: "r1", function: { name: "agent_one" } }),
+      }),
+    );
+
+    expect(result).toBe("denied by test");
+    const subAgentNames = captured!.tools.map((t) => t.function.name);
+    for (const name of PEER_SESSION_TOOL_NAMES) {
+      expect(subAgentNames).not.toContain(name);
+    }
+    // 剔除只掐那三个名字：普通工具照旧在
+    expect(subAgentNames).toContain("ordinary_tool");
+
+    // 收窄只发生在被派出去的那一层：同一个定义，父会话那一侧照旧拿得到那三个
+    const parentNames = scope.buildTools(def).map((t) => t.function.name);
+    for (const name of PEER_SESSION_TOOL_NAMES) {
+      expect(parentNames).toContain(name);
+    }
   });
 });

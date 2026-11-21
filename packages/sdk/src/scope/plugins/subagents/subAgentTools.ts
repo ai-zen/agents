@@ -4,6 +4,7 @@ import type OpenAI from "openai";
 import type { AgentDefinition } from "../../../types/index.js";
 import type { Scope } from "../../Scope.js";
 import { createModel } from "../../../runtime/createModel.js";
+import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
 
 /**
  * 创建 SubAgent 工具（AgentToolLazy）。
@@ -53,6 +54,13 @@ export function createSubAgentTool(def: AgentDefinition, scope: Scope): Tool {
       const subFiltered = scope.filter(def, {
         exclude: {
           subagents: def.function?.name ? [def.function.name] : undefined,
+          // 平级会话那三个工具是会话级能力，被派出去的执行体手上不该有：它不属于任何一段
+          // 会话 —— 没有可以署名的身份（发话要写「来自哪一段会话」），也开不出有人认领的新
+          // 会话，所以这三个工具在它手上只有必错的路（发话在端口层直接抛，创建被判
+          // depth_exceeded）。取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的
+          // 配置，这条规矩不长在那儿；而 filter 先按 exclude 剔除、再按权限过滤，定义写
+          // `allow: ["*"]` 也照样剔得掉。
+          tools: [...PEER_SESSION_TOOL_NAMES],
         },
       });
       const tools = scope.instantiate(subFiltered);
