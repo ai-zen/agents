@@ -1,8 +1,8 @@
 # 宿主实施顺序
 
-需求见 `PRD.md`，结构与判据见 `packages/host/ARCHITECTURE.md`，风格见 `packages/host/STYLE.md`，术语见 `GLOSSARY.md`。
+需求见 `PRD.md`，技术规范见 `TRD.md`，结构与判据见 `../packages/host/ARCHITECTURE.md`，风格见 `../packages/host/STYLE.md`，术语见 `GLOSSARY.md`。
 
-本文件只回答两件事：**哪条需求还没做到，怎么算做到了，先做哪一块。** 代码怎么写归 `ARCHITECTURE.md` 与 `STYLE.md`，不写在这里。旧 `src` 已整包退到 `packages/host/src-bad`，只作行为参照。
+本文件只回答两件事：**哪条需求还没做到，怎么算做到了，先做哪一块。** 代码怎么写归 `ARCHITECTURE.md` 与 `STYLE.md`，不写在这里。旧 `src` 已整包退到 `../packages/host/src-bad`，只作行为参照。
 
 ## 这个文件里只许写两样东西
 

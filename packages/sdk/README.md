@@ -4,7 +4,7 @@ AI-Zen SDK — shared business logic layer providing a unified Agent runtime for
 
 ## Source of Truth
 
-**[`../../PRD.md`](../../PRD.md)** (requirements) and **[`../../PLAN.md`](../../PLAN.md)** (implementation) are the single sources of truth for this package's behaviour. All implementations must stay consistent with them.
+**[`../../dev-docs/PRD.md`](../../dev-docs/PRD.md)** (requirements) and **[`../../dev-docs/PLAN.md`](../../dev-docs/PLAN.md)** (implementation) are the single sources of truth for this package's behaviour. All implementations must stay consistent with them.
 
 ## Architecture
 
