@@ -248,6 +248,31 @@ export interface ResponseFinishedEvent {
   /** 是哪一次委派引起的（与 `subAgent` 同现） */
   via?: AgentNS.ToolCall;
 }
+/**
+ * 一趟请求（向模型要一次答复 + 它引出的那些工具）的开始。
+ *
+ * `message` 是这一趟那条 assistant 占位 —— **活对象，不是拷贝**：这一刻它的 `status` 还是
+ * `pending`，收完之后还是同一个实例。订阅者拿它开事务：这一趟里所有事实（`requestSent`、
+ * `delta`、工具那两条、`responseFinished`）都落在这一对之间。
+ *
+ * 被 `onInnerLoopStart` 拒掉的那一趟**不算开始** —— 那时连 assistant 占位都没有，没有事实
+ * 可说，所以这一条与 {@link TurnFinishedEvent} 都不发。
+ */
+export interface TurnStartedEvent {
+  agent: Agent;
+  message: AgentNS.Message;
+}
+/**
+ * 一趟请求的结束。`message` 与开始那一刻是**同一个实例**，此刻已经定型（`completed` /
+ * `error` / `aborted`）—— 订阅者拿它结算用量、冲刷这一笔（见 `live-objects.md` 的
+ * 「一趟请求：开始 / 结束」）。
+ *
+ * 中断与出错的那一趟**照样有这一条**：它说的是「这一趟到此为止」，不是「这一趟跑得很好」。
+ */
+export interface TurnFinishedEvent {
+  agent: Agent;
+  message: AgentNS.Message;
+}
 export interface ToolStartedEvent {
   agent: Agent;
   toolCall: AgentNS.ToolCall;
@@ -334,6 +359,8 @@ export interface AgentEvents {
   delta: DeltaEvent;
   requestSent: RequestSentEvent;
   responseFinished: ResponseFinishedEvent;
+  turnStarted: TurnStartedEvent;
+  turnFinished: TurnFinishedEvent;
   toolStarted: ToolStartedEvent;
   toolFinished: ToolFinishedEvent;
   subAgentStarted: SubAgentEvent;
@@ -463,6 +490,13 @@ export class Agent extends AgentContext {
    * 两个出口都得能说，就得有人保证不说第二遍。
    */
   private deathSaid = false;
+  /**
+   * 死了就是死了：它为 `true` 之后，这个执行体不再发任何事件（`live-objects.md` 判据四）。
+   *
+   * 立起来的地方只有 {@link markDead}，而且是在「我要没了」那一条之后 —— 顺序反过来的话，
+   * 连那一条都发不出去。
+   */
+  private gone = false;
   /** 一次性 agent 已经吃过一次投递了（自此关收） */
   private fed = false;
   /**
@@ -539,6 +573,13 @@ export class Agent extends AgentContext {
    * 不为 subagent 另起一套平行名字，只多「哪个 subagent + 哪个工具调用」两格。
    */
   emit<K extends keyof AgentEvents>(type: K, payload: AgentEvents[K]): void {
+    // 死了就是死了：这一条之后不再有任何事实（见 `live-objects.md` 判据四）。
+    //
+    // 这道门挡住的是什么：`kill()` 之后仍在收流的那一次请求，它的收尾会再走一遍
+    // `messageChanged`（`touch`），甚至再冒一个 `failed` —— 而「订阅者在此之后拿不到任何
+    // 事实」是这一层的承诺。丢掉的那几条不必补：重启装配时 `AgentRuntime` 会把 `pending` /
+    // `writing` 归成 `aborted`，历史不会因此缺一块。
+    if (this.gone) return;
     this.bus.emit(type as string, payload);
   }
 
@@ -1221,9 +1262,26 @@ export class Agent extends AgentContext {
       });
       this.append(assistant);
 
+      // 这一趟从这儿算起：`turnStarted` 排在 `runTurn` **之前**，于是这一趟里所有事实
+      //（`requestSent`、`delta`、工具的、`responseFinished`）都落在这一对之间。
+      //
+      // 被 `onInnerLoopStart` 拒掉的那一趟**不算开始**：上面已经 `return` 了，那时还没有
+      // assistant 占位，没有事实可说，所以一对事件都不发。
+      this.emit("turnStarted", { agent: this, message: assistant });
+
       const hadTools = await this.runTurn(assistant, ctx);
 
       await this.dispatchHook("onInnerLoopEnd", ctx);
+
+      // `turnFinished` 排在 `onInnerLoopEnd` **之后**（与 `toolFinished` 排在 `onToolEnd` 之后
+      // 同一个口径：钩子在前、事件在后），并排在 `landHigh()` **之前** —— 下一次取件不属于
+      // 这一趟。
+      //
+      // 中断与出错的那一趟照样走到这里：`runTurn` 自己接住一切（错误落到那条消息上再返回）、
+      // `dispatchHook` 自己接住一切，两个都不抛，所以这一条一定发得出去 —— 订阅者靠它结算
+      // 用量、冲刷那一笔。也正因为如此，这里没有 try/finally：为一个不会发生的路径加 finally，
+      // 是给不存在的处境兜底。
+      this.emit("turnFinished", { agent: this, message: assistant });
 
       if (!hadTools) return;
       // 唯一的取件点：这一次请求刚收尾（工具结果已进 messages）、下一次还没开始。
@@ -1515,12 +1573,17 @@ export class Agent extends AgentContext {
    * 「事件只发一条」与「状态必须落到 `idle`」是两件事：门关在 `start()` 之前、后来才
    * `start()` 的那种情形（存量还要跑完）走到这里时，事件早发过了，但这一批的尾部仍要
    * 把状态拉回 `idle` —— 否则一个已经死透的 agent 会永远停在 `working` 上。
+   *
+   * 这一条发完就把 {@link gone} 立起来：此后这个执行体一条事实都不再说
+   *（`live-objects.md` 判据四的「之后不再发出任何事件」）。
    */
   private markDead(): void {
     this.state = "idle";
     if (this.deathSaid) return;
     this.deathSaid = true;
     this.emit(this.killed ? "killed" : "stopped", { agent: this });
+    // 顺序不能反：先把「我要没了」说出去，再把门关上。反过来连那一条都发不出去。
+    this.gone = true;
   }
 
   // -------------------------------------------------------------------------
