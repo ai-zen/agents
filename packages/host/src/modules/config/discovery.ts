@@ -5,6 +5,7 @@ import {
   discoverSubAgents,
   discoverUserToolFiles,
   type AgentDefinition,
+  type LogSink,
   type SkillInfo,
   type UserToolFile,
 } from "@ai-zen/agents-sdk";
@@ -14,6 +15,11 @@ export interface DiscoveryDeps {
   readonly dataRoot: string;
   /** 用户主目录：`~/.agents/...` 那几层在它下面 */
   readonly homeDir: string;
+  /**
+   * 日志口。必填：一个坏的 SKILL.md、一个读不出来的 subagent 定义、一个被拒的工具文件，
+   * 在清单上都是「不见了」——没有这一格就没有任何一处可以说原因。
+   */
+  readonly log: LogSink;
 }
 
 /**
@@ -83,15 +89,15 @@ export class Discovery {
    * 消费者，投影出来的字段只是猜的；有消费者时按它真正读的那几格再定。
    */
   skills(cwd: string): Promise<SkillInfo[]> {
-    return discoverSkills(this.dirs(cwd, "skills"));
+    return discoverSkills(this.dirs(cwd, "skills"), { logger: this.deps.log });
   }
 
   tools(cwd: string): Promise<UserToolFile[]> {
-    return discoverUserToolFiles(this.dirs(cwd, "tools"));
+    return discoverUserToolFiles(this.dirs(cwd, "tools"), { logger: this.deps.log });
   }
 
   subagents(cwd: string): Promise<AgentDefinition[]> {
-    return discoverSubAgents(this.dirs(cwd, "sub-agents"));
+    return discoverSubAgents(this.dirs(cwd, "sub-agents"), { logger: this.deps.log });
   }
 
   /**

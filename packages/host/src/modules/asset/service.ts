@@ -1,4 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+
+import { contentHash } from "@ai-zen/agents-sdk";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -33,7 +35,7 @@ export class AssetService {
    * 都要做的事。名字也跟着是第一次那一份 —— 摘要相同就是同一份字节，不该有第二个身份。
    */
   store(bytes: Buffer, mime: string, name: string | null): Asset {
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const sha256 = contentHash(bytes);
     const existing = this.deps.assets.getBySha256(sha256);
     if (existing !== undefined) return existing;
 

@@ -29,7 +29,7 @@ export { GeneralConfig } from "./modules/config/general.js";
 export type { GeneralConfigDeps } from "./modules/config/general.js";
 export { HostSettings } from "./modules/config/hostSettings.js";
 export { McpConfig } from "./modules/config/mcp.js";
-export type { McpScope, McpServer } from "./modules/config/mcp.js";
+export type { McpScope } from "./modules/config/mcp.js";
 export { ModelService } from "./modules/config/models.js";
 export { ScopeRegistry } from "./modules/scope/registry.js";
 export { SessionService } from "./modules/session/service.js";

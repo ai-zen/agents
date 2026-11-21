@@ -301,6 +301,7 @@ describe("能力来源目录", () => {
       const discovery = new Discovery({
         dataRoot: join(root, "data"),
         homeDir: join(root, "home"),
+        log: { info: () => {}, warn: () => {}, error: () => {} },
       });
 
       const paths = discovery.abilityPaths(project);

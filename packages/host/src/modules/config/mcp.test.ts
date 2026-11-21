@@ -1,8 +1,9 @@
 /**
  * 两条验收，都针对会安静出错的地方：
  *
- * 1. 传输方式不写 `type` 时按形状推断 —— 收紧成必填会让别的工具写的那份 `.mcp.json` 整层读不
- *    出来，而那一层宿主只读不改，报「配置坏了」既不真、又没法修。
+ * 1. 近层写 `disabled: true` 取消远处同名的定义 —— SDK 的合并没有这条规则（停用的条目不进
+ *    `seen`，远处那份反而赢），只能由这一层补。补齐之后不再有人重做归一化：别名、推断、坏文件
+ *    都归 SDK，抄回来就又有两份。
  * 2. 写回一条不洗掉文件里其他键 —— 洗掉之后没有任何报错，只在用户下次打开文件时发现字段没了。
  */
 
@@ -31,29 +32,36 @@ function configOf(dirs: { dataRoot: string; homeDir: string; cwd: string }): Mcp
     dataRoot: dirs.dataRoot,
     homeDir: dirs.homeDir,
     events: createBus(),
+    log: { info: () => {}, warn: () => {}, error: () => {} },
     t: (text: string) => text,
   });
 }
 
 describe("MCP 配置", () => {
-  it("不带 type 的文件也读得出来：给 command 就是 stdio，否则按 http 算", async () => {
+  it("近层的 disabled 取消远处同名的定义", async () => {
     const dirs = setup();
+    mkdirSync(join(dirs.cwd, ".ai-zen"), { recursive: true });
     writeFileSync(
       join(dirs.cwd, ".mcp.json"),
       JSON.stringify({
         mcpServers: {
-          files: { command: "npx", args: ["-y", "server-files"] },
-          remote: { url: "https://example.com/mcp" },
+          files: { type: "stdio", command: "npx", args: ["-y", "server-files"] },
+          kept: { command: "npx", args: ["-y", "server-kept"] },
         },
       }),
+    );
+    writeFileSync(
+      join(dirs.cwd, ".ai-zen", "mcp.json"),
+      JSON.stringify({ mcpServers: { files: { disabled: true } } }),
+    );
+    writeFileSync(
+      join(dirs.dataRoot, "mcp.json"),
+      JSON.stringify({ mcpServers: { files: { type: "stdio", command: "another" } } }),
     );
 
     const servers = await configOf(dirs).effective(dirs.cwd);
 
-    expect(servers.map((server) => [server.id, server.transport])).toEqual([
-      ["files", "stdio"],
-      ["remote", "http"],
-    ]);
+    expect(servers.map((server) => server.id)).toEqual(["kept"]);
   });
 
   it("保存一条只动那一条，文件里其他键原样留着", async () => {

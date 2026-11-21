@@ -129,8 +129,18 @@ export class HostApp {
     // 模型与 MCP 这一版还没有 procedure 用它们：先按依赖顺序接上，免得下一波以为这里没装配过
     // 而另立一份配置读法。
     new ModelService({ config: deps.manager, events: configEvents, t });
-    new McpConfig({ dataRoot: deps.dataRoot, homeDir: homedir(), events: configEvents, t });
-    const discovery = new Discovery({ dataRoot: deps.dataRoot, homeDir: homedir() });
+    new McpConfig({
+      dataRoot: deps.dataRoot,
+      homeDir: homedir(),
+      events: configEvents,
+      t,
+      log: this.log,
+    });
+    const discovery = new Discovery({
+      dataRoot: deps.dataRoot,
+      homeDir: homedir(),
+      log: this.log,
+    });
 
     const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
     const sessions = new SessionService({ sessions: sessionRows, events, t });

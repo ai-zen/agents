@@ -1,4 +1,8 @@
-import { AgentNS } from "@ai-zen/agents-core";
+import {
+  AgentNS,
+  reconcileAbortedMessages,
+  reconcileAbortedToolRounds,
+} from "@ai-zen/agents-core";
 import {
   createAgent,
   resolveModel,
@@ -44,21 +48,45 @@ export async function assemble(deps: AssemblyDeps, session: Session): Promise<Sd
   // 这一段要连 `hidden` 的一起取：那些消息只是不给人看，模型照样得看到。
   const history = deps.messages.listBySession(session.id);
 
-  const interrupted = history.filter(
-    (message) =>
+  // 序列化前后对比判「哪几条真的变了」。两个归一步骤就地在内存里改状态、补正文、删条目，
+  // 没有返回值告诉外面它动过谁；把整段历史重写一遍则是把每一条都当成变了。
+  const before = new Map(history.map((message) => [message.id, JSON.stringify(message)]));
+
+  // 引擎修历史时只认 `aborted`：留着 pending / writing，那几条既进不了请求，界面上也永远
+  // 停在「正在写」。进程是在写它们的时候没的，这件事只有装载这一刻知道。
+  for (const message of history) {
+    if (
       message.status === AgentNS.MessageStatus.Pending ||
-      message.status === AgentNS.MessageStatus.Writing,
-  );
-  if (interrupted.length > 0) {
-    // 引擎修历史时只认 `aborted`：留着 pending / writing，那几条既进不了请求，界面上也永远
-    // 停在「正在写」。进程是在写它们的时候没的，这件事只有装载这一刻知道。
-    for (const message of interrupted) message.status = AgentNS.MessageStatus.Aborted;
+      message.status === AgentNS.MessageStatus.Writing
+    ) {
+      message.status = AgentNS.MessageStatus.Aborted;
+    }
+  }
+
+  // 两步的顺序照引擎那一处：先归工具轮次，再处置剩下的半截 assistant 消息。两者互相跳过对方
+  // 管辖的消息，现在这两条实现上顺序反了结果一样；照它的顺序是为了两处不会各自漂移。
+  //
+  // 策略取自 `config` 上那两格：`AppConfig` 本来就有 `abortedMessageStrategy` 与
+  // `abortedToolRoundStrategy`，引擎从同一个 `AppConfig`（`scope.config`）读，宿主不另立一档。
+  // `abortedToolRoundReason` 不传：它不在 `AppConfig` 上，引擎那一侧走的也是函数的缺省值。
+  const config = deps.config.read();
+  const removed = [
+    ...reconcileAbortedToolRounds(history, config.abortedToolRoundStrategy),
+    ...reconcileAbortedMessages(history, config.abortedMessageStrategy),
+  ];
+
+  const changed = history.filter((message) => before.get(message.id) !== JSON.stringify(message));
+  if (changed.length > 0 || removed.length > 0) {
     try {
-      deps.messages.upsertMany(session.id, interrupted);
+      deps.messages.upsertMany(session.id, changed);
+      // 被归一步骤删掉的那几条，库里那一行也要消失：留着它，用户会看见一条模型那边已经不存在
+      // 的消息。平时这件事由 `AgentSubscription` 接 `messageRemoved` 做，而装载这一刻还没有
+      // 订阅者。
+      for (const message of removed) deps.messages.delete(message.id);
     } catch (error) {
       // 写不回去就不写：修的是同一格事实，下一次装载会再修一遍（幂等）。为一条状态列
       // 让整段会话打不开，代价比它大。
-      deps.onError(error, "write back interrupted messages");
+      deps.onError(error, "write back repaired messages");
     }
   }
 
@@ -89,7 +117,7 @@ export async function assemble(deps: AssemblyDeps, session: Session): Promise<Sd
     modelId: resolveModel({
       sessionModelId: session.modelId ?? undefined,
       agentModelId: definition.modelId,
-      defaultModel: deps.config.read().defaultModel,
+      defaultModel: config.defaultModel,
     })?.modelId,
     modelParams,
   });

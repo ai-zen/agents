@@ -1,63 +1,12 @@
 import { dirname, join } from "node:path";
 
-import { z } from "zod";
+import { discoverMcpServers, type LogSink, type McpServerConfig } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
 import { ensureDirectory, readTextFile, writeTextFile } from "../../infra/files.js";
 import type { Translator } from "../i18n/index.js";
 import type { ConfigEvent } from "./events.js";
-
-const transportSchema = z.enum(["stdio", "http", "sse"]);
-
-type Transport = z.infer<typeof transportSchema>;
-
-/** 字段留着：配了也连不上，因为 OAuth 授权流程还没做 */
-const oauthSchema = z.object({
-  authorizationUrl: z.string(),
-  tokenUrl: z.string(),
-  clientId: z.string(),
-  clientSecret: z.string().optional(),
-  scope: z.string().optional(),
-});
-
-/**
- * 文件里的一条服务器。stdio 用 `command` / `args` / `env`，http 与 sse 用 `url` / `headers`；
- * 这里不校验「stdio 必须给 command」这类配套关系，缺的那一项在连不上的那一刻才有答案，
- * 而配置面不该因为一条连不上的服务器就整层读不出来。
- *
- * `type` 可省：别的工具写的 `.mcp.json` 常常不写它，见 {@link transportOf}。
- */
-const entrySchema = z.object({
-  type: transportSchema.optional(),
-  description: z.string().optional(),
-  disabled: z.boolean().optional(),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  url: z.string().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  oauth: oauthSchema.optional(),
-});
-
-type Entry = z.infer<typeof entrySchema>;
-
-/** 一份 MCP 配置文件：服务器按名字放在 `mcpServers` 下，没有这个键就是这一层空着 */
-const fileSchema = z.object({
-  mcpServers: z.record(z.string(), entrySchema).default({}),
-});
-
-/**
- * 有效清单里的一条服务器。服务器名在文件里是 `mcpServers` 的键，进了清单才是 `id` 字段，
- * 所以它与文件里那一条不是同一个形状，两者各有一个类型。
- *
- * 传输方式在文件里叫 `type`，这里叫 `transport`：`McpServer` 因此与
- * `@ai-zen/agents-sdk` 的 `McpServerConfig` 逐字段一致，接上连接那一侧不需要再转一次。
- */
-export type McpServer = Omit<Entry, "type"> & {
-  readonly id: string;
-  readonly transport: Transport;
-};
 
 /**
  * MCP 配置的五层文件。`workspace` 是项目根下与其他工具共用的那一份，`workspaceAiZen` 与
@@ -87,10 +36,19 @@ export interface McpConfigDeps {
   readonly homeDir: string;
   readonly events: Bus<ConfigEvent>;
   readonly t: Translator;
+  /**
+   * 日志口。必填：某个配置文件坏了的话，那个文件里定义的服务器会安静地从清单里少掉——
+   * 没有这一格就没有任何一处可以说原因。
+   */
+  readonly log: LogSink;
 }
 
 /**
  * MCP 服务器的配置。五层文件合并成一份有效清单，同名以离项目近的为准。
+ *
+ * 合并本身不在这里：`discoverMcpServers` 做的就是这件事，它认识的写法比这一层多（`transport`
+ * 与 `transportType` 两个别名、停用、解析失败记日志）。这一层只剩 SDK 不知道的两件事 ——
+ * 哪五个文件，以及哪两层可以写。
  *
  * 每次调用都重新读文件，不留缓存：缓存一份就要回答「什么时候让它失效」，而这几份文件用户
  * 随时会手改，命令行工具也可能在宿主运行期间写它们。
@@ -99,43 +57,40 @@ export class McpConfig {
   constructor(private readonly deps: McpConfigDeps) {}
 
   /**
-   * 合并后的有效清单。停用的条目照旧在里面、带着 `disabled`：滤掉它，界面就再也无法把它重新
-   * 启用；而且用停用来取消远处同名的定义就失效了 —— 挡住的必须是名字，不是可用性。
+   * 合并后的有效清单。停用的条目自己也不在里面：SDK 归一化时就把它们丢了。所以「把一条停用的
+   * 配置重新启用」读的是它所在的那层文件，不是这份清单。
    */
-  async effective(cwd: string): Promise<McpServer[]> {
-    const merged = new Map<string, McpServer>();
-    for (const layer of LAYER_ORDER) {
-      for (const server of this.read(this.pathOf(layer, cwd))) {
-        if (!merged.has(server.id)) merged.set(server.id, server);
-      }
-    }
-    return [...merged.values()];
+  async effective(cwd: string): Promise<McpServerConfig[]> {
+    // 不传 `logger`：配置面还没有可接的日志口，SDK 的发现不注入就什么都不记 —— 某个文件
+    // 解析失败时，清单里那一条会安静地少掉。
+    const servers = await discoverMcpServers(this.layerPaths(cwd), { logger: this.deps.log });
+    const disabled = this.disabledNames(cwd);
+    return servers.filter((server) => !disabled.has(server.id));
   }
 
-  async save(scope: McpScope, cwd: string, server: McpServer): Promise<void> {
+  async save(scope: McpScope, cwd: string, server: McpServerConfig): Promise<void> {
     const path = this.writablePath(scope, cwd);
-    this.mutate(path, (file) => {
-      const existing = file.mcpServers[server.id] ?? {};
+    this.mutate(path, (servers) => {
+      const existing = servers[server.id] ?? {};
       // 与文件里那一条合并，不是覆盖：这一层那条上的其他键（别的工具写的、这一版还不认识的）
       // 原样留着，否则一次保存就把用户的配置抹掉了。
-      file.mcpServers[server.id] = { ...existing, ...toEntry(server) };
+      servers[server.id] = { ...existing, ...entryOf(server) };
     });
     this.deps.events.emit({ kind: "mcp", scope });
   }
 
   async remove(scope: McpScope, cwd: string, name: string): Promise<void> {
     const path = this.writablePath(scope, cwd);
-    const servers = this.read(path);
-    // 这一层里没有它，说明它来自更远的一层：删这一层什么也删不掉，不能报成功
-    if (!servers.some((server) => server.id === name)) {
-      throw new HostError(
-        "not_found",
-        this.deps.t("MCP 配置 {path} 里没有名为 {name} 的服务器", { path, name }),
-        { path, name },
-      );
-    }
-    this.mutate(path, (file) => {
-      delete file.mcpServers[name];
+    this.mutate(path, (servers) => {
+      // 这一层里没有它，说明它来自更远的一层：删这一层什么也删不掉，不能报成功
+      if (servers[name] === undefined) {
+        throw new HostError(
+          "not_found",
+          this.deps.t("MCP 配置 {path} 里没有名为 {name} 的服务器", { path, name }),
+          { path, name },
+        );
+      }
+      delete servers[name];
     });
     this.deps.events.emit({ kind: "mcp", scope });
   }
@@ -155,6 +110,11 @@ export class McpConfig {
     }
   }
 
+  /** 交给 SDK 的就是这五个路径，近的在前：它的合并按这个顺序先到先得 */
+  private layerPaths(cwd: string): string[] {
+    return LAYER_ORDER.map((scope) => this.pathOf(scope, cwd));
+  }
+
   private writablePath(scope: McpScope, cwd: string): string {
     const path = this.pathOf(scope, cwd);
     if (!WRITABLE.includes(scope)) {
@@ -166,87 +126,92 @@ export class McpConfig {
   }
 
   /**
-   * 读一层。文件不在就是这一层空着。
+   * 按层序读一遍各文件，收 `disabled: true` 的名字。
    *
-   * 文件在但读不成配置时，五层只有一种处置：报 `config_invalid` 并指出是哪个文件。数据根那一份
-   * 由启动时的出厂恢复负责（坏文件留档为 `mcp.json.broken`），项目里那三份与 `~/.agents/`
-   * 那一份在用户的仓库和别的工具目录里，恢复出厂等于改写别人的文件，只能让人自己修。
+   * 这是产品的规则，SDK 的合并没有它：`discoverMcpServers` 把停用的条目归一化成 `null` 之后
+   * 直接 `continue`，名字因此不进它的 `seen`，远处同名的定义照样被收进结果 —— 人写「别用」，
+   * 合出来的却是一条能用的。过滤排在 SDK 之后，归一化一行都没有抄回来。
+   *
+   * 坏文件在这里不报：同一趟 `effective()` 里 `discoverMcpServers` 已经为它记过一条日志，
+   * 这里再抛一次会把整份清单变成一条失败，而 SDK 的合并没有这个失败面。
+   *
+   * 这是同一批文件的第二遍读：SDK 只交出合并结果，不交出每个文件里有哪些名字被它丢掉了。
+   * 少读这一遍就得让 SDK 那边多一个返回值，而那属于 SDK 的接口，不属于这一层。
    */
-  private read(path: string): McpServer[] {
-    const file = this.parse(path);
-    if (file === undefined) return [];
-    return Object.entries(file.mcpServers).map(([id, entry]) => toServer(id, entry));
+  private disabledNames(cwd: string): Set<string> {
+    const names = new Set<string>();
+    for (const path of this.layerPaths(cwd)) {
+      const file = parseRawFile(readTextFile(path));
+      if (file === undefined) continue;
+      for (const [name, entry] of Object.entries(file.mcpServers ?? {})) {
+        if (entry?.disabled === true) names.add(name);
+      }
+    }
+    return names;
   }
 
   /**
    * 改一层并写回**原文件的内容**：只动被点名的那一条，文件里其他键、条目上这一版不认识的键
-   * 都原样留着。所以这里改的是解析出来的原始对象，而不是校验之后的那一份 —— 校验会把未知键
-   * 去掉，用它写回等于把别人的字段洗掉了。
+   * 都原样留着。所以这里改的是解析出来的原始对象，而不是归一化之后的那一份 —— 归一化会把
+   * 未知键去掉，用它写回等于把别人的字段洗掉了。
    */
-  private mutate(path: string, change: (file: RawFile) => void): void {
-    const parsed = this.parse(path);
-    const file: RawFile = parsed === undefined ? { mcpServers: {} } : { ...parsed };
-    change(file);
+  private mutate(path: string, change: (servers: RawServers) => void): void {
+    const file = this.readForWrite(path);
+    change(file.mcpServers);
     ensureDirectory(dirname(path));
-    writeTextFile(path, `${JSON.stringify(serialize(file), null, 2)}\n`);
+    writeTextFile(path, `${JSON.stringify(file, null, 2)}\n`);
   }
 
-  /** 文件不在回 `undefined`；在但读不成配置就报 `config_invalid` */
-  private parse(path: string): RawFile | undefined {
+  /**
+   * 写回要的那一份：文件原样。`mcpServers` 缺了这一格就按空表算 —— 这一层第一次存服务器时
+   * 正是这种情形，而文件里其余的键仍然要跟着走。
+   *
+   * 读不出 JSON 就报 `config_invalid` 并且不写：覆盖一份读不出来的文件，等于把人的配置换成
+   * 我们这一份。SDK 那边没有写文件的能力，所以这条判断没有第二处可以借。
+   */
+  private readForWrite(path: string): RawFile {
     const text = readTextFile(path);
-    if (text === undefined) return undefined;
-
-    const raw = jsonOf(text);
-    if (!fileSchema.safeParse(raw).success) {
+    if (text === undefined) return { mcpServers: {} };
+    const raw = parseRawFile(text);
+    if (raw === undefined) {
       throw new HostError("config_invalid", this.deps.t("读不出 MCP 配置 {path}", { path }), {
         path,
       });
     }
-    return raw as RawFile;
+    return { ...raw, mcpServers: raw.mcpServers ?? {} };
   }
 }
 
-/** 文件原样：`mcpServers` 之外这一版不认识的键也要能带着走，所以不定成精确形状 */
+type RawServers = Record<string, Record<string, unknown> | undefined>;
+
+/**
+ * 文件原样：`mcpServers` 之外这一版不认识的键也要能带着走，所以不定成精确形状。
+ *
+ * 条目里的键同样不归这一层管 —— 认识哪些写法是 SDK 的事，这里只保证没认出来的那些原样回去。
+ */
 interface RawFile {
-  mcpServers: Record<string, Record<string, unknown>>;
+  mcpServers: RawServers;
   [key: string]: unknown;
 }
 
 /**
- * 解析失败返回 `undefined`，交给 schema 判死：JSON 语法错与形状错是同一档坏文件，往上抛两种
- * 错误只会让调用方多一条没人走的路径。
+ * 文本读不成 JSON 回 `undefined`。两个调用处对它的处置不同：合并那一路当这一层空着（坏文件
+ * 由 SDK 的发现记日志），写那一路报 `config_invalid` 并且不写。
  */
-function jsonOf(text: string): unknown {
+function parseRawFile(text: string | undefined): RawFile | undefined {
+  if (text === undefined) return undefined;
   try {
-    return JSON.parse(text);
+    return JSON.parse(text) as RawFile;
   } catch {
     return undefined;
   }
 }
 
 /**
- * 传输方式。文件里没写时按形状推断：给 `command` 就是 stdio，否则按 http 算。
- *
- * 收紧成必填会让最常见的那份 `.mcp.json` 整层读不出来 —— 它由别的工具写、宿主只读不改，
- * 报一个「配置坏了」既不真、又没法修。
+ * 写回时传输方式改回文件里的那个键名。读的时候几个别名都认（那是 SDK 的归一化），写只写标准
+ * 那一个：一份文件里同时留着 `type` 与 `transport` 之后，人改哪一个都可能不生效。
  */
-function transportOf(entry: Entry): Transport {
-  if (entry.type !== undefined) return entry.type;
-  return entry.command === undefined ? "http" : "stdio";
-}
-
-/** 传输方式的两个名字在读写各出现一次，都在这里对齐 */
-function toServer(id: string, entry: Entry): McpServer {
-  const { type: _type, ...rest } = entry;
-  return { id, transport: transportOf(entry), ...rest };
-}
-
-function toEntry(server: McpServer): Entry {
+function entryOf(server: McpServerConfig): Record<string, unknown> {
   const { id: _id, transport, ...rest } = server;
-  return { type: transport, ...rest };
-}
-
-/** 写回时保住 `mcpServers` 之外那些键：它们属于同一份文件，不属于我们 */
-function serialize(file: RawFile): unknown {
-  return { ...file, mcpServers: file.mcpServers };
+  return { ...rest, type: transport };
 }
