@@ -8,14 +8,14 @@ import { defineConfig } from "vitest/config";
  * 文件）、不靠 `AI_ZEN_DIR` / 全局 locale 这类模块级状态跨文件、不从 `process.cwd()` 推路径
  * （一律从 `import.meta.url` 推包根）。违反了就是一例「单跑绿、合跑红」。
  *
- * 只收不依赖构建产物 / 子进程 / 端口的那些：`src/app.e2e.test.ts` 起真端口、写真实磁盘、连真
- * WebSocket，它在 `vitest.e2e.config.ts`（`npm run test:e2e`），这里排除掉。
+ * 只收不依赖构建产物 / 子进程 / 端口的那些：`*.e2e.test.ts` 起真端口、写真实磁盘、连真
+ * WebSocket，它们在 `vitest.e2e.config.ts`（`npm run test:e2e`），这里排除掉。
  * `src-bad/` 那两条旧用例（`serve.process.test.ts` / `host.integration.test.ts`）不在 `src/`
  * 下，本来就不进这个 glob。
  */
 export default defineConfig({
   test: {
-    include: ["src/**/*.test.ts", "!src/app.e2e.test.ts"],
+    include: ["src/**/*.test.ts", "!src/**/*.e2e.test.ts"],
     isolate: false,
   },
 });

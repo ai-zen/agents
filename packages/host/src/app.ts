@@ -159,8 +159,11 @@ export class HostApp {
    *
    * 它是个薄壳与运行时之间唯一的接面：宿主给四格端口（造容器、开平级会话的行、现读会话名、日志），
    * 其余全部问它。
+   *
+   * 对外只读：用例要取的正是那一段执行体手上的工具实例（宿主把端口接上没有，只有真的从容器里
+   * 取出工具、真的执行一次才看得出来），而装配根之外没有第二条路拿得到执行体。
    */
-  private readonly runtime: AgentRuntime;
+  readonly runtime: AgentRuntime;
   /** 全进程一份的观察者：把运行时的事实翻译成写库与推送 */
   private readonly observer: HostObserver;
   /** 收工时解掉观察者：它在运行时那条事实流上的一个订阅 */
