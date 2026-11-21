@@ -47,6 +47,15 @@ export function noticeTable(db: DatabaseSync) {
       db.prepare("DELETE FROM notices WHERE sessionId = ?").run(sessionId);
     },
 
+    /**
+     * 清一条：回删掉的那一行，不存在的 id 回 `undefined`。删与读是同一条语句（`RETURNING`）：
+     * 两个客户端同时清同一条时，只有真删掉的那一份拿到这一行。
+     */
+    removeOne(id: string): Notice | undefined {
+      const row = db.prepare("DELETE FROM notices WHERE id = ? RETURNING payload").get(id);
+      return row === undefined ? undefined : (JSON.parse(String(row.payload)) as Notice);
+    },
+
     deleteExpired(now: number): void {
       db.prepare(
         `DELETE FROM notices

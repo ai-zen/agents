@@ -62,8 +62,11 @@ export type HostEvent =
    */
   | { readonly type: "session.handoff"; readonly sessionId: string; readonly handingOff: boolean }
   | { readonly type: "notice"; readonly notice: Notice }
-  /** 不给 `sessionId` 的意思是清掉了全部，所以这一格可缺省，不是 `string | null` */
-  | { readonly type: "notice.cleared"; readonly sessionId?: string }
+  /**
+   * 清掉了哪一档：清一条带 `id`，清一段会话带 `sessionId`，两格都不带就是清掉了全部。
+   * 清掉的若是全局通知，`sessionId` 那一格跟着空：它不属于哪一段，收到的人该动的是自己那个栏位。
+   */
+  | { readonly type: "notice.cleared"; readonly id?: string; readonly sessionId?: string }
   | {
       readonly type: "question.asked";
       readonly sessionId: string;

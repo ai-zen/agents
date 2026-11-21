@@ -69,6 +69,22 @@ export class NoticeService {
     this.deps.events.emit({ type: "notice.cleared", sessionId });
   }
 
+  /**
+   * 清一条：回删掉的那一条，不存在的 id 回 `undefined`。不存在不是错误 —— 两个客户端同时清同一条，
+   * 后到的那个本来就该拿到「没改动」。
+   */
+  clearOne(id: string): Notice | undefined {
+    const notice = this.deps.notices.removeOne(id);
+    if (notice === undefined) return undefined;
+    // 事件带上会话 id：别的客户端据此只动那一段的通知栏；全局那一条不属于任何一段，每段的栏位都得动。
+    this.deps.events.emit({
+      type: "notice.cleared",
+      id,
+      sessionId: notice.sessionId ?? undefined,
+    });
+    return notice;
+  }
+
   sweep(now: number): void {
     this.deps.notices.deleteExpired(now);
   }
