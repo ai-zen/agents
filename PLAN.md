@@ -17,6 +17,11 @@
 | 5 | 已建表的存量库不会自动长出 `searchText` 与 `hidden`（`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作） | 协议机上的旧库要删掉重建，或补一次 ALTER + `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')` |
 | 6 | 交接降级的根因看不见：宿主没给 SDK 传 `logger`，`supportsSelfHandoff` 为假时每一趟都降级、每趟堆一条警告，根因只在 SDK 的静默日志里 | 降级要有可追的原因，不只是结果 |
 
+## 已经拍过、不要重开的
+
+- **交接不接 Skill。** 交接不是一种能力：把交接文档的模板放进用户可编辑的 Skill 目录，等于用户改一次 Skill 就意外改掉交接行为。用 SDK 内置的那份模板。
+  连带一件要清：`ConfigManager.bootstrap()` 仍会释放 `<数据根>/skills/handoff/SKILL.md`，而没人读它。一份看起来是配置点、实质是死的文件，比没有它更糟——要么让 SDK 不再释放，要么先记在这里。
+
 ## 门禁
 
 - `tsc --noEmit -p tsconfig.test.json` 通过；
