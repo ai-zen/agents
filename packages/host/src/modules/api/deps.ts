@@ -4,7 +4,11 @@ import type { Bus } from "../../infra/bus.js";
 import type { inboxTable } from "../agent/inbox.js";
 import type { AssetService } from "../asset/service.js";
 import type { AgentDefinitionService } from "../config/agents.js";
+import type { EndpointService } from "../config/endpoints.js";
 import type { GeneralConfig } from "../config/general.js";
+import type { ImageModelService } from "../config/imageModels.js";
+import type { ModelService } from "../config/models.js";
+import type { PresetService } from "../config/presets.js";
 import type { HostEvent } from "../events.js";
 import type { HandoffService } from "../handoff/service.js";
 import type { Translator } from "../i18n/index.js";
@@ -29,7 +33,16 @@ export interface HostApiDeps {
   readonly workspaces: WorkspaceService;
   readonly runtime: AgentRuntime;
   readonly definitions: AgentDefinitionService;
+  /**
+   * 内存里那一份配置。它同时是**配置面的读口**（`config.get` 读它）与**写盘口的入口**
+   * （`GeneralConfig.patch` / `write`：写盘、更新内存那份、发事件都在那一处）。
+   */
   readonly config: GeneralConfig;
+  /** 配置面的四个写口。读不在这里 —— 读只有 `config` 一处 */
+  readonly endpoints: EndpointService;
+  readonly models: ModelService;
+  readonly imageModels: ImageModelService;
+  readonly presets: PresetService;
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
   readonly assets: AssetService;

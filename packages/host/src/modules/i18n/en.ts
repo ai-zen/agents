@@ -48,6 +48,29 @@ export const en: Record<string, string> = {
   "模型 {modelId} 没有 {level} 这一档，可选：{levels}":
     'The model "{modelId}" has no level "{level}"; available: {levels}',
   "这一段历史里没有 id 为 {messageId} 的消息": 'This history has no message "{messageId}"',
+  "已经有 id 为 {endpointId} 的端点了": 'An endpoint with id "{endpointId}" already exists',
+  "模型 {ids}": "model(s) {ids}",
+  "图片模型 {ids}": "image model(s) {ids}",
+  "端点 {endpointId} 上还挂着{hanging}，先把它们换走或删掉":
+    'The endpoint "{endpointId}" still has {hanging} on it; move them elsewhere or delete them first',
+  "已经有 id 为 {modelId} 的模型了": 'A model with id "{modelId}" already exists',
+  "模型 {modelId} 的交接阈值与防护阈值都必须是数字":
+    'The handoff and guard thresholds of the model "{modelId}" must both be numbers',
+  "「{modelId}」不是出厂的那几个模型之一": '"{modelId}" is not one of the factory models',
+  "已经有 id 为 {imageModelId} 的图片模型了":
+    'An image model with id "{imageModelId}" already exists',
+  "找不到 id 为 {imageModelId} 的图片模型": 'Cannot find the image model "{imageModelId}"',
+  "配置里没有 id 为 {imageModelId} 的图片模型": 'The config has no image model "{imageModelId}"',
+  "「{imageModelId}」不是出厂的那几个图片模型之一":
+    '"{imageModelId}" is not one of the factory image models',
+  "思考档位表必须是一张「策略名 → 档位」的表":
+    "The reasoning presets must be a table of preset name → levels",
+  "思考档位表 {preset} 必须是一个对象": 'The reasoning preset "{preset}" must be an object',
+  "思考档位表 {preset} 的 custom 只有 true / false 两种":
+    'The "custom" field of the reasoning preset "{preset}" must be true or false',
+  "思考档位表 {preset} 缺少 levels": 'The reasoning preset "{preset}" has no "levels"',
+  "思考档位表 {preset} 的 {level} 这一档必须是一个对象：一档的补丁是「参数名 → 值」":
+    'Level "{level}" of the reasoning preset "{preset}" must be an object: a level patch is a map of parameter name → value',
   "只能撤回到自己说过的话之前：助手的话与工具结果不是这个意思":
     "You can only rewind to before something you said yourself; replies and tool results are not yours to unsend",
   "这段会话还在跑，等它停下来再撤回": "This session is still running; rewind once it stops",

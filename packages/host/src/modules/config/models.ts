@@ -1,13 +1,13 @@
-import type { AppConfig, ConfigManager, Model } from "@ai-zen/agents-sdk";
+import { DEFAULT_APP_CONFIG } from "@ai-zen/agents-sdk";
+import type { AppConfig, Model } from "@ai-zen/agents-sdk";
 
-import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
-import type { ConfigEvent } from "./events.js";
+import type { GeneralConfig } from "./general.js";
 
 export interface ModelDeps {
-  readonly config: ConfigManager;
-  readonly events: Bus<ConfigEvent>;
+  /** 内存里那一份配置：读它、写也经过它（`GeneralConfig.write` 是唯一的写盘口） */
+  readonly general: GeneralConfig;
   readonly t: Translator;
 }
 
@@ -21,13 +21,23 @@ export class ModelService {
   constructor(private readonly deps: ModelDeps) {}
 
   async add(model: Model): Promise<AppConfig> {
-    const current = await this.deps.config.read();
+    const current = this.deps.general.read();
+    // 与端点同一条规矩：id 是默认项与会话行引用它的方式，重名之后「引用的是哪一条」变成
+    // 看谁赢 —— 那种配置不报错，只是让某一段会话悄悄换了个模型
+    if (current.models.some((item) => item.id === model.id)) {
+      throw new HostError(
+        "conflict",
+        this.deps.t("已经有 id 为 {modelId} 的模型了", { modelId: model.id }),
+        { entity: "model", modelId: model.id },
+      );
+    }
+
     await this.assertWritable(model, current);
     return this.write({ ...current, models: [...current.models, model] });
   }
 
   async update(id: string, change: Partial<Omit<Model, "id">>): Promise<AppConfig> {
-    const current = await this.deps.config.read();
+    const current = this.deps.general.read();
     const found = current.models.find((model) => model.id === id);
     if (found === undefined) throw this.notFound(id);
 
@@ -40,7 +50,7 @@ export class ModelService {
   }
 
   async remove(id: string): Promise<AppConfig> {
-    const current = await this.deps.config.read();
+    const current = this.deps.general.read();
     const removed = current.models.find((model) => model.id === id);
     if (removed === undefined) throw this.notFound(id);
 
@@ -59,13 +69,57 @@ export class ModelService {
     });
   }
 
-  private async write(config: AppConfig): Promise<AppConfig> {
-    await this.deps.config.write(config);
-    this.deps.events.emit({ kind: "models" });
-    return config;
+  /**
+   * 恢复出厂：把这一条整条换回 `DEFAULT_APP_CONFIG` 里同 id 的那一条，并把 `custom` 置回
+   * `false` —— 「换回出厂定义、然后重新归入托管」（`prd/03-legacy.md` 3.4）。
+   *
+   * **整条换，不是把出厂那几格叠到用户那份上**：出厂之后要给用户的是「出厂长什么样」，
+   * 用户此前加在这一条上的字段（自填的描述、额外参数）一并退场；否则「恢复出厂」之后界面上
+   * 还留着他改过的痕迹，而下一次启动的出厂同步又会按出厂清单覆盖一次 —— 两个时刻不一样。
+   *
+   * 写之前照样过 `assertWritable`：出厂那条的端点可能已经被用户删掉了（端点是用户的财产，
+   * 我们不替他补回来），这时写进去的就是一条指不到端点的模型。
+   */
+  async reset(id: string): Promise<AppConfig> {
+    const current = this.deps.general.read();
+    if (!current.models.some((model) => model.id === id)) throw this.notFound(id);
+
+    const factory = DEFAULT_APP_CONFIG.models.find((model) => model.id === id);
+    if (factory === undefined) {
+      throw new HostError(
+        "not_found",
+        this.deps.t("「{modelId}」不是出厂的那几个模型之一", { modelId: id }),
+        { entity: "model", modelId: id },
+      );
+    }
+
+    const next: Model = { ...factory, custom: false };
+    await this.assertWritable(next, current);
+    return this.write({
+      ...current,
+      models: current.models.map((model) => (model.id === id ? next : model)),
+    });
+  }
+
+  private write(next: AppConfig): Promise<AppConfig> {
+    return this.deps.general.write(next, "models");
   }
 
   private async assertWritable(model: Model, config: AppConfig): Promise<void> {
+    // 形状由边界上的 `.input()` 声明，但那一格是 `z.custom`（`Model` 的形状只有 SDK 一处，
+    // 不在这里抄第二份）。抄不了就得自己判：读不到两条阈值时下面那次比较会抛 TypeError，
+    // 那是宿主事故的报法，而这里是「写进来的一格不对」。
+    if (
+      typeof model.tokenThresholds?.handoff !== "number" ||
+      typeof model.tokenThresholds?.guard !== "number"
+    ) {
+      throw new HostError(
+        "invalid_params",
+        this.deps.t("模型 {modelId} 的交接阈值与防护阈值都必须是数字", { modelId: model.id }),
+        { entity: "model", modelId: model.id },
+      );
+    }
+
     if (!config.endpoints.some((endpoint) => endpoint.id === model.endpointId)) {
       throw new HostError(
         "config_invalid",
@@ -85,7 +139,7 @@ export class ModelService {
 
     // 不写档位表 = 不可调，允许；写了名字却查不到这张表，直到选档那一刻才失败
     if (model.reasoningPreset !== undefined) {
-      const presets = await this.deps.config.readReasoningPresets();
+      const presets = await this.deps.general.presets();
       if (!Object.hasOwn(presets, model.reasoningPreset)) {
         throw new HostError(
           "config_invalid",

@@ -33,11 +33,14 @@ import { AssetService } from "./modules/asset/service.js";
 import { assetTable, sessionAssetTable } from "./modules/asset/table.js";
 import { AgentDefinitionService } from "./modules/config/agents.js";
 import { Discovery } from "./modules/config/discovery.js";
+import { EndpointService } from "./modules/config/endpoints.js";
 import type { ConfigEvent } from "./modules/config/events.js";
 import { GeneralConfig } from "./modules/config/general.js";
 import { HostSettings } from "./modules/config/hostSettings.js";
+import { ImageModelService } from "./modules/config/imageModels.js";
 import { McpConfig } from "./modules/config/mcp.js";
 import { ModelService } from "./modules/config/models.js";
+import { PresetService } from "./modules/config/presets.js";
 import { Connections } from "./modules/connection/registry.js";
 import { ensureLocalToken } from "./modules/credential/local.js";
 import { CredentialService } from "./modules/credential/service.js";
@@ -194,9 +197,12 @@ export class HostApp {
       general: this.general,
     });
     const hostSettings = new HostSettings({ path: join(deps.dataRoot, "host.json") });
-    // 模型这一版还没有 procedure 用它：先按依赖顺序接上，免得下一波以为这里没装配过而另立一份
-    // 配置读法。
-    new ModelService({ config: deps.manager, events: configEvents, t });
+    // 配置面的四个写口。读只有一个入口（`this.general`），写全经过它的 `write`：写盘、更新内存
+    // 那份、发事件三件事在一处，内存与文件才不会各自漂移。
+    const endpoints = new EndpointService({ general: this.general, t });
+    const models = new ModelService({ general: this.general, t });
+    const imageModels = new ImageModelService({ general: this.general, t });
+    const presets = new PresetService({ general: this.general, config: deps.manager, t });
     // MCP 现在有运行期的消费者（`openScope` 里的发现），配置面那一路（`effective()`）还没有
     // procedure 用它。两者看的是同一批文件、问的是不同的问题。
     const mcp = new McpConfig({
@@ -369,6 +375,10 @@ export class HostApp {
       runtime: this.runtime,
       definitions,
       config: this.general,
+      endpoints,
+      models,
+      imageModels,
+      presets,
       messages,
       inbox,
       assets,

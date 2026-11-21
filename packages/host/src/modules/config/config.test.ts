@@ -75,11 +75,12 @@ describe("配置", () => {
       namingModel: "m-a1",
     });
     const config = new ConfigManager(configPath);
-    const models = new ModelService({
+    const general = new GeneralConfig({
       config,
+      current: await config.read(),
       events: createBus<ConfigEvent>(),
-      t: createTranslator(() => "zh"),
     });
+    const models = new ModelService({ general, t: createTranslator(() => "zh") });
 
     const afterFirst = await models.remove("m-a1");
 
