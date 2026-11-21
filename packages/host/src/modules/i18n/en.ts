@@ -11,6 +11,24 @@ export const en: Record<string, string> = {
   "找不到 id 为 {modelId} 的模型": 'Cannot find the model "{modelId}"',
   "找不到 id 为 {agentDefinitionId} 的助手":
     'Cannot find the agent definition "{agentDefinitionId}"',
+  "已经有 id 为 {agentDefinitionId} 的助手了，改它走 update":
+    'The agent definition "{agentDefinitionId}" already exists; use update to change it',
+  "助手标识 {agentDefinitionId} 只能由字母、数字、点、下划线与连字符组成，且不以点、下划线与连字符开头":
+    'The agent definition id "{agentDefinitionId}" must be usable as a file name: letters, digits, dot, underscore and hyphen, and it must not start with dot, underscore or hyphen',
+  "助手 {agentDefinitionId} 的模板里至少要有一条 system 消息":
+    'The template of the agent definition "{agentDefinitionId}" needs at least one system message',
+  "助手 {agentDefinitionId} 的 {dimension} 权限只能是 allow 或 deny 其一":
+    'The {dimension} permission of the agent definition "{agentDefinitionId}" must be either allow or deny, not both',
+  "助手 {agentDefinitionId} 的 {dimension} 权限必须是字符串数组":
+    'The {dimension} permission of the agent definition "{agentDefinitionId}" must be an array of strings',
+  "subagent {agentDefinitionId} 的函数名不能为空":
+    'The function name of the subagent "{agentDefinitionId}" must not be empty',
+  "subagent {agentDefinitionId} 的参数结构不是合法的 JSON：{reason}":
+    'The function parameters of the subagent "{agentDefinitionId}" are not valid JSON: {reason}',
+  "subagent {agentDefinitionId} 的参数结构必须是一个对象：它是一份 JSON Schema":
+    'The function parameters of the subagent "{agentDefinitionId}" must be an object: they are a JSON Schema',
+  "「{agentDefinitionId}」不是出厂的那两个助手之一":
+    '"{agentDefinitionId}" is not one of the two factory agent definitions',
   "找不到 id 为 {endpointId} 的端点": 'Cannot find the endpoint "{endpointId}"',
   "交接阈值 {handoff} 必须小于防护阈值 {guard}":
     "Handoff threshold {handoff} must be less than the guard threshold {guard}",

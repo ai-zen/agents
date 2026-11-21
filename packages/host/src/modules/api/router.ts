@@ -1,4 +1,5 @@
 import { agentRouter } from "./agent.js";
+import { agentDefinitionRouter } from "./agentDefinition.js";
 import { assetRouter } from "./asset.js";
 import { configRouter } from "./config.js";
 import type { HostApiDeps } from "./deps.js";
@@ -30,6 +31,7 @@ export function createAppRouter(deps: HostApiDeps) {
     handoff: handoffRouter(deps, api),
     search: searchRouter(deps, api),
     config: configRouter(deps, api),
+    agentDefinition: agentDefinitionRouter(deps, api),
     events: eventsProcedure(deps, api),
   });
 }
