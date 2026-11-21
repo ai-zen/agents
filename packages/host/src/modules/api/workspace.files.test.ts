@@ -24,7 +24,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../infra/db.js";
 import { HostError } from "../../infra/errors.js";
-import type { Connection } from "../connection/registry.js";
 import { createTranslator } from "../i18n/index.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { workspaceTable } from "../workspace/table.js";
@@ -46,7 +45,7 @@ function setup() {
   const deps = { workspaces, t } as unknown as HostApiDeps;
   const api = createTrpc(t);
   const router = api.router({ workspace: workspaceRouter(deps, api) });
-  const caller = router.createCaller({ connection: {} as Connection });
+  const caller = router.createCaller({});
 
   return { caller, workspaces };
 }

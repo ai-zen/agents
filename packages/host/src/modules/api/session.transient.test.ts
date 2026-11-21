@@ -38,7 +38,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
-import type { Connection } from "../connection/registry.js";
 import type { AgentDefinitionService } from "../config/agents.js";
 import type { GeneralConfig } from "../config/general.js";
 import type { HostEvent } from "../events.js";
@@ -173,7 +172,7 @@ async function newHost() {
 
   const api = createTrpc(t);
   const router = api.router({ session: sessionRouter(deps, api) });
-  const caller = router.createCaller({ connection: {} as Connection });
+  const caller = router.createCaller({});
 
   return { db, sessions, messages, inbox, caller, scope, asked };
 }

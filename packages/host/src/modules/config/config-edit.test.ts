@@ -41,7 +41,6 @@ import { HostError } from "../../infra/errors.js";
 import { configRouter } from "../api/config.js";
 import type { HostApiDeps } from "../api/deps.js";
 import { createTrpc } from "../api/trpc.js";
-import type { Connection } from "../connection/registry.js";
 import { createTranslator } from "../i18n/index.js";
 import type { AgentDefinitionService } from "./agents.js";
 import { EndpointService } from "./endpoints.js";
@@ -163,7 +162,7 @@ async function newHost(options: HostOptions = {}) {
 
   return {
     deps,
-    caller: router.createCaller({ connection: {} as Connection }),
+    caller: router.createCaller({}),
     configEvents,
     agents,
   };

@@ -42,7 +42,6 @@ import { ImageModelService } from "./modules/config/imageModels.js";
 import { McpConfig } from "./modules/config/mcp.js";
 import { ModelService } from "./modules/config/models.js";
 import { PresetService } from "./modules/config/presets.js";
-import { Connections } from "./modules/connection/registry.js";
 import { ensureLocalToken } from "./modules/credential/local.js";
 import { CredentialService } from "./modules/credential/service.js";
 import { credentialTable } from "./modules/credential/table.js";
@@ -166,7 +165,6 @@ export class HostApp {
   private readonly observer: HostObserver;
   /** 收工时解掉观察者：它在运行时那条事实流上的一个订阅 */
   private readonly detachObserver: () => void;
-  private readonly connections: Connections;
   /**
    * 监听这一侧。
    *
@@ -301,9 +299,6 @@ export class HostApp {
       ensureLocalToken(this.credentials, this.paths.tokenFile);
     }
     const questions = new QuestionRegistry({ events, t });
-    // 连接登记表：握手时建一条、socket 断开时摘掉，进程收尾清空。它不进业务判断 —— 问不问交接
-    // 与有没有人连着无关，题就挂在内存里等人。
-    this.connections = new Connections();
     // 全文索引的触发器指向 `messages`，所以只能在它之后建
     const search = new SearchService({ search: searchTable(this.db) });
 
@@ -506,7 +501,7 @@ export class HostApp {
     applyWSSHandler({
       wss: server,
       router: createAppRouter(api),
-      createContext: ({ res, info }) => {
+      createContext: ({ info }) => {
         // 每一条连接都要一串验得过的令牌。验不过就在这里止住：适配器会回一帧错误并关掉连接，
         // 而这条连接此后连方法名都问不出来。
         const presented = connectionParams.safeParse(info.connectionParams);
@@ -514,9 +509,9 @@ export class HostApp {
           throw new HostError("unauthorized", t("宿主访问令牌无效"));
         }
 
-        const connection = this.connections.open();
-        res.once("close", () => this.connections.close(connection.id));
-        return { connection };
+        // 上下文是空的：令牌在上面那一步就验完了，之后的每一次调用都不再问它；语言是用户级的
+        // 全局设置，不挂在连接上；也没有哪一处 procedure 要问「谁连着」。
+        return {};
       },
     });
 
@@ -666,7 +661,6 @@ export class HostApp {
       if (this.upgrading === undefined) clearVersionPin(this.paths.versionPinFile);
     }
 
-    this.connections.closeAll();
     this.db.close();
     await this.log.close();
   }

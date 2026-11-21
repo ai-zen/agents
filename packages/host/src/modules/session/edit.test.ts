@@ -26,13 +26,11 @@ import { openDatabase } from "../../infra/db.js";
 import { HostError } from "../../infra/errors.js";
 import type { HostApiDeps } from "../api/deps.js";
 import { sessionRouter } from "../api/session.js";
-import type { HostContext } from "../api/trpc.js";
 import { createTrpc } from "../api/trpc.js";
 import type { AgentDefinitionService } from "../config/agents.js";
 import type { GeneralConfig } from "../config/general.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
-import type { Connection } from "../connection/registry.js";
 import { workspaceTable } from "../workspace/table.js";
 import { messageTable } from "./messages.js";
 import { SessionService } from "./service.js";
@@ -132,7 +130,7 @@ function newHost(definition: AgentDefinition = DEFINITION) {
 
   const api = createTrpc(t);
   const router = api.router({ session: sessionRouter(deps, api) });
-  const caller = router.createCaller({ connection: {} as Connection });
+  const caller = router.createCaller({});
 
   return { sessions, messages, agents, caller };
 }

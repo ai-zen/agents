@@ -29,7 +29,6 @@ import { HostError } from "../../infra/errors.js";
 import { inboxTable } from "../agent/inbox.js";
 import { AssetService } from "../asset/service.js";
 import { assetTable, sessionAssetTable } from "../asset/table.js";
-import type { Connection } from "../connection/registry.js";
 import type { HostEvent } from "../events.js";
 import type { HandoffService } from "../handoff/service.js";
 import { createTranslator } from "../i18n/index.js";
@@ -113,7 +112,7 @@ function setup() {
 
   const api = createTrpc(t);
   const router = api.router({ session: sessionRouter(deps, api) });
-  const caller = router.createCaller({ connection: {} as Connection });
+  const caller = router.createCaller({});
 
   function newSession(workspaceId = WORKSPACE_ID): Session {
     return sessions.create({
