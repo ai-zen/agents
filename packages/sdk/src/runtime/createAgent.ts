@@ -3,7 +3,10 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
-import { PEER_SESSION_TOOL_NAMES } from "../scope/plugins/peers/peerSessionTools.js";
+import {
+  CREATE_SESSION_TOOL,
+  PEER_SESSION_TOOL_NAMES,
+} from "../scope/plugins/peers/peerSessionTools.js";
 import { resolveModel, resolveModelParams } from "./resolveModel.js";
 import type { AgentDefinition, ModelParams } from "../types/index.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
@@ -51,6 +54,15 @@ export interface CreateAgentOptions {
    * 吃一次投递，跑完就死，`send` / `runOnce` 才有意义。缺省仍是常驻 —— 那是能力更大的那个。
    */
   lifetime?: AgentNS.AgentLifetime;
+  /**
+   * 这一段能不能再开平级会话（缺省能）。
+   *
+   * 「这一段自己是不是别人开出来的」只有运行时知道（`WakeMaterials.lineage`），所以由它给这一格。
+   * 给 `false` 时排掉的是 `create_session` 一个工具：再开一层就是套娃，而排掉工具比让它调一次
+   * 再回 `depth_exceeded` 早一步 —— 模型手上没有这个工具，也就不会去试。投递与问状态那两个照旧
+   * 留着：平级会话之间是双向说话的。
+   */
+  canOpenPeers?: boolean;
 }
 
 /**
@@ -127,19 +139,21 @@ export async function createAgent(
   const tools = scope.buildTools(definition, {
     exclude: {
       subagents: definition.function?.name ? [definition.function.name] : undefined,
-      // 平级会话那三个工具是**会话级**能力，一次性执行体手上不该有 —— 这是同一件事的第二处
-      // （第一处是 `subAgentTools.ts` 里给 subagent 的 exclude）。两处的判据不同：那边是
-      // 「被派出去的」，这边是「一次性的」；结论一样 —— **不是一段会话的执行体，就没有会话级
-      // 工具**。
+      // 平级会话那三个工具是**会话级**能力，谁手上没有哪一个，判据都是「它是不是一段能自己开平级
+      // 会话的会话」。下面两支各自排掉哪些，理由不同：
       //
-      // 一次性执行体不属于任何一段会话：它没有可以署名的身份（`post_message` 要写「来自哪一段
-      // 会话」，它会把发起方标签算成 agentId 那串字符串），也开不出有人认领的新会话
-      // （`create_session` 必然回 `depth_exceeded`）。那三个工具在它手上只有必错的路，而每一条
-      // 必错的路都要烧一次模型调用去走 —— 不如一开始就不给。
+      // - 一次性执行体手上三个都不该有（第一处是 `subAgentTools.ts` 给 subagent 的 exclude，那边
+      //   的判据是「被派出去的」，这边的判据是「一次性的」，结论一样）：它不是一段会话的执行体
+      //   —— 没有可以署名的身份（`post_message` 要写「来自哪一段会话」，它会把发起方标签算成
+      //   agentId 那串字符串），也开不出有人认领的新会话（`create_session` 必然回
+      //   `depth_exceeded`）。那三个工具在它手上只有必错的路，而每一条必错的路都要烧一次模型
+      //   调用去走 —— 不如一开始就不给。
+      // - 别人开出来的那一段会话（`canOpenPeers: false`）只排 `create_session`：再开一层就是
+      //   套娃；投递与问状态那两个照旧留着，平级之间是双向说话的。
       //
       // 取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的配置，这条规矩不长在那儿；
       // 而 filter 先按 exclude 剔除、再按权限过滤，定义写 `allow: ["*"]` 也照样剔得掉。
-      tools: options.lifetime === "one-shot" ? [...PEER_SESSION_TOOL_NAMES] : undefined,
+      tools: excludedPeerTools(options),
     },
   });
 
@@ -167,4 +181,16 @@ export async function createAgent(
   });
 
   return agent;
+}
+
+/**
+ * 这一段手上不该有的平级会话工具。
+ *
+ * 两种情形排掉的名单不一样（一次性执行体三个都不给、别人开出来的那一段只少了 `create_session`），
+ * 名单只在这一处算 —— 调用方只说自己是什么，不自己拼名字。
+ */
+function excludedPeerTools(options: CreateAgentOptions): string[] | undefined {
+  if (options.lifetime === "one-shot") return [...PEER_SESSION_TOOL_NAMES];
+  if (options.canOpenPeers === false) return [CREATE_SESSION_TOOL];
+  return undefined;
 }

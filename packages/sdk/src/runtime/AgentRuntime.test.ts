@@ -331,11 +331,17 @@ describe("运行时：常驻与互相说话", () => {
     await until(() => child.state === "idle" && words(child, "lead 收到").length > 0, 5000);
     expect(words(child, "写一份报告")).toHaveLength(1);
 
-    // 它自己再开一段：拒，而且没有多出第二段会话
-    const refused = await callTool(toolOf(child, CREATE_SESSION_TOOL), child, {
-      prompt: "再开一段",
-    });
-    expect(refused).toMatchObject({ rejected: "depth_exceeded" });
+    // 它自己再开一段：它手上没有那个工具 —— 套娃在它这一侧无从发起
+    expect(child.tools.map((tool) => tool.function.name)).not.toContain(CREATE_SESSION_TOOL);
+    // 双向说话照旧：投递与问状态那两个还在
+    expect(child.tools.map((tool) => tool.function.name)).toEqual(
+      expect.arrayContaining([POST_MESSAGE_TOOL, READ_SESSION_STATUS_TOOL]),
+    );
+
+    // 绕过工具直接问运行时也开不出来（这话只有运行时答得出：血缘在它那张表里），
+    // 而且没有多出第二段会话
+    const refused = await h.runtime.openPeer({ from: "peer-1", prompt: "再开一段" });
+    expect(refused).toMatchObject({ ok: false, reason: "depth_exceeded" });
     expect(h.created).toHaveLength(1);
   });
 

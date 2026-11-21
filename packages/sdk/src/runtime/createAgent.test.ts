@@ -5,7 +5,12 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { Scope } from "../scope/Scope.js";
 import { allInOne } from "../scope/plugins/allInOne.js";
 import { PeerSessionsScopePlugin } from "../scope/plugins/peers/PeerSessionsScopePlugin.js";
-import { PEER_SESSION_TOOL_NAMES } from "../scope/plugins/peers/peerSessionTools.js";
+import {
+  CREATE_SESSION_TOOL,
+  PEER_SESSION_TOOL_NAMES,
+  POST_MESSAGE_TOOL,
+  READ_SESSION_STATUS_TOOL,
+} from "../scope/plugins/peers/peerSessionTools.js";
 import type { PeerSessionPort } from "../scope/plugins/peers/peerSessionTools.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -425,5 +430,20 @@ describe("createAgent", () => {
     for (const name of PEER_SESSION_TOOL_NAMES) {
       expect(residentNames).toContain(name);
     }
+  });
+
+  /**
+   * 别人开出来的那一段会话（`canOpenPeers: false`）：手上少了 `create_session` 一个工具，
+   * 投递与问状态那两个照旧在 —— 平级之间是双向说话的，少掉的只是「再开一层」。
+   */
+  it("canOpenPeers 为 false 时只少了 create_session", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope({ peerSessions: true });
+
+    const peer = await createAgent(scope, "my-agent", { canOpenPeers: false });
+    const names = peer.tools.map((t) => t.function.name);
+    expect(names).not.toContain(CREATE_SESSION_TOOL);
+    expect(names).toContain(POST_MESSAGE_TOOL);
+    expect(names).toContain(READ_SESSION_STATUS_TOOL);
   });
 });

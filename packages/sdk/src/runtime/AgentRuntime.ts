@@ -452,6 +452,10 @@ export class AgentRuntime {
     const agent = await createAgent(scope, materials.agentId, {
       modelId: materials.modelId,
       modelParams: materials.modelParams,
+      // 这一段是不是别人开出来的，只有运行时知道（材料里的血缘）：是的话它手上就没有
+      // `create_session`，于是套娃这件事在它那一侧无从发起 —— 判据是工具在不在，不是拦一次调用。
+      // 投递与问状态那两个照旧留着，平级之间双向说话。
+      canOpenPeers: materials.lineage === null,
     });
 
     // 插件必须排在 `start()` 之前装上：装晚了的代价不是「晚一点生效」—— 第一批取件可能已经
