@@ -16,6 +16,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import type { ClientOptions, HostClient } from "./client.js";
 import {
+  UPGRADE_EXIT_CODE,
   ensureHost,
   npxHostArgv,
   readHostFile,
@@ -27,6 +28,7 @@ import {
   tokenFilePath,
   versionPinFilePath,
   type EnsureHostOptions,
+  type HostLaunchFailure,
   type HostLaunchStage,
   type SpawnDeps,
   type SpawnHostContext,
@@ -615,6 +617,20 @@ function pinContent(version: string): string {
   return JSON.stringify({ version, requestedAt: "2026-11-22T03:00:00.000Z" });
 }
 
+/** 宿主爬起来之后该写的那两份（发现文件与凭证） */
+function appearAlive(
+  test: { files: Map<string, ScheduledFile>; tick(): number },
+  pid: number,
+  port: number,
+): void {
+  const now = test.tick();
+  test.files.set(HOST_FILE, {
+    content: JSON.stringify({ pid, host: "127.0.0.1", port }),
+    fromTick: now,
+  });
+  test.files.set(TOKEN_FILE, { content: "fresh-token\n", fromTick: now });
+}
+
 describe("读 pin", () => {
   it("文件不在：没有 pin（没升过级是正常路径）", async () => {
     await expect(readHostVersionPin(DATA_ROOT, async () => null)).resolves.toEqual({
@@ -773,5 +789,137 @@ describe("升级：拉哪一版由 pin 定", () => {
       code: "version_pin_broken",
       detail: { path: PIN_FILE, reason: "missing_version" },
     });
+  });
+});
+
+describe("升级：子进程以 75 退出不是拉起失败", () => {
+  it("以 75 退出之后按 pin 重拉一次，连上就算成功", async () => {
+    const test = harness({ settings: { mode: "local" }, hostEntry: null });
+    test.options.versionRange = RANGE;
+    const contexts: SpawnHostContext[] = [];
+    test.options.spawnHost = async (context) => {
+      contexts.push(context);
+      if (contexts.length === 1) {
+        // 宿主写下 pin 就以 75 退了（升级那一半是它自己的事）
+        test.files.set(PIN_FILE, { content: pinContent("0.2.0"), fromTick: test.tick() });
+        return {
+          exited: Promise.resolve({ code: UPGRADE_EXIT_CODE, reason: "restarting for upgrade" }),
+        };
+      }
+      appearAlive(test, 222, 6000);
+      return { exited: new Promise<HostLaunchFailure>(() => {}) };
+    };
+
+    const result = await ensureHost(test.options);
+
+    expect(contexts).toHaveLength(2);
+    // 重拉之前把新那一版的 pin 读进来了
+    expect(contexts[0]?.versionRange).toBe(RANGE);
+    expect(contexts[1]?.versionRange).toBe("0.2.0");
+    expect(result.started).toBe(true);
+    expect(result.target.port).toBe(6000);
+  });
+
+  it("重拉之后它又要升级：报 host_upgrade_failed（只重拉一次，不循环）", async () => {
+    const test = harness({ settings: { mode: "local" }, hostEntry: null });
+    test.options.versionRange = RANGE;
+    const contexts: SpawnHostContext[] = [];
+    test.options.spawnHost = async (context) => {
+      contexts.push(context);
+      return { exited: Promise.resolve({ code: UPGRADE_EXIT_CODE, reason: "" }) };
+    };
+
+    const error = (await ensureHost(test.options).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(contexts).toHaveLength(2);
+    expect(error.code).toBe("host_upgrade_failed");
+    expect(error.detail).toMatchObject({ code: UPGRADE_EXIT_CODE, logFile: launchLogOf(DATA_ROOT) });
+  });
+
+  it("重拉那一版拉不下来：报拉起失败，原因里留着 npx 那行", async () => {
+    const test = harness({ settings: { mode: "local" }, hostEntry: null });
+    test.options.versionRange = RANGE;
+    const contexts: SpawnHostContext[] = [];
+    test.options.spawnHost = async (context) => {
+      contexts.push(context);
+      if (contexts.length === 1) {
+        return { exited: Promise.resolve({ code: UPGRADE_EXIT_CODE, reason: "" }) };
+      }
+      return {
+        exited: Promise.resolve({
+          code: 1,
+          reason: "npm error 404 not found @ai-zen/agents-host@0.2.0",
+        }),
+      };
+    };
+
+    const error = (await ensureHost(test.options).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(contexts).toHaveLength(2);
+    expect(error.code).toBe("host_launch_failed");
+    expect(error.message).toContain("404 not found @ai-zen/agents-host@0.2.0");
+  });
+
+  it("重拉之后起来了但没连上：报 host_did_not_start（与拉不下来分得开）", async () => {
+    const test = harness({ settings: { mode: "local" }, hostEntry: null, timeoutMs: 300 });
+    test.options.versionRange = RANGE;
+    const contexts: SpawnHostContext[] = [];
+    test.options.spawnHost = async (context) => {
+      contexts.push(context);
+      if (contexts.length === 1) {
+        return { exited: Promise.resolve({ code: UPGRADE_EXIT_CODE, reason: "" }) };
+      }
+      // 这一版起来了，但一直没写发现文件
+      return { exited: new Promise<HostLaunchFailure>(() => {}) };
+    };
+
+    const error = (await ensureHost(test.options).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(contexts).toHaveLength(2);
+    expect(error.code).toBe("host_did_not_start");
+  });
+
+  it("其它非 0 退出仍然是这次拉起失败，不重拉", async () => {
+    const test = harness({ settings: { mode: "local" }, hostEntry: null });
+    const contexts: SpawnHostContext[] = [];
+    test.options.spawnHost = async (context) => {
+      contexts.push(context);
+      return { exited: Promise.resolve({ code: 1, reason: "npm error 404 not found" }) };
+    };
+
+    const error = (await ensureHost(test.options).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(contexts).toHaveLength(1);
+    expect(error.code).toBe("host_launch_failed");
+  });
+
+  it("正常关闭（0）不重拉：退出信号才是信号，pin 只是「拉哪一版」", async () => {
+    const test = harness({
+      settings: { mode: "local" },
+      hostEntry: null,
+      files: { [PIN_FILE]: { content: pinContent("0.2.0"), fromTick: 0 } },
+    });
+    const contexts: SpawnHostContext[] = [];
+    test.options.spawnHost = async (context) => {
+      contexts.push(context);
+      return { exited: Promise.resolve({ code: 0, reason: "" }) };
+    };
+
+    const error = (await ensureHost(test.options).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(contexts).toHaveLength(1);
+    expect(error.code).toBe("host_launch_failed");
+    // 这一侧只读 pin，不顺手删它
+    expect(test.files.has(PIN_FILE)).toBe(true);
   });
 });

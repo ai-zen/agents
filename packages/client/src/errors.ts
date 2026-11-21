@@ -89,6 +89,8 @@ export type LocalErrorCode =
   | "host_did_not_start"
   /** 拉起的那个子进程自己退了（npx 装不上、入口起不来）；`reason` 是它最后一行输出 */
   | "host_launch_failed"
+  /** 宿主以升级为理由退出之后，按 pin 重拉的那一次仍然以升级为理由退出 */
+  | "host_upgrade_failed"
   /** 调用方取消了这次拉起（Ctrl+C 杀掉了那个子进程） */
   | "host_launch_cancelled"
   /** 既没给宿主入口，也没给该让 npx 拉的版本范围（本机拉起无从下手） */
@@ -138,6 +140,10 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
   host_launch_failed: {
     zh: "拉起本机宿主失败：{reason}（日志 {log}）",
     en: "Could not start the local host: {reason} (log {log})",
+  },
+  host_upgrade_failed: {
+    zh: "宿主升级之后没有进入服务：按 pin 重拉的那一次仍然以升级为理由退出（{reason}，日志 {log}）",
+    en: "The host did not come up after the upgrade: the relaunch exited for an upgrade again ({reason}, log {log})",
   },
   host_launch_cancelled: {
     zh: "已取消：本机宿主没有拉起来",

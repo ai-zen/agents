@@ -44,9 +44,15 @@
  * ## 升级：pin 由宿主写，这里只读
  *
  * 宿主不自装包、也不 exec 回自己：它验过「这一版拿得到」之后写下
- * `<数据根>/run/next-version.json`，再以退出码 75 退出（`host.upgrade` 那一侧的事）。装包只能
- * 发生在宿主那台机器上，所以替它装的只能是启动方式 —— 也就是这里：走 npx 那条路之前先读 pin，
- * 读到了就拉 `@<pin.version>`，读不到才用调用方给的版本范围。
+ * `<数据根>/run/next-version.json`，再以 {@link UPGRADE_EXIT_CODE} 退出（`host.upgrade` 那一侧
+ * 的事）。装包只能发生在宿主那台机器上，所以替它装的只能是启动方式 —— 也就是这里：
+ *
+ *   · 走 npx 那条路之前先读 pin：读到了就拉 `@<pin.version>`，读不到才用调用方给的版本范围；
+ *   · 子进程以 {@link UPGRADE_EXIT_CODE} 退出不是「这次拉起失败」，而是「宿主请我按新那一版重拉」：
+ *     重读 pin、再拉一次，只一次，不循环。
+ *
+ * pin 与退出信号是两件事：只有 pin 的话，一次正常关闭之后这里又会照着老 pin 把服务拉起来。所以
+ * 退出码才是信号，pin 只是一个「拉哪一版」的提示；正常关闭（0）照旧算这次拉起失败，不重拉。
  *
  * pin 的清理归宿主（它启动时发现 pin 指的就是自己那一版就删掉），这一侧只读、不删。
  *
@@ -104,7 +110,7 @@ export type HostLaunchStage =
   /** 握手成功，这条连接可以用了 */
   | "connected";
 
-/** 拉起的那个子进程自己退了：这次拉起失败 */
+/** 拉起的那个子进程自己退了（退出码是 {@link UPGRADE_EXIT_CODE} 时不是失败，见文件头） */
 export interface HostLaunchFailure {
   /** 退出码（被信号杀掉时是 `null`） */
   code: number | null;
@@ -114,7 +120,10 @@ export interface HostLaunchFailure {
 
 /** 拉起的结果 */
 export interface SpawnedHost {
-  /** 子进程退出时 settle（拉起之后它该一直活着；提前退＝这次拉起失败了） */
+  /**
+   * 子进程退出时 settle（拉起之后它该一直活着；提前退是这次拉起失败，只有以
+   * {@link UPGRADE_EXIT_CODE} 退出是它在要求换一版）。
+   */
   exited: Promise<HostLaunchFailure>;
 }
 
@@ -217,6 +226,14 @@ export interface EnsureHostResult {
 
 const DEFAULT_START_TIMEOUT_MS = 15_000;
 const DEFAULT_RETRY_INTERVAL_MS = 100;
+
+/**
+ * 宿主以「我要升级」为理由退出时用的退出码（与宿主 `app.ts` 的 `UPGRADE_EXIT_CODE` 同一个数）。
+ *
+ * 这里不能 import 那个常量：宿主对本包只是 `devDependency`，产物里不带它的代码（理由同
+ * {@link hostFilePath}）。
+ */
+export const UPGRADE_EXIT_CODE = 75;
 
 /** 数据根：显式参数 > `AI_ZEN_DIR` > `~/.ai-zen`（与宿主 `resolveDataRoot` 同一口径） */
 export function resolveDataRoot(explicit?: string): string {
@@ -427,64 +444,115 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
     return options.versionRange;
   };
 
-  throwIfCancelled();
-  // 拉哪一版必须在起子进程之前定下来：盘上有 pin 就是 pin 那一版
-  const versionRange = await versionToStart();
-  // 这一趟之前的发现文件：轮询只认 pid 与它不同的那一个
-  const before = await readHostFile(dataRoot, readText);
-  const spawned = await spawnHost({
-    dataRoot,
-    launchLog: options.launchLog,
-    ...(options.hostEntry === undefined ? {} : { entry: options.hostEntry }),
-    ...(versionRange === undefined ? {} : { versionRange }),
-    onStage,
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  });
-
-  /** 拉起它的那个子进程提前退了：它就是这次失败的原因（不必等满时限） */
-  let launchFailure: HostLaunchFailure | null = null;
-  void spawned?.exited.then((failure) => {
-    launchFailure = failure;
-  });
-
-  // ---- 轮询到就绪（发现文件换了 pid + 握手成功）--------------------------------
-  /** `starting` 只报一次：同一个宿主起来只该占用一行字一遍 */
-  let announcedStarting = false;
-  const deadline = now() + timeoutMs;
-  while (now() < deadline) {
+  /**
+   * 起一个宿主，钉到它就绪（发现文件里是新 pid + 握手成功）。
+   *
+   * 子进程以 {@link UPGRADE_EXIT_CODE} 退出不算这次拉起失败，而是把「该换一版了」交回调用方；
+   * 其余退出与到时限没就绪都当场抛出，不必等满时限的就不等。
+   */
+  const launchOnce = async (): Promise<HostLaunchOutcome> => {
     throwIfCancelled();
-    if (launchFailure) throw launchFailed(launchFailure, options.launchLog, language);
-    const facts = await readHostFile(dataRoot, readText);
-    // 只认**新**的那个 pid：旧发现文件（进程已死）对应的端口不该被当成刚拉起的那个
-    if (facts && facts.pid !== before?.pid) {
-      // 发现文件出现＝宿主进程真的起来了，剩下的只是握手
-      if (!announcedStarting) {
-        announcedStarting = true;
-        onStage("starting");
+    // 拉哪一版必须在起子进程之前定下来
+    const versionRange = await versionToStart();
+    // 这一趟之前的发现文件：轮询只认 pid 与它不同的那一个
+    const before = await readHostFile(dataRoot, readText);
+    const spawned = await spawnHost({
+      dataRoot,
+      launchLog: options.launchLog,
+      ...(options.hostEntry === undefined ? {} : { entry: options.hostEntry }),
+      ...(versionRange === undefined ? {} : { versionRange }),
+      onStage,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+
+    /** 拉起它的那个子进程提前退了：它就是这次失败的原因（不必等满时限） */
+    let launchFailure: HostLaunchFailure | null = null;
+    void spawned?.exited.then((failure) => {
+      launchFailure = failure;
+    });
+
+    /** 子进程退了：75 是「宿主请我按新那一版重拉」，其余是这次拉起失败 */
+    const onExit = (failure: HostLaunchFailure): HostLaunchOutcome => {
+      if (failure.code === UPGRADE_EXIT_CODE) return { kind: "upgrading", failure };
+      throw launchFailed(failure, options.launchLog, language);
+    };
+
+    // ---- 轮询到就绪（发现文件换了 pid + 握手成功）------------------------------
+    /** `starting` 只报一次：同一个宿主起来只该占用一行字一遍 */
+    let announcedStarting = false;
+    const deadline = now() + timeoutMs;
+    while (now() < deadline) {
+      throwIfCancelled();
+      if (launchFailure) return onExit(launchFailure);
+      const facts = await readHostFile(dataRoot, readText);
+      // 只认**新**的那个 pid：旧发现文件（进程已死）对应的端口不该被当成刚拉起的那个
+      if (facts && facts.pid !== before?.pid) {
+        // 发现文件出现＝宿主进程真的起来了，剩下的只是握手
+        if (!announcedStarting) {
+          announcedStarting = true;
+          onStage("starting");
+        }
+        const target: HostTarget = { host: facts.host, port: facts.port };
+        const client = await attempt(target, (await readLocalToken(dataRoot, readText)) ?? "");
+        if (client) {
+          onStage("connected");
+          return { kind: "ready", client, target };
+        }
       }
-      const target: HostTarget = { host: facts.host, port: facts.port };
-      const client = await attempt(target, (await readLocalToken(dataRoot, readText)) ?? "");
-      if (client) {
-        onStage("connected");
-        return { client, target, started: true, explicit: false, dataRoot };
-      }
+      await sleep(retryIntervalMs);
     }
-    await sleep(retryIntervalMs);
+
+    throwIfCancelled();
+    if (launchFailure) return onExit(launchFailure);
+    throw localError("host_did_not_start", {
+      language,
+      params: { timeoutMs, dataRoot, log: join(dataRoot, HOST_LOG_FILE) },
+      detail: {
+        dataRoot,
+        timeoutMs,
+        discoveredPid: before?.pid ?? null,
+        logFile: join(dataRoot, HOST_LOG_FILE),
+      },
+    });
+  };
+
+  let outcome = await launchOnce();
+  if (outcome.kind === "upgrading") {
+    // 宿主把「下一拍该跑哪一版」写进 pin 就退了。`launchOnce` 开拉之前会重读一次 pin，
+    // 所以这一下拉的就是它要的那一版。只重拉一次：再要升级，说明 pin 指的那一版并没有在服务。
+    outcome = await launchOnce();
+    if (outcome.kind === "upgrading") {
+      const reason =
+        outcome.failure.reason !== "" ? outcome.failure.reason : `exit code ${UPGRADE_EXIT_CODE}`;
+      throw localError("host_upgrade_failed", {
+        language,
+        params: { reason, log: options.launchLog },
+        detail: {
+          code: outcome.failure.code,
+          reason: outcome.failure.reason,
+          logFile: options.launchLog,
+        },
+      });
+    }
   }
 
-  throwIfCancelled();
-  if (launchFailure) throw launchFailed(launchFailure, options.launchLog, language);
-  throw localError("host_did_not_start", {
-    language,
-    params: { timeoutMs, dataRoot, log: join(dataRoot, HOST_LOG_FILE) },
-    detail: {
-      dataRoot,
-      timeoutMs,
-      discoveredPid: before?.pid ?? null,
-      logFile: join(dataRoot, HOST_LOG_FILE),
-    },
-  });
+  return {
+    client: outcome.client,
+    target: outcome.target,
+    started: true,
+    explicit: false,
+    dataRoot,
+  };
 }
+
+/**
+ * 一次拉起的结果。
+ *
+ * 只有「可用」与「它要求换一版」两种，其余都在 {@link ensureHost} 的 `launchOnce` 里抛出去了。
+ */
+type HostLaunchOutcome =
+  | { kind: "ready"; client: HostClient; target: HostTarget }
+  | { kind: "upgrading"; failure: HostLaunchFailure };
 
 /** 缺省的提醒出口：写一行到 stderr（全屏界面接了这一格就不会走到这里） */
 function warningToStderr(warning: LocalWarning): void {

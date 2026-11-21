@@ -33,6 +33,7 @@ export type { HostTarget } from "./address.js";
 
 export {
   AI_ZEN_DIR_ENV,
+  UPGRADE_EXIT_CODE,
   ensureHost,
   npxHostArgv,
   readHostFile,
