@@ -10,14 +10,6 @@ export interface ContextGuardOptions {
    * 想调松就把它调大，「安全边界写多少就是多少」比「隐式乘以某个系数」可预测得多。
    */
   guardTokens: number;
-  /**
-   * 临时让行：返回 `true` 时这一次请求不做超限判定（默认 `false`）。
-   *
-   * 用于交接回合 —— 那种回合本身就是「上下文已满」时才发起的，若不放宽必定被打回。
-   * 语义是「谁做限制谁放宽」：限制在护栏自己身上，放宽也必须由护栏自己表达，
-   * 而不是由调用方去改写用量数据。典型接线：`isSuspended: () => handoffService.handingOff`。
-   */
-  isSuspended?: () => boolean;
 }
 
 /**
@@ -33,14 +25,15 @@ export interface ContextGuardOptions {
  *
  * ```ts
  * const { handoff, guard } = config.models[i].tokenThresholds;
- * agent.use(
- *   new ContextGuardPlugin({
- *     guardTokens: guard,
- *     isSuspended: () => handoffService.handingOff, // 交接回合让行
- *   }),
- * );
+ * agent.use(new ContextGuardPlugin({ guardTokens: guard }));
  * agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: handoff }));
  * ```
+ *
+ * ## 交接那一趟也不让路
+ *
+ * 需求拍定的是**交接那一次请求也不让路**：硬线照旧拦，要避免撞线就把阈值配得够宽。所以这里
+ * 没有、也不该有「交接回合让行」的开关 —— 此前那一格（`isSuspended`）的全部用途就是让交接
+ * 回合绕过硬线，留着它等于留一个能把硬线关掉的开关。
  *
  * ## 为什么是「返回字符串」而不是「抛错」
  *
@@ -55,17 +48,14 @@ export interface ContextGuardOptions {
  */
 export class ContextGuardPlugin implements AgentPlugin {
   private readonly guardTokens: number;
-  private readonly isSuspended?: () => boolean;
 
   constructor(options: ContextGuardOptions) {
     this.guardTokens = options.guardTokens;
-    this.isSuspended = options.isSuspended;
   }
 
   /** 返回 string = 拒这一次请求（这一次不会发出去，历史里一个字都不多） */
   async onInnerLoopStart(ctx: InnerLoopContext): Promise<string | undefined> {
-    // 交接回合让行（见 `isSuspended`）
-    if (this.isSuspended?.()) return;
+    // 不看「此刻在不在交接」：交接那一趟也不让路，任何时刻都只看用量
 
     // 上一次回答的 prompt 用量：只从消息上读（同一份事实、不另立快照，见 `lastPromptTokens`）
     const promptTokens = lastPromptTokens(ctx.agent);

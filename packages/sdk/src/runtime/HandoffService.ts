@@ -218,10 +218,11 @@ export type HandoffFact =
  *
  * 「这段会话正在交接」那份事实由宿主持有（`ChatRunner.beginHandoff` / `endHandoff`：它决定
  * 这段的消息落不落库、对外报哪一格），SDK 这一层根本不认识会话，也就不该有自己的那本账。
- * 这里的 `handingOff` 只回答一件事：**本服务这一趟是不是已经在跑**（防重入 + 让护栏插件
- * 让行）。自重入是真会发生的：自交接就是「往同一个 agent 里再投一条指令」（`push`），它跑完
- * 那一段照样落回闲 —— 不在 `handingOff` 期间让 `AutoMigratePlugin` / `ContextGuardPlugin`
- * 让行，就会「交接触发自动交接、自动交接再触发交接」无限递归，或在最满的时刻被护栏直接拒掉。
+ * 这里的 `handingOff` 只回答一件事：**本服务这一趟是不是已经在跑**（防重入 + 给自动交接插件
+ * 一个让行的依据）。自重入是真会发生的：自交接就是「往同一个 agent 里再投一条指令」（`push`），
+ * 它跑完那一段照样落回闲 —— 不在 `handingOff` 期间让 `AutoMigratePlugin` 让行，就会「交接触发
+ * 自动交接、自动交接再触发交接」无限递归。硬线（`ContextGuardPlugin`）不在这条线上：它在交接
+ * 回合也照拦、不让路（见 `dev-docs/prd/05-control.md`「两条线的口径」）。
  *
  * ## 取消只认调用方递进来的 `signal`
  *
@@ -247,7 +248,7 @@ export class HandoffService {
   private readonly logger: LogSink;
 
   /**
-   * 这一趟交接是不是本服务自己在跑（防重入 + 插件让行）。
+   * 这一趟交接是不是本服务自己在跑（防重入 + 自动交接插件据此让行）。
    *
    * 不是「这段会话在交接」：那份事实由宿主持有（见类注释）。
    */
@@ -295,7 +296,7 @@ export class HandoffService {
     this.logger = logger ?? SILENT_LOG;
   }
 
-  /** 这一趟交接是不是本服务自己在跑（`AutoMigratePlugin` / `ContextGuardPlugin` 据此让行） */
+  /** 这一趟交接是不是本服务自己在跑（`AutoMigratePlugin` 据此让行，防递归） */
   get handingOff(): boolean {
     return this._handingOff;
   }
@@ -812,9 +813,9 @@ export class HandoffService {
     });
 
     /*
-     * 交接期间护栏的让行由 `ContextGuardPlugin.isSuspended` 负责（接线为
-     * `() => handoffService.handingOff`），这里不去改写用量数据：「谁做限制谁放宽」
-     * —— 限制在护栏自己身上，放宽也必须写在护栏的选项里。
+     * 硬线（`ContextGuardPlugin`）在交接回合**也照拦**，不放宽：交接那一次请求不让路
+     * （`dev-docs/prd/05-control.md`「两条线的口径」），要避免撞线就把阈值配得够宽。
+     * 这里因此不去改写用量数据，也没有任何「让行」要接。
      */
     try {
       const instruction = HandoffService.createHandoffInstruction({

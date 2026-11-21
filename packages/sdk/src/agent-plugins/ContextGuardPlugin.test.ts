@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
+import type { HandoffService } from "../runtime/HandoffService.js";
 
 /**
  * 护栏现在**拒绝这一圈**（返回字符串），不是抛错。
@@ -104,31 +105,16 @@ describe("ContextGuardPlugin", () => {
     await expect(lenient.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
   });
 
-  it("isSuspended 返回 true 时让行（交接回合）", async () => {
+  it("正在交接时超线，请求照样被拒（硬线不给交接让路）", async () => {
+    // 「这一段正在交接」这件事只由交接服务那一侧表达（它那一格 `handingOff`）。护栏身上没有、
+    // 也不该有任何一格能看见它 —— 没有回头路：交接那一次请求撞上硬线同样被拒，要避免撞线只能
+    // 把阈值配得够宽。
+    const handingOffService = { handingOff: true } as unknown as HandoffService;
+    expect(handingOffService.handingOff).toBe(true);
+
     const agent = mockAgent({ promptTokens: 400_000 });
-    let handingOff = true;
-    const plugin = new ContextGuardPlugin({
-      guardTokens: 375_000,
-      isSuspended: () => handingOff,
-    });
+    const plugin = new ContextGuardPlugin({ guardTokens: 375_000 });
 
-    // 交接回合：上下文最满，但不应该被打回
-    await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
-
-    // 让行结束后恢复硬线
-    handingOff = false;
     await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toEqual(expect.any(String));
-  });
-
-  it("isSuspended 为 false 或未提供时照常判定", async () => {
-    const agent = mockAgent({ promptTokens: 400_000 });
-
-    const notSuspended = new ContextGuardPlugin({
-      guardTokens: 375_000,
-      isSuspended: () => false,
-    });
-    await expect(notSuspended.onInnerLoopStart!(buildCtx(agent))).resolves.toEqual(
-      expect.any(String),
-    );
   });
 });

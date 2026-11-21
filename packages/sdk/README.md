@@ -69,7 +69,7 @@ await scope.init();
 
 const agent = await createAgent(scope, "my-agent");
 const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
-agent.use(new ContextGuardPlugin({ guardTokens, isSuspended: () => handoffService.busy }));
+agent.use(new ContextGuardPlugin({ guardTokens }));
 agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 agent.use(new UnknownToolHintPlugin({ scope }));
@@ -121,7 +121,7 @@ Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`ke
 |--------|-------------|
 | `AutoMigratePlugin` | Automatically triggers task migration when `usage.prompt_tokens` exceeds `handoffTokens`; delegates the actual migration to the injected `HandoffService` (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it). `resolveMode` lets the caller pick the handoff executor or skip the round. Steps aside while `service.busy` to avoid the handoff→migrate→handoff recursion |
 | `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
-| `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `guardTokens` (an absolute value: no multiplier, no looser tier), preventing context runaway from reading oversized files. `isSuspended()` lets the guard itself step aside for handoff/migration turns |
+| `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `guardTokens` (an absolute value: no multiplier, no looser tier), preventing context runaway from reading oversized files. it never steps aside, not even for the handoff turn: to avoid hitting it, configure a larger `guard` |
 | `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |
 
 ## Language
