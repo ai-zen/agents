@@ -32,6 +32,8 @@ import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
+import { noticeTable } from "../notice/table.js";
+import { NoticeService } from "../notice/service.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
 import type { Session } from "../session/types.js";
@@ -66,6 +68,9 @@ function newHost() {
   const t = createTranslator(() => "zh");
   const events = createBus<HostEvent>();
   const sessions = new SessionService({ sessions: sessionTable(db), events, t });
+  // 宿主的日志口这一条路上只当出口：撞硬线那条通知由 `GuardNoticePlugin` 推
+  const log = { info: () => {}, warn: () => {}, error: () => {} };
+  const notices = new NoticeService({ notices: noticeTable(db), events, log });
 
   /**
    * 定义与配置：这两条路上只用得到「定义一个模型是谁」「配置里那个模型的两条阈值」。
@@ -94,9 +99,12 @@ function newHost() {
       automaticMode: async () => null,
     } as unknown as MaterialsDeps["handoff"],
     assetPort: { readAsset: () => undefined },
+    notices,
+    t,
+    onError: () => {},
   } as MaterialsDeps;
 
-  return { deps, sessions };
+  return { deps, sessions, notices };
 }
 
 /** 一条带用量的助手消息：护栏只从消息上读用量 */

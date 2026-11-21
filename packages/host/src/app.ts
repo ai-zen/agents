@@ -309,6 +309,14 @@ export class HostApp {
     // 全文索引的触发器指向 `messages`，所以只能在它之后建
     const search = new SearchService({ search: searchTable(this.db) });
 
+    /**
+     * 落库、发事件这两条路上不跨 wire 的失败出口：去向是宿主日志，不是客户端。
+     *
+     * 定在这里而不是观察者旁边：装配会话的材料（`materialsFor`）也要把插件钩子里的失败交给同一条
+     * 出口，而它在造运行时那一处就用得上这一个。
+     */
+    const onError = (error: unknown, what: string): void => this.log.error(what, { error });
+
     // 运行时：装起来、登记、开跑、发话、拆容器全在它那一侧。宿主给它四格端口，每一格都是
     // 「只有宿主答得出」的事（怎么装配能力、怎么开一行会话、一段会话此刻叫什么、日志往哪写）。
     //
@@ -397,6 +405,9 @@ export class HostApp {
               sessions,
               handoff,
               assetPort,
+              notices,
+              t,
+              onError,
             },
             session,
           ),
@@ -429,7 +440,6 @@ export class HostApp {
      * 的执行体就已经在跑了（运行时那边 `void agent.start()`），它发出来的每一条事实都要有人接；
      * 而事实只报变化、没有回放 —— 晚一步挂，从装载到挂上之间那几条就永远丢了。
      */
-    const onError = (error: unknown, what: string): void => this.log.error(what, { error });
     this.observer = new HostObserver({
       messages,
       inbox,

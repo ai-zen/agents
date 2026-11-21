@@ -18,10 +18,13 @@ import {
 import type { AgentDefinitionService } from "../config/agents.js";
 import type { GeneralConfig } from "../config/general.js";
 import type { HandoffService } from "../handoff/service.js";
+import type { Translator } from "../i18n/index.js";
+import type { NoticeService } from "../notice/service.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { Session } from "../session/types.js";
 import type { WorkspaceService } from "../workspace/service.js";
+import { GuardNoticePlugin } from "./guard-notice.js";
 import type { inboxTable } from "./inbox.js";
 
 export interface MaterialsDeps {
@@ -38,6 +41,12 @@ export interface MaterialsDeps {
   readonly sessions: SessionService;
   /** 自动交接发起的那一趟：它与手动交接共用交接态、取消口与落库 */
   readonly handoff: HandoffService;
+  /** 撞硬线时那条会话内通知：拒的那一刻由护栏那一颗插件推出去 */
+  readonly notices: NoticeService;
+  /** 用户可见的句子在产生处渲染好（通知里存的是成品句子） */
+  readonly t: Translator;
+  /** 插件钩子里失败的去处（宿主日志）：那里没有人接得住异常 */
+  readonly onError: (error: unknown, what: string) => void;
   /**
    * 出网/素材端口。**与 `openScope` 里交给 `Scope` 的是同一个对象**（在装配根造一次）：
    * 附件传输插件靠它读素材字节，工具那一侧也读同一份 —— 两边各拼一个 `readAsset` 的话，
@@ -180,8 +189,24 @@ export function hostPlugins(
 
   plugins.push(
     // 硬线：越线就拒这一次请求（不发、不兜底），交接那一次也不让路。装在这一段上，阈值取值
-    // 函数与上面那条同一个口径
-    new ContextGuardPlugin(guardThreshold),
+    // 函数与上面那条同一个口径。
+    //
+    // 一段会话上那一颗同时负责把「这一次请求没有发出去」说给用户听（`GuardNoticePlugin`）。
+    // 一次性会话没有会话行，也就没有可挂通知的那一段，撞线只说给这次调用的调用方 —— 它拿到的
+    // 就是那句拒绝理由
+    session === null
+      ? new ContextGuardPlugin(guardThreshold)
+      : new GuardNoticePlugin(
+          {
+            sessionId: session.id,
+            notices: deps.notices,
+            t: deps.t,
+            // 会话行可能在这之前被删掉：通知挂在它名下，行没了会撞外键
+            sessionExists: () => deps.sessions.get(session.id) !== undefined,
+            onError: deps.onError,
+          },
+          guardThreshold,
+        ),
     // 硬线要罩住 subagent 与孙级：委派边界上把同一颗护栏装到它们身上，阈值与主 Agent 同源
     new SubAgentGuardInstallerPlugin(guardThreshold),
     // 发出去之前把带 `__asset_id` 的段按当下生效的模型与端点重建：内容在库里只有一份（原样

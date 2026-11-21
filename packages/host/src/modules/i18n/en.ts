@@ -64,6 +64,8 @@ export const en: Record<string, string> = {
   "交接失败：{reason}": "Handoff failed: {reason}",
   "这一段会话自动起名失败，名字还是创建时的那一个":
     "Automatic naming failed for this session; the name is still the one from creation time",
+  "这一次请求没有发出去：上一次请求的输入用了 {used} tokens，超过了防护阈值 {guard}。换模型、调高防护阈值或者新开一段会话之后可以接着试。":
+    "This request was not sent: the previous request's input used {used} tokens, above the guard threshold of {guard}. Switch the model, raise the guard threshold, or start a new session, then try again.",
   "配置里没有 id 为 {modelId} 的模型": 'The config has no model "{modelId}"',
   "这段会话没有生效模型，思考档位只能跟随助手定义":
     "This session has no effective model; the thinking level can only follow the agent definition",
