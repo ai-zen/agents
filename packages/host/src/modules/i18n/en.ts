@@ -40,6 +40,10 @@ export const en: Record<string, string> = {
   "会话 {sessionId} 没有运行中的执行体，先运行它再投递":
     'Session "{sessionId}" has no running agent; start the session before sending',
   "宿主内部出错，这次调用没有完成": "Internal host failure: the call did not complete",
+  "{version} 不是一个具体的版本号：挑版本是客户端的事，宿主只认一个号":
+    '"{version}" is not a concrete version: picking one is the client\'s job, the host takes a single number',
+  "{version} 在 registry 上没有，磁盘上也不是这一版":
+    '"{version}" is not on the registry, and the installed copy is not that version',
   宿主访问令牌无效: "The host access token is not valid",
   "助手 {agentDefinitionId} 没有可用的模型":
     'The agent definition "{agentDefinitionId}" has no usable model',

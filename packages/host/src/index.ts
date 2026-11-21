@@ -1,4 +1,5 @@
 export { HostApp } from "./app.js";
+export { UPGRADE_EXIT_CODE } from "./app.js";
 export type { HostAppDeps, HostAppOpenOptions } from "./app.js";
 export type { AppRouter } from "./modules/api/router.js";
 export { HostError } from "./infra/errors.js";

@@ -14,6 +14,11 @@ export type ErrorCode =
   | "busy"
   | "unsupported"
   | "config_invalid"
+  /**
+   * 这一版拿不到：registry 上没有这个号，磁盘上也不是这一版。与 `invalid_params` 分开是因为
+   * 客户端对两步的下一步不同 —— 前者是「换个版本再挑」，后者是「你给的不是一个版本号」。
+   */
+  | "not_available"
   | "unauthorized";
 
 export class HostError extends Error {

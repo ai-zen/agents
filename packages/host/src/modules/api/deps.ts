@@ -18,6 +18,7 @@ import type { QuestionRegistry } from "../question/registry.js";
 import type { SearchService } from "../search/service.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
+import type { UpdateService } from "../update/service.js";
 import type { WorkspaceService } from "../workspace/service.js";
 
 /**
@@ -61,6 +62,11 @@ export interface HostApiDeps {
   readonly questions: QuestionRegistry;
   readonly search: SearchService;
   readonly handoff: HandoffService;
+  /**
+   * 升级的第 ② 段与「现在是哪一版」。只有 `host` 那两条 procedure 用它 —— 装包与拉起不在
+   * 宿主里，这个服务也只做到「写 pin、请退出」为止。
+   */
+  readonly updates: UpdateService;
   readonly events: Bus<HostEvent>;
   readonly t: Translator;
   readonly onError: (error: unknown, what: string) => void;

@@ -7,9 +7,11 @@ import type { Translator } from "../i18n/index.js";
 /**
  * `HostError.code` 到 tRPC 自带码的对应。
  *
- * 不另立一套码：客户端只学 tRPC 那一套，宿主自己那六个码是源码与日志里的分类，不出网。
+ * 不另立一套码：客户端只学 tRPC 那一套，宿主自己那几个码是源码与日志里的分类，不出网。
  * `busy` 与 `conflict` 都落在 `CONFLICT` 上 —— 对客户端来说两者的下一步都是「等一下再试」，
  * 再细分就得让它多认一个码，换不到任何分支上的区别。
+ * `not_available` 落在 `NOT_FOUND`：这一版不存在，与「你给的不是一个版本号」(
+ * `BAD_REQUEST`) 在客户端那侧是两条分支。
  */
 const TRPC_CODES: Record<ErrorCode, keyof typeof TRPC_ERROR_CODES_BY_KEY> = {
   not_found: "NOT_FOUND",
@@ -18,6 +20,7 @@ const TRPC_CODES: Record<ErrorCode, keyof typeof TRPC_ERROR_CODES_BY_KEY> = {
   busy: "CONFLICT",
   unsupported: "NOT_IMPLEMENTED",
   config_invalid: "PRECONDITION_FAILED",
+  not_available: "NOT_FOUND",
   unauthorized: "UNAUTHORIZED",
 };
 

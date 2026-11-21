@@ -23,8 +23,9 @@ import { Message } from "@ai-zen/agents-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 
-import { HostApp } from "./app.js";
+import { HostApp, UPGRADE_EXIT_CODE } from "./app.js";
 import { openDatabase } from "./infra/db.js";
+import { readVersionPin, writeVersionPin } from "./infra/versionPin.js";
 import { inboxTable } from "./modules/agent/inbox.js";
 import { Discovery } from "./modules/config/discovery.js";
 import type { HostEvent } from "./modules/events.js";
@@ -706,4 +707,180 @@ describe("关掉再打开", () => {
       await second.stop();
     }
   }, 120_000);
+});
+
+/**
+ * 第 14 行的另一半：pin 与退出信号是两件事。
+ *
+ * 只写 pin 的话，一次**正常**关闭之后启动方式会照着老 pin 把服务又拉起来。所以：「正常关闭把 pin
+ * 清掉」（下一条用例），而升级那一路留下 pin，并以另一个退出码退出 —— 启动方式据此分清「照 pin
+ * 重拉」与「就是关了」。
+ *
+ * 后两条要说的是同一条规矩的两个窗口：pin 与退出信号对得上。升级请求落在收尾之后（第三条）时，
+ * 「先到的那一句没理由」不能把它吞成一次正常关闭 —— 那会是「以 75 退出、却没有 pin」，启动方式
+ * 读到 75 却读不到版本，这次升级静默失效。
+ *
+ * 三条都不碰网络：升级走判据 A（磁盘上那一份已经是目标版本），registry 那一路由
+ * `modules/update/service.test.ts` 用替身钉住。也不真的退出：`exit` 是可注入的，注一个记账的
+ * 替身 —— 真的 `process.exit` 会把整个用例进程带走，而「退出码是多少」正是要断言的那一格。
+ */
+describe("pin 与退出信号", () => {
+  let dataRoot: string;
+  let pinFile: string;
+  let previousHome: string | undefined;
+
+  beforeAll(() => {
+    dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-upgrade-"));
+    pinFile = join(dataRoot, "run", "next-version.json");
+
+    process.env.AI_ZEN_DIR = dataRoot;
+    previousHome = process.env.HOME;
+    // 与另两组同口径：用户主目录也指到临时目录，别让用例去读开发机的 `~/.agents`
+    process.env.HOME = join(dataRoot, "home");
+  }, 60_000);
+
+  afterAll(() => {
+    delete process.env.AI_ZEN_DIR;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(dataRoot, { recursive: true, force: true });
+  }, 60_000);
+
+  it("正常关闭会把 pin 清掉", async () => {
+    // 上一次升级留下的那条 pin：这一条验的正是它会不会被清掉
+    writeVersionPin(pinFile, { version: "9.9.9", requestedAt: new Date().toISOString() });
+
+    const app = await HostApp.open({ port: 0, local: true });
+    await app.start();
+
+    // 启动只清「跑着的这一版」那条 pin；9.9.9 不是它，所以跑起来之后它还在
+    expect(readVersionPin(pinFile)?.version).toBe("9.9.9");
+
+    await app.stop();
+
+    expect(existsSync(pinFile)).toBe(false);
+  }, 60_000);
+
+  it("升级那一路留下 pin，并以升级退出码退出", async () => {
+    const exits: number[] = [];
+    const app = await HostApp.open({
+      port: 0,
+      local: true,
+      exit: (code) => exits.push(code),
+    });
+    await app.start();
+
+    const client = await HostClient.connect(
+      app.address.port,
+      readFileSync(join(dataRoot, "run", "token"), "utf8").trim(),
+    );
+
+    try {
+      // 客户端要显示的那一格
+      await expect(client.query<{ version: string }>("host.version", undefined)).resolves.toEqual({
+        version: app.version,
+      });
+
+      // 升到「磁盘上已经是的那一版」：判据 A 成立，这一条不碰网络
+      await expect(
+        client.mutation<{ version: string; restarting: true }>("host.upgrade", {
+          version: app.version,
+        }),
+      ).resolves.toEqual({ version: app.version, restarting: true });
+    } finally {
+      client.close();
+    }
+
+    // 退出推后一拍（答复先出去，然后才收尾）：等到「退出意图」为止，不真的退
+    await vi.waitFor(() => expect(exits).toEqual([UPGRADE_EXIT_CODE]), {
+      timeout: 10_000,
+      interval: 20,
+    });
+
+    // pin 留下，写的是目标版本 —— 启动方式读它、照它重拉
+    expect(readVersionPin(pinFile)?.version).toBe(app.version);
+    // 但发现文件照样清掉了：这个进程确实已经不在服务
+    expect(existsSync(join(dataRoot, "run", "host.json"))).toBe(false);
+  }, 60_000);
+
+  it("升级请求落在「已经在关」之后：pin 照样留着", async () => {
+    const exits: number[] = [];
+    const app = await HostApp.open({
+      port: 0,
+      local: true,
+      exit: (code) => exits.push(code),
+    });
+    await app.start();
+
+    const hostFile = join(dataRoot, "run", "host.json");
+    expect(existsSync(hostFile)).toBe(true);
+
+    // 信号那一路先进来：它不带理由，收尾已经开始（不等它）
+    const closing = app.stop();
+
+    // 紧接着升级那一路赶到，次序与 `UpdateService.upgrade` 里那一套一致：pin 先写、再请退出
+    writeVersionPin(pinFile, { version: app.version, requestedAt: new Date().toISOString() });
+    app.requestRestart(app.version);
+
+    await closing;
+    // 退出意图照样是「照 pin 重拉」那一个码
+    await vi.waitFor(() => expect(exits).toEqual([UPGRADE_EXIT_CODE]), {
+      timeout: 10_000,
+      interval: 20,
+    });
+
+    // 「以 75 退出、却没有 pin」正是要堵掉的那一格：先到的那一句没理由，但它不能把后来那句
+    // 「这是升级」吞成一次正常关闭
+    expect(readVersionPin(pinFile)?.version).toBe(app.version);
+    // 发现文件照样清掉：这个进程确实已经不在服务
+    expect(existsSync(hostFile)).toBe(false);
+  }, 60_000);
+});
+
+/**
+ * 收尾只做一次。这条钉的是一个真实的窗口：客户端点了升级，`stop("upgrade")` 正在收尾
+ * （`db.close()` 走了一半），同一刻又来一条 SIGTERM —— `agents-host stop` 那一路的 `app.stop()`
+ * 会再跑一遍，第二次在已经关掉的库上抛，而进程本该安安静静退出去。
+ *
+ * 所以第二次拿到的必须是**同一句** promise：等第一句，而不是从头再拆一遍。这里连关两次，两次都要
+ * 正常返回，发现文件照样清掉（该做的事一件没少，只是没做第二遍）。
+ *
+ * 不碰网络也不碰模型：起一台宿主、绑端口、写发现文件，然后关两次。
+ */
+describe("连关两次", () => {
+  let dataRoot: string;
+  let previousHome: string | undefined;
+
+  beforeAll(() => {
+    dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-double-stop-"));
+    process.env.AI_ZEN_DIR = dataRoot;
+    // 与另几组同口径：用户主目录也指到临时目录，别让用例去读开发机的 `~/.agents`
+    previousHome = process.env.HOME;
+    process.env.HOME = join(dataRoot, "home");
+  }, 60_000);
+
+  afterAll(() => {
+    delete process.env.AI_ZEN_DIR;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(dataRoot, { recursive: true, force: true });
+  }, 60_000);
+
+  it("连关两次不会抛：第二次等的是同一次收尾", async () => {
+    const app = await HostApp.open({ port: 0, local: true });
+    await app.start();
+
+    const hostFile = join(dataRoot, "run", "host.json");
+    expect(existsSync(hostFile)).toBe(true);
+
+    // 两句在同一刻发出：第二句进来时第一句正在收尾，`await` 下面那几段还没走完
+    const first = app.stop();
+    const second = app.stop();
+
+    // 两次都正常返回 —— 收尾没有做第二遍，进程不炸
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+
+    // 该做的事一件没少：发现文件清掉了，这台机器上不再有宿主在服务
+    expect(existsSync(hostFile)).toBe(false);
+  }, 60_000);
 });
