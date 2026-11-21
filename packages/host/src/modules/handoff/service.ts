@@ -7,7 +7,7 @@ import type { HandoffContext, HandoffMode, MemoryCommit, SdkAgent } from "@ai-ze
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
-import type { AgentRegistry } from "../api/registry.js";
+import type { AgentRegistry } from "../agent/registry.js";
 import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";

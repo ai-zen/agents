@@ -2,10 +2,10 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import type { SdkAgent } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
-import type { AgentSubscription } from "../agent/subscription.js";
 import type { HostEvent } from "../events.js";
 import type { SessionService } from "../session/service.js";
 import type { WorkspaceService } from "../workspace/service.js";
+import type { AgentSubscription } from "./subscription.js";
 
 export interface AgentRegistryDeps {
   readonly sessions: SessionService;

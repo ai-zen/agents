@@ -20,7 +20,7 @@ import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
 import { AgentSubscription } from "../agent/subscription.js";
 import { inboxTable } from "../agent/inbox.js";
-import { AgentRegistry } from "../api/registry.js";
+import { AgentRegistry } from "../agent/registry.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";

@@ -18,6 +18,8 @@ export type { Choice, Question } from "./modules/question/types.js";
 export { Delivery } from "./modules/agent/delivery.js";
 export type { DeliveryEntry, DeliveryInput } from "./modules/agent/delivery.js";
 export { inboxTable } from "./modules/agent/inbox.js";
+export { AgentRegistry } from "./modules/agent/registry.js";
+export type { AgentRegistryDeps } from "./modules/agent/registry.js";
 export { AgentSubscription } from "./modules/agent/subscription.js";
 export type { AgentSubscriptionDeps } from "./modules/agent/subscription.js";
 export { AgentDefinitionService } from "./modules/config/agents.js";

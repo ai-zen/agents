@@ -10,12 +10,12 @@ import type { QuestionRegistry } from "../question/registry.js";
 import type { SearchService } from "../search/service.js";
 import type { Delivery } from "../agent/delivery.js";
 import type { inboxTable } from "../agent/inbox.js";
+import type { AgentRegistry } from "../agent/registry.js";
 import type { HostEvent } from "../events.js";
 import type { HandoffService } from "../handoff/service.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { WorkspaceService } from "../workspace/service.js";
-import type { AgentRegistry } from "./registry.js";
 
 /**
  * procedure 拿到的那一层。全部必填：缺哪一个，调用点就得自己判「有没有」，那份判断迟早会

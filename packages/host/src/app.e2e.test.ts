@@ -20,6 +20,7 @@ import { WebSocket } from "ws";
 
 import { HostApp } from "./app.js";
 import { openDatabase } from "./infra/db.js";
+import { Discovery } from "./modules/config/discovery.js";
 import type { HostEvent } from "./modules/events.js";
 import type { Session } from "./modules/session/types.js";
 import { workspaceTable } from "./modules/workspace/table.js";
@@ -153,6 +154,7 @@ function textOf(message: AgentNS.Message): string {
 describe("宿主跑起来", () => {
   const workspaceId = randomUUID();
   let dataRoot: string;
+  let previousHome: string | undefined;
   let model: { origin: string; server: Server };
   let app: HostApp;
   let client: HostClient;
@@ -218,6 +220,10 @@ describe("宿主跑起来", () => {
     db.close();
 
     process.env.AI_ZEN_DIR = dataRoot;
+    // 用户主目录那几层也要指到临时目录：否则这条用例会去读开发机的 `~/.agents/skills`，
+    // 于是結果跟着机器变 —— 那是「单跑绿、合跑红」的典型来源。
+    previousHome = process.env.HOME;
+    process.env.HOME = join(dataRoot, "home");
     app = await HostApp.open({ port: 0 });
     await app.start();
     client = await HostClient.connect(app.port);
@@ -228,6 +234,8 @@ describe("宿主跑起来", () => {
     await app?.stop();
     await new Promise<void>((resolve) => model?.server.close(() => resolve()));
     delete process.env.AI_ZEN_DIR;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
     rmSync(dataRoot, { recursive: true, force: true });
   }, 60_000);
 
@@ -278,4 +286,34 @@ describe("宿主跑起来", () => {
     expect(changedAt).toBeGreaterThan(addedAt);
     expect(idledAt).toBeGreaterThan(changedAt);
   }, 60_000);
+});
+
+/**
+ * 来源目录是 `allInOne` 唯一会读的那个参数：三个列表全空时它不报错，只是什么都不发现，界面上表现为
+ * 「这三种能力一个都没有」。而列表顺序就是优先级（SDK 按这个顺序先到先得），排反了远处的定义会盖住
+ * 项目里的那一份。
+ */
+describe("能力来源目录", () => {
+  it("三种能力都从项目那一层起，近的在前", () => {
+    const root = mkdtempSync(join(tmpdir(), "ai-zen-ability-"));
+    try {
+      const project = join(root, "project");
+      const discovery = new Discovery({
+        dataRoot: join(root, "data"),
+        homeDir: join(root, "home"),
+      });
+
+      const paths = discovery.abilityPaths(project);
+
+      expect(paths.skillsPaths.length).toBeGreaterThan(0);
+      expect(paths.toolsPaths.length).toBeGreaterThan(0);
+      expect(paths.subAgentsPaths.length).toBeGreaterThan(0);
+
+      expect(paths.skillsPaths[0]).toBe(join(project, ".ai-zen", "skills"));
+      expect(paths.toolsPaths[0]).toBe(join(project, ".agents", "tools"));
+      expect(paths.subAgentsPaths[0]).toBe(join(project, ".agents", "sub-agents"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

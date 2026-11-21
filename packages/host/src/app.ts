@@ -13,6 +13,7 @@ import { createBus } from "./infra/bus.js";
 import { openDatabase } from "./infra/db.js";
 import { Delivery } from "./modules/agent/delivery.js";
 import { inboxTable } from "./modules/agent/inbox.js";
+import { AgentRegistry } from "./modules/agent/registry.js";
 import type { HostApiDeps } from "./modules/api/deps.js";
 import { AssetService } from "./modules/asset/service.js";
 import { assetTable, sessionAssetTable } from "./modules/asset/table.js";
@@ -23,9 +24,9 @@ import { noticeTable } from "./modules/notice/table.js";
 import { QuestionRegistry } from "./modules/question/registry.js";
 import { SearchService } from "./modules/search/service.js";
 import { searchTable } from "./modules/search/table.js";
-import { AgentRegistry } from "./modules/api/registry.js";
 import { createAppRouter } from "./modules/api/router.js";
 import { AgentDefinitionService } from "./modules/config/agents.js";
+import { Discovery } from "./modules/config/discovery.js";
 import type { ConfigEvent } from "./modules/config/events.js";
 import { GeneralConfig } from "./modules/config/general.js";
 import { HostSettings } from "./modules/config/hostSettings.js";
@@ -129,6 +130,7 @@ export class HostApp {
     // 而另立一份配置读法。
     new ModelService({ config: deps.manager, events: configEvents, t });
     new McpConfig({ dataRoot: deps.dataRoot, homeDir: homedir(), events: configEvents, t });
+    const discovery = new Discovery({ dataRoot: deps.dataRoot, homeDir: homedir() });
 
     const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
     const sessions = new SessionService({ sessions: sessionRows, events, t });
@@ -166,7 +168,7 @@ export class HostApp {
           getConfig: () => this.general.read(),
           agentsDir,
           cwd,
-        }).use(...allInOne());
+        }).use(...allInOne(discovery.abilityPaths(cwd)));
         await scope.init();
         return scope;
       },
