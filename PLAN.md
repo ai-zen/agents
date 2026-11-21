@@ -10,12 +10,13 @@
 
 | # | 做什么 | 过关标准 |
 |---|---|---|
-| 1 | `AgentRegistry` 搬进 `modules/agent/` | 域只向下依赖 `infra`。它现在在 `modules/api/` 里，而 `handoff/` 反过来 import 它，方向是反的 || 2 | `Discovery.abilityPaths(cwd)`（三个目录列表），接进 `allInOne` | 运行期的 Skill / 用户工具 / subagent 现在一层都发现不到：`app.ts` 的 `allInOne()` 三个路径参数全空 |
-| 3 | 自动交接：装 `AutoMigratePlugin`，复用同一条 `commit` | 三处容易漏：交接态（它不经 `start`，不置态的话那一趟的消息会落库然后被 prune 掉）、闸（插件关、宿主在 `onMigrated` / `onFailed` 开）、取消的 controller 两条路共用 |
-| 4 | 两处已知缺口：subagent 最后一片正文（core 不转发 `responseFinished`）、连接上的凭证校验（`credential/` 已建但 `createContext` 还没用它） | 每条要能说出具体可见的后果 |
-| 5 | 已建表的存量库不会自动长出 `searchText` 与 `hidden`（`CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作） | 协议机上的旧库要删掉重建，或补一次 ALTER + `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')` |
-| 6 | 交接降级的根因看不见：宿主没给 SDK 传 `logger`，`supportsSelfHandoff` 为假时每一趟都降级、每趟堆一条警告，根因只在 SDK 的静默日志里 | 降级要有可追的原因，不只是结果 |
-| 7 | `effective()` 没有消费者，也表达不了「已停用」：停用条目与不存在的条目在返回值里长得一样 | 客户端要做开关列表只能自己读文件——那就是第三份读法 |
+| 1 | `effective()` 没有消费者，也表达不了「已停用」：停用条目与不存在的条目在返回值里长得一样 | 客户端要做开关列表只能自己读文件——那就是第三份读法 |
+| 2 | 连接上的凭证校验：`credential/` 已建、`CredentialService.verify` 有，而 `createContext` 还是 `open(null)` | 任何客户端都能连，令牌形同虚设 |
+| 3 | 交接降级的根因看不见：宿主没给 SDK 传 `logger`，`supportsSelfHandoff` 为假时每一趟都降级、堆一串警告，根因只在 SDK 的静默日志里 | 降级要有可追的原因 |
+| 4 | 自动交接在 `autoHandoff` 关着时什么也不做：越线了不问用户，也不记「这次不交接」 | PRD 4.5 要求问一次；现在那个 `null` 只表示「这一趟不迁移」，不代表用户表过态 |
+| 5 | 旧库补出来的 `searchText` 是空串：列有了、索引重建了，但正文没回填 | 迁移前的旧消息永远搜不到，直到那行被再次 upsert |
+| 6 | 嵌套委派把 `subAgent` 覆盖成子执行体（既有行为，`messageAdded` / `messageChanged` / 现在的 `responseFinished` 都一样） | 孙级的话被记到子那一栏；根治要改事件语义，不是补一处转发 |
+| 7 | `failed` 事件不转发：子执行体请求失败时，父级与客户端都不知道 | 将来要给 subagent 画错误态时这里还是空的 |
 
 ## 已经拍过、不要重开的
 

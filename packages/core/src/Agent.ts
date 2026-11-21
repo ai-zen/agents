@@ -243,6 +243,10 @@ export interface RequestSentEvent {
 export interface ResponseFinishedEvent {
   agent: Agent;
   message: AgentNS.Message;
+  /** 这条消息属于某个 subagent（委派工具转发上来时才有） */
+  subAgent?: Agent;
+  /** 是哪一次委派引起的（与 `subAgent` 同现） */
+  via?: AgentNS.ToolCall;
 }
 export interface ToolStartedEvent {
   agent: Agent;

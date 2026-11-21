@@ -97,7 +97,13 @@ export class AgentSubscription {
        * 早于它们，上面那条写不出这三格。core 只在这里给出定型的那条消息，而单条 `usage`
        * 是要跟着消息落库的。
        */
-      agent.on("responseFinished", ({ message }) => this.changedMessage(message)),
+      agent.on("responseFinished", ({ message, subAgent, via }) => {
+        // subagent 的收口也会转发上来，而它的话从不入库：不分这一支的话，落库那一处会把
+        // subagent 的回复写进这段会话的主转录，客户端还会收到一条自己从没 `message.added`
+        // 过的 id。
+        if (subAgent !== undefined) return this.subAgentMessage(agent, message, subAgent, via);
+        this.changedMessage(message);
+      }),
 
       agent.on("state:idle", (event) => this.emitEvent(this.statusEvent(event.agent))),
       agent.on("state:working", (event) => this.emitEvent(this.statusEvent(event.agent))),

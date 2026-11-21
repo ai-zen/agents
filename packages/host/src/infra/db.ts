@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { addMessageSearchColumns } from "./migrations.js";
+
 /**
  * 开库：`file` 为 `:memory:` 时不落盘（用例用它）。
  *
@@ -13,6 +15,7 @@ export function openDatabase(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
+  migrate(db);
   return db;
 }
 
@@ -31,5 +34,22 @@ export function transaction<T>(db: DatabaseSync, work: () => T): T {
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
+  }
+}
+
+/**
+ * 把库的结构递进到当前版本，返回时库的形状与 `PRAGMA user_version` 一致。
+ *
+ * 每一级只补已经存在的表缺的东西，不建表：建表归各域的 `*Table(db)`，它们在本函数之后才被
+ * 调用 —— 新库走到这里一张表都没有，所以每一级都得能对着空库跑。
+ */
+function migrate(db: DatabaseSync): void {
+  const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+
+  if (version < 1) {
+    transaction(db, () => {
+      addMessageSearchColumns(db);
+      db.exec("PRAGMA user_version = 1");
+    });
   }
 }

@@ -505,7 +505,7 @@ subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 ### 血缘与事件转发：落在委派工具里
 
 - **血缘只有名册一份**（`subAgentRegistry`）：一行一个 subagent，记 `toolCallId` / `name` / `startedAt` / `endedAt`（`endedAt === null` 就是「还活着」）。派遣那一刻加一行，结束**只填 `endedAt`、不删** —— 那个 agent 要答得出它跑过什么。**没有 `parent` / `children` 这两个反向指针**：同一段关系不写第二遍，外面要问「这一段派出了谁、还活着吗」就读名册。**先记名册再问 `onSubAgentStart`**，拒了把那一行撤掉 —— `subAgentStarted` 是在钩子之后发的，订阅方要在那一刻就能摸到它。`[用户]`
-- **事件转发**：subagent 的消息、原始片、工具事件**按同一套名字**转到派它的那个 agent 上，只多两格：`subAgent`（这些事发生在谁身上）与 `via`（是哪一次委派引起的）。`delta` 走它的 `source` 第二格。
+- **事件转发**：subagent 的消息、原始片、工具事件**按同一套名字**转到派它的那个 agent 上，只多两格：`subAgent`（这些事发生在谁身上）与 `via`（是哪一次委派引起的）。`delta` 走它的 `source` 第二格。收口那一条（`responseFinished`）也照这套转发 —— 最后一片正文与 `status` / `finish_reason` / `usage` 只有它带得出来。
 - **`state` 不转发**：那个 agent 自己的 `working` / `idle` 就是它自己的，subagent 的混进来之后，「这个 agent 现在在不在干」就没人答得上来。
 
 ### subagent 没产出时不许复读

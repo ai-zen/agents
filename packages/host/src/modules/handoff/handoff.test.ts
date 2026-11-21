@@ -4,6 +4,9 @@
  * 段会话的消息照样推给客户端，但不落库 —— 收口之后恢复；换记忆之后库里与执行体里是同一份新的，
  * 且换的是数组的内容而不是数组本身。
  *
+ * 自动交接那一条路另有两件：它不经 `start`，所以交接态与闸得由插件那两拍自己接上；开关关着时
+ * 它一格都不碰。
+ *
  * 把交接态写成宿主上的一格开关，「这一段在交接」就会连带把别的段的消息写入一起停掉 —— 那几段上
  * 的人只是发现自己的回答不再落库，界面上看不出来。
  *
@@ -13,8 +16,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { AgentNS, Message } from "@ai-zen/agents-core";
-import { HandoffAbortedError, type HandoffMode, type SdkAgent } from "@ai-zen/agents-sdk";
+import { AgentNS, Message, type OuterLoopContext } from "@ai-zen/agents-core";
+import {
+  AutoMigratePlugin,
+  HandoffAbortedError,
+  type HandoffMode,
+  type SdkAgent,
+} from "@ai-zen/agents-sdk";
 
 import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
@@ -28,7 +36,7 @@ import { noticeTable } from "../notice/table.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { NewSession } from "../session/types.js";
+import type { NewSession, Session } from "../session/types.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { workspaceTable } from "../workspace/table.js";
 import { HandoffService, type CreateSdkHandoff, type SdkHandoffOptions } from "./service.js";
@@ -393,5 +401,94 @@ describe("交接期间不落库", () => {
 
     expect(messages.get("m-2")?.content).toBe("收口之后说的");
     expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * 自动那一套插件的接法：与装配时同一份（服务、阈值、开关现读、两个回声）。
+ *
+ * 阈值 100 配用例里那条 200 的用量，就是「越线」。
+ */
+function autoMigrate(handoff: HandoffService, session: Session) {
+  return new AutoMigratePlugin({
+    service: handoff.automatic(session),
+    handoffTokens: 100,
+    resolveMode: () => handoff.automaticMode(session.id),
+    onMigrated: ({ mode }) => handoff.finish(session.id, { mode }),
+    onFailed: ({ error }) => handoff.finish(session.id, { error }),
+  });
+}
+
+/** 一条带用量的助手消息：越线只读上一次回答的 `usage.prompt_tokens` */
+function answered(promptTokens: number): AgentNS.Message {
+  return new Message({
+    role: AgentNS.Role.Assistant,
+    status: AgentNS.MessageStatus.Completed,
+    content: "上一句回答",
+    usage: { prompt_tokens: promptTokens, completion_tokens: 1, total_tokens: promptTokens + 1 },
+  });
+}
+
+describe("自动交接", () => {
+  /**
+   * 自动那条路不经 `start`：不置交接态的话，这一趟写下的消息会照常落库，而记忆马上被 `prune`
+   * 掉 —— 库里留下的是永远读不回来的残渣。
+   */
+  it("自动那一趟期间消息不落库，收口之后恢复", async () => {
+    const { handoff, handoffs, sessions, messages, errors, wake } = setup();
+    const session = sessions.create({ ...input, autoHandoff: true });
+    const agent = wake(session.id);
+    agent.messages.push(answered(200));
+
+    const plugin = autoMigrate(handoff, session);
+    plugin.onOuterLoopStart({ agent } as unknown as OuterLoopContext);
+    const idle = plugin.onIdle();
+    await settle();
+
+    expect(handoff.isHandingOff(session.id)).toBe(true);
+    agent.fire("messageAdded", {
+      agent,
+      message: message("m-1", "这一任最后说的"),
+      subAgent: undefined,
+      via: undefined,
+    });
+    expect(messages.get("m-1")).toBeUndefined();
+
+    // 关闸那一半在 SDK 的 `HandoffGuardPlugin`（指令被取走那一拍）：这里照那一拍按住
+    agent.pauseOutput();
+    handoffs.runs[0].succeed();
+    await idle;
+
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+    expect(agent.isOutputPaused).toBe(false);
+
+    agent.fire("messageAdded", {
+      agent,
+      message: message("m-2", "收口之后说的"),
+      subAgent: undefined,
+      via: undefined,
+    });
+    expect(messages.get("m-2")?.content).toBe("收口之后说的");
+    expect(errors).toEqual([]);
+  });
+
+  /** 用户建的会话默认关（`PRD.md` 4.5）：关着就不动手 —— 那一趟既不进交接态，也不碰模型 */
+  it("`autoHandoff` 关着时这一趟什么都不做", async () => {
+    const { handoff, handoffs, sessions, wake } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+    agent.messages.push(answered(200));
+
+    const plugin = autoMigrate(handoff, session);
+    plugin.onOuterLoopStart({ agent } as unknown as OuterLoopContext);
+    void plugin.onIdle();
+    await settle();
+
+    expect(handoffs.runs).toEqual([]);
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+
+    // 开关是现读的：同一个插件还挂在同一条会话上，开关一开它就自己交班
+    sessions.update(session.id, { autoHandoff: true });
+    expect(handoff.automaticMode(session.id)).toBe("self");
   });
 });

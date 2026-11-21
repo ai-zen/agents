@@ -1,9 +1,15 @@
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
-import type { AgentNS } from "@ai-zen/agents-core";
+import { AgentError, type AgentNS } from "@ai-zen/agents-core";
 import { HandoffAbortedError, HandoffService as SdkHandoffService } from "@ai-zen/agents-sdk";
-import type { HandoffContext, HandoffMode, MemoryCommit, SdkAgent } from "@ai-zen/agents-sdk";
+import type {
+  HandoffContext,
+  HandoffMode,
+  MemoryCommit,
+  MigrateParams,
+  SdkAgent,
+} from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
@@ -47,7 +53,12 @@ export interface SdkHandoffOptions {
  * —— 只有「这一趟实际是谁写的」必须宿主自己看一眼，降级了得说出来。
  */
 export interface SdkHandoff {
-  migrate(params: { agent: SdkAgent; signal: AbortSignal }): Promise<Pick<HandoffContext, "mode">>;
+  /** `mode` 是这一趟**申请**的执行者；不给就走 SDK 的默认那一个 */
+  migrate(params: {
+    agent: SdkAgent;
+    signal: AbortSignal;
+    mode?: HandoffMode;
+  }): Promise<Pick<HandoffContext, "mode">>;
 }
 
 export type CreateSdkHandoff = (options: SdkHandoffOptions) => SdkHandoff;
@@ -95,7 +106,10 @@ export interface HandoffDeps {
  */
 export class HandoffService {
   private readonly handingOff = new Set<string>();
-  /** 这一趟的取消口，按会话。`cancel` 掐它，一趟结束在 `finally` 里摘掉 */
+  /**
+   * 这一趟的取消口，按会话。`cancel` 掐它 —— 手动与自动两条路共用这一格，界面上按停掐断的
+   * 因此也包括插件自己发起的那一趟。一趟结束在 `finally` 里摘掉。
+   */
   private readonly aborters = new Map<string, AbortController>();
 
   constructor(private readonly deps: HandoffDeps) {}
@@ -159,40 +173,60 @@ export class HandoffService {
       );
     }
 
-    const workspace = this.deps.workspaces.get(session.workspaceId);
-    if (workspace === undefined) {
-      throw new HostError(
-        "not_found",
-        this.deps.t("找不到 id 为 {workspaceId} 的项目", { workspaceId: session.workspaceId }),
-        { entity: "workspace", workspaceId: session.workspaceId },
-      );
-    }
-
-    const abort = new AbortController();
-    this.aborters.set(sessionId, abort);
-    this.handingOff.add(sessionId);
-    this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: true });
-
-    void this.run({
-      sessionId,
-      agent,
-      handoffDir: join(workspace.cwd, ".ai-zen", "handoffs"),
-      signal: abort.signal,
-    });
+    const handoffDir = this.handoffDir(session);
+    const signal = this.enter(sessionId);
+    void this.run({ sessionId, agent, handoffDir, signal });
   }
 
   /**
-   * 正常收口：退出交接态，把输出闸开回来。
+   * 收口：退出交接态，把输出闸开回来，再把这一趟的结果说给用户。
    *
    * 开闸只能在这里，不能更早：SDK 那边关闸之后还要写文档，而记忆换成新的那一拍在宿主这一侧
    * （{@link commit}）。在写文档那一刻开闸，这期间落进来的话就会随旧记忆一起进存档。
    *
-   * 不在交接态时是空操作：第二次到这里事实没有变化，不再推事件。
+   * 自动交接那条路在插件的 `onMigrated` / `onFailed` 里走到这里 —— 那两拍是「这一趟结束了」
+   * 唯一对外的回声，闸与通知因此只有这一份实现。取消不走这里（{@link cancel}）。
+   *
+   * 不在交接态时是空操作：第二次到这里事实没有变化，不再推事件也不再推通知。
    */
-  finish(sessionId: string): void {
+  finish(
+    sessionId: string,
+    outcome: { readonly mode: HandoffMode } | { readonly error: unknown },
+  ): void {
     if (!this.handingOff.delete(sessionId)) return;
     this.deps.agents.resumeOutput(sessionId);
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: false });
+
+    // 会话可能已经被删掉（这一趟正好撞上）：那条通知挂在它名下会撞外键，而那段会话已经不在了，
+    // 也就没有要告知的人
+    if (this.deps.sessions.get(sessionId) === undefined) return;
+
+    if ("error" in outcome) {
+      this.deps.notices.push({
+        level: "error",
+        code: "handoff_failed",
+        sessionId,
+        // 永久留到用户自己清：失败的原因得有机会读到，一闪而过的错误档等于没说
+        durationMs: null,
+        message: this.deps.t("交接失败：{reason}", {
+          reason: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+        }),
+      });
+      return;
+    }
+
+    // 申请的是自交接、拿回来的是摘要 = 降级了。这一趟的文档是独立摘要写的，保真度低了一档，
+    // 而界面上一切正常 —— 不说出来用户永远不会知道（`PRD.md` 3.6）。
+    // 自动那条路申请的也是自交接：`automaticMode` 只回这一个
+    if (outcome.mode === REQUESTED_MODE) return;
+    this.deps.notices.push({
+      level: "warning",
+      code: "handoff_degraded",
+      sessionId,
+      // 永久留到用户自己清：降级是个事实，不是一闪而过的事件
+      durationMs: null,
+      message: this.deps.t("交接降级为摘要：这一趟没能由原会话自己写交接文档"),
+    });
   }
 
   /**
@@ -278,14 +312,75 @@ export class HandoffService {
   }
 
   /**
-   * 后台那一趟：造一个只为这一趟服务的 SDK 实例，跑 `migrate`，成败都在这里收口。
+   * 越线那一刻这一趟要不要交班：只看会话行上的开关（`PRD.md` 4.5）。
    *
-   * 失败与成功各走一条，但两条都必须退出交接态：留在交接态的那一段既不再落库，也不再取件。
-   * 失败还要把闸开回来（只有取消不开）并推一条通知 —— `start` 早就返回了，这条通知是用户
-   * 唯一能拿到「为什么没换」的地方。开闸漏一次，这一段就再也不取件，而界面上只是「它不理我」。
+   * 现读而不是让调用方把值递进来：开关改了不重建执行体（`PRD.md` 4.7），装配那一刻读到的值
+   * 会让用户改完没反应。
    *
-   * 成功那条路只看一件事：拿回来的 `mode` 与申请的那一个（{@link REQUESTED_MODE}）是不是同一个。
-   * 不是就是降级 —— 记忆照换、闸照开，但文档是摘要写的，这回事得有一条通知说出来。
+   * 开关关着的那一段装不下时该问用户一次（`PRD.md` 4.5），而这条提问路径还没有：`null` 在
+   * `AutoMigratePlugin` 那里是「这一趟不迁移」，不是「用户说了不交班」。
+   */
+  automaticMode(sessionId: string): HandoffMode | null {
+    return this.deps.sessions.get(sessionId)?.autoHandoff === true ? "self" : null;
+  }
+
+  /**
+   * 自动那一趟交给插件的那一份：`AutoMigratePlugin` 那一格要的是 SDK 的 `HandoffService`。
+   *
+   * 不给真的实例：这一趟必须由宿主发起 —— 取消口按会话在 `aborters` 里（界面上按停掐的就是
+   * 它），交接态决定这一趟的消息落不落库，换完的记忆落在 {@link commit} 上。造一个真的实例再
+   * 把 `migrate` 换掉行不通：插件调 `migrate` 时不带 `signal`，那一趟就拿不到宿主的取消口。
+   * 插件只碰 `handingOff` 与 `migrate` 两格（另外两格是「只写文档」与文档目录，宿主这一侧没有
+   * 对应的路），所以这里也只给那两格。
+   */
+  automatic(session: Session): SdkHandoffService {
+    const sessionId = session.id;
+    const handoffDir = this.handoffDir(session);
+    const isHandingOff = () => this.isHandingOff(sessionId);
+    const facade = {
+      // 整趟跑着的时候它必须是 true：交接回合结束、执行体又变闲那一拍插件会再到这里一次，
+      // 那时用量还超着线，不让行就是「交接触发交接」
+      get handingOff(): boolean {
+        return isHandingOff();
+      },
+      migrate: (params: MigrateParams) => this.runAutomatically(sessionId, handoffDir, params),
+    };
+    return facade as unknown as SdkHandoffService;
+  }
+
+  /**
+   * 进入交接态：造这一趟的取消口、置态、发事件。
+   *
+   * 手动与自动两条路共用它，四条判据不在这里 —— 那四条判的是「人现在能不能点交接」，而自动
+   * 那一趟是插件自己发的，它只在执行体闲着时才会到这里。
+   */
+  private enter(sessionId: string): AbortSignal {
+    const abort = new AbortController();
+    this.aborters.set(sessionId, abort);
+    this.handingOff.add(sessionId);
+    this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: true });
+    return abort.signal;
+  }
+
+  /** 交接文档落在项目里，按会话所属项目的 `cwd` 现算：多项目共用一个目录，文档就跟代码分家了 */
+  private handoffDir(session: Session): string {
+    const workspace = this.deps.workspaces.get(session.workspaceId);
+    if (workspace === undefined) {
+      throw new HostError(
+        "not_found",
+        this.deps.t("找不到 id 为 {workspaceId} 的项目", { workspaceId: session.workspaceId }),
+        { entity: "workspace", workspaceId: session.workspaceId },
+      );
+    }
+    return join(workspace.cwd, ".ai-zen", "handoffs");
+  }
+
+  /**
+   * 后台那一趟：造一个只为这一趟服务的 SDK 实例，跑 `migrate`，成败都在收口里落地。
+   *
+   * 失败与成功各走一条，两条都必须退出交接态：留在交接态的那一段既不再落库，也不再取件。
+   * 失败还要把闸开回来（只有取消不开）—— `start` 早就返回了，{@link finish} 推的那条通知是
+   * 用户唯一能拿到「为什么没换」的地方。
    *
    * 取消不是失败：`cancel` 已经摘了牌、也把闸留在关着的那一边。这里还认一种它不经手
    * 的取消 —— 用户在界面上按停打的是这段会话的中断（`agent.abort()`，它不碰这里的 `signal`），
@@ -307,43 +402,53 @@ export class HandoffService {
           this.commit(sessionId, commit.memory, agent.definition.messages?.length ?? 0),
       });
       const { mode } = await sdk.migrate({ agent, signal });
-      this.finish(sessionId);
-
-      // 申请的是自交接、拿回来的是摘要 = 降级了。这一趟的文档是独立摘要写的，保真度低了一档，
-      // 而界面上一切正常 —— 不说出来用户永远不会知道（`PRD.md` 3.6）。
-      // 排在收口之后：开闸与摘牌先落地，这条通知晚一步也不会让闸停在关着的那一边。
-      // 会话可能已经被删掉（这一趟正好撞上）：那条通知挂在它名下会撞外键，与失败那条同理。
-      if (mode !== REQUESTED_MODE && this.deps.sessions.get(sessionId) !== undefined) {
-        this.deps.notices.push({
-          level: "warning",
-          code: "handoff_degraded",
-          sessionId,
-          // 永久留到用户自己清：降级是个事实，不是一闪而过的事件
-          durationMs: null,
-          message: this.deps.t("交接降级为摘要：这一趟没能由原会话自己写交接文档"),
-        });
-      }
+      this.finish(sessionId, { mode });
     } catch (error) {
       if (signal.aborted || error instanceof HandoffAbortedError) {
         this.cancel(sessionId);
         return;
       }
 
-      this.finish(sessionId);
-      // 会话可能已经被删掉（这一趟正好撞上）：那条通知挂在它名下会撞外键，而那段会话已经不
-      // 在了，也就没有要告知的人
-      if (this.deps.sessions.get(sessionId) !== undefined) {
-        this.deps.notices.push({
-          level: "error",
-          code: "handoff_failed",
-          sessionId,
-          // 永久留到用户自己清：失败的原因得有机会读到，一闪而过的错误档等于没说
-          durationMs: null,
-          message: this.deps.t("交接失败：{reason}", {
-            reason: error instanceof Error ? error.message : String(error),
-          }),
-        });
+      this.finish(sessionId, { error });
+    } finally {
+      this.aborters.delete(sessionId);
+    }
+  }
+
+  /**
+   * 自动那一趟：插件越线时发起，不经 `start` 的四条判据。
+   *
+   * 收口不在这里：成与不成从插件的两个回声里走 {@link finish}（闸只能在那里开）。取消只能
+   * 在这里交给 {@link cancel} —— 插件把取消咽掉、不会叫它的 `onFailed`，不在这里摘牌，这一段
+   * 的消息从此不再落库。
+   *
+   * 申请的执行者由插件按开关现读后递进来，与手动那条是同一个（`REQUESTED_MODE`）。
+   */
+  private async runAutomatically(
+    sessionId: string,
+    handoffDir: string,
+    params: MigrateParams,
+  ): Promise<Pick<HandoffContext, "mode">> {
+    const signal = this.enter(sessionId);
+
+    try {
+      const sdk = this.deps.createSdk({
+        handoffDir,
+        strategy: "prune",
+        commitMemory: (commit) =>
+          this.commit(sessionId, commit.memory, params.agent.definition.messages?.length ?? 0),
+      });
+      return await sdk.migrate({ agent: params.agent, mode: params.mode, signal });
+    } catch (error) {
+      if (signal.aborted || error instanceof HandoffAbortedError) {
+        this.cancel(sessionId);
+        throw error;
       }
+
+      // 执行体已经关门：插件对那一格也不叫 `onFailed`（那里没有可收的东西），交接态就没人摘。
+      // 留着它，这段会话重新被叫醒之后消息永远不落库，而界面上只是「它不回话」
+      if (error instanceof AgentError && error.code === "closed") this.finish(sessionId, { error });
+      throw error;
     } finally {
       this.aborters.delete(sessionId);
     }

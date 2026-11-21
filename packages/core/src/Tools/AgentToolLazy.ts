@@ -110,7 +110,7 @@ export class AgentToolLazy implements Tool {
    * 不另起一套平行名字：父和宿主的订阅方只多认两格 —— `subAgent`（这些事发生在谁身上）
    * 与 `via`（是哪一次委派引起的）。`delta` 走它的 `source` 第二格。
    *
-   * 只转发「subagent 内部发生了什么」这三类（消息、原始片、工具）；`state` 不转发 ——
+   * 只转发「subagent 内部发生了什么」这几类（消息、原始片、工具、收口那一条）；`state` 不转发 ——
    * 父自己的那一格（`state`）是父的，混进来会让「这个 agent 现在在不在干」变得没法回答。
    */
   private forward(sub: Agent, ctx: ToolCallContext): Array<() => void> {
@@ -129,6 +129,19 @@ export class AgentToolLazy implements Tool {
         sub.on(type, (payload) => host.emit(type, { ...payload, agent: host, subAgent: sub, via })),
       );
     }
+
+    // **收口那一条也要转发。** 主转录靠 `responseFinished` 把**最后一片正文**、`status`、
+    // `finish_reason`、`usage` 钉到消息上（§10：收流之后才发）—— 派出去的那个也一样欠这一条：
+    // 不转发的话，subagent 的最后一片正文只能等「下一片」带出来，而最后一片没有下一片（那片字
+    // 就这么丢了），父级看到的 subagent 消息还会长期停在 `writing`。
+    //
+    // 载荷改写与「消息」那几条**同一套**（`agent` 换成父、加 `subAgent` / `via`）；带出去的是
+    // **那条活消息本身**、不是 id —— 接收方读它就把收尾三格一起拿到了，与 `messageChanged` 同理。
+    offs.push(
+      sub.on("responseFinished", (payload) =>
+        host.emit("responseFinished", { ...payload, agent: host, subAgent: sub, via }),
+      ),
+    );
 
     offs.push(
       sub.on("delta", (payload) =>

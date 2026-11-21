@@ -448,3 +448,92 @@ describe("AgentToolLazy 委派用量", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 收口那一条：最后一片正文靠它钉上去
+// ---------------------------------------------------------------------------
+
+/**
+ * 一段回答的流：正文分两片到，**第二片自己带收尾信息**（`finish_reason` + `usage`）。
+ *
+ * 真实端点最后一片正文往往就是流里最后一条带增量的 chunk。core 派发 `delta` 排在把这个片
+ * 攒进消息**之前**，所以接收方看到的最后一条「原始片」永远缺这一片正文；它只能由收口那一条补。
+ */
+function tailPieceStream(first: string, last: string, usage: AgentNS.Usage): AnyChunk[] {
+  return [
+    {
+      id: "c-1",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "mock",
+      choices: [{ index: 0, delta: { content: first }, finish_reason: null }],
+    },
+    {
+      id: "c-2",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "mock",
+      choices: [{ index: 0, delta: { content: last }, finish_reason: "stop" }],
+      usage,
+    },
+  ];
+}
+
+describe("AgentToolLazy 收口转发", () => {
+  it("subagent 跑到收口时，父级收到的 responseFinished 带着完整正文（含最后一片）", async () => {
+    const subUsage = usageOf(10, 5, 15);
+    const child = new Agent({
+      client: sequenceClient([tailPieceStream("前半", "最后一片", subUsage)]),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
+    const tool = new AgentToolLazy({
+      function: {
+        name: "lazyFn",
+        description: "测试",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      messages: [Message.User("{{task}}")],
+      buildAgent: () => child,
+    });
+    const host = new Agent({
+      client: sequenceClient([]),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [tool],
+    });
+    const ctx = new ToolCallContext({
+      agent: host,
+      tool_call: {
+        id: "call-1",
+        function: { name: "lazyFn", arguments: JSON.stringify({ task: "写代码" }) },
+      },
+      resultMessage: Message.Tool({ id: "result-1", function: { name: "lazyFn" } }),
+    });
+
+    // 接收方手里有两条路：原始片只带「已经攒进去的那部分」（最后一片还没攒），收口那一条才是完整
+    const seenAtDelta: unknown[] = [];
+    const finished: any[] = [];
+    host.on("delta", ({ source }) => {
+      if ("subAgent" in source) seenAtDelta.push(source.subAgent.messages.at(-1)?.content);
+    });
+    host.on("responseFinished", (payload) => finished.push(payload));
+
+    await tool.exec(ctx);
+
+    // 父级自己一趟请求都没发，这一条只可能是从 subagent 转发上来的
+    expect(finished).toHaveLength(1);
+    expect(finished[0].agent).toBe(host);
+    expect(finished[0].subAgent).toBe(child);
+    expect(finished[0].via.function.name).toBe("lazyFn");
+    // 交出去的是那条活消息本身（不是 id、不是拷贝）：接收方读它就把正文与收尾三格一起拿到
+    expect(finished[0].message).toBe(child.messages.at(-1));
+    expect(finished[0].message.content).toBe("前半最后一片");
+    // 原始片那条路停在「最后一片」之前 —— 这正是收口那一条必须转发的原因
+    expect(seenAtDelta.at(-1)).toBe("前半");
+    // 收尾三格也随它一起到：`status` 不再停在 `writing`
+    expect(finished[0].message.status).toBe(AgentNS.MessageStatus.Completed);
+    expect(finished[0].message.finish_reason).toBe("stop");
+    expect(finished[0].message.usage).toEqual(subUsage);
+  });
+});
