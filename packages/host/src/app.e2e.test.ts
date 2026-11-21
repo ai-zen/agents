@@ -206,6 +206,13 @@ function textOf(message: AgentNS.Message): string {
   return String(message.content ?? "");
 }
 
+/** `session.open` 回来的那几格；用例只断言用得上的，其余照旧过网 */
+interface Opened {
+  readonly live: { readonly state: string } | null;
+  readonly messages: AgentNS.Message[];
+  readonly inbox: readonly unknown[];
+}
+
 describe("宿主跑起来", () => {
   const workspaceId = randomUUID();
   /** 一个没有任何会话的项目：前面那条用例会往 `workspaceId` 里落一段会话，这里要的是真的空 */
@@ -216,6 +223,8 @@ describe("宿主跑起来", () => {
   let app: HostApp;
   let client: HostClient;
   let token: string;
+  /** 第一条用例递出去的那句话落在哪段会话上：后面那条「重新打开」要用它 */
+  let sessionId: string;
 
   beforeAll(async () => {
     dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-host-"));
@@ -320,6 +329,7 @@ describe("宿主跑起来", () => {
       content: SAID,
       messageId: randomUUID(),
     });
+    sessionId = sent.sessionId;
 
     const idled = () =>
       events.some((event) => event.type === "agent.status" && event.status === "idle");
@@ -355,8 +365,29 @@ describe("宿主跑起来", () => {
     expect(idledAt).toBeGreaterThan(changedAt);
   }, 60_000);
 
-  it("验不过的连接调不到任何 procedure，宿主照旧服务", async () => {
-    // 不送令牌：连的是没有查询串的那条地址，服务端在建上下文那一刻就把它拒了，握手帧无从送起
+  it("另开一条连接打开那段会话，状态与全部历史一次拿到；杀掉执行体之后历史照样在", async () => {
+    // 手里没有任何历史的一条新连接：它看到的一切都来自这一次调用
+    const fresh = await HostClient.connect(app.address.port, token);
+    try {
+      const opened = await fresh.query<Opened>("session.open", { sessionId });
+      expect(opened.live?.state).toBe("idle");
+      expect(opened.messages.map(textOf)).toContain(SAID);
+      expect(opened.messages.map(textOf)).toContain(REPLY.join(""));
+      // 那一句话已经被取走并且落了地，排队区里不应当还留着它
+      expect(opened.inbox).toEqual([]);
+    } finally {
+      fresh.close();
+    }
+
+    // 杀掉执行体：内存没了，这时库就是它的全部
+    await client.mutation("agent.kill", { sessionId });
+    const reopened = await client.query<Opened>("session.open", { sessionId });
+    expect(reopened.live).toBeNull();
+    expect(reopened.messages.map(textOf)).toContain(SAID);
+    expect(reopened.messages.map(textOf)).toContain(REPLY.join(""));
+  }, 60_000);
+
+  it("验不过的连接调不到任何 procedure，宿主照旧服务", async () => {    // 不送令牌：连的是没有查询串的那条地址，服务端在建上下文那一刻就把它拒了，握手帧无从送起
     const anonymous = await HostClient.connect(app.address.port);
     await expect(anonymous.query("session.list", { workspaceId })).rejects.toThrow(
       /UNAUTHORIZED|令牌/,
