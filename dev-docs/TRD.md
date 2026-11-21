@@ -8,6 +8,7 @@
 
 | 册 | 装什么 |
 |---|---|
+| [`trd/00-layers.md`](trd/00-layers.md) | 包与模块的职责：每个包负责什么、不许做什么、对外四个面、一条判据 |
 | [`trd/engine.md`](trd/engine.md) | 引擎（core）：六个动作、外循环与取件、状态两处、事件与钩子、格式化历史、修尾。想知道「agent 到底怎么跑」读它 |
 | [`trd/live-objects.md`](trd/live-objects.md) | 运行时活物的四问（创造、观测、持久化、销毁）与五条判据：执行体与能力容器怎么被第三方观察、落库、恢复 |
 | [`trd/host-infrastructure.md`](trd/host-infrastructure.md) | 宿主基础设施：数据根、单实例与发现文件、监听地址、端口优先级、凭证与连接校验、升级三段 |
