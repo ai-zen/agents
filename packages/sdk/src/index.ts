@@ -158,6 +158,7 @@ export type {
   NewPeerSession,
   OpenPeerSession,
   RuntimePorts,
+  RuntimeFact,
   PostResult,
 } from "./runtime/AgentRuntime.js";
 // 能力容器按目录存活：什么时候造、什么时候拆

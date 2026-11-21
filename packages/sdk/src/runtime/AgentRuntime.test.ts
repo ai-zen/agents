@@ -25,7 +25,12 @@ import {
 } from "../scope/plugins/peers/peerSessionTools.js";
 import type { AgentDefinition, AppConfig } from "../types/index.js";
 import { until } from "../test-support/agent-round.js";
-import { AgentRuntime, type RuntimePorts, type WakeMaterials } from "./AgentRuntime.js";
+import {
+  AgentRuntime,
+  type RuntimeFact,
+  type RuntimePorts,
+  type WakeMaterials,
+} from "./AgentRuntime.js";
 import type { SdkAgent } from "./SdkAgent.js";
 
 // ---------------------------------------------------------------------------
@@ -198,6 +203,17 @@ function toolOf(agent: Agent, name: string): Tool {
   const tool = agent.tools.find((item) => item.function.name === name);
   if (tool === undefined) throw new Error(`tool "${name}" is not on agent "${agent.id}"`);
   return tool;
+}
+
+/** 一条事实收窄之后的那一支：只按名字判别，不另造形状 */
+type Appeared = Extract<RuntimeFact, { type: "resident:appeared" }>;
+type Gone = Extract<RuntimeFact, { type: "resident:gone" }>;
+type Added = Extract<RuntimeFact, { type: "inboxAdded" }>;
+type Finished = Extract<RuntimeFact, { type: "responseFinished" }>;
+
+/** 某一段会话收到的事实，按到达顺序 */
+function factsOf(facts: readonly RuntimeFact[], sessionId: string): RuntimeFact[] {
+  return facts.filter((fact) => fact.sessionId === sessionId);
 }
 
 /** 直接调一次工具（模型那一侧的位置：`ctx.agent` 就是调用它的那个执行体） */
@@ -404,6 +420,99 @@ describe("运行时：常驻与互相说话", () => {
     // 拆掉了：下一次要容器是重新造一个
     await h.runtime.scopes.for(h.cwd);
     expect(h.opened).toEqual([h.cwd, h.cwd]);
+  });
+});
+
+describe("运行时：观察面（只订阅、不介入）", () => {
+  it("第三方只订阅就能说清谁活着、谁在干、谁没了", async () => {
+    const h = await harness({ reply: "假端点说的那句" });
+    const seen: RuntimeFact[] = [];
+    h.runtime.observe((fact) => seen.push(fact));
+
+    const a = await h.wake("a", "lead");
+    const b = await h.wake("b", "helper");
+
+    // 谁活着：两段各一条「出现」，带目录、血缘（两段都是人建的，所以是 null）与执行体本身
+    const appeared = seen.filter((fact): fact is Appeared => fact.type === "resident:appeared");
+    expect(appeared.map((fact) => fact.sessionId)).toEqual(["a", "b"]);
+    expect(appeared[0]).toMatchObject({ cwd: h.cwd, lineage: null, agent: a });
+    expect(appeared[1]).toMatchObject({ cwd: h.cwd, lineage: null, agent: b });
+
+    // 每一段会话的第一条事实就是它自己的「出现」：开跑之后那些一定排在后面
+    expect(factsOf(seen, "a")[0]?.type).toBe("resident:appeared");
+    expect(factsOf(seen, "b")[0]?.type).toBe("resident:appeared");
+
+    // 谁在干：投一句给 b，入队、变忙、跑完回到闲都收到了
+    h.name("a", "会话甲");
+    expect(await h.runtime.post({ from: "a", to: "b", content: "把测试跑一遍" })).toEqual({
+      ok: true,
+    });
+    await until(() => b.state === "idle" && words(b, "假端点说的那句").length > 0, 5000);
+
+    const ofB = factsOf(seen, "b");
+    expect(ofB.map((fact) => fact.type)).toContain("state:working");
+    expect(ofB.map((fact) => fact.type)).toContain("state:idle");
+
+    // 入队那一条的载荷就是寄过去的那句话本身（内核那一侧的形状，原样转出来的）
+    const added = ofB.filter((fact): fact is Added => fact.type === "inboxAdded");
+    expect(added.length).toBeGreaterThan(0);
+    expect(added[0]!.entry.content).toBe("把测试跑一遍");
+    expect(added[0]!.entry).toMatchObject({ source: { kind: "agent", label: "会话甲" } });
+
+    // 跑完那一条里的消息正文就是假端点给的那句
+    const finished = ofB.filter((fact): fact is Finished => fact.type === "responseFinished");
+    expect(finished).toHaveLength(1);
+    expect(text(finished[0]!.message)).toBe("假端点说的那句");
+
+    // 谁没了：杀 b，报一条「没了」；此后 b 一条事实都不再有
+    h.runtime.kill("b");
+    const gone = seen.filter((fact): fact is Gone => fact.type === "resident:gone");
+    expect(gone.map((fact) => fact.sessionId)).toEqual(["b"]);
+
+    const marked = seen.length;
+    // 让这一段再跑一句走的是用户说话那条路：用户说的话也是一条投递，进执行体的队列
+    a.push({ content: "再跑一句", priority: "low", source: { kind: "user" } });
+    await until(() => a.state === "idle" && words(a, "假端点说的那句").length > 0, 5000);
+
+    expect(factsOf(seen.slice(marked), "b")).toEqual([]);
+    // 对照：这一段的转发照常在，说明「没有 b 的事实」不是因为整条转发停了
+    expect(factsOf(seen.slice(marked), "a").length).toBeGreaterThan(0);
+  });
+
+  it("退订之后不再收到，退订两次不炸", async () => {
+    const h = await harness();
+    const seen: RuntimeFact[] = [];
+    const off = h.runtime.observe((fact) => seen.push(fact));
+    off();
+    off();
+
+    const a = await h.wake("a", "lead");
+    // 用户说的话也是一条投递，进执行体的队列
+    a.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    await until(() => a.state === "idle" && words(a, "收到").length > 0, 5000);
+
+    // 整个过程中一条事实都没收到
+    expect(seen).toEqual([]);
+  });
+
+  it("一段会话没了不影响另一段的转发", async () => {
+    const h = await harness();
+    const seen: RuntimeFact[] = [];
+    h.runtime.observe((fact) => seen.push(fact));
+
+    await h.wake("a", "lead");
+    const b = await h.wake("b", "helper");
+
+    h.runtime.kill("a");
+    const marked = seen.length;
+
+    // 用户说的话也是一条投递，进执行体的队列
+    b.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    await until(() => b.state === "idle" && words(b, "收到").length > 0, 5000);
+
+    const ofB = factsOf(seen.slice(marked), "b").map((fact) => fact.type);
+    expect(ofB).toContain("state:working");
+    expect(ofB).toContain("state:idle");
   });
 });
 

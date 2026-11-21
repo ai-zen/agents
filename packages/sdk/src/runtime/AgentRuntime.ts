@@ -1,4 +1,4 @@
-import { AgentNS, type Agent } from "@ai-zen/agents-core";
+import { AgentNS, type Agent, type AgentEvents } from "@ai-zen/agents-core";
 import type { Scope } from "../scope/Scope.js";
 import type {
   PeerSessionCreated,
@@ -85,6 +85,71 @@ interface Resident {
   readonly agent: SdkAgent;
 }
 
+/**
+ * 运行时交出去的事实。
+ *
+ * 三种来源，按 `type` 判别：
+ * - 运行时自己知道的两格：一段会话出现了（`resident:appeared`）、没了（`resident:gone`）。
+ *   这两件事只有运行时知道 —— 执行体自己说不出「我在这张登记表里」；
+ * - 每个执行体的内核事件：名字与载荷**原样**转出（`started`、`messageAdded`、`state:idle` 等），
+ *   只额外带上它属于哪一段会话。
+ *
+ * 内核那一支为什么用映射类型拼、而不是手抄一份成员：手抄的那一份与内核的事件表迟早漂开，而漂开
+ * 的后果是订阅者按 `fact.type === "messageAdded"` 收窄不出载荷的形状。映射之后，每一个成员都是
+ * 「事件名 + 同一个名字的载荷 + 会话身份」的交叉，订阅者按名字判别就取得到那一格。
+ *
+ * 载荷里带出去的是活对象本身（内核原样），不是拷贝：收到事实的人手里攥着的就是那条消息。
+ */
+export type RuntimeFact =
+  | {
+      type: "resident:appeared";
+      sessionId: string;
+      cwd: string;
+      lineage: string | null;
+      agent: SdkAgent;
+    }
+  | { type: "resident:gone"; sessionId: string }
+  | {
+      [K in keyof AgentEvents]: { type: K; sessionId: string } & AgentEvents[K];
+    }[keyof AgentEvents];
+
+/**
+ * 内核事件表的一份**穷尽**清单：键与值是同一个字。
+ *
+ * 它只为一件事存在 —— 防漂移。`keyof AgentEvents` 上加了新事件而这张表没补，TypeScript 直接
+ * 报缺属性；表里多写一个内核没有的名字同样过不了编译。转发那一处从这张表取名字，不另抄第二份。
+ */
+const AGENT_EVENT_NAMES: { readonly [K in keyof AgentEvents]: K } = {
+  started: "started",
+  stopped: "stopped",
+  killed: "killed",
+  "state:idle": "state:idle",
+  "state:working": "state:working",
+  "output:paused": "output:paused",
+  "output:resumed": "output:resumed",
+  "input:paused": "input:paused",
+  "input:resumed": "input:resumed",
+  aborted: "aborted",
+  inboxAdded: "inboxAdded",
+  inboxTaken: "inboxTaken",
+  inboxCleared: "inboxCleared",
+  messageAdded: "messageAdded",
+  messageChanged: "messageChanged",
+  messageRemoved: "messageRemoved",
+  delta: "delta",
+  requestSent: "requestSent",
+  responseFinished: "responseFinished",
+  toolStarted: "toolStarted",
+  toolFinished: "toolFinished",
+  subAgentStarted: "subAgentStarted",
+  subAgentFinished: "subAgentFinished",
+  denied: "denied",
+  failed: "failed",
+};
+
+/** 上面那张表的值：挂转发要按名字逐个挂，键与值是同一个字，取哪一边都一样 */
+const AGENT_EVENT_LIST: ReadonlyArray<keyof AgentEvents> = Object.values(AGENT_EVENT_NAMES);
+
 /** `send` 的答案与工具那一侧同一个形状（`ok` / 两条拒绝原因） */
 export type PostResult = PeerSessionSent;
 
@@ -117,6 +182,15 @@ export class AgentRuntime {
    * 看到 false，于是装出两个执行体，而登记表只留得下一个。
    */
   private readonly waking = new Map<string, Promise<SdkAgent>>();
+  /** 订了这份事实的那些人。**旁路**：只收，不参与任何判断 */
+  private readonly listeners = new Set<(fact: RuntimeFact) => void>();
+  /**
+   * 每个活着的执行体那一组转发订阅，按会话收好。
+   *
+   * 与登记表分开的理由：登记表答的是「谁活着」，这张表答的是「谁的转发还没解」。杀一段会话只解
+   * 它自己那一组，别的执行体一个字都不动。
+   */
+  private readonly forwarders = new Map<string, Array<() => void>>();
 
   /** 能力容器：按目录一份，什么时候造、什么时候拆归它 */
   readonly scopes: Scopes;
@@ -132,6 +206,20 @@ export class AgentRuntime {
       peers: this.peerSessions,
       log: ports.log ?? SILENT_LOG,
     });
+  }
+
+  /**
+   * 订阅运行时交出去的事实；返回退订函数（幂等：连着调两次不会炸）。
+   *
+   * 这是**旁路**：订阅者不改任何决定，也不参与任何判断。晚到的订阅者拿不到过去的事实 ——
+   * 事实只报变化，快照那一侧由 `get` / `aliveOn` 对齐，两者合起来才说得清「此刻」与「怎么走到
+   * 这一刻」。
+   */
+  observe(listener: (fact: RuntimeFact) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   /** 这一段此刻活着的执行体；没有就是 `undefined` */
@@ -277,8 +365,11 @@ export class AgentRuntime {
   /**
    * 杀死：执行体销毁，登记项去掉。会话行与历史留着（`PRD.md` 4.1）。
    *
-   * 先去掉登记项再杀：杀死会发最后几条事件，那时这一段不该还能被别人查到活着的执行体，
-   * 也不该有人趁这一刻往里投话。
+   * 四步次序（`live-objects.md` 判据四）：
+   * - 先去掉登记项再杀：杀死会发最后几条事件，那时这一段不该还能被别人查到活着的执行体，
+   *   也不该有人趁这一刻往里投话；
+   * - 杀完再报「没了」：它最后那几条事实要排在这一条之前转出去；
+   * - 报完再解这一组转发订阅：先解再报的话，订阅者永远不知道自己漏了什么。
    */
   kill(sessionId: string): void {
     const resident = this.residents.get(sessionId);
@@ -286,6 +377,8 @@ export class AgentRuntime {
 
     this.residents.delete(sessionId);
     resident.agent.kill();
+    this.broadcast({ type: "resident:gone", sessionId });
+    this.detach(sessionId);
   }
 
   /** 收工：杀光、拆光。进程退出前那一步；此后再叫醒就要重新给材料 */
@@ -320,8 +413,21 @@ export class AgentRuntime {
     );
     agent.restore(waiting);
 
-    // 先登记再开跑：它一跑起来就可能被别的执行体 `post` 到，那时它必须已经查得到
+    // 三项次序（`live-objects.md` 判据一与判据四）：
+    // - 先挂转发再登记：「出现」之后这一段会话发出来的每一条事实都要转出去，一条不落；
+    // - 报「出现」排在开跑之前：一跑起来就可能被别的执行体 `post` 到，那些事实必须排在「出现」
+    //   后面，否则订阅者会先收到一条关于它还不认识的会话的事实；
+    // - 报「出现」排在写登记表之后：报完那一刻，`get` / `aliveOn` 这两份快照立刻查得到它，
+    //   订阅者拿着「出现」去问不会被回一句「没这一段」。
+    this.forwarders.set(sessionId, this.forward(sessionId, agent));
     this.residents.set(sessionId, {
+      sessionId,
+      cwd: materials.cwd,
+      lineage: materials.lineage,
+      agent,
+    });
+    this.broadcast({
+      type: "resident:appeared",
       sessionId,
       cwd: materials.cwd,
       lineage: materials.lineage,
@@ -330,6 +436,44 @@ export class AgentRuntime {
     void agent.start();
 
     return agent;
+  }
+
+  /**
+   * 给一个执行体挂上转发：它的每一条内核事件都变成一条运行时事实（名字与载荷原样，只多一个
+   * 会话身份）。交回来的是这一组退订函数，由调用方按会话收好。
+   */
+  private forward(sessionId: string, agent: SdkAgent): Array<() => void> {
+    const offs: Array<() => void> = [];
+    for (const name of AGENT_EVENT_LIST) {
+      offs.push(
+        agent.on(name, (payload) =>
+          // 全文件唯一一处类型断言，理由是表与载荷同源：`name` 取自上面那张穷尽表，`payload` 由
+          // `agent.on` 按同一个名字给出，拼出来的就是 `RuntimeFact` 里对应的那一支。编译器推不出
+          // 「名字与载荷一一对应」这件事实，所以由这里说一次。
+          this.broadcast({ type: name, sessionId, ...payload } as RuntimeFact),
+        ),
+      );
+    }
+    return offs;
+  }
+
+  /**
+   * 把一条事实交给每一个订阅者。
+   *
+   * 这里**不 try/catch**：一个订阅者抛错不该连累别的订阅者、也不该打断这个执行体，而这件事的
+   * 实现只有一处 —— 内核发事件那里（`EventBus.emit`）。在这里再包一层就是两份实现，而且哪一份
+   * 先生效说不清。
+   */
+  private broadcast(fact: RuntimeFact): void {
+    for (const listener of this.listeners) listener(fact);
+  }
+
+  /** 解掉一段会话的转发订阅（整组解，只解这一段会话） */
+  private detach(sessionId: string): void {
+    const offs = this.forwarders.get(sessionId);
+    if (offs === undefined) return;
+    this.forwarders.delete(sessionId);
+    for (const off of offs) off();
   }
 
   /** 这一段此刻叫什么；库里已经没有这一段时退回身份本身（说得出是哪一段，不编一个名字） */
