@@ -291,7 +291,9 @@ export class HostApp {
         };
       },
     };
-    const notices = new NoticeService({ notices: noticeTable(this.db), events });
+    // 通知的日志口就是装配根这一份：警告与错误两档在产生处就顺手记一行（界面被占着的时候，
+    // 日志必须另有去处），模块里不另造 `FileLogger`
+    const notices = new NoticeService({ notices: noticeTable(this.db), events, log: this.log });
     this.credentials = new CredentialService({ credentials: credentialTable(this.db), t });
     // 本机实例把能用的那一串交付到 `run/token`：客户端因此不必手抄令牌。对外实例不写这个文件，
     // 凭证由 `agents-host token create` 造出来分发给要连的设备。

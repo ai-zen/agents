@@ -192,7 +192,13 @@ function setup() {
   const sessions = new SessionService({ sessions: sessionTable(db), events, t });
   const workspaces = new WorkspaceService({ workspaces: workspaceRows, t });
   const fake = fakeRuntime();
-  const notices = new NoticeService({ notices: noticeTable(db), events });
+  // 通知的日志口给一个不出声的：这几条用例验的是通知本身（写库与发事件），日志那一行由
+  // `notice.test.ts` 验
+  const notices = new NoticeService({
+    notices: noticeTable(db),
+    events,
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  });
   const questions = new QuestionRegistry({ events, t });
   const handoffs = fakeHandoffs();
   const handoff = new HandoffService({
