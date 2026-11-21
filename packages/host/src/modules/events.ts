@@ -56,6 +56,14 @@ export type HostEvent =
    */
   | { readonly type: "session.changed"; readonly session: Session }
   /**
+   * 这一段没了。删成功之后发：发起删除的那个客户端自己会换屏，而同一台机器上另一个连着的客户端
+   * 要等到下一次 `session.list` 才会发现列表里少了一段。
+   *
+   * 只带 id：那一段行已经没了，再带一份整行就是发一份读不回来的东西。会话自己的通知、消息、
+   * 排队区都随它一起没了，收方不必逐样收，清掉这一段就对了。
+   */
+  | { readonly type: "session.removed"; readonly sessionId: string }
+  /**
    * 这段会话在交接。输入框能不能发、界面上要不要直说「正在交接」都看它。
    *
    * 不并进 `session.changed`：交接态不落在会话行上，混进那一行就得给它编一个并不存在的字段。

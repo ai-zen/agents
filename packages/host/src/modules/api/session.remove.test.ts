@@ -1,8 +1,13 @@
 /**
  * `session.remove`：删掉一段会话（硬删）。
  *
- * 五条验收：删完之后会话行、消息、排队区、通知都没了；素材按引用归零才删；还被另一段会话引用着
- * 的那一份留着；活着的执行体先被杀掉、之后才删行；不存在的会话报 `not_found`。
+ * 六条验收：删完之后会话行、消息、排队区、通知都没了；素材按引用归零才删；还被另一段会话引用着
+ * 的那一份留着；活着的执行体先被杀掉、之后才删行；删成功之后推一条 `session.removed`；不存在的
+ * 会话报 `not_found`、一条事件都不推。
+ *
+ * `session.removed` 那一条说的是别的客户端：发起删除的那个自己会换屏，同一台机器上另一个连着的
+ * 客户端手里的列表要跟着消失，靠的就是这一条 —— 它不带的话，那个客户端要等到下一次 `session.list`
+ * 才发现少了一段。`not_found` 那一条反过来验它不多说：什么都没删，就没有「这段没了」可说。
  *
  * 通知那一条不是顺手加的：它落在 `notices.sessionId` 那条外键上，外键一旦不是级联，界面上就留下
  * 一批指着一段不存在的会话的通知，谁也不报。全局通知（`sessionId` 为 `null`）不被连坐，与它一起
@@ -86,6 +91,10 @@ function setup() {
 
   /** 这一路做过的事按发生次序记一笔：次序本身就是「先杀后删」那一条的结论 */
   const log: string[] = [];
+
+  /** 推给客户端的每一条事实：另一个连着的客户端看到的就是这一串 */
+  const pushed: HostEvent[] = [];
+  events.subscribe((event) => pushed.push(event));
   const runtime = {
     kill: (sessionId: string) => void log.push(`kill ${sessionId}`),
   } as unknown as AgentRuntime;
@@ -107,6 +116,7 @@ function setup() {
     runtime,
     questions,
     handoff,
+    events,
     t,
   } as unknown as HostApiDeps;
 
@@ -136,6 +146,7 @@ function setup() {
     questions,
     log,
     forgotten,
+    pushed,
     caller,
     newSession,
   };
@@ -279,6 +290,17 @@ describe("删一段会话", () => {
     expect(host.forgotten).toEqual([session.id]);
   });
 
+  it("删成功之后推一条 session.removed，载荷里是那一段的 id", async () => {
+    const host = setup();
+    const session = host.newSession();
+
+    await host.caller.session.remove({ sessionId: session.id });
+
+    // 只认这一条：另一个客户端靠它把列表里那一段拿掉，别的账它不记
+    const removed = host.pushed.filter((event) => event.type === "session.removed");
+    expect(removed).toEqual([{ type: "session.removed", sessionId: session.id }]);
+  });
+
   it("会话不存在时是 not_found，且一个字都没动", async () => {
     const host = setup();
 
@@ -291,5 +313,7 @@ describe("删一段会话", () => {
     // 没有这一段，就没有什么可杀、可收、可删
     expect(host.log).toEqual([]);
     expect(host.forgotten).toEqual([]);
+    // 什么都没删，就没有「这段没了」可说：推一条会叫另一个客户端去删一段不存在的会话
+    expect(host.pushed.filter((event) => event.type === "session.removed")).toEqual([]);
   });
 });

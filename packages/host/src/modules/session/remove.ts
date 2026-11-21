@@ -1,6 +1,8 @@
 import type { AgentRuntime } from "@ai-zen/agents-sdk";
 
+import type { Bus } from "../../infra/bus.js";
 import type { AssetService } from "../asset/service.js";
+import type { HostEvent } from "../events.js";
 import type { HandoffService } from "../handoff/service.js";
 import type { QuestionRegistry } from "../question/registry.js";
 
@@ -20,10 +22,17 @@ export interface RemoveSessionsDeps {
    * 会话 id 存的内存格，会话行没了不会自己消失。
    */
   readonly handoff: HandoffService;
+  /**
+   * 推事实的那条总线。「这一段没了」得由发起删除的这条路说出来：外键级联只删行，它一个字都不会
+   * 往外说，另一个连着的客户端于是要等到下一次 `session.list` 才发现。
+   */
+  readonly events: Bus<HostEvent>;
 }
 
 /**
  * 让这几段会话消失：杀执行体、收内存里按会话记着的那几格、收素材引用、删行、按引用归零扫素材。
+ *
+ * 每一段删完推一条 `session.removed`：这一段真的没了，别的客户端手里的列表才能跟着动。
  *
  * `removeRows` 是「删那几行」本身，由调用方递进来：删一段会话删的是它那一行，删一个项目删的是
  * 项目那一行（会话行随外键跟着走）。两条路的差别只有这一句，其余收尾完全一样 —— 复制成两份的话，
@@ -59,6 +68,12 @@ export function removeSessions(
   // 消息、排队区、素材关联与通知都挂在会话行上，各自的外键是 `ON DELETE CASCADE`：删掉那一行，
   // 它们跟着走。这里不跨域逐个删 —— 那样每一处都得自己记得还有哪几张表挂在下面。
   removeRows();
+
+  // 删完才说「这段没了」：收到这条的客户端会去回读列表，排在删行之前的话它读回去那一段还在。
+  //
+  // 这一句只能写在这里，不能挂在表上：外键级联删的是行，它不会对谁说一句话。删一段会话与删一个
+  // 项目（名下会话随外键跟着走）走的是同一个地方，两条路上「这一段没了」因此说的是同一句话。
+  for (const sessionId of sessionIds) deps.events.emit({ type: "session.removed", sessionId });
 
   // 扫的是上一步收起来的那一份，不是全表：只有这几段会话引用过的素材可能刚刚失去最后的引用，
   // 全表扫是另一件事，还会让这个动作带着一个与调用点无关的代价。

@@ -106,6 +106,7 @@ function newHost() {
     runtime,
     questions,
     handoff,
+    events,
     t,
   };
 
@@ -118,6 +119,7 @@ function newHost() {
     assets,
     questions,
     handoff,
+    events,
     dataRoot,
     log,
     deps,
