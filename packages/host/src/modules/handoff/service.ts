@@ -161,8 +161,12 @@ export class HandoffService {
    * 四条判据的顺序不能换。没有活执行体时其余三格都无从谈起；已经在这一趟里的那一段，它自己
    * 正在写文档、输出闸也是关着的 —— 把这一条排到后面，用户拿到的就是 `working` 或
    * `output_paused`，而真实原因是「已经在交接了」。
+   *
+   * `mode` 是调用方显式挑的执行者（自交接 / 独立摘要）：给了就用它跑这一趟。不给时这一格不往下
+   * 传，执行者由 SDK 那一侧的默认值定（`createSdkHandoff` 没建 `mode` 时为 `self`）—— 与这一格
+   * 加进来之前的每一趟一致。
    */
-  start(sessionId: string): void {
+  start(sessionId: string, mode?: HandoffMode): void {
     const session = this.deps.sessions.get(sessionId);
     if (session === undefined) {
       throw new HostError(
@@ -207,7 +211,7 @@ export class HandoffService {
 
     const handoffDir = this.handoffDir(session);
     const signal = this.enter(sessionId);
-    void this.run({ sessionId, agent, handoffDir, signal });
+    void this.run({ sessionId, agent, handoffDir, signal, mode });
   }
 
   /**
@@ -490,8 +494,10 @@ export class HandoffService {
     readonly agent: SdkAgent;
     readonly handoffDir: string;
     readonly signal: AbortSignal;
+    /** 调用方挑的执行者；不给就交给 SDK 的默认值（见 {@link start}） */
+    readonly mode?: HandoffMode;
   }): Promise<void> {
-    const { sessionId, agent, handoffDir, signal } = run;
+    const { sessionId, agent, handoffDir, signal, mode } = run;
 
     try {
       const sdk = this.deps.createSdk({
@@ -500,8 +506,10 @@ export class HandoffService {
         commitMemory: (commit) =>
           this.commit(sessionId, commit.memory, agent.definition.messages?.length ?? 0),
       });
-      // 返回值一格都不读：记忆走 `commitMemory`，成败看这里抛不抛。成了就收口，没别的话要说
-      await sdk.migrate({ agent, signal });
+      // 返回值一格都不读：记忆走 `commitMemory`，成败看这里抛不抛。成了就收口，没别的话要说。
+      // `mode` 原样递给 SDK：摘要那一档它自己起一个一次性执行体去写，这段会话的 agent 只被读
+      // 历史（`summary` 不往它的队列里投指令）
+      await sdk.migrate({ agent, mode, signal });
       this.finish(sessionId);
     } catch (error) {
       if (signal.aborted || error instanceof HandoffAbortedError) {

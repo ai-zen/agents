@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { listMentionFiles } from "../workspace/mentions.js";
 import { removeWorkspace } from "../workspace/remove.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
@@ -36,6 +37,22 @@ export function workspaceRouter(deps: HostApiDeps, api: Trpc) {
       .output(z.object({ workspace: workspaceSchema }))
       .mutation(({ input }) => ({
         workspace: deps.workspaces.create(input.name ?? String(Date.now()), input.cwd),
+      })),
+
+    /**
+     * 项目目录里的文件清单，给客户端的「`@` 提及」用。
+     *
+     * 这件事只能在宿主做：客户端在远端，读不到那台机器的盘。回的是相对 `cwd` 的路径（正斜杠、
+     * 字典序、最多 500 条），`query` 给了就按子串筛（大小写不敏感，比对相对路径）——
+     * 客户端每敲一个字母问一次，筛在这儿省掉的是整份清单过 wire。
+     *
+     * 只有路径，没有大小也没有内容：那份清单是给人挑的，挑中之后读哪个文件是下一步的事。
+     */
+    files: api.procedure
+      .input(z.object({ workspaceId: z.string().min(1), query: z.string().optional() }))
+      .output(z.object({ files: z.array(z.string()) }))
+      .query(({ input }) => ({
+        files: listMentionFiles(deps, input.workspaceId, input.query),
       })),
 
     /** 改名。只有名字这一格可改：`cwd` 与 `createdAt` 不在可改的事实里 */

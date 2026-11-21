@@ -7,6 +7,9 @@
  * 自动交接那一条路另有两件：它不经 `start`，所以交接态与闸得由插件那两拍自己接上；开关关着时
  * 它一格都不碰。
  *
+ * 最后一条是执行者：`start` 收到 `mode` 就把它原样递给 SDK（谁写这份文档由那一格定），不给时
+ * 这一格不往下传 —— 与这一格加进来之前的那一趟是同一趟。
+ *
  * 把交接态写成宿主上的一格开关，「这一段在交接」就会连带把别的段的消息写入一起停掉 —— 那几段上
  * 的人只是发现自己的回答不再落库，界面上看不出来。
  *
@@ -27,6 +30,7 @@ import {
   AutoMigratePlugin,
   HandoffAbortedError,
   type HandoffContext,
+  type HandoffMode,
   type RuntimeFact,
   type SdkAgent,
 } from "@ai-zen/agents-sdk";
@@ -145,18 +149,24 @@ function fakeHandoffs() {
   const runs: {
     readonly options: SdkHandoffOptions;
     readonly agent: SdkAgent;
+    /**
+     * 这一趟申请的执行者：宿主从 `start` 那一格原样递下来的。`undefined` 的意思是「调用方没挑」，
+     * 由 SDK 的默认值定（`createSdkHandoff` 没建 `mode` 时是 `self`）。
+     */
+    readonly mode: HandoffMode | undefined;
     readonly signal: AbortSignal;
     succeed(): void;
     fail(error: unknown): void;
   }[] = [];
 
   const create: CreateSdkHandoff = (options) => ({
-    migrate: ({ agent, signal }) =>
+    migrate: ({ agent, mode, signal }) =>
       // 形状照真的来（`migrate` 回的就是那份 ctx 里的 `mode`），但宿主一次都不读它
       new Promise<Pick<HandoffContext, "mode">>((resolve, reject) => {
         runs.push({
           options,
           agent,
+          mode,
           signal,
           succeed: () => resolve({ mode: "self" }),
           fail: reject,
@@ -306,6 +316,9 @@ describe("交接态", () => {
     expect(handoffs.runs[0].options.handoffDir).toBe("/tmp/ws-1/.ai-zen/handoffs");
     expect(handoffs.runs[0].options.strategy).toBe("prune");
     expect(handoffs.runs[0].agent).toBe(runtime.get(first.id));
+    // 不给 `mode`：这一格不往下递，执行者由 SDK 的默认值定（`self`）—— 与这一格加进来之前的
+    // 每一趟一致。要给「独立摘要」得调用方自己开口（下一条）
+    expect(handoffs.runs[0].mode).toBeUndefined();
 
     // 后台那一趟跑完：闸开回来、退出交接态
     handoffs.runs[0].succeed();
@@ -327,6 +340,38 @@ describe("交接态", () => {
       { type: "session.handoff", sessionId: first.id, handingOff: true },
       { type: "session.handoff", sessionId: first.id, handingOff: false },
     ]);
+  });
+});
+
+describe("交接的执行者", () => {
+  /**
+   * 调用方挑了「独立摘要」，这一趟就得是摘要：宿主把这一格原样递给 SDK，SDK 照它另起一个一次性
+   * 执行体去写 —— 那一个是空队列、不属于任何记忆，跑完即散。
+   *
+   * 逆过来的错法是安静的那种：这一格丢在路上，宿主跑的是默认的 `self`，用户挑的「独立摘要」变成
+   * 这段会话自己的 agent 在写文档，而界面上两者长得一模一样。
+   *
+   * 「一次性执行体」是 SDK 那一侧的事，宿主这儿能验的只有那一格：递进去的 `mode` 是 `summary`。
+   * 递进去的 `agent` 仍是这一段自己的 —— 摘要要读它的记忆与模型，写的那一支另起。
+   */
+  it("给了 `mode: summary` 就按独立摘要跑", async () => {
+    const { handoff, handoffs, sessions, runtime, wake } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+
+    handoff.start(session.id, "summary");
+
+    expect(handoffs.runs[0].mode).toBe("summary");
+    expect(handoffs.runs[0].agent).toBe(agent);
+    expect(handoffs.runs[0].signal).toBeInstanceOf(AbortSignal);
+    // 交接态照常置上：选哪种执行者不影响「这一段正在交接」这一格
+    expect(handoff.isHandingOff(session.id)).toBe(true);
+
+    // 后台那一趟跑完就收口，与自交接那条路同一份收口
+    handoffs.runs[0].succeed();
+    await settle();
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+    expect(runtime.get(session.id)?.isOutputPaused).toBe(false);
   });
 });
 

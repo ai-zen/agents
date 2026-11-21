@@ -8,6 +8,8 @@ export const en: Record<string, string> = {
   "找不到 id 为 {sessionId} 的会话": 'Cannot find the session "{sessionId}"',
   "找不到 id 为 {workspaceId} 的项目": 'Cannot find the workspace "{workspaceId}"',
   "目录 {cwd} 已经有项目了": 'A workspace already exists at "{cwd}"',
+  "项目 {workspaceId} 的目录 {cwd} 已经不在了":
+    'The directory "{cwd}" of the workspace "{workspaceId}" is gone',
   "找不到 id 为 {modelId} 的模型": 'Cannot find the model "{modelId}"',
   "找不到 id 为 {agentDefinitionId} 的助手":
     'Cannot find the agent definition "{agentDefinitionId}"',
