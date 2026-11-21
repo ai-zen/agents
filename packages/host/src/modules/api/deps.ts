@@ -7,6 +7,7 @@ import type { AssetService } from "../asset/service.js";
 import type { CredentialService } from "../credential/service.js";
 import type { NoticeService } from "../notice/service.js";
 import type { QuestionRegistry } from "../question/registry.js";
+import type { SearchService } from "../search/service.js";
 import type { Delivery } from "../agent/delivery.js";
 import type { inboxTable } from "../agent/inbox.js";
 import type { HostEvent } from "../events.js";
@@ -36,6 +37,7 @@ export interface HostApiDeps {
   readonly notices: NoticeService;
   readonly credentials: CredentialService;
   readonly questions: QuestionRegistry;
+  readonly search: SearchService;
   readonly events: Bus<HostEvent>;
   readonly t: Translator;
   readonly onError: (error: unknown, what: string) => void;

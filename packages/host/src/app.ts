@@ -21,6 +21,8 @@ import { credentialTable } from "./modules/credential/table.js";
 import { NoticeService } from "./modules/notice/service.js";
 import { noticeTable } from "./modules/notice/table.js";
 import { QuestionRegistry } from "./modules/question/registry.js";
+import { SearchService } from "./modules/search/service.js";
+import { searchTable } from "./modules/search/table.js";
 import { AgentRegistry } from "./modules/api/registry.js";
 import { createAppRouter } from "./modules/api/router.js";
 import { AgentDefinitionService } from "./modules/config/agents.js";
@@ -141,6 +143,8 @@ export class HostApp {
     const notices = new NoticeService({ notices: noticeTable(this.db), events });
     const credentials = new CredentialService({ credentials: credentialTable(this.db), t });
     const questions = new QuestionRegistry({ events, t });
+    // 全文索引的触发器指向 `messages`，所以只能在它之后建
+    const search = new SearchService({ search: searchTable(this.db) });
 
     this.scopes = new ScopeRegistry({
       createScope: async (cwd) => {
@@ -172,6 +176,7 @@ export class HostApp {
       notices,
       credentials,
       questions,
+      search,
       events,
       t,
       onError: (error, what) => this.log.error(what, { error }),

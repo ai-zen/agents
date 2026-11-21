@@ -5,6 +5,7 @@ import type { HostApiDeps } from "./deps.js";
 import { eventsProcedure } from "./events.js";
 import { noticeRouter } from "./notice.js";
 import { questionRouter } from "./question.js";
+import { searchRouter } from "./search.js";
 import { sessionRouter } from "./session.js";
 import { createTrpc } from "./trpc.js";
 
@@ -24,6 +25,7 @@ export function createAppRouter(deps: HostApiDeps) {
     notice: noticeRouter(deps, api),
     credential: credentialRouter(deps, api),
     question: questionRouter(deps, api),
+    search: searchRouter(deps, api),
     events: eventsProcedure(deps, api),
   });
 }

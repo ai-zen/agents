@@ -12,28 +12,41 @@ import type { AgentNS } from "@ai-zen/agents-core";
  * 流式写入改的是同一个对象的正文，所以它自然停在第一次那一刻；反过来，拿一个新对象再写一遍
  * 同一个 id，时刻就会跟着变 —— 那是调用方该知道的事，不是这张表该拦的。
  *
- * `seq` 是 `payload` 之外仅有的一个真列：同一会话内的顺序是并发写入的单调量，从 `payload` 里
- * 取不出来。`createdAt` 由 core 在构造消息时填，所以它是生成列，JS 不写它。
+ * `seq` 与 `searchText` 是 JS 写进去的两个真列：同一会话内的顺序是并发写入的单调量，从
+ * `payload` 里取不出来；`searchText` 是全文索引的产物，见下。`createdAt` 由 core 在构造消息
+ * 时填，所以它是生成列，JS 不写它。
+ *
+ * `searchText` 不是消息的第二份：消息本体始终是 `payload` 里那一整条，读的时候不从这一列
+ * 重建任何字段，它只喂 `messages_fts`（索引由触发器同步）。它只收 `content` 里的文本段：
+ * 把整条 `payload` 的 JSON 键名也索引进去，搜 `id` 会捞出所有工具调用。
  */
 export function messageTable(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
-      id        TEXT PRIMARY KEY,
-      payload   TEXT NOT NULL,
-      sessionId TEXT    NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-      seq       INTEGER NOT NULL,
-      createdAt INTEGER GENERATED ALWAYS AS (json_extract(payload, '$.createdAt')) STORED,
+      id         TEXT PRIMARY KEY,
+      payload    TEXT NOT NULL,
+      sessionId  TEXT    NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+      seq        INTEGER NOT NULL,
+      searchText TEXT    NOT NULL DEFAULT '',
+      hidden     INTEGER GENERATED ALWAYS AS (COALESCE(json_extract(payload, '$.hidden'), 0)) STORED,
+      createdAt  INTEGER GENERATED ALWAYS AS (json_extract(payload, '$.createdAt')) STORED,
       UNIQUE (sessionId, seq)
     );
     CREATE INDEX IF NOT EXISTS messages_session_seq ON messages (sessionId, seq);
   `);
 
-  const upsertSql = `INSERT INTO messages (id, payload, sessionId, seq)
-    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?))
-    ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`;
+  const upsertSql = `INSERT INTO messages (id, payload, sessionId, seq, searchText)
+    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?), ?)
+    ON CONFLICT (id) DO UPDATE SET payload = excluded.payload, searchText = excluded.searchText`;
 
   function upsert(sessionId: string, message: AgentNS.Message): void {
-    db.prepare(upsertSql).run(message.id, JSON.stringify(message), sessionId, sessionId);
+    db.prepare(upsertSql).run(
+      message.id,
+      JSON.stringify(message),
+      sessionId,
+      sessionId,
+      searchTextOf(message),
+    );
   }
 
   return {
@@ -85,4 +98,22 @@ export function messageTable(db: DatabaseSync) {
       ).run(sessionId, messageId, sessionId);
     },
   };
+}
+
+/**
+ * 喂给全文索引的纯文本：只取 `content` 里的文本段，拼起来、空白归一。
+ *
+ * 图片段与文件段没有可搜的字；整条 `payload` 序列化进来则会把 JSON 键名一起索引，
+ * 于是搜 `id` 命中所有工具调用。`content` 是裸字符串时它自己就是那一段文本。
+ */
+function searchTextOf(message: AgentNS.Message): string {
+  const content = message.content;
+  const parts =
+    content === undefined
+      ? []
+      : typeof content === "string"
+        ? [content]
+        : content.filter((section) => section.type === "text").map((section) => section.text);
+
+  return parts.join(" ").replace(/\s+/g, " ").trim();
 }
