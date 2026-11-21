@@ -3,6 +3,7 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
+import { PEER_SESSION_TOOL_NAMES } from "../scope/plugins/peers/peerSessionTools.js";
 import { resolveModel, resolveModelParams } from "./resolveModel.js";
 import type { AgentDefinition, ModelParams } from "../types/index.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
@@ -43,6 +44,13 @@ export interface CreateAgentOptions {
    * 定义绑定的模型的，会话把模型换掉之后把旧参数发给新模型就是端点 400。
    */
   modelParams?: ModelParams;
+  /**
+   * 寿命：`resident`（缺省）还是 `one-shot`。
+   *
+   * `one-shot` 是「一次调用、一个答案、一个退出码」那条路（`PRD.md` 4.1 的一次性会话）：它只
+   * 吃一次投递，跑完就死，`send` / `runOnce` 才有意义。缺省仍是常驻 —— 那是能力更大的那个。
+   */
+  lifetime?: AgentNS.AgentLifetime;
 }
 
 /**
@@ -52,6 +60,9 @@ export interface CreateAgentOptions {
  * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）；
  * **参数取「模型来自哪一级」那一份**，不跨级混合（同一处实现：`resolveModelParams`）。
  *
+ * 寿命由 `options.lifetime` 定：缺省造出来的是**常驻**执行体；`one-shot` 造出来的是「一次调用、
+ * 一个答案、一个退出码」那一种（只能 `send` / `runOnce`，跑完就散）。
+ *
  * ```ts
  * const agent = await createAgent(scope, "my-agent");
  * // 这一段会话临时换个模型（不动 Agent 定义）：模型与参数都取会话级那一份
@@ -59,6 +70,8 @@ export interface CreateAgentOptions {
  *   modelId: "gpt-6-astra",
  *   modelParams: { reasoning_effort: "high" },
  * });
+ * // 一次性执行体：没有会话行、跑完就死（宿主 `session.transient` 走这一条）
+ * const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
  * ```
  */
 export async function createAgent(
@@ -114,6 +127,19 @@ export async function createAgent(
   const tools = scope.buildTools(definition, {
     exclude: {
       subagents: definition.function?.name ? [definition.function.name] : undefined,
+      // 平级会话那三个工具是**会话级**能力，一次性执行体手上不该有 —— 这是同一件事的第二处
+      // （第一处是 `subAgentTools.ts` 里给 subagent 的 exclude）。两处的判据不同：那边是
+      // 「被派出去的」，这边是「一次性的」；结论一样 —— **不是一段会话的执行体，就没有会话级
+      // 工具**。
+      //
+      // 一次性执行体不属于任何一段会话：它没有可以署名的身份（`post_message` 要写「来自哪一段
+      // 会话」，它会把发起方标签算成 agentId 那串字符串），也开不出有人认领的新会话
+      // （`create_session` 必然回 `depth_exceeded`）。那三个工具在它手上只有必错的路，而每一条
+      // 必错的路都要烧一次模型调用去走 —— 不如一开始就不给。
+      //
+      // 取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的配置，这条规矩不长在那儿；
+      // 而 filter 先按 exclude 剔除、再按权限过滤，定义写 `allow: ["*"]` 也照样剔得掉。
+      tools: options.lifetime === "one-shot" ? [...PEER_SESSION_TOOL_NAMES] : undefined,
     },
   });
 
@@ -136,6 +162,8 @@ export async function createAgent(
       options.abortedToolRoundStrategy ?? scope.config?.abortedToolRoundStrategy,
     abortedToolRoundReason: options.abortedToolRoundReason,
     abortedMessageStrategy: options.abortedMessageStrategy ?? scope.config?.abortedMessageStrategy,
+    // 缺省由 core 定（`resident`）：这里只在调用方显式要一次性执行体时才把那一格递下去
+    lifetime: options.lifetime,
   });
 
   return agent;

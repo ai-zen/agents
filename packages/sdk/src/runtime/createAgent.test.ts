@@ -4,6 +4,9 @@ import { createAgent } from "./createAgent.js";
 import { AgentRepository } from "../crud/AgentRepository.js";
 import { Scope } from "../scope/Scope.js";
 import { allInOne } from "../scope/plugins/allInOne.js";
+import { PeerSessionsScopePlugin } from "../scope/plugins/peers/PeerSessionsScopePlugin.js";
+import { PEER_SESSION_TOOL_NAMES } from "../scope/plugins/peers/peerSessionTools.js";
+import type { PeerSessionPort } from "../scope/plugins/peers/peerSessionTools.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -51,6 +54,13 @@ async function makeScope(
     mcpPaths?: string[];
     /** 覆盖/追加配置（三级解析的用例要看 `defaultModel`） */
     config?: Partial<AppConfig>;
+    /**
+     * 装不装平级会话插件（装了才有那三个会话级工具）。
+     *
+     * 它不在 `allInOne` 里：平级会话不是磁盘上的定义，是宿主的运行时能力（候选名固定三个，
+     * 从端口进来），所以标准插件包里没有它 —— 要测那三个名字就得自己装一个。
+     */
+    peerSessions?: boolean;
   } = {},
 ): Promise<Scope> {
   const scope = new Scope({
@@ -58,8 +68,24 @@ async function makeScope(
     agentsDir: join(dir, "agents"),
     cwd: dir,
   }).use(...allInOne(opts));
+  if (opts.peerSessions) scope.use(new PeerSessionsScopePlugin(fakePeerSessionPort()));
   await scope.init();
   return scope;
+}
+
+/** 假端口：会话级工具的用例只数工具名单，三个端口方法都不会被调到 */
+function fakePeerSessionPort(): PeerSessionPort {
+  return {
+    async create() {
+      return { ok: true, sessionId: "session-1", label: "占位会话" };
+    },
+    async status() {
+      return { found: false, status: null };
+    },
+    async send() {
+      return { ok: true };
+    },
+  };
 }
 
 async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
@@ -357,5 +383,47 @@ describe("createAgent", () => {
 
     expect(agent.abortedMessageStrategy).toBe("drop");
     expect(agent.abortedToolRoundStrategy).toBe("fill");
+  });
+
+  /**
+   * 寿命是**能力差**，不是「活多久」的小事：`resident`（缺省）能 `push` 多次，`one-shot` 只能
+   * `send` / `runOnce` 一次（宿主的一次性会话、subagent 走的后一条）。缺省不许被默默改掉 ——
+   * 常驻是能力更大的那个。
+   */
+  it("lifetime：缺省造常驻执行体，显式 one-shot 才是一次性", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope();
+
+    const resident = await createAgent(scope, "my-agent");
+    expect(resident.lifetime).toBe("resident");
+
+    // 显式要一次性：那一格透传到 core 的构造参数（`send` / `runOnce` 的准入判据就是它）
+    const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
+    expect(once.lifetime).toBe("one-shot");
+  });
+
+  /**
+   * 寿命不只改「能投几次」，还改**手上有什么工具**：会话级工具跟着「是不是一段会话的执行体」走。
+   *
+   * 一次性执行体不属于任何一段会话（没有可署名的身份、也开不出有人认领的新会话），那三个工具
+   * 在它手上只有必错的路 —— 所以造工具时一并排掉（`createAgent.ts` 里那处 exclude，与
+   * `subAgentTools.ts` 给 subagent 的是同一件事的两处）。常驻的那一侧照旧有：它**就是**一段
+   * 会话的执行体。
+   */
+  it("一次性执行体拿不到平级会话那三个工具，常驻的照旧有", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope({ peerSessions: true });
+
+    const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
+    const oneShotNames = once.tools.map((t) => t.function.name);
+    for (const name of PEER_SESSION_TOOL_NAMES) {
+      expect(oneShotNames).not.toContain(name);
+    }
+
+    const resident = await createAgent(scope, "my-agent");
+    const residentNames = resident.tools.map((t) => t.function.name);
+    for (const name of PEER_SESSION_TOOL_NAMES) {
+      expect(residentNames).toContain(name);
+    }
   });
 });

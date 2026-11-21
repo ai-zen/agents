@@ -7,6 +7,7 @@ import {
   resolveModel,
   resolveModelParams,
   type AgentDefinition,
+  type AgentPlugin,
   type Model,
   type ModelParams,
   type ResolvedModel,
@@ -104,19 +105,6 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
 
   deps.inbox.deleteMany(consumed);
 
-  /**
-   * 硬线阈值：会话行上的 `guardThreshold` 优先，否则生效模型的 `tokenThresholds.guard`。
-   *
-   * 取值函数而不是装配时算好的数：两条阈值改了不重建执行体（`dev-docs/prd/05-control.md`），装一次
-   * 就等于把用户之后改的数字钉死在装配那一刻。两颗插件拿到的是**同一个**对象 —— 主 Agent 与
-   * subagent 必须同源，各算一份就会在「改完阈值之后主 Agent 按新的、subagent 按旧的」上分家。
-   */
-  const guardThreshold = {
-    get guardTokens(): number {
-      return deps.sessions.get(session.id)?.guardThreshold ?? model.tokenThresholds.guard;
-    },
-  };
-
   return {
     cwd: workspace.cwd,
     agentId: session.agentId,
@@ -130,10 +118,52 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
     lineage: session.lineage,
     history,
     waiting,
+    plugins: hostPlugins(deps, session, model),
+  };
+}
+
+/**
+ * 这一条路上要装的那几颗插件。**只留这一处实现**：装配一段会话（{@link materialsFor}）与
+ * 跑一次性会话（宿主的 `session.transient`）从这里取，两边各写一遍迟早会在「新加一颗护栏只在
+ * 一边装上」这种地方表现出来，而那种缺口不报错。
+ *
+ * `session` 给 `null` 就是**一次性会话**那一路（`PRD.md` 4.1）：它没有会话行，于是
+ * - **不装** `AutoMigratePlugin`：自动交接的阈值与开关都长在会话行上，而这个执行体跑完就散，
+ *   没有「下一代」可交接；
+ * - 其余照装 —— 它仍是一个执行体：撞硬线一样要拒（{@link ContextGuardPlugin}）、它的 subagent
+ *   一样要罩（{@link SubAgentGuardInstallerPlugin}）、带素材的消息一样要在出网前重建
+ *   （{@link AssetTransportPlugin}）。
+ *
+ * 阈值用的是**取值函数**而不是装配时算好的数：两条阈值改了不重建执行体
+ * （`dev-docs/prd/05-control.md`），装一次就等于把用户之后改的数字钉死在装配那一刻。两颗插件
+ * 拿到的是**同一个**对象 —— 主 Agent 与 subagent 必须同源，各算一份就会在「改完阈值之后主 Agent
+ * 按新的、subagent 按旧的」上分家。没有会话行时它读到的就是生效模型上那一条（没有行可改）。
+ */
+export function hostPlugins(
+  deps: MaterialsDeps,
+  session: Session | null,
+  model: Model,
+): AgentPlugin[] {
+  /**
+   * 硬线阈值：会话行上的 `guardThreshold` 优先，否则生效模型的 `tokenThresholds.guard`。
+   *
+   * 一次性会话没有行，所以它这一格永远是模型上那一条 —— 不是「跳过判断」，而是「没有更近的
+   * 那个数可说」。
+   */
+  const guardThreshold = {
+    get guardTokens(): number {
+      const fromSession = session === null ? undefined : deps.sessions.get(session.id);
+      return fromSession?.guardThreshold ?? model.tokenThresholds.guard;
+    },
+  };
+
+  const plugins: AgentPlugin[] = [];
+
+  if (session !== null) {
     // 自动交接：装在这一段上，越线之后由插件自己发起。阈值与开关两格是取值函数而不是装配时
     // 算好的数 —— 改阈值、改开关都不重建执行体（`PRD.md` 4.7），装一次就等于把用户之后的选择
     // 钉死在装配那一刻。
-    plugins: [
+    plugins.push(
       new AutoMigratePlugin({
         service: deps.handoff.automatic(session),
         get handoffTokens(): number {
@@ -145,17 +175,22 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
         onMigrated: () => deps.handoff.finish(session.id),
         onFailed: ({ error }) => deps.handoff.finish(session.id, { error }),
       }),
-      // 硬线：越线就拒这一次请求（不发、不兜底），交接那一次也不让路。装在这一段上，阈值取值
-      // 函数与上面那条同一个口径
-      new ContextGuardPlugin(guardThreshold),
-      // 硬线要罩住 subagent 与孙级：委派边界上把同一颗护栏装到它们身上，阈值与主 Agent 同源
-      new SubAgentGuardInstallerPlugin(guardThreshold),
-      // 发出去之前把带 `__asset_id` 的段按当下生效的模型与端点重建：内容在库里只有一份（原样
-      // 落库），出网那一份每次现造。端口就是 `Scope` 那一份 —— 素材库是宿主的财产，SDK 只认
-      // `readAsset` 这一个函数。
-      new AssetTransportPlugin({ config: () => deps.config.read(), deps: deps.assetPort }),
-    ],
-  };
+    );
+  }
+
+  plugins.push(
+    // 硬线：越线就拒这一次请求（不发、不兜底），交接那一次也不让路。装在这一段上，阈值取值
+    // 函数与上面那条同一个口径
+    new ContextGuardPlugin(guardThreshold),
+    // 硬线要罩住 subagent 与孙级：委派边界上把同一颗护栏装到它们身上，阈值与主 Agent 同源
+    new SubAgentGuardInstallerPlugin(guardThreshold),
+    // 发出去之前把带 `__asset_id` 的段按当下生效的模型与端点重建：内容在库里只有一份（原样
+    // 落库），出网那一份每次现造。端口就是 `Scope` 那一份 —— 素材库是宿主的财产，SDK 只认
+    // `readAsset` 这一个函数。
+    new AssetTransportPlugin({ config: () => deps.config.read(), deps: deps.assetPort }),
+  );
+
+  return plugins;
 }
 
 /**
@@ -170,6 +205,23 @@ export interface ModelAndParamsDeps {
   readonly config: GeneralConfig;
 }
 
+/**
+ * 算「用哪个模型、带哪一份参数」要读的那几格。
+ *
+ * 一段会话（`Session`）本身就是这一份：`agentId` 是定义，`modelId` / `thinkingLevel` 是两级
+ * 覆盖。**一次性会话没有行**，所以宿主给的是「三格都没有覆盖」的那一份（`modelId: null`、
+ * `thinkingLevel: null`），模型就从助手定义落到全局兜底 —— 档位那一格这一次没有，因为它本来
+ * 就长在会话行上。
+ */
+export interface ModelSource {
+  /** 用哪个助手定义装（三级解析的第二级与「模型来自定义」那一级的基础参数都在它上面） */
+  readonly agentId: string;
+  /** 会话级模型覆盖（`null` = 跟随助手定义） */
+  readonly modelId: string | null;
+  /** 会话级思考档位（`null` = 跟随助手定义） */
+  readonly thinkingLevel: string | null;
+}
+
 export interface ModelAndParams {
   /** 助手定义（`definitions.get` 的那一份）：它的 `modelId` 是解析的第二级，`modelParams` 是模型来自定义那一级时的基础参数 */
   readonly definition: AgentDefinition;
@@ -182,11 +234,12 @@ export interface ModelAndParams {
 }
 
 /**
- * 这一段会话的生效模型与请求参数：基础参数取「模型来自哪一级」那一份，思考档位的补丁叠在上面。
+ * 这一份材料（一段会话，或一个没有行的一次性会话）的生效模型与请求参数：基础参数取「模型来自
+ * 哪一级」那一份，思考档位的补丁叠在上面。
  *
  * **「模型 + 档位补丁」全仓只有这一处实现**：装配（`materialsFor`）、换模型与换思考档位两个
- * procedure 都调它。三处各写一遍的话，用户点了换档位而请求里带的是另一份参数这种事不会报错，
- * 只会在某个厂商那里变成一句 400。
+ * procedure、一次性会话（`session.transient`）都调它。四路各写一遍的话，用户点了换档位而请求
+ * 里带的是另一份参数这种事不会报错，只会在某个厂商那里变成一句 400。
  *
  * 档位名是客户端的选择，请求参数是厂商的方言，两者之间只有档位表能翻译 —— 表由生效模型的
  * `reasoningPreset` 指过来（同一张表还决定客户端能选哪几档）。三种情况都不叠补丁：会话没选档位
@@ -196,13 +249,13 @@ export interface ModelAndParams {
  */
 export async function modelAndParamsFor(
   deps: ModelAndParamsDeps,
-  session: Session,
+  source: ModelSource,
 ): Promise<ModelAndParams> {
-  const definition = await deps.definitions.get(session.agentId);
+  const definition = await deps.definitions.get(source.agentId);
 
   const config = deps.config.read();
   const resolved = resolveModel({
-    sessionModelId: session.modelId ?? undefined,
+    sessionModelId: source.modelId ?? undefined,
     agentModelId: definition.modelId,
     defaultModel: config.defaultModel,
   });
@@ -226,7 +279,7 @@ export async function modelAndParamsFor(
 
   // 档位那一份：会话没选档位（`null` 表示跟随定义）、模型没挂档位表、档位名不在表里，这三种
   // 都一个字段都不叠。
-  const level = session.thinkingLevel;
+  const level = source.thinkingLevel;
   const patch: ModelParams = {};
 
   if (level !== null) {

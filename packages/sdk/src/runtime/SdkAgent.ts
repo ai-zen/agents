@@ -57,6 +57,13 @@ export class SdkAgent extends Agent {
     abortedToolRoundReason?: string;
     /** 被中断的 assistant（内容/思考）是否保留（core 默认 `drop`） */
     abortedMessageStrategy?: AbortedMessageStrategy;
+    /**
+     * 寿命：常驻（缺省）还是一次性（`AgentNS.AgentLifetime`）。
+     *
+     * 这一格原样透传给 core —— 它不只是「活多久」，是能力差：一次性执行体只吃一次投递、
+     * `send` / `runOnce` 才有意义。
+     */
+    lifetime?: AgentNS.AgentLifetime;
   }) {
     super({
       client: params.client,
@@ -67,6 +74,7 @@ export class SdkAgent extends Agent {
       abortedToolRoundStrategy: params.abortedToolRoundStrategy,
       abortedToolRoundReason: params.abortedToolRoundReason,
       abortedMessageStrategy: params.abortedMessageStrategy,
+      lifetime: params.lifetime,
     });
     this.scope = params.scope;
     this.definition = params.definition;
