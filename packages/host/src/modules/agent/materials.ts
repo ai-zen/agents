@@ -1,5 +1,6 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 import {
+  AssetTransportPlugin,
   AutoMigratePlugin,
   resolveModel,
   resolveModelParams,
@@ -7,6 +8,7 @@ import {
   type Model,
   type ModelParams,
   type ResolvedModel,
+  type ToolEnvDeps,
   type WakeMaterials,
 } from "@ai-zen/agents-sdk";
 
@@ -33,6 +35,12 @@ export interface MaterialsDeps {
   readonly sessions: SessionService;
   /** 自动交接发起的那一趟：它与手动交接共用交接态、取消口与落库 */
   readonly handoff: HandoffService;
+  /**
+   * 出网/素材端口。**与 `openScope` 里交给 `Scope` 的是同一个对象**（在装配根造一次）：
+   * 附件传输插件靠它读素材字节，工具那一侧也读同一份 —— 两边各拼一个 `readAsset` 的话，
+   * 「素材怎么取」就成了两份得同时改的实现。
+   */
+  readonly assetPort: ToolEnvDeps;
 }
 
 /**
@@ -122,6 +130,10 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
         onMigrated: () => deps.handoff.finish(session.id),
         onFailed: ({ error }) => deps.handoff.finish(session.id, { error }),
       }),
+      // 发出去之前把带 `__asset_id` 的段按当下生效的模型与端点重建：内容在库里只有一份（原样
+      // 落库），出网那一份每次现造。端口就是 `Scope` 那一份 —— 素材库是宿主的财产，SDK 只认
+      // `readAsset` 这一个函数。
+      new AssetTransportPlugin({ config: () => deps.config.read(), deps: deps.assetPort }),
     ],
   };
 }

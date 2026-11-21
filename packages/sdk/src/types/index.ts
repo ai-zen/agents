@@ -354,6 +354,14 @@ export interface ToolEnvDeps {
   upload?: UploadFn;
   /** 调用端点生成图片，默认 `client.images.generate` */
   generateImage?: GenerateImageFn;
+  /**
+   * 按 id 取一份素材的字节。素材库是宿主的财产，SDK 不认识它；这一格是「发出去之前按当前模型
+   * 重建内容段」唯一需要外部给的东西。
+   *
+   * 取不到（那份素材已经不在）就回 `undefined`，**不要抛**：发送前的那一步要把它换成一句
+   * 「附件已不在」的文本，而不是让整次请求失败。
+   */
+  readAsset?: (assetId: string) => { bytes: Uint8Array; mime: string; name?: string } | undefined;
 }
 
 /**

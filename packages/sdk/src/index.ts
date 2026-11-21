@@ -203,6 +203,8 @@ export {
 export { ContextGuardPlugin } from "./agent-plugins/ContextGuardPlugin.js";
 export type { ContextGuardOptions } from "./agent-plugins/ContextGuardPlugin.js";
 export { UnknownToolHintPlugin } from "./agent-plugins/UnknownToolHintPlugin.js";
+export { AssetTransportPlugin } from "./agent-plugins/AssetTransportPlugin.js";
+export type { AssetTransportOptions } from "./agent-plugins/AssetTransportPlugin.js";
 export { SubAgentGuardInstallerPlugin } from "./agent-plugins/SubAgentGuardInstallerPlugin.js";
 export type { SubAgentGuardOptions } from "./agent-plugins/SubAgentGuardInstallerPlugin.js";
 

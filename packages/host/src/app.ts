@@ -13,7 +13,7 @@ import {
   allInOne,
   resolveModel,
 } from "@ai-zen/agents-sdk";
-import type { AppConfig } from "@ai-zen/agents-sdk";
+import type { AppConfig, ToolEnvDeps } from "@ai-zen/agents-sdk";
 import { applyWSSHandler } from "@trpc/server/adapters/ws";
 import { WebSocketServer } from "ws";
 
@@ -228,6 +228,28 @@ export class HostApp {
       dataRoot: deps.dataRoot,
       t,
     });
+
+    /**
+     * 素材端口：**只在这里造一次**，两处用 —— 能力容器的 `Scope.deps`（工具那一侧）与
+     * `materialsFor` 交给附件传输插件的那一格。两处各拼一个 `readAsset` 的话，「素材怎么取」
+     * 就成了两份得同时改的实现，而它们差一步就会在「工具能看见图、发出去的那一份看不见」
+     * 这种地方表现出来。
+     *
+     * 找不到就是 `undefined`，**不抛**：素材被删是一个正常处境（引用归零就会删），发送前那一步
+     * 把它换成一句「附件已不在」的文本就好。字节读不出来（文件没了）才抛 —— 那是一件真事故，
+     * 由调用方接住并说清。
+     */
+    const assetPort: ToolEnvDeps = {
+      readAsset: (assetId) => {
+        const asset = assets.find(assetId);
+        if (asset === undefined) return undefined;
+        return {
+          bytes: assets.getBytes(asset.id),
+          mime: asset.mime,
+          name: asset.name ?? undefined,
+        };
+      },
+    };
     const notices = new NoticeService({ notices: noticeTable(this.db), events });
     this.credentials = new CredentialService({ credentials: credentialTable(this.db), t });
     // 本机实例把能用的那一串交付到 `run/token`：客户端因此不必手抄令牌。对外实例不写这个文件，
@@ -255,6 +277,8 @@ export class HostApp {
           getConfig: () => this.general.read(),
           agentsDir,
           cwd,
+          // 工具那一侧的出网/素材端口（与 `materialsFor` 给附件插件的是同一个对象）
+          deps: assetPort,
         }).use(
           ...allInOne({
             ...discovery.abilityPaths(cwd),
@@ -316,7 +340,16 @@ export class HostApp {
           ok: true,
           sessionId: session.id,
           materials: await materialsFor(
-            { workspaces, definitions, config: this.general, messages, inbox, sessions, handoff },
+            {
+              workspaces,
+              definitions,
+              config: this.general,
+              messages,
+              inbox,
+              sessions,
+              handoff,
+              assetPort,
+            },
             session,
           ),
         };
@@ -384,6 +417,7 @@ export class HostApp {
       messages,
       inbox,
       assets,
+      assetPort,
       notices,
       questions,
       search,

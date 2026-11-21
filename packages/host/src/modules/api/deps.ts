@@ -1,4 +1,4 @@
-import type { AgentRuntime } from "@ai-zen/agents-sdk";
+import type { AgentRuntime, ToolEnvDeps } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import type { inboxTable } from "../agent/inbox.js";
@@ -52,6 +52,11 @@ export interface HostApiDeps {
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
   readonly assets: AssetService;
+  /**
+   * 出网/素材端口（`readAsset` 在那里），与 `Scope` 拿到的是同一个对象：`materialsFor` 把它
+   * 交给 SDK 的附件传输插件 —— 发出去之前按当下生效的模型重建素材段时，那是它唯一需要的口。
+   */
+  readonly assetPort: ToolEnvDeps;
   readonly notices: NoticeService;
   readonly questions: QuestionRegistry;
   readonly search: SearchService;
