@@ -85,6 +85,17 @@ export function messageTable(db: DatabaseSync) {
       return row?.at === null || row?.at === undefined ? null : Number(row.at);
     },
 
+    /**
+     * 这一段有几条。删会话要报「这一次删掉了什么」，那个数在删之前数，而数条数不必把每一条的
+     * `payload` 读出来再解析一遍。
+     */
+    countBySession(sessionId: string): number {
+      const row = db
+        .prepare("SELECT COUNT(*) AS count FROM messages WHERE sessionId = ?")
+        .get(sessionId);
+      return Number(row?.count ?? 0);
+    },
+
     delete(id: string): void {
       db.prepare("DELETE FROM messages WHERE id = ?").run(id);
     },

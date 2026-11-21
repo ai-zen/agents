@@ -112,8 +112,13 @@ export class AssetService {
    *
    * 先删行再删字节：反过来的话，崩在中间会留下一条「行在、文件没了」的素材 —— 它会一直出现在
    * 列表里却打不开。多留一个没人引用的文件则是安全的：下次存同一份字节时按摘要写回同一个路径。
+   *
+   * 返回真的删掉的那几个 id：入参里有引用没归零的、也有本来就已经不在的，调用方要报「这一次
+   * 删掉了什么」时，只有这里数得准。
    */
-  sweepUnreferenced(assetIds: readonly string[]): void {
+  sweepUnreferenced(assetIds: readonly string[]): string[] {
+    const removed: string[] = [];
+
     for (const assetId of assetIds) {
       if (this.deps.sessionAssets.countByAsset(assetId) > 0) continue;
       // 同一个素材被两条删掉的消息引用时，这个 id 会在入参里出现两次
@@ -121,7 +126,10 @@ export class AssetService {
       if (asset === undefined) continue;
       this.deps.assets.delete(assetId);
       rmSync(this.pathOf(asset.sha256), { force: true });
+      removed.push(assetId);
     }
+
+    return removed;
   }
 
   private pathOf(sha256: string): string {

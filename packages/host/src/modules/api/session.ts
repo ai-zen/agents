@@ -7,6 +7,7 @@ import { createAgent } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import { hostPlugins, modelAndParamsFor } from "../agent/materials.js";
+import { removeSessions } from "../session/remove.js";
 import { rewindTo } from "../session/rewind.js";
 import type { Session } from "../session/types.js";
 import type { HostApiDeps } from "./deps.js";
@@ -266,6 +267,41 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       .mutation(({ input }) => rewindTo(deps, input.sessionId, input.messageId)),
 
     /**
+     * 删掉这一段会话：硬删，删完这一段的记忆与排队区都没了。
+     *
+     * 代价不在这里算，也不为此另开一条读口：消息数与素材数都在 `open` 给的那一份里，客户端先
+     * 数出代价、问过用户，再调这一条 —— 二次确认是客户端的两步，宿主只回答「删了之后少了什么」。
+     *
+     * 出参就只有这两个数：删掉了几条消息，以及跟着一起删掉的那几份素材（引用归零才删，所以它
+     * 可能少于这一段引用过的份数）。会话本身没了，不必再回一行。
+     *
+     * 收尾与删项目那一条共用一个实现：杀执行体、收题、忘掉交接那一侧的记忆、收素材引用、删行、
+     * 按引用归零扫素材。这里的范围只有这一段。
+     */
+    remove: api.procedure
+      .input(sessionIdInput)
+      .output(z.object({ messages: z.number(), assets: z.number() }))
+      .mutation(({ input }) => {
+        // 与 `open` 同一句话、同一份 `details`：`SessionService.remove` 不看有没有这一行，删一段
+        // 不存在的会话会安静地成功 —— 先 `get` 一次，才分得出「删掉了」与「本来就没有」。
+        if (deps.sessions.get(input.sessionId) === undefined) {
+          throw new HostError(
+            "not_found",
+            deps.t("找不到 id 为 {sessionId} 的会话", { sessionId: input.sessionId }),
+            { entity: "session", sessionId: input.sessionId },
+          );
+        }
+
+        // 条数在删之前数：删完之后这一段的消息行就没有了
+        const messages = deps.messages.countBySession(input.sessionId);
+        const assets = removeSessions(deps, [input.sessionId], () =>
+          deps.sessions.remove(input.sessionId),
+        );
+
+        return { messages, assets: assets.length };
+      }),
+
+    /**
      * 跑一次**一次性会话**：一句投进去、等它跑到闲、把这一次跑出来的消息原样带回去。
      *
      * 这条路给的是 `dev-docs/prd/04-session.md` 「一次性会话：唯一的逃生窗」里那三种里的
@@ -273,9 +309,9 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * **不是一段会话的第一次运行**，也不是段/轮/圈里的一个：就是一次到头的会话，跑完就散。
      *
      * **一个字都不落库**，这正是这条路全部的意思：不建会话行、不建 inbox 行、不写消息表。
-     * 走 `agent.send`（建行 + 投递）的话，每敲一次命令行库里就多一段会话、项目里多一条工作区行，
-     * 而契约里没有 `session.remove` 可以清 —— 库只增不减。那不是 CLI 该兜的事，而是宿主少了一条
-     * procedure。
+     * 走 `agent.send`（建行 + 投递）的话，每敲一次命令行库里就多一段会话、项目里多一条工作区行
+     * —— 一次性会话跑完就散，那些行没有谁会去删（`session.remove` 是用户手上的动作，不是这条路
+     * 收尾的一部分），库只增不减。
      *
      * 所以入参是 `cwd`，**不是 `workspaceId`**：认项目的话，项目行必须先在，于是每敲一次
      * `ai "…"` 就多出一条项目行 —— 会话行是没了，垃圾还在，而项目「只走显式添加」
