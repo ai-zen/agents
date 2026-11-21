@@ -151,6 +151,18 @@ export type {
 } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
 export type { CreateAgentOptions } from "./runtime/createAgent.js";
+// 运行时：让执行体活着、让它们互相说话（登记、唤醒、发话）
+export { AgentRuntime } from "./runtime/AgentRuntime.js";
+export type {
+  WakeMaterials,
+  NewPeerSession,
+  OpenPeerSession,
+  RuntimePorts,
+  PostResult,
+} from "./runtime/AgentRuntime.js";
+// 能力容器按目录存活：什么时候造、什么时候拆
+export { Scopes } from "./runtime/Scopes.js";
+export type { ScopesDeps } from "./runtime/Scopes.js";
 // 模型三级解析（唯一实现）：档位类型也导出，宿主与客户端按它渲染「当前生效档」
 export { resolveModel, resolveModelParams } from "./runtime/resolveModel.js";
 export type {

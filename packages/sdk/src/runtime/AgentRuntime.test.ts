@@ -1,0 +1,413 @@
+/**
+ * 运行时的验收：**不 import 宿主**。
+ *
+ * 这里要守住的三件事（`dev-docs/PLAN.md` 第一段）：
+ *   1. 常驻：一段会话登记一个执行体，叫醒就开始跑；杀死之后它不再回应，说过的话还在；
+ *   2. 事件驱动：没有人 `await`，一条投递也把它从闲推到忙、跑完自己回到闲；
+ *   3. 互相说话：一段会话把话寄给另一段，另一边收下、跑完、回一句落回发起方那边。
+ *
+ * 假的是**模型提供方**（`@ai-zen/agents-testing` 那个 OpenAI 兼容端点）与**库**（这里几张
+ * Map）。凡是这一层真正的接线 —— 容器、定义文件、模型的 client、内核的事件 —— 都是真的。
+ */
+
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { AgentNS, Message, ToolCallContext, type Agent, type Tool } from "@ai-zen/agents-core";
+import { startFakeLlm, type FakeLlmOptions, type FakeLlmRequest } from "@ai-zen/agents-testing";
+import { Scope } from "../scope/Scope.js";
+import { PeerSessionsScopePlugin } from "../scope/plugins/peers/PeerSessionsScopePlugin.js";
+import {
+  CREATE_SESSION_TOOL,
+  POST_MESSAGE_TOOL,
+  READ_SESSION_STATUS_TOOL,
+} from "../scope/plugins/peers/peerSessionTools.js";
+import type { AgentDefinition, AppConfig } from "../types/index.js";
+import { until } from "../test-support/agent-round.js";
+import { AgentRuntime, type RuntimePorts, type WakeMaterials } from "./AgentRuntime.js";
+import type { SdkAgent } from "./SdkAgent.js";
+
+// ---------------------------------------------------------------------------
+// 一套假的宿主：只有库与能力装配两件事是真的要人做
+// ---------------------------------------------------------------------------
+
+interface Harness {
+  runtime: AgentRuntime;
+  /** 这一段在哪个目录上干活（能力容器按它取） */
+  cwd: string;
+  /** 造过的容器，按目录顺序（同一个目录只该有一次） */
+  opened: string[];
+  /** 开的会话，按顺序 */
+  created: Array<{ sessionId: string; agentId: string; lineage: string }>;
+  /** 模型端点收到的请求，按到达顺序 */
+  requests: FakeLlmRequest[];
+  wake(sessionId: string, agentId: string, extra?: Partial<WakeMaterials>): Promise<SdkAgent>;
+  /** 给这一段起个名字（假库里的那一格） */
+  name(sessionId: string, label: string): void;
+}
+
+/** each 用完就收：断言失败时也不留下监听与临时目录 */
+let disposers: Array<() => Promise<void>> = [];
+
+afterEach(async () => {
+  const all = disposers;
+  disposers = [];
+  for (const dispose of all) await dispose();
+});
+
+async function harness(options: { reply?: FakeLlmOptions["reply"] } = {}): Promise<Harness> {
+  const llm = await startFakeLlm({ reply: options.reply ?? "收到" });
+  const dir = await mkdtemp(join(tmpdir(), "agent-runtime-"));
+  const agentsDir = join(dir, "agents");
+  const cwd = join(dir, "project");
+  await mkdir(agentsDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeDefinition(agentsDir, "lead", "Lead", "You are the lead.");
+  await writeDefinition(agentsDir, "helper", "Helper", "You are the helper.");
+
+  const config: AppConfig = {
+    endpoints: [{ id: "e1", name: "fake", baseUrl: llm.baseUrl, apiKey: "fake-key" }],
+    models: [
+      {
+        id: "m1",
+        name: "fake-model",
+        endpointId: "e1",
+        tokenThresholds: { handoff: 100_000, guard: 200_000 },
+      },
+    ],
+    defaultModel: "m1",
+  };
+
+  // 假库：只有「这一段叫什么」与「新开一段」两件事，其余都不落任何东西
+  const names = new Map<string, string>();
+  const opened: string[] = [];
+  const created: Harness["created"] = [];
+  let seq = 0;
+
+  const ports: RuntimePorts = {
+    openScope: async (scopeCwd, peers) => {
+      opened.push(scopeCwd);
+      // 真实的宿主在这里读能力路径、装一整套插件；这里只装平级会话那三个工具 ——
+      // 端口随造容器的请求下来，正是要验的那一处接线
+      const scope = new Scope({ getConfig: () => config, agentsDir, cwd: scopeCwd }).use(
+        new PeerSessionsScopePlugin(peers),
+      );
+      await scope.init();
+      return scope;
+    },
+    open: async (input) => {
+      const sessionId = `peer-${++seq}`;
+      created.push({ sessionId, agentId: input.agentId, lineage: input.lineage });
+      names.set(sessionId, input.label ?? input.prompt.slice(0, 12));
+      return {
+        ok: true,
+        sessionId,
+        materials: {
+          cwd,
+          agentId: input.agentId,
+          modelId: input.modelId,
+          lineage: input.lineage,
+          history: [],
+          waiting: [],
+        },
+      };
+    },
+    nameOf: async (sessionId) => names.get(sessionId),
+  };
+
+  const runtime = new AgentRuntime(ports);
+
+  const wake = async (
+    sessionId: string,
+    agentId: string,
+    extra: Partial<WakeMaterials> = {},
+  ): Promise<SdkAgent> => {
+    if (!names.has(sessionId)) names.set(sessionId, sessionId);
+    return runtime.wake(sessionId, {
+      cwd,
+      agentId,
+      lineage: null,
+      history: [],
+      waiting: [],
+      ...extra,
+    });
+  };
+
+  disposers.push(async () => {
+    await runtime.close();
+    await llm.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  return {
+    runtime,
+    cwd,
+    opened,
+    created,
+    requests: llm.requests,
+    wake,
+    name: (sessionId, label) => names.set(sessionId, label),
+  };
+}
+
+async function writeDefinition(
+  agentsDir: string,
+  id: string,
+  name: string,
+  system: string,
+): Promise<void> {
+  const definition: AgentDefinition = {
+    id,
+    name,
+    messages: [Message.System(system)],
+    modelId: "m1",
+    // 定义上没有 permissions 就是四维全拒（`PermissionEvaluator` 的缺省），这里给的是一份
+    // 什么都放行的：要验的是运行时的接线，不是权限
+    permissions: { tools: { allow: ["*"] } },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await writeFile(join(agentsDir, `${id}.json`), JSON.stringify(definition), "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// 小工具
+// ---------------------------------------------------------------------------
+
+/** 按 system 提示分派答复：两段会话各说各的，才判得出那句话落在谁那边 */
+function bySystem(replies: { lead: string; helper: string }) {
+  return (body: any): string => {
+    const system = String(body?.messages?.[0]?.content ?? "");
+    return system.includes("the lead") ? replies.lead : replies.helper;
+  };
+}
+
+function text(message: AgentNS.Message): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (content === undefined) return "";
+  return content.map((section) => (section.type === "text" ? section.text : "")).join("");
+}
+
+function words(agent: Agent, needle: string): AgentNS.Message[] {
+  return agent.messages.filter((message) => text(message).includes(needle));
+}
+
+function toolOf(agent: Agent, name: string): Tool {
+  const tool = agent.tools.find((item) => item.function.name === name);
+  if (tool === undefined) throw new Error(`tool "${name}" is not on agent "${agent.id}"`);
+  return tool;
+}
+
+/** 直接调一次工具（模型那一侧的位置：`ctx.agent` 就是调用它的那个执行体） */
+async function callTool(tool: Tool, agent: Agent, args: Record<string, unknown>) {
+  const toolCall: AgentNS.ToolCall = {
+    id: `call-${Math.random().toString(36).slice(2, 8)}`,
+    type: "function",
+    function: { name: tool.function.name, arguments: JSON.stringify(args) },
+  };
+  const ctx = new ToolCallContext({
+    agent,
+    tool_call: toolCall,
+    tool,
+    resultMessage: Message.Tool(toolCall),
+  });
+  return JSON.parse(String(await tool.exec(ctx)));
+}
+
+// ---------------------------------------------------------------------------
+// 用例
+// ---------------------------------------------------------------------------
+
+describe("运行时：常驻与互相说话", () => {
+  it("一段会话把话寄给另一段：收下了、跑完了、回的那句落在发起方那边", async () => {
+    const h = await harness({ reply: bySystem({ lead: "lead 收到", helper: "helper 收到" }) });
+    const a = await h.wake("a", "lead");
+    const b = await h.wake("b", "helper");
+    h.name("a", "会话甲");
+    h.name("b", "会话乙");
+
+    expect(await h.runtime.post({ from: "a", to: "b", content: "把测试跑一遍" })).toEqual({
+      ok: true,
+    });
+
+    // 没有人 await，它自己从闲变成忙、跑完回到闲
+    await until(() => b.state === "idle" && words(b, "helper 收到").length > 0, 5000);
+
+    // 收下的是那句话，署名是发起方**现读**的名字
+    const heard = words(b, "把测试跑一遍");
+    expect(heard).toHaveLength(1);
+    expect(text(heard[0]!)).toContain("会话甲");
+    expect(heard[0]!.source).toEqual({ kind: "agent", label: "会话甲" });
+    // 那句话落在 b 自己的记忆里，a 那边一个字都没多
+    expect(words(a, "把测试跑一遍")).toHaveLength(0);
+
+    // 反向：b 回一句，a 收到并回一句 —— 双向都通
+    expect(await h.runtime.post({ from: "b", to: "a", content: "跑完了，全绿" })).toEqual({
+      ok: true,
+    });
+    await until(() => a.state === "idle" && words(a, "lead 收到").length > 0, 5000);
+
+    const back = words(a, "跑完了，全绿");
+    expect(back).toHaveLength(1);
+    expect(back[0]!.source).toEqual({ kind: "agent", label: "会话乙" });
+  });
+
+  it("三个工具在没有宿主时也能用：投一句、问一句状态", async () => {
+    const h = await harness({ reply: bySystem({ lead: "lead 收到", helper: "helper 收到" }) });
+    const a = await h.wake("a", "lead");
+    const b = await h.wake("b", "helper");
+    h.name("a", "会话甲");
+
+    const sent = await callTool(toolOf(b, POST_MESSAGE_TOOL), b, {
+      sessionId: "a",
+      content: "从工具这条路寄过去",
+    });
+    expect(sent).toMatchObject({ accepted: true });
+
+    await until(() => a.state === "idle" && words(a, "lead 收到").length > 0, 5000);
+    expect(words(a, "从工具这条路寄过去")).toHaveLength(1);
+
+    // 问状态：只有忙闲、名字与最近一句的摘要，没有全量消息
+    const answer = await callTool(toolOf(b, READ_SESSION_STATUS_TOOL), b, { sessionId: "a" });
+    expect(answer).toMatchObject({
+      found: true,
+      status: "idle",
+      alive: true,
+      label: "会话甲",
+      lastMessage: "lead 收到",
+    });
+    expect(answer.messages).toBeUndefined();
+    expect(answer.history).toBeUndefined();
+  });
+
+  it("agent 开的会话开不出第二层", async () => {
+    const h = await harness({ reply: bySystem({ lead: "lead 收到", helper: "helper 收到" }) });
+    const a = await h.wake("a", "lead");
+
+    const created = await callTool(toolOf(a, CREATE_SESSION_TOOL), a, {
+      prompt: "写一份报告",
+      label: "报告",
+    });
+    expect(created.sessionId).toBe("peer-1");
+    expect(created.label).toBe("报告");
+    expect(h.created).toEqual([{ sessionId: "peer-1", agentId: "lead", lineage: "a" }]);
+
+    // 新的一段自己跑起来了：它收到了那句 prompt 并说了一句话
+    const child = h.runtime.get("peer-1")!;
+    expect(child).toBeDefined();
+    await until(() => child.state === "idle" && words(child, "lead 收到").length > 0, 5000);
+    expect(words(child, "写一份报告")).toHaveLength(1);
+
+    // 它自己再开一段：拒，而且没有多出第二段会话
+    const refused = await callTool(toolOf(child, CREATE_SESSION_TOOL), child, {
+      prompt: "再开一段",
+    });
+    expect(refused).toMatchObject({ rejected: "depth_exceeded" });
+    expect(h.created).toHaveLength(1);
+  });
+
+  it("唤醒幂等：两个触发方同时叫醒同一段，装出来的只有一个", async () => {
+    const h = await harness();
+
+    const [first, second] = await Promise.all([h.wake("a", "lead"), h.wake("a", "lead")]);
+
+    expect(first).toBe(second);
+    expect(h.runtime.get("a")).toBe(first);
+    expect(h.opened).toEqual([h.cwd]);
+  });
+
+  it("恢复：历史接在模板后面，已经在历史里的条目不再放回队列", async () => {
+    const h = await harness();
+    const landed: AgentNS.Message = {
+      ...Message.User("早说过的话"),
+      id: "m1",
+    };
+    const waiting: AgentNS.InboxEntryWithContent[] = [
+      {
+        messageId: "m1",
+        createdAt: new Date().toISOString(),
+        priority: "low",
+        source: { kind: "user" },
+        content: "早说过的话",
+      },
+      {
+        messageId: "m2",
+        createdAt: new Date().toISOString(),
+        priority: "low",
+        source: { kind: "user" },
+        content: "还没处理的那句",
+      },
+    ];
+
+    const a = await h.wake("a", "lead", { history: [landed], waiting });
+    await until(
+      () => a.state === "idle" && a.messages.some((m) => m.role === AgentNS.Role.Assistant),
+      5000,
+    );
+
+    // 两句都在，各一份：m1 是历史里那条，不是又被投了一遍
+    expect(a.messages.filter((message) => message.id === "m1")).toHaveLength(1);
+    expect(a.messages.filter((message) => message.id === "m2")).toHaveLength(1);
+
+    // 发出去的那一份请求里，那句旧话只出现一次
+    const sent = JSON.stringify(h.requests[0]!.body.messages);
+    expect(count(sent, "早说过的话")).toBe(1);
+    expect(count(sent, "还没处理的那句")).toBe(1);
+  });
+
+  it("杀死之后不再回应，说过的话还在；投过去会说是哪一条路不通", async () => {
+    const h = await harness({ reply: bySystem({ lead: "lead 收到", helper: "helper 收到" }) });
+    const a = await h.wake("a", "lead");
+    const b = await h.wake("b", "helper");
+    h.name("b", "会话乙");
+
+    await h.runtime.post({ from: "a", to: "b", content: "在吗" });
+    await until(() => b.state === "idle" && words(b, "helper 收到").length > 0, 5000);
+    const said = b.messages.length;
+
+    h.runtime.kill("b");
+    expect(h.runtime.get("b")).toBeUndefined();
+    expect(h.runtime.aliveOn(h.cwd)).toEqual(["a"]);
+
+    // 会话行还在、只是没人取件 → dead；行都没了 → gone
+    expect(await h.runtime.post({ from: "a", to: "b", content: "还在吗" })).toEqual({
+      ok: false,
+      reason: "dead",
+    });
+    expect(await h.runtime.post({ from: "a", to: "没这一段", content: "在吗" })).toEqual({
+      ok: false,
+      reason: "gone",
+    });
+
+    // 说过的话还在，而且杀死之后它不再动
+    expect(b.messages).toHaveLength(said);
+    expect(await h.runtime.status("b")).toEqual({ found: false, status: null });
+  });
+
+  it("同一个目录上的两段会话共用一个容器；都杀掉之后才拆得掉", async () => {
+    const h = await harness();
+    await h.wake("a", "lead");
+    await h.wake("b", "helper");
+
+    expect(h.opened).toEqual([h.cwd]);
+    expect(h.runtime.aliveOn(h.cwd)).toEqual(["a", "b"]);
+
+    // 还有活执行体时不许拆：拆了就是把正在干活的会话静默杀掉
+    await expect(h.runtime.scopes.dispose(h.cwd)).rejects.toThrow(/2 session/);
+
+    h.runtime.kill("a");
+    h.runtime.kill("b");
+    await h.runtime.scopes.dispose(h.cwd);
+
+    // 拆掉了：下一次要容器是重新造一个
+    await h.runtime.scopes.for(h.cwd);
+    expect(h.opened).toEqual([h.cwd, h.cwd]);
+  });
+});
+
+/** 一个子串在文本里出现了几次（判「没有重复投递」用） */
+function count(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
