@@ -105,7 +105,7 @@
 
 **判据**：只有它 import 宿主的类型；`sdk` 与 `core` 不 import 它。
 
-> 现状：这一层还是对着旧宿主那份 JSON-RPC 写的，随客户端一起重写。
+> 现状：已对着宿主的 tRPC 契约重写 —— 一条 WebSocket 上跑 `TRPCClient<AppRouter>`，失败的码按宿主自己那八个还原。
 
 ## 测试替身：`@ai-zen/agents-testing`
 
