@@ -1,6 +1,6 @@
 /**
  * 五条验收：交接态只落在进入的那一段上，输出闸按 SDK 那一侧的分工走（`start` 不碰、收口开、
- * 取消显式关）；后台那一趟失败也开闸并留下一条通知；自交接降级成摘要时推一条警告；交接期间这
+ * 取消显式关）；后台那一趟失败也开闸并留下一条通知（成则一句话不说）；交接期间这
  * 段会话的消息照样推给客户端，但不落库 —— 收口之后恢复；换记忆之后库里与执行体里是同一份新的，
  * 且换的是数组的内容而不是数组本身。
  *
@@ -11,7 +11,10 @@
  * 的人只是发现自己的回答不再落库，界面上看不出来。
  *
  * 执行体与 SDK 都是假的：真的 `Agent` 会起请求、跑循环、拉插件，真的 `migrate` 是一次完整的模型
- * 调用，而这几条要证的只有「交接态落在谁身上、闸开没开、记忆落在哪、失败收没收口、降级报没报」。
+ * 调用，而这几条要证的只有「交接态落在谁身上、闸开没开、记忆落在哪、失败收没收口」。
+ *
+ * **没有「降级」这一档可报**：申请哪个执行者就跑哪个，做不成就抛 —— 于是宿主这一侧只有
+ * 「成了」与「失败」两种收口，没有第三种。
  */
 
 import { describe, expect, it } from "vitest";
@@ -20,7 +23,7 @@ import { AgentNS, Message, type OuterLoopContext } from "@ai-zen/agents-core";
 import {
   AutoMigratePlugin,
   HandoffAbortedError,
-  type HandoffMode,
+  type HandoffContext,
   type SdkAgent,
 } from "@ai-zen/agents-sdk";
 
@@ -90,26 +93,27 @@ function fakeAgent() {
  * 「失败也开闸」那条要的就是一个会抛的替身；其余几条要的是「后台那一趟还没跑完时状态是什么」，
  * 所以 `migrate` 停在那里等人推。掐断也照真的来：信号响了就抛取消那个类型，它不是失败。
  *
- * `succeed` 收下这一趟**实际**用的执行者：宿主只看这一格决定要不要报降级，那件事没有第二个观察
- * 面 —— 记忆、闸、事件在降级那一趟里与正常那一趟一模一样。
+ * `succeed` 没有任何参数：宿主不再读回「这一趟实际是谁写的」（没有降级可报了），成功就是
+ * 「没抛、回来了」。
  */
 function fakeHandoffs() {
   const runs: {
     readonly options: SdkHandoffOptions;
     readonly agent: SdkAgent;
     readonly signal: AbortSignal;
-    succeed(mode?: HandoffMode): void;
+    succeed(): void;
     fail(error: unknown): void;
   }[] = [];
 
   const create: CreateSdkHandoff = (options) => ({
     migrate: ({ agent, signal }) =>
-      new Promise<{ readonly mode: HandoffMode }>((resolve, reject) => {
+      // 形状照真的来（`migrate` 回的就是那份 ctx 里的 `mode`），但宿主一次都不读它
+      new Promise<Pick<HandoffContext, "mode">>((resolve, reject) => {
         runs.push({
           options,
           agent,
           signal,
-          succeed: (mode = "self") => resolve({ mode }),
+          succeed: () => resolve({ mode: "self" }),
           fail: reject,
         });
         signal.addEventListener("abort", () => reject(new HandoffAbortedError()), { once: true });
@@ -205,7 +209,7 @@ describe("交接态", () => {
     expect(handoff.isHandingOff(first.id)).toBe(true);
     expect(handoff.isHandingOff(second.id)).toBe(false);
     // 闸不归 `start` 管：关闸是 `HandoffGuardPlugin.onOuterLoopStart` 在指令被取走那一拍做的。
-    // 这里先关上，`runSelfHandoff` 第一句就判「不收件」返回 false，整趟单向降级成摘要
+    // 这里先关上，`runSelfHandoff` 第一句就判「会话不收件」—— 那一趟整个失败（不会换成摘要）
     expect(agents.get(first.id)?.isOutputPaused).toBe(false);
     expect(agents.get(second.id)?.isOutputPaused).toBe(false);
     // 交接文档落在这一段所属项目里，不是宿主的 cwd：多项目共用一个目录，文档就跟代码分家了
@@ -281,42 +285,51 @@ describe("后台那一趟失败", () => {
   });
 });
 
-describe("降级", () => {
+describe("收口", () => {
   /**
-   * 申请自交接、拿回来摘要 = 降级。这一趟文档是独立摘要写的，保真度低了一档，而记忆照换、闸照
-   * 开、事件一样 —— 界面上根本看不出差别。不说出来用户就永远不知道（`PRD.md` 3.6）。
+   * 成了就一句话不说：闸开回来、交接态摘掉、没有通知。从前这里还有一条「降级成摘要」的警告，
+   * 现在没有降级了 —— 换执行者那件事不存在，也就没有什么要告知的（`PRD.md` 3.6）。
    */
-  it("自交接降级成摘要时推一条警告，其余照常收口", async () => {
+  it("成功收口不推任何通知，闸开回来、交接态摘掉", async () => {
     const { handoff, handoffs, sessions, agents, notices, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
 
     handoff.start(session.id);
-    handoffs.runs[0].succeed("summary");
+    handoffs.runs[0].succeed();
     await settle();
 
-    const pushed = notices.listBySession(session.id);
-    expect(pushed).toHaveLength(1);
-    expect(pushed[0].level).toBe("warning");
-    expect(pushed[0].code).toBe("handoff_degraded");
-    expect(pushed[0].durationMs).toBeNull();
-
-    // 降级不是失败：闸开回来了、交接态也摘了
+    expect(notices.listBySession(session.id)).toEqual([]);
     expect(agents.get(session.id)?.isOutputPaused).toBe(false);
     expect(handoff.isHandingOff(session.id)).toBe(false);
   });
 
-  /** 申请的就是自交接、拿回来的也是自交接：没降级，不能因为「跑完了」就报一声 */
-  it("自交接就是自交接时不推通知", async () => {
-    const { handoff, handoffs, sessions, notices, wake } = setup();
+  /**
+   * SDK 报的那几种做不成（没有写文件的工具 / 不是常驻会话 / 会话不收件 / 会话已不存在 /
+   * 没写出可用的文档）走的是同一条：失败通知里就是它那一句原因，一字不改。
+   */
+  it("做不成就是失败：原因原样进通知，没有第二种收口", async () => {
+    const { handoff, handoffs, sessions, agents, notices, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
 
     handoff.start(session.id);
-    handoffs.runs[0].succeed("self");
+    handoffs.runs[0].fail(
+      new Error(
+        "Cannot write the handoff document with this session: it no longer exists (it was stopped or killed during the round), so there is nothing left to write with. No other writer was swapped in.",
+      ),
+    );
     await settle();
 
-    expect(notices.listBySession(session.id)).toEqual([]);
+    const pushed = notices.listBySession(session.id);
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].level).toBe("error");
+    expect(pushed[0].code).toBe("handoff_failed");
+    expect(pushed[0].message).toContain("it no longer exists");
+    expect(pushed[0].durationMs).toBeNull();
+    // 失败也开闸、也退交接态 —— 两者是失败那条路的一部分，不是降级
+    expect(agents.get(session.id)?.isOutputPaused).toBe(false);
+    expect(handoff.isHandingOff(session.id)).toBe(false);
   });
 });
 
@@ -414,7 +427,7 @@ function autoMigrate(handoff: HandoffService, session: Session) {
     service: handoff.automatic(session),
     handoffTokens: 100,
     resolveMode: () => handoff.automaticMode(session.id),
-    onMigrated: ({ mode }) => handoff.finish(session.id, { mode }),
+    onMigrated: () => handoff.finish(session.id),
     onFailed: ({ error }) => handoff.finish(session.id, { error }),
   });
 }

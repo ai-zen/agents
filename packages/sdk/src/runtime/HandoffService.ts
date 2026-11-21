@@ -17,8 +17,10 @@ import type { SdkAgent } from "./SdkAgent.js";
  * - `self`：**原 agent 在自己的会话里**停工后写（默认）。上下文完整、可用工具核实真实状态，
  *   产出质量最好；代价是多 1~2 次全量输入。
  * - `summary`：一次独立的模型调用，把序列化后的历史摘要成交接文档（无工具、无原会话上下文）。
- *   便宜、确定，但保真度低——它是**逃生模式**，也是 `self` 没写出来时的单向降级目标
- *   （`self` 那一回合自己出错的（端点 4xx、超时）不降级：那种事换个执行者也不会成）。
+ *   便宜、确定，但保真度低 —— **只有调用方明确申请它才用它**。
+ *
+ * 两者之间**没有自动过渡**：申请哪个就跑哪个，做不成就是失败（开闸、退出交接状态、报失败）。
+ * 换一个执行者接着做，会让一次失败的交接看起来像成功。
  */
 export type HandoffMode = "self" | "summary";
 
@@ -90,7 +92,7 @@ function abortRace<T>(
 export interface HandoffContext {
   /** 当前会话 Agent（这一趟只在它的会话里再投一条指令，不换会话） */
   agent: SdkAgent;
-  /** **实际**使用的执行者（`self` 失败降级后会是 `summary`） */
+  /** 这一趟**实际**用的执行者（不换执行者之后，它恒等于 {@link requestedMode}） */
   mode: HandoffMode;
   /** 调用方请求的执行者 */
   requestedMode: HandoffMode;
@@ -166,7 +168,7 @@ export interface MemoryCommit {
   memory: AgentNS.Message[];
   /** 这份记忆指向的那份交接文档（断点消息里带的就是它） */
   handoffPath: string;
-  /** **实际**用的执行者（`self` 降级之后会是 `summary`） */
+  /** 这一趟**实际**用的执行者（恒等于申请的那个：做不成就报失败，不换执行者） */
   mode: HandoffMode;
 }
 
@@ -199,7 +201,7 @@ export interface MigrateParams extends HandoffParams {
 /**
  * 任务交接服务。
  *
- * 职责两半：`handoff()` 只产出交接文档（停工 → 写文档 → 失败降级），不动会话；`migrate()`
+ * 职责两半：`handoff()` 只产出交接文档（停工 → 写文档，做不成就报失败），不动会话；`migrate()`
  * 再算出「换完之后记忆长什么样」并交给接缝。落库（旧历史挂成存档会话、写回会话行）在宿主
  * 那一侧：那是一个库事务，SDK 不认识库。
  *
@@ -403,7 +405,7 @@ export class HandoffService {
    * 交接 **+ 换记忆**（宿主的交接收口、自动交接、`/migrate`）。
    *
    * 两半，第二半是这方法存在的理由：
-   *   1. 先跟 {@link handoff} 一样把文档写出来（写不出来就降级、再不行就抛）；
+   *   1. 先跟 {@link handoff} 一样把文档写出来（写不出来就抛：不换执行者）；
    *   2. 然后**算出换完之后那段记忆长什么样**（{@link planMemory}）并把它交给接缝。
    *
    * 「长什么样」只有这一处算：哪些旧消息留（`omit` / `prune`）、断点消息的形状
@@ -569,27 +571,16 @@ export class HandoffService {
       await this.onBeforeHandoff?.(beforeCtx);
       this.throwIfAborted(signal);
 
-      // ---- 执行者：self 优先，不可用/没写出来才单向降级 summary ----
-      // 「没写出来」以外的抛出（端点 4xx、超时、core 内部错）不从这条道走：它们原样穿到调用方
-      let mode = requestedMode;
+      // ---- 执行者：申请哪个就跑哪个，做不成 = 失败 ----
+      // 这里**不换执行者**：换一个接着做，会让一次失败的交接看起来像成功，而用户以为手里那份
+      // 文档是原会话自己写的。做不成就抛，由调用方开闸、退出交接状态、报失败。
+      const mode = requestedMode;
       let handoffDoc: string | undefined;
       let historyText = "";
 
-      if (mode === "self" && !this.supportsSelfHandoff(agent)) {
-        this.logger.warn(
-          "[handoff] agent has no write tool or is not a resident session, falling back to standalone summary mode",
-        );
-        mode = "summary";
-      }
-
       if (mode === "self") {
-        const ok = await this.runSelfHandoff(agent, handoffPath, signal);
-        if (!ok) {
-          this.logger.warn(
-            "[handoff] self handoff failed, falling back to standalone summary mode",
-          );
-          mode = "summary";
-        }
+        this.assertSelfHandoffAvailable(agent);
+        await this.runSelfHandoff(agent, handoffPath, signal);
       }
 
       if (mode === "summary") {
@@ -649,16 +640,26 @@ export class HandoffService {
   }
 
   /**
-   * 自交接是否可用：需要 `write` 工具（名字只由 {@link WRITE_TOOL_NAME} 命名一次），
-   * 且 agent 是**常驻**的。
+   * 申请的 `self` 这一趟**能不能做**：需要 `write` 工具（名字只由 {@link WRITE_TOOL_NAME}
+   * 命名一次），且 agent 是**常驻**的。做不到就抛，**不换成摘要** ——
+   * 两种原因分开报，因为人能做的事不同（给这段会话配一个写工具 / 换一段常驻会话），
+   * 而失败通知里只有这一句话可读。
    *
    * 为什么要看 `lifetime`：自交接靠「往同一个会话里投一条指令」实现，而一次性 agent
    * 开跑即关收（第二次 `push` 抛 `closed`），且跑完就死透（`CORE.md` §1）—— 它根本没
    * 有「再问一次」这种能力。
    */
-  private supportsSelfHandoff(agent: SdkAgent): boolean {
-    if (agent.lifetime === "one-shot") return false;
-    return Boolean(agent.tools?.some((tool) => tool.function?.name === WRITE_TOOL_NAME));
+  private assertSelfHandoffAvailable(agent: SdkAgent): void {
+    if (!agent.tools?.some((tool) => tool.function?.name === WRITE_TOOL_NAME)) {
+      throw new Error(
+        "Cannot write the handoff document with this session: the agent has no write tool, so it has no way to put the document on disk. No other writer was swapped in — request the standalone summary explicitly if that is what you want.",
+      );
+    }
+    if (agent.lifetime === "one-shot") {
+      throw new Error(
+        "Cannot write the handoff document with this session: it is a one-shot session, and a one-shot session closes as soon as it starts, so it cannot be asked to write again after it stops. No other writer was swapped in — request the standalone summary explicitly if that is what you want.",
+      );
+    }
   }
 
   /**
@@ -688,15 +689,17 @@ export class HandoffService {
    * 的解释**，不是判据本身 —— 模型先撞一次错、缓过来照样把文档写成的，是一次**成功的**交接，
    * 不该被那个错反过来判死。
    *
-   * 于是四种情形，各自的姿势：
+   * 于是四种情形，各自的报法：
    *
    *   - **写出来了**：`failures` 不再看。文档已经落盘，之后再冒的错与这一次交接无关；
-   *   - **这个会话已经没了**（`gone`）：回 `false`，先于「写没写过」—— 没有可写的东西，也别为
-   *     一个死掉的会话白烧一次全量输入；
-   *   - **没写出来，且这一回合报过错**：那个错就是真因，**原样抛给调用方**。降级 summary 会为
-   *     一次已经失败的请求再烧一次全量输入，而用户只拿到一行 warn；
-   *   - **没写出来，且一个错都没报**（齐根没调写工具 / 只说了句「写好了」）：回 `false`，交上层
-   *     单向降级 summary —— 那是逃生模式，一次写不成还有第二条路。
+   *   - **这个会话已经没了**（`gone`）：抛「会话已不存在」—— 先于「写没写过」，没有可写的东西，
+   *     也别为一个死掉的会话白烧一次全量输入；
+   *   - **没写出来，且这一回合报过错**：那个错就是真因，**原样抛给调用方**；
+   *   - **没写出来，且一个错都没报**（齐根没调写工具 / 只说了句「写好了」）：抛「没写出可用的
+   *     文档」，这一趟到此为止。
+   *
+   * 这一趟答 `void` 或抛 —— **没有「成了没有」这个布尔值**：`false` 从前只有一个意思（交上层去
+   * 降级），而看不懂原因的失败等于没说；换个执行者接着做则是另一件更坏的事（见 {@link runHandoff}）。
    *
    * 「这一回合报过错」这个事实 core 不从 `start()` 往外招（`Agent.start()` 的注释：一次请求挂了
    * 就是一次挂了，循环接着等下一个事件），它报成 `failed` 事件 —— 所以这一回合期间订阅它一次，
@@ -709,9 +712,15 @@ export class HandoffService {
     agent: SdkAgent,
     handoffPath: string,
     signal?: AbortSignal,
-  ): Promise<boolean> {
-    // 已经不收件了（用户让它停）：此刻投进去只会排在队里，等放行之后突然自己跑起来 —— 这一趟当没跑成
-    if (agent.isOutputPaused) return false;
+  ): Promise<void> {
+    // 已经不收件了（用户让它停）：此刻投进去只会排在队里，等放行之后突然自己跑起来 —— 这一趟没
+    // 跑成。报的是「会话不收件」而不是笼统的一句失败：那一种处置是「让用户放开闸再试」，而
+    // 「会话已不存在」那一种是「这段会话得重开」
+    if (agent.isOutputPaused) {
+      throw new Error(
+        "Cannot write the handoff document with this session: it is not taking new work right now (its output is paused), so an instruction pushed into it would only queue up and start by itself after the resume. No other writer was swapped in.",
+      );
+    }
 
     const guard = this.ensureGuard(agent);
     const skillContent = await this.readSkillContent();
@@ -742,27 +751,35 @@ export class HandoffService {
       const outcome = await this.pushAndWatch(agent, watch, instruction, signal);
       // `agent.abort()` 不抛错，取消要主动看一眼（见方法注释）
       this.throwIfAborted(signal);
-      // 那一下被掐（用户把它叫停了）：回到交接前，不降级
+      // 那一下被掐（用户把它叫停了）：回到交接前，不重试
       if (outcome === "interrupted") throw new HandoffAbortedError();
-      // 这个会话已经不在了：没有可写的东西，也别为一个死掉的会话白烧一次全量输入
-      if (outcome === "gone") return false;
-      // 这一批收口了还没见到那次写：这一次交接没成，`failures` 只解释「为什么没写出来」
-      if (outcome !== "written") {
-        // 没写出来的真因是这一趟里报过的那个错：原样交上去，不再降级 summary 烧一次全量输入
-        if (failures.length > 0) throw failures[0];
-        // 一个错都没报，模型只说了句「写好了」而一个字没写：交上层降级
-        return false;
+      // 这个会话已经不在了：没有可写的东西，也别为一个死掉的会话白烧一次全量输入。
+      // 与「没写出文档」分开报：那一种是模型没写成（还能再试）、这一段会话照旧能用；
+      // 这一种是会话本身没了，得像开一段新会话那样处置
+      if (outcome === "gone") {
+        throw new Error(
+          "Cannot write the handoff document with this session: the session no longer exists (it was stopped or killed during the round), so there is nothing left to write with. No other writer was swapped in.",
+        );
       }
       // 写出来了：这一次交接已经成，`failures` 从此不再看（文档在盘上，之后冒的错与它无关）
-      // 等这一批收口：此后这个会话的消息不再增长，要换掉的就是定了的这一份
-      await this.waitRoundOver(watch, signal);
-      // 写出来了没有：文件在不在、够不够长（默认 400 字节，`PRD.md` 3.6）。
-      // 这一格与断点消息的形状同在 SDK 一处算 —— 宿主不再自己量一遍（`PRD.md` 4.5）。
-      return await this.isHandoffFileReady(handoffPath);
+      if (outcome === "written") {
+        // 等这一批收口：此后这个会话的消息不再增长，要换掉的就是定了的这一份
+        await this.waitRoundOver(watch, signal);
+        // 写出来了没有：文件在不在、够不够长（默认 400 字节，`PRD.md` 3.6）。
+        // 这一格与断点消息的形状同在 SDK 一处算 —— 宿主不再自己量一遍（`PRD.md` 4.5）。
+        if (await this.isHandoffFileReady(handoffPath)) return;
+      }
+      // 没写出可用的文档（齐根没调写工具 / 只说了句「写好了」/ 写出来不到阈值）：这一趟里报过的
+      // 那个错就是真因，原样交上去
+      if (failures.length > 0) throw failures[0];
+      // 一个错都没报：交接没写出可用的文档。不换成摘要 —— 那会让一次失败的交接看起来像成功
+      throw new Error(
+        `Cannot write the handoff document with this session: the round produced no usable handoff document (the write tool was never called on the handoff path, or the file is missing or smaller than ${this.minHandoffBytes} bytes). No other writer was swapped in.`,
+      );
     } catch (err: any) {
       // 取消不是失败：它要一路走到 {@link runHandoff} 的收尾那里（删半成品、截消息）
       if (err instanceof HandoffAbortedError) throw err;
-      // agent 已经关门：不是「文档没写出来」，是「这个会话已经不在了」。降级 summary 会
+      // agent 已经关门：不是「文档没写出来」，是「这个会话已经不在了」。换一个执行者接着做只会
       // 为一个死掉的会话白烧一次全量输入，所以直接把 `closed` 往上交（调用方该知道这件事）
       if (err instanceof AgentError && err.code === "closed") throw err;
       if (isAbortError(err, signal)) throw new HandoffAbortedError();

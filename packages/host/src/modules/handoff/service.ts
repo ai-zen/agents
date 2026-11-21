@@ -49,11 +49,17 @@ export interface SdkHandoffOptions {
 }
 
 /**
- * 宿主用到的那一面。返回值只取 `mode`：记忆走 `commitMemory`，交接上下文别的格宿主没有要看的东西
- * —— 只有「这一趟实际是谁写的」必须宿主自己看一眼，降级了得说出来。
+ * 宿主用到的那一面：返回值一格都不读 —— 记忆走 `commitMemory`，成败从事件与通知里看。
+ *
+ * 从前这里得读回 `mode`，因为「申请自交接、拿回来摘要」要报一声降级。现在没有降级：申请哪个
+ * 就跑哪个，做不成就抛，走失败那条路（{@link HandoffService.finish} 的 `error` 那一支）。
  */
 export interface SdkHandoff {
-  /** `mode` 是这一趟**申请**的执行者；不给就走 SDK 的默认那一个 */
+  /**
+   * `mode` 是这一趟**申请**的执行者；不给就走 SDK 的默认那一个。
+   *
+   * 返回值保留 SDK 那个形状（插件那一拍要读 `mode`），但宿主的收口一格都不读：成败看抛不抛。
+   */
   migrate(params: {
     agent: SdkAgent;
     signal: AbortSignal;
@@ -62,16 +68,6 @@ export interface SdkHandoff {
 }
 
 export type CreateSdkHandoff = (options: SdkHandoffOptions) => SdkHandoff;
-
-/**
- * 这一趟申请的交接执行者。
- *
- * 宿主不给 SDK 传 `mode`（{@link SdkHandoffOptions} 里也没有这一格），所以申请的就是 SDK 的
- * 默认执行者 —— 自交接。写死在宿主这一侧而不是读 `HandoffContext.requestedMode`：那一格是 SDK
- * 的回话，「我问了什么」该由问的人自己记着。两边取同一个来源的话，SDK 哪天把默认换成摘要，这里
- * 就一声不响地跟着变，降级通知也就永远不推了。
- */
-const REQUESTED_MODE: HandoffMode = "self";
 
 /**
  * 真的那一个。
@@ -123,8 +119,8 @@ export class HandoffService {
    *
    * **不碰输出闸。** 闸的两半按 SDK 的分工走：关闸是 `HandoffGuardPlugin.onOuterLoopStart` 在
    * 指令被取走那一拍做的事，开闸是宿主在收口（{@link finish}）做的事。这里先关上的话，`migrate`
-   * 一开跑就撞上 `runSelfHandoff` 的第一句 `if (agent.isOutputPaused) return false;`（不收件就
-   * 不取件），拿到 `false` 之后单向降级成摘要 —— 于是每一趟交接都静默降级，而界面上一切正常。
+   * 一开跑就撞上 `runSelfHandoff` 的第一句（会话不收件就不投递）—— 那一趟直接是失败，用户在
+   * 通知里只会看到一句「会话不收件」。
    *
    * 四条判据的顺序不能换。没有活执行体时其余三格都无从谈起；已经在这一趟里的那一段，它自己
    * 正在写文档、输出闸也是关着的 —— 把这一条排到后面，用户拿到的就是 `working` 或
@@ -181,6 +177,9 @@ export class HandoffService {
   /**
    * 收口：退出交接态，把输出闸开回来，再把这一趟的结果说给用户。
    *
+   * **没有降级这条支**：申请哪个执行者就跑哪个，做不成就抛 —— 那样走到的一律是「失败」
+   * （一条带原因的通知），不会出现「换了个执行者、界面上一切正常」那种收口。
+   *
    * 开闸只能在这里，不能更早：SDK 那边关闸之后还要写文档，而记忆换成新的那一拍在宿主这一侧
    * （{@link commit}）。在写文档那一刻开闸，这期间落进来的话就会随旧记忆一起进存档。
    *
@@ -189,10 +188,7 @@ export class HandoffService {
    *
    * 不在交接态时是空操作：第二次到这里事实没有变化，不再推事件也不再推通知。
    */
-  finish(
-    sessionId: string,
-    outcome: { readonly mode: HandoffMode } | { readonly error: unknown },
-  ): void {
+  finish(sessionId: string, outcome?: { readonly error: unknown }): void {
     if (!this.handingOff.delete(sessionId)) return;
     this.deps.agents.resumeOutput(sessionId);
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: false });
@@ -201,31 +197,20 @@ export class HandoffService {
     // 也就没有要告知的人
     if (this.deps.sessions.get(sessionId) === undefined) return;
 
-    if ("error" in outcome) {
-      this.deps.notices.push({
-        level: "error",
-        code: "handoff_failed",
-        sessionId,
-        // 永久留到用户自己清：失败的原因得有机会读到，一闪而过的错误档等于没说
-        durationMs: null,
-        message: this.deps.t("交接失败：{reason}", {
-          reason: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
-        }),
-      });
-      return;
-    }
+    // 成了就到此为止：记忆换了、闸开了，没什么要说的
+    if (outcome === undefined) return;
 
-    // 申请的是自交接、拿回来的是摘要 = 降级了。这一趟的文档是独立摘要写的，保真度低了一档，
-    // 而界面上一切正常 —— 不说出来用户永远不会知道（`PRD.md` 3.6）。
-    // 自动那条路申请的也是自交接：`automaticMode` 只回这一个
-    if (outcome.mode === REQUESTED_MODE) return;
     this.deps.notices.push({
-      level: "warning",
-      code: "handoff_degraded",
+      level: "error",
+      code: "handoff_failed",
       sessionId,
-      // 永久留到用户自己清：降级是个事实，不是一闪而过的事件
+      // 永久留到用户自己清：失败的原因得有机会读到，一闪而过的错误档等于没说。
+      // SDK 报的那几种做不成（没有写文件的工具 / 不是常驻会话 / 会话不收件 / 会话已不存在 /
+      // 没写出可用的文档）各自带一句原因，原样送到这里
       durationMs: null,
-      message: this.deps.t("交接降级为摘要：这一趟没能由原会话自己写交接文档"),
+      message: this.deps.t("交接失败：{reason}", {
+        reason: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+      }),
     });
   }
 
@@ -233,7 +218,7 @@ export class HandoffService {
    * 用户按了停：掐断那一趟，关闸，退出交接态，**不开闸** —— 回滚之后就该停在那一段，开闸等于替
    * 用户按了「继续」。
    *
-   * 「不开闸」现在得**显式关一次**：闸已经不再由 {@link start} 关（那一手会把自交接降级成摘要），
+   * 「不开闸」现在得**显式关一次**：闸已经不再由 {@link start} 关（那一手会让每一趟交接都失败），
    * 而取消完全可能发生在批头关闸之前 —— 那一拍还没到，闸就一直是开着的。「取消不开闸」的意思是
    * 取消之后保持暂停；不显式关这一下，取消会顺手把闸留在开着的状态，那一段于是接着取件。
    *
@@ -401,8 +386,9 @@ export class HandoffService {
         commitMemory: (commit) =>
           this.commit(sessionId, commit.memory, agent.definition.messages?.length ?? 0),
       });
-      const { mode } = await sdk.migrate({ agent, signal });
-      this.finish(sessionId, { mode });
+      // 返回值一格都不读：记忆走 `commitMemory`，成败看这里抛不抛。成了就收口，没别的话要说
+      await sdk.migrate({ agent, signal });
+      this.finish(sessionId);
     } catch (error) {
       if (signal.aborted || error instanceof HandoffAbortedError) {
         this.cancel(sessionId);
@@ -422,7 +408,8 @@ export class HandoffService {
    * 在这里交给 {@link cancel} —— 插件把取消咽掉、不会叫它的 `onFailed`，不在这里摘牌，这一段
    * 的消息从此不再落库。
    *
-   * 申请的执行者由插件按开关现读后递进来，与手动那条是同一个（`REQUESTED_MODE`）。
+   * 申请的执行者由插件按开关现读后递进来（`automaticMode`），与手动那条是同一个：都是自交接 ——
+   * 做不成就报失败，不换成摘要。
    */
   private async runAutomatically(
     sessionId: string,

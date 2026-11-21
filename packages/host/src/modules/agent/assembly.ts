@@ -173,7 +173,7 @@ export async function assemble(deps: AssemblyDeps, session: Session): Promise<Sd
       resolveMode: () => deps.handoff.automaticMode(session.id),
       // 闸只在这两拍开：关闸那一半在 SDK 的 `HandoffGuardPlugin`，开闸只有宿主知道什么时候该开
       // （记忆换完了 / 这一趟没成）。取消不走这里 —— 回滚之后就该停在那一段
-      onMigrated: ({ mode }) => deps.handoff.finish(session.id, { mode }),
+      onMigrated: () => deps.handoff.finish(session.id),
       onFailed: ({ error }) => deps.handoff.finish(session.id, { error }),
     }),
   );

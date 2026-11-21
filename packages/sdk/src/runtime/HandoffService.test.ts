@@ -221,12 +221,15 @@ class FakeAgent {
   stop(): void {
     this.closed = true;
     this.emit("stopped", { agent: this });
+    // 与 core 同口径：事件给订阅方，钩子给插件（守卫就靠 `onStop` 认「这一段已经不在了」）
+    void this.dispatch("onStop", { agent: this });
     this.resolveDeath?.();
   }
 
   kill(): void {
     this.closed = true;
     this.emit("killed", { agent: this });
+    void this.dispatch("onKill", { agent: this });
     this.resolveDeath?.();
   }
 
@@ -428,7 +431,7 @@ describe("handoff", () => {
         pausedAtCommit = (ctx.agent as any).isOutputPaused;
       },
     });
-    // 没有 write 工具 → 自交接不可用，必然走摘要
+    // 摘要是这一段**申请**的执行者（构造时 `mode: "summary"`），不是替谁降级的
     const agent = new FakeAgent({ writeTool: false });
     const resume = vi.spyOn(agent, "resumeOutput");
 
@@ -455,32 +458,43 @@ describe("handoff", () => {
     expect(agent.isOutputPaused).toBe(true);
   });
 
-  it("agent 无 write 工具时直接走 summary", async () => {
-    const { service } = await makeService();
+  it("agent 无 write 工具时这一趟失败（报「没有写文件的工具」）", async () => {
+    // 申请的是自交接：做不成就报失败，**不是**退到独立摘要。退过去会让用户以为手里那份文档
+    // 是原会话自己写的（`PRD.md` 3.6）
+    const { service, dir } = await makeService();
     const agent = new FakeAgent({ writeTool: false });
 
-    const ctx = await service.handoff({ agent: asAgent(agent) });
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(/no write tool/);
 
+    // 指令没投、模型没调、盘上什么都没有：不是「换个人又做成了」
     expect(agent.sent).toHaveLength(0);
-    expect(ctx.mode).toBe("summary");
-    expect(existsSync(ctx.handoffPath)).toBe(true);
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
+    expect(await fs.readdir(dir)).toEqual([]);
   });
 
-  it("写得过小 → 单向降级 summary（阈值 400 字节）", async () => {
+  it("一次性会话做不了自交接：报「不是常驻会话」，与「没有写工具」分得开", async () => {
+    // 两种做不成的人能做的事不同（配一个写工具 / 换一段常驻会话），所以不许并成一句笼统的失败
+    const { service } = await makeService();
+    const agent = new FakeAgent({ onSend: writeScript() });
+    agent.lifetime = "one-shot";
+
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(/one-shot session/);
+
+    expect(agent.sent).toHaveLength(0);
+  });
+
+  it("写得过小 → 这一趟失败（阈值 400 字节，不换成摘要）", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({ onSend: writeScript("too short") });
 
-    const ctx = await service.handoff({ agent: asAgent(agent) });
+    // 文件写出来了，但不到 400 字节 —— 算没写出可用的文档（PRD 3.6 / 4.5），这一趟到此为止
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(
+      /no usable handoff document/,
+    );
 
     expect(agent.sent).toHaveLength(1); // 只投一次：没有第二次机会
-    expect(ctx.requestedMode).toBe("self");
-    // 文件写出来了，但不到 400 字节 —— 算没写出来（PRD 3.6 / 4.5）
-    expect(ctx.mode).toBe("summary");
-    // summary 由服务调用模型并落盘
-    expect(agent.client.chat.completions.create).toHaveBeenCalledTimes(1);
-    expect(ctx.handoffDoc).toContain("## 💬 Conversation Breakpoint");
-    const written = await fs.readFile(ctx.handoffPath, "utf-8");
-    expect(written).toBe(ctx.handoffDoc);
+    // 摘要那条路一步都没走：没再发模型请求
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it("minHandoffBytes 可调：调小之后短文档算写出来了", async () => {
@@ -507,6 +521,8 @@ describe("handoff", () => {
 
     const guard = agent.plugins.find((p) => p instanceof HandoffGuardPlugin)!;
     expect(guard.armed).toBe(false);
+    // 闸还关着（开闸归宿主）：不开回来，下一趟的第一句就是「会话不收件」
+    agent.resumeOutput();
     // 同一 agent 反复交接不重复注册守卫
     await service.handoff({ agent: asAgent(agent) });
     expect(agent.plugins.filter((p) => p instanceof HandoffGuardPlugin)).toHaveLength(1);
@@ -514,7 +530,7 @@ describe("handoff", () => {
 
   it("agent 已经关门时不投递、不做 summary，直接把 closed 往上抛", async () => {
     // `push` 在关门之后抛 `AgentError("closed")`（CORE.md §1）。那不是「文档没写出来」，
-    // 而是「这个会话已经不在了」—— 降级 summary 会为一个死掉的会话白烧一次全量输入。
+    // 而是「这个会话已经不在了」—— 换一个执行者接着做只会为一个死掉的会话白烧一次全量输入。
     const { service } = await makeService();
     const agent = new FakeAgent();
     agent.stop();
@@ -524,28 +540,40 @@ describe("handoff", () => {
     expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
   });
 
-  it("agent 不收件时不投递（不收件就不取件），直接降级 summary", async () => {
+  it("agent 不收件时这一趟失败，报的是「会话不收件」", async () => {
     // 不收件时 `push` 只会排队，等 resumeOutput 之后突然自己跑起来 —— 那是「用户让它停却看见
-    // 它又开口」。所以这一趟当没跑成，走逃生模式（summary 不经过 agent）。
-    const { service } = await makeService();
+    // 它又开口」。这一趟就此失败：既不投递，也不换一个执行者接着做。
+    // 与「会话已不存在」分开报：那一种是这段会话得重开，这一种是让用户放开闸再试。
+    const { service, dir } = await makeService();
     const agent = new FakeAgent();
     agent.pauseOutput();
 
-    const ctx = await service.handoff({ agent: asAgent(agent) });
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(/output is paused/);
 
     expect(agent.sent).toHaveLength(0);
-    expect(ctx.mode).toBe("summary");
-    expect(existsSync(ctx.handoffPath)).toBe(true);
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("交接那一批里会话没了 → 报「会话已不存在」，与「没写出文档」分得开", async () => {
+    const { service } = await makeService();
+    const agent = new FakeAgent({ onSend: (_content, _nth, self) => void self.kill() });
+
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(/no longer exists/);
+
+    expect(agent.sent).toHaveLength(1);
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it("summary 模型不返回内容时抛错", async () => {
     const { service } = await makeService();
+    // 摘要是**申请来的**（`mode: "summary"`），不是替谁降级的：不传这一格就该走自交接
     const agent = new FakeAgent({ writeTool: false });
     agent.client.chat.completions.create.mockResolvedValue({
       choices: [{ message: { content: null } }],
     });
 
-    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(
+    await expect(service.handoff({ agent: asAgent(agent), mode: "summary" })).rejects.toThrow(
       "Failed to generate the handoff document",
     );
   });
@@ -554,15 +582,17 @@ describe("handoff", () => {
     const { service } = await makeService();
     let nested: Promise<unknown> | undefined;
     const agent = new FakeAgent({
-      onSend: async () => {
-        nested = service.handoff({ agent: asAgent(agent) });
+      onSend: async (_content, _nth, self) => {
+        nested = service.handoff({ agent: asAgent(self) });
         await nested.catch(() => {});
+        // 这一趟自己也要把文档写出来，否则它自己就会因为「没写出可用的文档」失败
+        await self.callWrite(self.handoffPathOf(), docContent());
       },
     });
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
-    expect(ctx.mode).toBe("summary"); // 因为文件没写出来 → 降级
+    expect(ctx.mode).toBe("self");
     await expect(nested).rejects.toThrow("A handoff is already in progress");
   });
 
@@ -696,8 +726,8 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
     agent.kill();
   });
 
-  it("模型不写文档（工具失败）→ 降级 summary（真 core 也一样）", async () => {
-    const { service } = await makeService();
+  it("模型不写文档（工具失败）→ 这一趟失败，不换成摘要（真 core 也一样）", async () => {
+    const { service, dir } = await makeService();
     const { client } = makeStreams(() => "/nonexistent/path.md");
     // write 工具存在（否则自交接不可用），但模型调的是一个不写盘的方向：这里让它每次都失败
     const writeTool = new CallbackTool({
@@ -712,10 +742,11 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
     });
     const agent = new Agent({ client, model: "m", tools: [writeTool] });
 
-    const ctx = await service.handoff({ agent: agent as any });
-
-    expect(ctx.mode).toBe("summary");
-    expect(existsSync(ctx.handoffPath)).toBe(true);
+    // 没写出可用文档，而这一回合里报过的那个错就是真因：原样抛，不换执行者再试一遍
+    await expect(service.handoff({ agent: agent as any })).rejects.toThrow(
+      /nope|no usable handoff document/,
+    );
+    expect(await fs.readdir(dir)).toEqual([]);
 
     agent.kill();
   });
@@ -865,9 +896,10 @@ describe("migrate", () => {
 
   it("summary 模式下 prune 也把文档落盘，断点仍只给路径", async () => {
     const { service } = await makeService({ strategy: "prune" });
+    // 摘要必须被**申请**：没有 write 工具又没申请摘要，那一趟是失败，不是自动退过去
     const agent = new FakeAgent({ writeTool: false });
 
-    const ctx = await service.migrate({ agent: asAgent(agent) });
+    const ctx = await service.migrate({ agent: asAgent(agent), mode: "summary" });
 
     expect(ctx.mode).toBe("summary");
     const written = await fs.readFile(ctx.handoffPath, "utf-8");
@@ -998,20 +1030,24 @@ describe("migrate 的落库接缝（commitMemory）", () => {
     });
   });
 
-  it("400 字节门槛在两条路上都生效：不注入", async () => {
+  it("400 字节门槛在两条路上都生效：不注入 —— 记忆不换", async () => {
     const { service } = await makeService({ strategy: "prune" });
     const agent = new FakeAgent({ onSend: writeScript("too short") });
+    const memory = agent.messages;
 
-    const ctx = await service.migrate({ agent: asAgent(agent) });
+    // 自交接没写出 400 字节 → 这一趟失败。**不换成摘要**：换了就是「记忆照换、看起来像成功」
+    await expect(service.migrate({ agent: asAgent(agent) })).rejects.toThrow(
+      /no usable handoff document/,
+    );
 
-    // 自交接没写过 400 字节 → 单向降级到独立摘要，记忆照旧换
-    expect(ctx.requestedMode).toBe("self");
-    expect(ctx.mode).toBe("summary");
-    expect(agent.messages).toHaveLength(2);
-    expect(agent.messages.at(-1)?.content).toBe(ctx.handoffPath);
+    // 换记忆那一步没走到：数组身份没换、断点没追上去（交接回合自己那两条留着 —— 失败不收它们，
+    // 只有取消才把这一回合截掉）
+    expect(agent.messages).toBe(memory);
+    expect(agent.messages.at(-1)?.hidden).toBeFalsy();
+    expect(agent.messages.some((message) => message.content === agent.handoffPathOf())).toBe(false);
   });
 
-  it("400 字节门槛在两条路上都生效：注入（降级也交同一份结果给回调）", async () => {
+  it("400 字节门槛在两条路上都生效：注入 —— 接缝一次都不被叫", async () => {
     const seen: string[] = [];
     const { service } = await makeService({
       strategy: "prune",
@@ -1021,14 +1057,14 @@ describe("migrate 的落库接缝（commitMemory）", () => {
     });
     const agent = new FakeAgent({ onSend: writeScript("too short") });
 
-    const ctx = await service.migrate({ agent: asAgent(agent) });
+    await expect(service.migrate({ agent: asAgent(agent) })).rejects.toThrow(
+      /no usable handoff document/,
+    );
 
-    expect(ctx.mode).toBe("summary");
-    // 降级之后仍然走同一个接缝（落库这一段不因执行者不同而分叉）
-    expect(seen).toEqual(["summary"]);
-    // SDK 没动内存：交接回合那一条指令与回执都还在（旧记忆一条没剔）
+    // 失败的一趟不落库：接缝没被叫过，落库那段不会把半趟交接写进去
+    expect(seen).toEqual([]);
+    // SDK 没动内存：交接回合那一条指令与回执都还在
     expect(agent.messages.at(-1)?.content).toBe("Handoff document written.");
-    expect(agent.messages.some((message) => message.content === ctx.handoffPath)).toBe(false);
   });
 });
 

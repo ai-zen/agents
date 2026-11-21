@@ -197,7 +197,7 @@ describe("AutoMigratePlugin", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("agent 已关门（AgentError closed）时不报错、也不降级 summary", async () => {
+  it("agent 已关门（AgentError closed）时不报错、也不换执行者", async () => {
     const { service, migrate } = stubService();
     const log = recordingLog();
     migrate.mockRejectedValueOnce(
@@ -226,7 +226,7 @@ describe("AutoMigratePlugin", () => {
       { promptTokens: MAX_HANDOFF_TOKENS + 1 },
     );
 
-    // 实际用的是降级后的 `summary`（服务返回的 ctx 说的）：回声报事实，不报「请求的那个」
+    // 回声报的 `mode` 是服务报的事实（这里替身给的是 `summary`）：插件只转手，不替服务决定执行者
     expect(onMigrated).toHaveBeenCalledWith({
       promptTokens: MAX_HANDOFF_TOKENS + 1,
       handoffTokens: MAX_HANDOFF_TOKENS,

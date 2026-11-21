@@ -21,7 +21,7 @@ export function handoffRouter(deps: HostApiDeps, api: Trpc) {
   return api.router({
     /**
      * 开跑。它回得快与交接跑得快不快无关：`migrate` 是一次完整的模型调用，所以这一手只表示
-     * 「交接开始了」，收口看 `session.handoff` 那一对事件，失败与降级各有一条通知。
+     * 「交接开始了」，收口看 `session.handoff` 那一对事件，做不成有一条失败通知。
      */
     start: procedure
       .input(sessionIdParams)

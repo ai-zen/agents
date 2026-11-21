@@ -36,8 +36,8 @@ export interface AutoMigrateOptions {
    */
   resolveMode?: AutoMigrateModeResolver;
   /**
-   * 迁移完成之后的回声（可选）：`mode` 是**实际**用的执行者（`self` 降级到 `summary` 时以
-   * 服务报的为准）。宿主据此落「这段会话压缩过」这类观测事实 —— 插件自己不认识存储层。
+   * 迁移完成之后的回声（可选）：`mode` 是这一趟用的执行者。宿主据此落「这段会话压缩过」这类
+   * 观测事实 —— 插件自己不认识存储层。
    *
    * 钩子抛错就让这一次迁移报错（本插件不接）：写钩子的是宿主，它写崩了该在自己的调用栈里
    * 炸出来，而不是被吞成一行日志。
@@ -146,7 +146,7 @@ export class AutoMigratePlugin implements AgentPlugin {
       // 凭空多一条「迁移失败」（日志口是注入的，宿主那格可能是终端）
       if (err instanceof HandoffAbortedError) return;
       // agent 已经关门/被硬杀（`stop()` / `kill()` 之后又走到 idle）：没什么可交接的。
-      // 不报错、也不降级 summary —— 那会为一个已经没有的会话白烧一次全量输入。
+      // 不报错、也不换执行者 —— 那会为一个已经没有的会话白烧一次全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
       this.logger.error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
       // 失败回声是「把闸开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里炸出来
