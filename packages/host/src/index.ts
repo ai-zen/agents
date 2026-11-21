@@ -36,6 +36,5 @@ export type { McpScope } from "./modules/config/mcp.js";
 export { ModelService } from "./modules/config/models.js";
 export { SessionService } from "./modules/session/service.js";
 export type { NewSession, Session } from "./modules/session/types.js";
-export { listFiles } from "./modules/workspace/files.js";
 export { WorkspaceService } from "./modules/workspace/service.js";
 export type { Workspace } from "./modules/workspace/types.js";
