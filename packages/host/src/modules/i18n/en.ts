@@ -47,4 +47,8 @@ export const en: Record<string, string> = {
     'The model "{modelId}" has no thinking levels; the thinking level can only follow the agent definition',
   "模型 {modelId} 没有 {level} 这一档，可选：{levels}":
     'The model "{modelId}" has no level "{level}"; available: {levels}',
+  "这一段历史里没有 id 为 {messageId} 的消息": 'This history has no message "{messageId}"',
+  "只能撤回到自己说过的话之前：助手的话与工具结果不是这个意思":
+    "You can only rewind to before something you said yourself; replies and tool results are not yours to unsend",
+  "这段会话还在跑，等它停下来再撤回": "This session is still running; rewind once it stops",
 };

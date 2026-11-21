@@ -4,6 +4,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 
 import { HostError } from "../../infra/errors.js";
 import { modelAndParamsFor } from "../agent/materials.js";
+import { rewindTo } from "../session/rewind.js";
 import type { Session } from "../session/types.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
@@ -230,6 +231,18 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
 
         return { session };
       }),
+
+    /**
+     * 撤回到某条自己说过的话之前：那一条与它之后的全部硬删（库里的行、记忆里那一份、没人再
+     * 引用的素材字节），正文原样交回去让客户端回填输入框。
+     *
+     * 规则全在 `rewindTo` 里：只认用户自己说的话、跑着的时候不许撤、删掉的每一条推一条
+     * `message.removed`。这一层只把入参递下去 —— 多写一句判断就是两处各有一份规则。
+     */
+    rewind: api.procedure
+      .input(sessionIdInput.extend({ messageId: z.string() }))
+      .output(z.object({ content: z.custom<AgentNS.MessageContent>() }))
+      .mutation(({ input }) => rewindTo(deps, input.sessionId, input.messageId)),
   });
 }
 
