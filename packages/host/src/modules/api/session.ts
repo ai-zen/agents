@@ -30,7 +30,6 @@ const sessionSchema = z.object({
   lineage: z.string().nullable(),
   handoffThreshold: z.number().nullable(),
   guardThreshold: z.number().nullable(),
-  pendingHandoff: z.enum(["self", "summary"]).nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });

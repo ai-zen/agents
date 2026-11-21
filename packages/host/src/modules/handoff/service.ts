@@ -109,8 +109,7 @@ export interface HandoffDeps {
  * 交接：这段会话的记忆要被换成新的一份的那段时间。
  *
  * 「这段在交接」是内存里的一格，不落会话行：它只在这一趟活着期间成立，进程没了这一趟也就没了。
- * 会话行上的 `pendingHandoff` 是另一件事 —— 那是「答完交接题的那一刻不闲、等它变闲再兑现」的
- * 一项待办；两件事可以同时成立，写进同一格之后就读不出眼前说的是哪一件。
+ * 会话行上也没有「待交接」这么一格 —— 会话行就那十一格，交接不往上多占一格。
  */
 export class HandoffService {
   private readonly handingOff = new Set<string>();
@@ -308,7 +307,6 @@ export class HandoffService {
       guardThreshold: session.guardThreshold,
       autoHandoff: session.autoHandoff,
       lineage: session.lineage,
-      pendingHandoff: null,
       createdAt: at,
       updatedAt: at,
     };

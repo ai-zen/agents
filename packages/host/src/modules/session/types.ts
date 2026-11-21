@@ -18,7 +18,6 @@ export interface Session {
   lineage: string | null;
   handoffThreshold: number | null;
   guardThreshold: number | null;
-  pendingHandoff: "self" | "summary" | null;
   createdAt: number;
   updatedAt: number;
 }

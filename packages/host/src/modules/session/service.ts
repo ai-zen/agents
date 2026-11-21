@@ -36,7 +36,6 @@ export class SessionService {
       lineage: input.lineage,
       handoffThreshold: null,
       guardThreshold: null,
-      pendingHandoff: null,
       createdAt: now,
       updatedAt: now,
     };

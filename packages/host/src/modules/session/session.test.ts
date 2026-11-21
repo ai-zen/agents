@@ -76,6 +76,48 @@ describe("会话行", () => {
     expect(service.get(created.id)).toEqual(renamed);
   });
 
+  /**
+   * 删掉的那一格还留在旧库的 payload 里：那一行照样装得起来。
+   *
+   * 一张「一行一个 JSON」的表对多出来的键是宽容的（读路径整份 `JSON.parse` 之后按形状用），所以
+   * 旧库不需要迁移；下一次写这一行时，那一格自然就没了。
+   */
+  it("旧库的行 payload 里还留着删掉的那一格，照样读得回来", () => {
+    const db = newDatabase();
+    // 先按现在这份形状建表，再直接写一行带旧键的 payload：这一行就是升级前那个版本留下的样子
+    sessionTable(db);
+    db.prepare("INSERT INTO sessions (id, payload) VALUES (?, ?)").run(
+      "s-old",
+      JSON.stringify({
+        id: "s-old",
+        workspaceId: "ws-1",
+        name: "旧会话",
+        nameIsAuto: false,
+        pinned: false,
+        agentId: "agent-1",
+        modelId: "model-1",
+        thinkingLevel: null,
+        autoHandoff: false,
+        lineage: null,
+        handoffThreshold: null,
+        guardThreshold: null,
+        // 旧版本写下的那一格：读路径不认识它，也不该因此炸
+        pendingHandoff: "self",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+
+    const service = newService(db);
+    expect(service.get("s-old")?.name).toBe("旧会话");
+    expect(service.list("ws-1").map((session) => session.id)).toEqual(["s-old"]);
+
+    // 改一格照常写回去：写的是这一份行本身（多出来的那个键跟着原样留着，谁也不读它）
+    const renamed = service.update("s-old", { name: "改过的名字" });
+    expect(renamed.name).toBe("改过的名字");
+    expect(service.get("s-old")?.updatedAt).toBeGreaterThan(1);
+  });
+
   it("置顶的会话排到前面，其余仍按创建时间倒序", async () => {
     const service = newService();
     const older = service.create(input);
@@ -106,7 +148,6 @@ describe("消息", () => {
       lineage: null,
       handoffThreshold: null,
       guardThreshold: null,
-      pendingHandoff: null,
       createdAt: 1,
       updatedAt: 1,
     });

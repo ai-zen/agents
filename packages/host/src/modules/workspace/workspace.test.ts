@@ -69,7 +69,6 @@ describe("项目行", () => {
       lineage: null,
       handoffThreshold: null,
       guardThreshold: null,
-      pendingHandoff: null,
       createdAt: 1,
       updatedAt: 1,
     });

@@ -60,7 +60,6 @@ function setup() {
     lineage: null,
     handoffThreshold: null,
     guardThreshold: null,
-    pendingHandoff: null,
     createdAt: 1,
     updatedAt: 1,
   });
