@@ -40,7 +40,26 @@ export interface HostObserverDeps {
  * 客户端要看能力表是另一件事，等有人要了再接。这一段只搬老行为，没人在用的不新接。
  */
 export class HostObserver {
+  /**
+   * 进程正在往下走：`kill` 带来的「排队区作废」不再落库 —— 关掉宿主不是杀死那一段。
+   *
+   * 两条路（用户按杀死、整个进程退出）共用同一个内核事实（`inboxCleared`），后果却相反：前者那
+   * 些条目真的作废了，后者一条都没作废、下次打开还要接着等。区别只在宿主这一层，所以开关放在这
+   * 一层，内核那一格一个字都不改。
+   */
+  private goingDown = false;
+
   constructor(private readonly deps: HostObserverDeps) {}
+
+  /**
+   * 调用方在 `runtime.close()` **之前**调它。
+   *
+   * `close()` 里逐段 `kill`，每一段都会清空队列并报 `inboxCleared`；那些事实从这一刻起说的不是
+   * 「这些条目作废」，是「这个进程要没了」。
+   */
+  shutdown(): void {
+    this.goingDown = true;
+  }
 
   /** 挂到运行时的事实流上；返回退订函数（幂等由运行时那一侧保证） */
   attach(runtime: AgentRuntime): () => void {
@@ -274,7 +293,12 @@ export class HostObserver {
 
       // 作废不是取走：这些条目再也不会落地，它们那一行没有等下去的理由。
       // 整段清掉而不是删载荷里的那几个 id —— 队列此刻已经空了，这张表里这段会话也不该剩东西。
+      //
+      // 关机时**不删**：这一条的意思是「这些条目作废」，而整个进程退出不是杀死那一段 —— 它们一条
+      // 都没作废，下次打开还要接着等（需求：关掉再打开，记忆与排队区都在）。下面推客户端那一句
+      // 一并不发，那时已经在关机，没有谁还看着这个界面。
       case "inboxCleared":
+        if (this.goingDown) return;
         try {
           this.deps.inbox.clearBySession(fact.sessionId);
         } catch (error) {

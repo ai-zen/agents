@@ -1,5 +1,7 @@
 /**
- * 一条验收：一条带两个 `__asset_id` 的消息经观察者落库之后，`session_assets` 里恰两行；同一条
+ * 两条验收。
+ *
+ * 其一：一条带两个 `__asset_id` 的消息经观察者落库之后，`session_assets` 里恰两行；同一条
  * 消息再报一次 `messageChanged` 之后仍然是两行。
  *
  * 两半各管一件事：
@@ -7,6 +9,9 @@
  *   它又还在；
  * - 不幂等，「同一条消息被报很多次」就会把引用行乘以次数（流式期间一条长回答会被写很多次），
  *   `countByAsset` 于是永远归不了零。
+ *
+ * 其二：关机时 `inboxCleared` 不删库，没关机时照删。两者是同一个内核事实（`kill` 清空队列），
+ * 后果却相反 —— 关机不是杀死那一段，还没被处理的那几句话一条都没作废，下次打开还要接着等。
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -62,6 +67,7 @@ function setup() {
 
   const t = createTranslator(() => "zh");
   const messages = messageTable(db);
+  const inbox = inboxTable(db);
   const assetRows = assetTable(db);
   const sessionAssets = sessionAssetTable(db);
   const assets = new AssetService({ assets: assetRows, sessionAssets, dataRoot, t });
@@ -69,14 +75,15 @@ function setup() {
   const errors: unknown[] = [];
 
   const listeners: Array<(fact: RuntimeFact) => void> = [];
-  new HostObserver({
+  const observer = new HostObserver({
     messages,
-    inbox: inboxTable(db),
+    inbox,
     assets,
     events,
     onError: (error) => errors.push(error),
     isHandingOff: () => false,
-  }).attach({
+  });
+  observer.attach({
     observe: (listener: (fact: RuntimeFact) => void) => {
       listeners.push(listener);
       return () => undefined;
@@ -89,6 +96,8 @@ function setup() {
 
   return {
     messages,
+    inbox,
+    observer,
     sessionAssets,
     errors,
     first,
@@ -115,6 +124,36 @@ function messageWithAssets(id: string, assetIds: readonly string[]): AgentNS.Mes
 }
 
 const agent = new Agent({ client: {} as never, model: "model-1" });
+
+/** 一段会话预置两条还没被处理的话：它们只活在 core 的队列里就会随进程消失，所以要落库 */
+function presetInbox(inbox: ReturnType<typeof inboxTable>): void {
+  inbox.insert("s-1", {
+    messageId: "m-pending-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    priority: "high",
+    source: { kind: "user" },
+    content: "第一句还在等",
+  });
+  inbox.insert("s-1", {
+    messageId: "m-pending-2",
+    createdAt: "2026-01-01T00:00:01.000Z",
+    priority: "high",
+    source: { kind: "user" },
+    content: "第二句还在等",
+  });
+}
+
+/** `kill` 清空队列时 core 报的那一条 */
+function inboxClearedFact(): RuntimeFact {
+  return {
+    type: "inboxCleared",
+    sessionId: "s-1",
+    agent,
+    seq: 1,
+    at: "2026-01-01T00:00:02.000Z",
+    entries: [],
+  };
+}
 
 describe("观察者登记素材引用", () => {
   it("一条带两个 `__asset_id` 的消息落库之后恰两行引用，再报一次 `messageChanged` 仍是两行", () => {
@@ -146,5 +185,31 @@ describe("观察者登记素材引用", () => {
 
     expect(sessionAssets.countByAsset(first.id)).toBe(1);
     expect(sessionAssets.countByAsset(second.id)).toBe(1);
+  });
+});
+
+describe("关机时排队区不作废", () => {
+  it("没调 `shutdown()`：`inboxCleared` 照老样子把两行删掉", () => {
+    const { emit, inbox } = setup();
+    presetInbox(inbox);
+    expect(inbox.listBySession("s-1")).toHaveLength(2);
+
+    emit(inboxClearedFact());
+
+    expect(inbox.listBySession("s-1")).toHaveLength(0);
+  });
+
+  it("调了 `shutdown()`：同一个事实不再删库，两行还在等下一次打开", () => {
+    const { emit, inbox, observer } = setup();
+    presetInbox(inbox);
+    expect(inbox.listBySession("s-1")).toHaveLength(2);
+
+    observer.shutdown();
+    emit(inboxClearedFact());
+
+    expect(inbox.listBySession("s-1").map((entry) => entry.messageId)).toEqual([
+      "m-pending-1",
+      "m-pending-2",
+    ]);
   });
 });
