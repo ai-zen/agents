@@ -1,7 +1,5 @@
 export interface Connection {
   readonly id: string;
-  /** 这条连接用的哪把宿主访问令牌；这一波还没有凭证校验，先允许 `null` */
-  readonly credentialId: string | null;
   readonly openedAt: number;
 }
 
@@ -11,6 +9,9 @@ export interface Connection {
  * 它承载的是身份，不是偏好：语言是用户级的全局设置，存到连接上就是每条连接各一份快照，
  * 而调用方会以为「用哪种语言」由连接决定。
  *
+ * 也不记「用的是哪串凭证」：凭证在握手那一刻就验完了，之后的每一次调用都不再问它；吊销只影响
+ * 以后能不能连上，不会回头断开已经握过手的连接，所以没有任何一处要读它。
+ *
  * 没有「最后一次活动时间」：那要每条消息回来改一次记录，而「这条连接还在不在」的答案
  * 就是它在不在登记表里。
  */
@@ -18,13 +19,8 @@ export class Connections {
   private readonly live = new Map<string, Connection>();
 
   /** 握手成功：建一条，返回它 */
-  open(credentialId: string | null): Connection {
-    const connection: Connection = {
-      id: crypto.randomUUID(),
-      credentialId,
-      openedAt: Date.now(),
-    };
-
+  open(): Connection {
+    const connection: Connection = { id: crypto.randomUUID(), openedAt: Date.now() };
     this.live.set(connection.id, connection);
     return connection;
   }

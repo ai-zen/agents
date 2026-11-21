@@ -18,6 +18,7 @@ const TRPC_CODES: Record<ErrorCode, keyof typeof TRPC_ERROR_CODES_BY_KEY> = {
   busy: "CONFLICT",
   unsupported: "NOT_IMPLEMENTED",
   config_invalid: "PRECONDITION_FAILED",
+  unauthorized: "UNAUTHORIZED",
 };
 
 /**

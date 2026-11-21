@@ -7,16 +7,12 @@ import { describe, expect, it } from "vitest";
 
 import { Connections } from "./registry.js";
 
-function createConnections(): Connections {
-  return new Connections();
-}
-
 describe("客户端连接", () => {
   it("开两条是不同的 id，list() 两条，close 之后剩一条", () => {
-    const connections = createConnections();
+    const connections = new Connections();
 
-    const first = connections.open(null);
-    const second = connections.open("credential-1");
+    const first = connections.open();
+    const second = connections.open();
 
     expect(second.id).not.toBe(first.id);
     expect(connections.list()).toEqual([first, second]);
@@ -29,8 +25,8 @@ describe("客户端连接", () => {
   });
 
   it("close 不存在的 id 不抛，get 它回 undefined", () => {
-    const connections = createConnections();
-    const live = connections.open(null);
+    const connections = new Connections();
+    const live = connections.open();
 
     expect(() => connections.close("not-a-connection")).not.toThrow();
     expect(connections.get("not-a-connection")).toBeUndefined();

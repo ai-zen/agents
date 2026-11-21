@@ -23,6 +23,7 @@ export const en: Record<string, string> = {
   "会话 {sessionId} 没有运行中的执行体，先运行它再投递":
     'Session "{sessionId}" has no running agent; start the session before sending',
   "宿主内部出错，这次调用没有完成": "Internal host failure: the call did not complete",
+  "宿主访问令牌无效": "The host access token is not valid",
   "助手 {agentDefinitionId} 没有可用的模型":
     'The agent definition "{agentDefinitionId}" has no usable model',
   "找不到 id 为 {assetId} 的素材": 'Cannot find the asset "{assetId}"',

@@ -1,4 +1,5 @@
 import { initTRPC } from "@trpc/server";
+import { z } from "zod";
 
 import type { Connection } from "../connection/registry.js";
 import type { Translator } from "../i18n/index.js";
@@ -12,6 +13,15 @@ import { hostErrorFormatter } from "./errors.js";
 export interface HostContext {
   readonly connection: Connection;
 }
+
+/**
+ * 握手帧带的那几格。
+ *
+ * 令牌从这里上来而不是从 URL 查询串：查询串会进访问日志、进浏览器历史，而这一格只在连接建立
+ * 时过一遍线。tRPC 客户端与此处的约定是「连接时先送 `connectionParams`」，服务端因此不需要
+ * 猜客户端用的是哪种 WebSocket 实现 —— 浏览器里设不了请求头。
+ */
+export const connectionParams = z.object({ token: z.string() });
 
 /**
  * tRPC 的根，每个宿主一个。

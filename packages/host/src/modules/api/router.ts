@@ -1,6 +1,5 @@
 import { agentRouter } from "./agent.js";
 import { assetRouter } from "./asset.js";
-import { credentialRouter } from "./credential.js";
 import type { HostApiDeps } from "./deps.js";
 import { eventsProcedure } from "./events.js";
 import { handoffRouter } from "./handoff.js";
@@ -24,7 +23,6 @@ export function createAppRouter(deps: HostApiDeps) {
     agent: agentRouter(deps, api),
     asset: assetRouter(deps, api),
     notice: noticeRouter(deps, api),
-    credential: credentialRouter(deps, api),
     question: questionRouter(deps, api),
     handoff: handoffRouter(deps, api),
     search: searchRouter(deps, api),

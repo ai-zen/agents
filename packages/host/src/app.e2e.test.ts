@@ -1,11 +1,12 @@
 /**
- * 唯一必须有的那条用例：起一个真的宿主、用真的 ws 客户端连上去、发一句话、收到流。
+ * 真端口这一组：起一个真的宿主、用真的 ws 客户端连上去、发一句话、收到流；另有一条说的是连接
+ * 这一层的鉴权 —— 令牌验不过就连不上，任何 procedure 都调不到。
  *
  * 模型不出网：用例里起一个本地的 OpenAI 兼容端点回一段 SSE，地址写进 `config.json` 的端点。
  * 这样验的是「一句话真的走到了执行体、模型说的话真的流回来了」，而不是把请求层整个打掉。
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -33,26 +34,60 @@ const SAID = "你好，本地端点";
 interface Envelope {
   readonly id: number | null;
   readonly result?: { readonly type?: string; readonly data?: unknown };
-  readonly error?: { readonly message?: string };
+  readonly error?: { readonly message?: string; readonly data?: { readonly code?: string } };
+}
+
+/** 错误帧里能读出结论的那两格：码说的是哪一种拒，话是渲染好的那一句 */
+function rejectionOf(error: NonNullable<Envelope["error"]>): Error {
+  return new Error(`${error.data?.code ?? ""} ${error.message ?? ""}`.trim());
 }
 
 class HostClient {
   private id = 0;
   private readonly waiting = new Map<number, (message: Envelope) => void>();
+  /**
+   * 没有 `id` 的帧。服务端在连接这一层拒绝时只发这一种，它不属于任何一次调用；记下来是为了让
+   * 断言说得出「先回了一帧 `UNAUTHORIZED` 才关掉连接」，而不是只有「断了」。
+   */
+  readonly refusals: Envelope[] = [];
+  /** 服务端关掉这条连接时兑现。被拒的连接没有本调用的回包可等，能等的只有它 */
+  private readonly closed: Promise<void>;
 
   private constructor(private readonly socket: WebSocket) {
+    this.closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
     this.socket.on("message", (raw) => {
       const message = JSON.parse(String(raw)) as Envelope;
-      if (message.id === null) return;
+      if (message.id === null) {
+        this.refusals.push(message);
+        return;
+      }
       this.waiting.get(message.id)?.(message);
     });
   }
 
-  static connect(port: number): Promise<HostClient> {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  static connect(port: number, token?: string): Promise<HostClient> {
+    // 查询串不是装饰：带 `connectionParams=1` 时服务端才等握手帧再建上下文；不带时它一建成就用
+    // 空参数建一次，于是「没送令牌」在连接那一刻就已经被判完了，握手帧根本来不及送
+    const url =
+      token === undefined ? `ws://127.0.0.1:${port}` : `ws://127.0.0.1:${port}?connectionParams=1`;
+    const socket = new WebSocket(url);
     return new Promise((resolve, reject) => {
-      socket.once("open", () => resolve(new HostClient(socket)));
       socket.once("error", reject);
+      socket.once("open", () => {
+        // 握手帧只能在 `open` 之后发（早了 socket 还没连上，`send` 会抛），但必须紧接着发：
+        // 服务端拿这一帧建上下文，它是这条连接上第一帧才算数，之后的 `query` 才有上下文可判
+        if (token !== undefined) {
+          socket.send(
+            JSON.stringify({
+              id: null,
+              jsonrpc: "2.0",
+              method: "connectionParams",
+              data: { token },
+            }),
+          );
+        }
+        resolve(new HostClient(socket));
+      });
     });
   }
 
@@ -84,15 +119,35 @@ class HostClient {
     this.socket.close();
   }
 
+  /** 等服务端关掉这条连接：被拒的连接留在这儿的只有那一帧无 id 的错误 */
+  whenClosed(): Promise<void> {
+    return this.closed;
+  }
+
   private async once<T>(method: "query" | "mutation", path: string, input: unknown): Promise<T> {
     const id = this.send(method, path, input);
-    const message = await new Promise<Envelope>((resolve) => this.waiting.set(id, resolve));
+    const answered = new Promise<Envelope>((resolve) => this.waiting.set(id, resolve));
+    // 被拒的连接不会为这次调用回一帧带 `id` 的包，它先回一帧无 id 的错误再把连接关掉：所以
+    // 「关掉」也要能结束这次等待，否则用例等到的是超时，而不是「被拒」
+    const closed = this.closed.then((): never => {
+      throw this.refusal();
+    });
+    const message = await Promise.race([answered, closed]);
     this.waiting.delete(id);
-    if (message.error !== undefined) throw new Error(message.error.message ?? `${path} rejected`);
+    if (message.error !== undefined) throw rejectionOf(message.error);
     return message.result?.data as T;
   }
 
+  /** 这次调用等不到回包时的说法：服务端在连接这一层留的那一帧，或者「什么都没说就断了」 */
+  private refusal(): Error {
+    const last = this.refusals.at(-1)?.error;
+    return last === undefined ? new Error("服务端关掉了连接，没有回任何帧") : rejectionOf(last);
+  }
+
   private send(method: string, path: string, input: unknown): number {
+    // 连接已经被关掉时不再往 socket 上写：ws 此时抛的是「readyState 3」这种现场，与「被拒」
+    // 不是一件事，用例里也就无从断言
+    if (this.socket.readyState !== WebSocket.OPEN) throw this.refusal();
     this.id += 1;
     this.socket.send(
       JSON.stringify({ id: this.id, jsonrpc: "2.0", method, params: { path, input } }),
@@ -153,11 +208,14 @@ function textOf(message: AgentNS.Message): string {
 
 describe("宿主跑起来", () => {
   const workspaceId = randomUUID();
+  /** 一个没有任何会话的项目：前面那条用例会往 `workspaceId` 里落一段会话，这里要的是真的空 */
+  const vacantWorkspaceId = randomUUID();
   let dataRoot: string;
   let previousHome: string | undefined;
   let model: { origin: string; server: Server };
   let app: HostApp;
   let client: HostClient;
+  let token: string;
 
   beforeAll(async () => {
     dataRoot = mkdtempSync(join(tmpdir(), "ai-zen-host-"));
@@ -215,8 +273,16 @@ describe("宿主跑起来", () => {
     // 这一波还没有建项目的 procedure，项目行只能先写进去；会话挂在外键上，没有它插不进去
     const cwd = join(dataRoot, "project");
     mkdirSync(cwd, { recursive: true });
+    const vacant = join(dataRoot, "vacant");
+    mkdirSync(vacant, { recursive: true });
     const db = openDatabase(join(dataRoot, "ai-zen.db"));
     workspaceTable(db).put({ id: workspaceId, name: "用例项目", cwd, createdAt: Date.now() });
+    workspaceTable(db).put({
+      id: vacantWorkspaceId,
+      name: "空项目",
+      cwd: vacant,
+      createdAt: Date.now(),
+    });
     db.close();
 
     process.env.AI_ZEN_DIR = dataRoot;
@@ -226,7 +292,9 @@ describe("宿主跑起来", () => {
     process.env.HOME = join(dataRoot, "home");
     app = await HostApp.open({ port: 0 });
     await app.start();
-    client = await HostClient.connect(app.port);
+    // 令牌只从本机交付文件读，不自己造：文件里那一串带一个末尾换行，不 `trim` 就永远验不过
+    token = readFileSync(join(dataRoot, "run", "token"), "utf8").trim();
+    client = await HostClient.connect(app.address.port, token);
   }, 60_000);
 
   afterAll(async () => {
@@ -285,6 +353,36 @@ describe("宿主跑起来", () => {
     expect(addedAt).toBeGreaterThanOrEqual(0);
     expect(changedAt).toBeGreaterThan(addedAt);
     expect(idledAt).toBeGreaterThan(changedAt);
+  }, 60_000);
+
+  it("验不过的连接调不到任何 procedure，宿主照旧服务", async () => {
+    // 不送令牌：连的是没有查询串的那条地址，服务端在建上下文那一刻就把它拒了，握手帧无从送起
+    const anonymous = await HostClient.connect(app.address.port);
+    await expect(anonymous.query("session.list", { workspaceId })).rejects.toThrow(
+      /UNAUTHORIZED|令牌/,
+    );
+    // 拒这件事在客户端只剩两样能看的：一帧无 id 的错误，和随后关掉的连接
+    await anonymous.whenClosed();
+    expect(anonymous.refusals.at(-1)?.error?.data?.code).toBe("UNAUTHORIZED");
+
+    // 令牌送出去了但验不过：走的是握手那一支，结论相同
+    const forged = await HostClient.connect(app.address.port, "forged-token");
+    await expect(forged.query("session.list", { workspaceId })).rejects.toThrow(
+      /UNAUTHORIZED|令牌/,
+    );
+    await forged.whenClosed();
+    expect(forged.refusals.at(-1)?.error?.data?.code).toBe("UNAUTHORIZED");
+
+    // 这两次拒绝不能把宿主带走：换那串真的令牌上去，调用照旧成立。查的是那个还没有会话的项目，
+    // 上一个用例已经往 `workspaceId` 里落了一段会话，拿它兑不出「空数组」这个结论
+    const admitted = await HostClient.connect(app.address.port, token);
+    try {
+      await expect(
+        admitted.query<Session[]>("session.list", { workspaceId: vacantWorkspaceId }),
+      ).resolves.toEqual([]);
+    } finally {
+      admitted.close();
+    }
   }, 60_000);
 });
 

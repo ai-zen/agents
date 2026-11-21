@@ -4,7 +4,6 @@ import type { Bus } from "../../infra/bus.js";
 import type { Translator } from "../i18n/index.js";
 import type { ScopeRegistry } from "../scope/registry.js";
 import type { AssetService } from "../asset/service.js";
-import type { CredentialService } from "../credential/service.js";
 import type { NoticeService } from "../notice/service.js";
 import type { QuestionRegistry } from "../question/registry.js";
 import type { SearchService } from "../search/service.js";
@@ -36,7 +35,6 @@ export interface HostApiDeps {
   readonly agents: AgentRegistry;
   readonly assets: AssetService;
   readonly notices: NoticeService;
-  readonly credentials: CredentialService;
   readonly questions: QuestionRegistry;
   readonly search: SearchService;
   readonly handoff: HandoffService;

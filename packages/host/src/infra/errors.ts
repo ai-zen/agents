@@ -13,7 +13,8 @@ export type ErrorCode =
   | "conflict"
   | "busy"
   | "unsupported"
-  | "config_invalid";
+  | "config_invalid"
+  | "unauthorized";
 
 export class HostError extends Error {
   constructor(
