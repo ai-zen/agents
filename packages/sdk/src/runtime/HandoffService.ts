@@ -198,6 +198,12 @@ export interface MigrateParams extends HandoffParams {
   strategy?: MigrationStrategy;
 }
 
+/** 交接这一趟的三格事实：开始了、成了、没成。**旁路**：交接的流程不看它 */
+export type HandoffFact =
+  | { type: "started"; mode: HandoffMode }
+  | { type: "finished"; mode: HandoffMode }
+  | { type: "failed"; mode: HandoffMode; error: Error };
+
 /**
  * 任务交接服务。
  *
@@ -250,6 +256,11 @@ export class HandoffService {
   private guard?: HandoffGuardPlugin;
   /** 已注册过守卫的 agent（每个 agent 只 use 一次） */
   private readonly guardedAgents = new WeakSet<object>();
+  /**
+   * 订了交接事实的那些人。**旁路**：只收，不参与任何判断（交接的流程一个字都不从这里读），
+   * 与运行时的 `listeners` 同一个位置、同一个用法。
+   */
+  private readonly listeners = new Set<(fact: HandoffFact) => void>();
 
   constructor(options: HandoffServiceOptions = {}) {
     const {
@@ -292,6 +303,29 @@ export class HandoffService {
   /** 交接文档目录 */
   get handoffDir(): string {
     return this.handoffDirPath;
+  }
+
+  /**
+   * 订阅交接的事实；返回幂等的退订函数。
+   *
+   * 三格（{@link HandoffFact}）：开始了、成了、没成（失败那一格带错误）。发出点只有一处 ——
+   * {@link HandoffService.withHandingOff}，`handoff()` 与 `migrate()` 共用的那道包装：它本来就
+   * 是「正在交接」被立起来的地方；两边各发一遍就是把同一趟报两次。
+   *
+   * **这三格为什么挂在 `HandoffService` 上而不是内核的事件表上**：交接是这一层的概念，内核不认识
+   * 它。把它塞进内核的事件表，等于让内核认识一个它永远不参与的东西。
+   *
+   * **订阅者抛错不在这里兜**：与内核那条 `observerFailed` 是同一件事，隔离只有一处实现（`Agent.on`
+   * 里那层包装函数）；在这里再包一层就是两份实现，而且哪一份先生效说不清。
+   *
+   * **晚到的订阅者**拿不到过去的事实：事实只报变化，「此刻在不在交接」那一格由 `handingOff`
+   * 快照对齐，两者合起来才说得清「此刻」与「怎么走到这一刻」。
+   */
+  observe(listener: (fact: HandoffFact) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   // ==================================================================
@@ -398,7 +432,7 @@ export class HandoffService {
    * 回合从 `agent.messages` 里截掉，本次新建的文档也不留。
    */
   async handoff(params: HandoffParams): Promise<HandoffContext> {
-    return this.withHandingOff(() => this.runHandoff(params));
+    return this.withHandingOff(this.modeOf(params), () => this.runHandoff(params));
   }
 
   /**
@@ -424,7 +458,7 @@ export class HandoffService {
    * 换完才叫 `onMigrated`（恢复后的钩子就在这一拍：此刻记忆已经是新的那一份了）。
    */
   async migrate(params: MigrateParams): Promise<HandoffContext> {
-    return this.withHandingOff(async () => {
+    return this.withHandingOff(this.modeOf(params), async () => {
       // 拿到 ctx 就是「已提交」：文档已经写好并通过校验，取消不再生效（见 `runHandoff`）
       const ctx = await this.runHandoff(params);
       const memory = this.planMemory(
@@ -490,16 +524,48 @@ export class HandoffService {
    *
    * 只管「这一趟自己在跑」（不是「这段会话在交接」——那份事实在宿主那里），所以不需要
    * 跨实例的锁，也不持有取消句柄：取消只认调用方递进来的 `signal`。
+   *
+   * 这一趟的三格事实也在这里发（{@link HandoffFact}）：`handoff()` 与 `migrate()` 共用它，
+   * 而「正在交接」正是在这一处被立起来的 —— 两边各发一遍就是把同一趟报两次。
    */
-  private async withHandingOff<T>(fn: () => Promise<T>): Promise<T> {
+  private async withHandingOff<T>(mode: HandoffMode, fn: () => Promise<T>): Promise<T> {
     if (this._handingOff)
       throw new Error("A handoff is already in progress, wait for it to finish");
     this._handingOff = true;
+
     try {
-      return await fn();
+      this.emit({ type: "started", mode });
+
+      let result: T;
+      try {
+        result = await fn();
+      } catch (thrown) {
+        // 没成：错误收成 `Error`（与内核 `observerFailed` 那一处同一个口径），拿到事实的人不必
+        // 再分「这次是 Error 还是一个字符串」
+        this.emit({
+          type: "failed",
+          mode,
+          error: thrown instanceof Error ? thrown : new Error(String(thrown)),
+        });
+        throw thrown;
+      }
+
+      // 成了：这一格只由「闭包正常返回」发 —— 订阅者在报事实那一下抛错，不会被当成这一趟失败
+      this.emit({ type: "finished", mode });
+      return result;
     } finally {
       this._handingOff = false;
     }
+  }
+
+  /** 这一趟用哪个执行者：申请的那个，没申请就是构造时的默认（`runHandoff` 与事实那一侧同一份） */
+  private modeOf(params: HandoffParams): HandoffMode {
+    return params.mode ?? this.defaultMode;
+  }
+
+  /** 把一格事实交给每一个订阅者（这里**不 try/catch**，理由见 {@link HandoffService.observe}） */
+  private emit(fact: HandoffFact): void {
+    for (const listener of this.listeners) listener(fact);
   }
 
   /** 取消点检查：每跨过一个阶段就确认一次，避免取消后继续往下一步冲 */
@@ -549,7 +615,7 @@ export class HandoffService {
    */
   private async runHandoff(params: HandoffParams): Promise<HandoffContext> {
     const { agent, promptTokens, handoffTokens, signal } = params;
-    const requestedMode = params.mode ?? this.defaultMode;
+    const requestedMode = this.modeOf(params);
     const handoffPath = join(this.handoffDirPath, HandoffService.createHandoffFileName(new Date()));
     const model = this.model ?? agent.model;
     const messageCountBefore = agent.messages.length;
