@@ -47,7 +47,10 @@ export interface ConnectionSettings {
   url?: string;
   /** 仅 `remote` 有意义：显式凭证。留空 = 退回本机 `<数据根>/run/token`（本机实例那条兜底） */
   token?: string;
-  /** 连接语言（`hello` 时带上）。留空 = 由宿主的默认语言决定（D8：缺省英文） */
+  /**
+   * 连接语言。它管的是**客户端自己**那几句文案（连不上、握手超时这一类），留空按英文给；
+   * 宿主说什么语言是它的用户级设置，不进这条连接。
+   */
   language?: string;
 }
 

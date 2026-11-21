@@ -10,7 +10,7 @@
  *    地址上，拉起只会白等到时限，然后报一个指向错误方向的超时 —— 而用户真正要知道的是「那台
  *    机器没应答」或「凭证没被接受」。
  * 2. **本机**：读 `<数据根>/run/host.json` 拿地址、`<数据根>/run/token` 拿凭证；探不到就
- *    spawn `agents-host serve`，然后轮询到「发现文件出现 + `host.hello` 成功」才算就绪。
+ *    spawn `agents-host serve`，然后轮询到「发现文件出现 + 第一次调用调通」才算就绪。
  *
  * ## 为什么只认发现文件，不认端口
  *
@@ -53,12 +53,10 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import type { ClientInfo } from "@ai-zen/agents-host";
-
 import type { HostFileInfo } from "@ai-zen/agents-host";
 
-import { isLoopbackHost, parseAddress, type HostTarget } from "./address.js";
-import { Client, type ClientOptions } from "./client.js";
+import { isLoopbackHost, parseAddress, webSocketUrl, type HostTarget } from "./address.js";
+import { connect as connectToHost, type ClientOptions, type HostClient } from "./client.js";
 import { isClientError, localError, type ClientError } from "./errors.js";
 import { settingsToTarget, type ConnectionSettings } from "./settings.js";
 
@@ -151,14 +149,12 @@ export interface EnsureHostOptions {
    * （见 `SpawnHostContext.launchLog`）。显式地址那条路不拉起，给了也用不上。
    */
   launchLog: string;
-  /** 客户端身份（握手带上，宿主用它做连接列表与日志） */
-  clientInfo: ClientInfo;
   /** 上一次的连接设置（`settings.ts`）。`remote` 即「显式地址」 */
   settings?: ConnectionSettings;
   /** 覆盖设置里的语言（宿主切语言时不必改设置文件） */
   language?: string;
-  /** 建连（缺省 `Client.connect`） */
-  connect?: (options: ClientOptions) => Promise<Client>;
+  /** 建连（缺省 `connect`：一条 ws + 一次调通） */
+  connect?: (options: ClientOptions) => Promise<HostClient>;
   /** 拉起宿主（缺省 {@link spawnHostByContext}：给了 `hostEntry` 起它，没给就让 npx 现下现起） */
   spawnHost?: SpawnHost;
   /** 宿主入口（给了就走「已装 / 已打包」那条路；桌面端随包分发的那一份从这里进） */
@@ -181,13 +177,13 @@ export interface EnsureHostOptions {
   timeoutMs?: number;
   /** 轮询间隔 */
   retryIntervalMs?: number;
-  /** 单次建连 + 握手的时限 */
-  connectTimeoutMs?: number;
+  /** 单次建连 + 第一次调通的时限 */
+  handshakeTimeoutMs?: number;
 }
 
 /** `ensureHost` 的结果 */
 export interface EnsureHostResult {
-  client: Client;
+  client: HostClient;
   /** 连上的地址（结构化；界面拼地址一律用它） */
   target: HostTarget;
   /** 这次是不是本客户端拉起了宿主（`true` 说明之前没有活着的实例） */
@@ -259,7 +255,7 @@ export async function readLocalToken(
 }
 
 /**
- * 确保有一个能连的宿主，并把已经握过手的 `Client` 交出去。
+ * 确保有一个能连的宿主，并把已经调通过的 `HostClient` 交出去。
  *
  * 失败都是 `ClientError`：宿主说的话（例如 `unauthorized`）原样上抛，客户端自己造的
  * （连不上、拉起超时）用本地码。
@@ -271,8 +267,7 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const retryIntervalMs = options.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
-  const connect =
-    options.connect ?? ((connectOptions: ClientOptions) => Client.connect(connectOptions));
+  const connect = options.connect ?? connectToHost;
   const settings = options.settings ?? { mode: "local" as const };
   const language = options.language ?? settingsToTarget(settings).language;
   const onStage = options.onStage ?? (() => {});
@@ -285,15 +280,14 @@ export async function ensureHost(options: EnsureHostOptions): Promise<EnsureHost
   };
 
   /** 连一次；「现在连不上」不算错（返回 `null`），「被拒 / 地址不对」当场抛 */
-  const attempt = async (target: HostTarget, token: string): Promise<Client | null> => {
+  const attempt = async (target: HostTarget, token: string): Promise<HostClient | null> => {
     try {
       return await connect({
-        target,
+        url: webSocketUrl(target),
         token,
-        clientInfo: options.clientInfo,
         ...(language ? { language } : {}),
-        ...(options.connectTimeoutMs !== undefined
-          ? { connectTimeoutMs: options.connectTimeoutMs }
+        ...(options.handshakeTimeoutMs !== undefined
+          ? { handshakeTimeoutMs: options.handshakeTimeoutMs }
           : {}),
       });
     } catch (error) {
@@ -708,7 +702,7 @@ async function explicitToken(
 /**
  * 这个失败是「现在不行」还是「这样不行」。
  *
- * 连不上 / 断了 / 握手超时 / 调用超时都算「现在不行」，轮询继续；被宿主拒（`unauthorized`）、
+ * 连不上 / 断了 / 握手超时都算「现在不行」，轮询继续；被宿主拒（`UNAUTHORIZED`）、
  * 地址不合法之类继续等一万年也是同一个结果 —— 而把它吞掉只会得到一句「宿主起不来」，方向完全错。
  */
 function isNotReady(error: unknown): boolean {
@@ -717,7 +711,6 @@ function isNotReady(error: unknown): boolean {
     case "host_unavailable":
     case "connection_lost":
     case "handshake_timeout":
-    case "call_timeout":
       return true;
     default:
       return false;

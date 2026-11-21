@@ -3,17 +3,17 @@
  *
  * ## 分工
  *
- * 「怎么重连」是客户端的事（`Client.reconnect()`：换一条 socket、重新握手、连上后补镜像），
- * 「要不要一直重试」是**调用方**的事 —— 不同前端对「试到什么时候」的答案不一样，包内不预设
- * 「失败三次就放弃」那种数（那是产品判断，不是传输事实）。
+ * 「怎么重连」是连接层的事（`HostClient.reconnect()`：把手上那条 socket 掐掉，再等到一次调用
+ * 调通），「要不要一直重试」是**调用方**的事 —— 不同前端对「试到什么时候」的答案不一样，包内
+ * 不预设「失败三次就放弃」那种数（那是产品判断，不是传输事实）。
  *
  * 所以这个文件的默认策略是「**一直重试**」（{@link DEFAULT_RECONNECT_POLICY}：
  * `maxAttempts: Infinity`），调用方要给上限就传一个有限的数字。
  *
  * ## 哪些失败不值得重试
  *
- * 传输层的失败（连不上、断了、握手超时）重试有意义；**被宿主拒**（`unauthorized`）与**地址
- * 不合法**重试一万次也是同一个结果，无限重试只会把一条该上屏的错误藏进一个转圈的界面里。
+ * 传输层的失败（连不上、断了、握手超时）重试有意义；**被宿主拒**（`UNAUTHORIZED` / `BAD_REQUEST`）
+ * 与**地址不合法**重试一万次也是同一个结果，无限重试只会把一条该上屏的错误藏进一个转圈的界面里。
  * 判据在 {@link isRetryableByDefault}，按码而不是按错误文本 —— 文本会变，码是契约。
  */
 
@@ -46,7 +46,7 @@ export const DEFAULT_RECONNECT_POLICY: ReconnectPolicy = {
   factor: 2,
 };
 
-/** 只有 `reconnect()` 这一件事是重连需要的（`Client` 满足它；用例也可以给一个假的） */
+/** 只有 `reconnect()` 这一件事是重连需要的（`HostClient` 满足它；用例也可以给一个假的） */
 export interface Reconnectable {
   reconnect(): Promise<void>;
 }
@@ -70,7 +70,7 @@ export interface ReconnectOptions {
 }
 
 /**
- * 反复 `reconnect()` 直到连上（连上之后把镜像补回来由 `Client` 自己做）。
+ * 反复 `reconnect()` 直到连上（断线之后补什么由调用方决定：宿主有 `session.open`，一次取全）。
  *
  * 抛出的错误是**最后一次失败的那个**：调用方要显示的就是它（宿主的话术已经按连接语言渲染
  * 好了，本地那些也有文案）。不重试的失败当场抛出，不等满次数。
@@ -118,8 +118,8 @@ export function retryDelay(policy: ReconnectPolicy, attempt: number): number {
 export function isRetryableByDefault(error: unknown): boolean {
   if (!(error instanceof ClientError)) return true;
   switch (error.code) {
-    case "unauthorized":
-    case "invalid_params":
+    case "UNAUTHORIZED":
+    case "BAD_REQUEST":
     case "bad_address":
     case "closed":
     case "host_entry_missing":

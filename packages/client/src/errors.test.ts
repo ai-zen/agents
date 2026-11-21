@@ -1,78 +1,110 @@
 /**
- * 错误的验收：宿主回来的 `data.{code,message,detail}` 一个字不改；客户端自己那几句按语言给。
+ * 错误的验收：宿主那一套 tRPC 码能还原成能分支的东西、它渲染好的那句原样带出来、客户端自己那几句
+ * 按语言给。
  */
 
+import { TRPCClientError } from "@trpc/client";
 import { describe, expect, it } from "vitest";
 
-import { ClientError, fromHostError, isClientError, localError } from "./errors.js";
+import { ClientError, fromTRPCError, isClientError, localError } from "./errors.js";
 
-describe("fromHostError", () => {
-  it("把 error.data 的三样原样搬进来", () => {
-    const error = fromHostError({
-      code: -32004,
-      message: "这段会话不存在了",
+/** 一帧宿主回来的错误：形状照 `packages/host/src/modules/api/errors.ts` 那一份 */
+function hostError(input: {
+  code: string;
+  message: string;
+  details?: unknown;
+}): TRPCClientError<never> {
+  return TRPCClientError.from({
+    error: {
+      code: -32603,
+      message: input.message,
       data: {
-        code: "not_found",
-        message: "这段会话不存在了",
-        detail: { sessionId: "c1" },
-        params: { what: "session" },
+        code: input.code,
+        path: "session.open",
+        ...(input.details === undefined ? {} : { details: input.details }),
       },
-    });
+    },
+  });
+}
 
-    expect(error).toBeInstanceOf(ClientError);
-    expect(error.code).toBe("not_found");
-    expect(error.message).toBe("这段会话不存在了");
-    expect(error.detail).toEqual({ sessionId: "c1" });
-    expect(error.params).toEqual({ what: "session" });
-    expect(error.rpcCode).toBe(-32004);
-    expect(error.fromHost).toBe(true);
+describe("fromTRPCError：宿主回的那些码", () => {
+  it("把 data.code 还原成码、message 原样、details 进 detail", () => {
+    const error = fromTRPCError(
+      hostError({
+        code: "NOT_FOUND",
+        message: "找不到 id 为 c1 的会话",
+        details: { entity: "session", sessionId: "c1" },
+      }),
+    );
+
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.message).toBe("找不到 id 为 c1 的会话");
+    expect(error.detail).toEqual({ entity: "session", sessionId: "c1" });
   });
 
-  it("认不出来的业务码照样递出去（不吞、不改写成 internal）", () => {
-    const error = fromHostError({
-      code: -32099,
-      message: "宿主新加的一类失败",
-      data: { code: "brand_new_code", message: "宿主新加的一类失败", params: {} },
-    });
-    expect(error.code).toBe("brand_new_code");
-    expect(error.message).toBe("宿主新加的一类失败");
+  it("宿主那八个 ErrorCode 落到的七个 tRPC 码都能还原（busy/conflict、not_found/not_available 合成同一个）", () => {
+    const codes = [
+      "UNAUTHORIZED",
+      "BAD_REQUEST",
+      "NOT_FOUND",
+      "CONFLICT",
+      "NOT_IMPLEMENTED",
+      "PRECONDITION_FAILED",
+      "INTERNAL_SERVER_ERROR",
+    ];
+    for (const code of codes) {
+      expect(fromTRPCError(hostError({ code, message: "x" })).code).toBe(code);
+    }
   });
 
-  it("data 缺字段时按 internal 兜底，而不是变成一条空消息", () => {
-    const error = fromHostError({ code: -32603, message: "内部错误" });
-    expect(error.code).toBe("internal");
-    expect(error.message).toBe("内部错误");
-  });
-});
-
-describe("localError", () => {
-  it("按语言给句子，参数填进去", () => {
-    const zh = localError("not_connected", {
-      language: "zh",
-      params: { method: "host.version" },
-    });
-    expect(zh.code).toBe("not_connected");
-    expect(zh.message).toContain("host.version");
-    expect(zh.message).toContain("握手");
-
-    const en = localError("host_unavailable", {
-      language: "en",
-      params: { endpoint: "10.0.0.5:8790" },
-    });
-    expect(en.message).toContain("10.0.0.5:8790");
-    expect(en.fromHost).toBe(false);
-  });
-
-  it("语言认不出来时按缺省（英文）", () => {
-    const error = localError("closed", { language: "fr" });
-    expect(error.message).toMatch(/closed/i);
+  it("认不出的码照样递出去（宿主加了新码，客户端不必先认识它）", () => {
+    expect(fromTRPCError(hostError({ code: "PAYLOAD_TOO_LARGE", message: "x" })).code).toBe(
+      "PAYLOAD_TOO_LARGE",
+    );
   });
 });
 
-describe("isClientError", () => {
-  it("只认自己的类型", () => {
-    expect(isClientError(new ClientError("closed", "x"))).toBe(true);
-    expect(isClientError(new Error("x"))).toBe(false);
-    expect(isClientError(null)).toBe(false);
+describe("fromTRPCError：不是宿主说的话", () => {
+  it("客户端自己抛的（本端关掉）：从 cause 里取回原物", () => {
+    const closed = localError("closed", { params: {} });
+    const error = fromTRPCError(TRPCClientError.from(closed));
+
+    expect(error).toBe(closed);
+    expect(error.code).toBe("closed");
+  });
+
+  it("连接断了：传输层那句英文原样留着，码是 connection_lost", () => {
+    const error = fromTRPCError(TRPCClientError.from(new Error("WebSocket closed")));
+
+    expect(error.code).toBe("connection_lost");
+    expect(error.message).toBe("WebSocket closed");
+    expect(error.detail).toEqual({ reason: "WebSocket closed" });
+  });
+
+  it("根本不是 tRPC 的错误：unexpected，原始信息进 detail", () => {
+    const error = fromTRPCError(new TypeError("x is not a function"));
+
+    expect(error.code).toBe("unexpected");
+    expect(error.detail).toEqual({ reason: "x is not a function" });
+  });
+
+  it("已经是 ClientError 的原样返回（不重复包一层）", () => {
+    const original = new ClientError("BAD_REQUEST", "x");
+    expect(fromTRPCError(original)).toBe(original);
+    expect(isClientError(original)).toBe(true);
+  });
+});
+
+describe("localError：本地那几句按语言给", () => {
+  it("中文 / 英文各一份，缺省英文", () => {
+    const zh = localError("host_unavailable", { language: "zh-CN", params: { endpoint: "h:1" } });
+    const en = localError("host_unavailable", { params: { endpoint: "h:1" } });
+
+    expect(zh.message).toContain("连不上宿主（h:1）");
+    expect(en.message).toBe("Could not reach the host (h:1)");
+  });
+
+  it("缺参数时占位符原样留着（不把 undefined 印到界面上）", () => {
+    expect(localError("host_unavailable", { params: {} }).message).toContain("{endpoint}");
   });
 });

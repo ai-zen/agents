@@ -14,9 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import type { ClientInfo } from "@ai-zen/agents-host";
-
-import type { Client, ClientOptions } from "./client.js";
+import type { ClientOptions, HostClient } from "./client.js";
 import {
   ensureHost,
   npxHostArgv,
@@ -31,10 +29,9 @@ import {
   type SpawnDeps,
   type SpawnHostContext,
 } from "./connection.js";
-import { fromHostError, localError, type ClientError } from "./errors.js";
+import { ClientError, localError } from "./errors.js";
 
 const DATA_ROOT = "/data/ai-zen";
-const CLIENT_INFO: ClientInfo = { name: "test-client", version: "0.0.0-test" };
 
 /**
  * 拉起日志的落点由**调用方**给，所以用例自己定一个（CLI 那边给的是 `<数据根>/logs/cli/launch.log`）。
@@ -45,9 +42,9 @@ function launchLogOf(dataRoot: string): string {
 const HOST_FILE = hostFilePath(DATA_ROOT);
 const TOKEN_FILE = tokenFilePath(DATA_ROOT);
 
-/** 假客户端的标记（只有 `endpoint` 在这几条用例里被看） */
-function fakeClient(endpoint: string): Client {
-  return { endpoint } as unknown as Client;
+/** 假客户端的标记（`ensureHost` 只把它转手交出去，一个成员也不看） */
+function fakeClient(): HostClient {
+  return {} as HostClient;
 }
 
 interface ScheduledFile {
@@ -102,7 +99,6 @@ function harness(config: {
   const options: EnsureHostOptions = {
     dataRoot: DATA_ROOT,
     launchLog: launchLogOf(DATA_ROOT),
-    clientInfo: CLIENT_INFO,
     ...(config.settings ? { settings: config.settings } : {}),
     hostEntry: "/host/dist/cli.js",
     timeoutMs: config.timeoutMs ?? 1_000,
@@ -127,18 +123,12 @@ function harness(config: {
       connects.push(connectOptions);
       const outcome = config.onConnect?.(connectOptions) ?? { ok: true };
       if (!outcome.ok) {
-        // 两种失败分开造：连不上是本地码，被拒是宿主回的业务错误
+        // 两种失败分开造：连不上是本地码，被拒是宿主回的那个 tRPC 码
         throw outcome.code === "unauthorized"
-          ? fromHostError({
-              code: -32001,
-              message: "凭证没被接受",
-              data: { code: "unauthorized", message: "凭证没被接受", params: {} },
-            })
+          ? new ClientError("UNAUTHORIZED", "凭证没被接受")
           : localError("host_unavailable", { params: { endpoint: "x" } });
       }
-      return fakeClient(
-        `${connectOptions.target && typeof connectOptions.target === "object" ? connectOptions.target.port : "?"}`,
-      );
+      return fakeClient();
     },
   };
 
@@ -165,10 +155,9 @@ describe("显式地址：只连，绝不拉起", () => {
     expect(test.spawned).toEqual([]);
     expect(test.connects).toHaveLength(1);
     expect(test.connects[0]).toMatchObject({
-      target: { host: "example.test", port: 443, secure: true, path: "/ai-zen" },
+      url: "wss://example.test:443/ai-zen",
       token: "remote-token",
       language: "zh",
-      clientInfo: CLIENT_INFO,
     });
   });
 
@@ -195,8 +184,8 @@ describe("显式地址：只连，绝不拉起", () => {
     const error = (await ensureHost(test.options).catch(
       (caught: unknown) => caught,
     )) as ClientError;
-    // `unauthorized` 是「这样不行」（宿主在、话也说了），不是「现在不行」
-    expect(error.code).toBe("unauthorized");
+    // `UNAUTHORIZED` 是「这样不行」（宿主在、话也说了），不是「现在不行」
+    expect(error.code).toBe("UNAUTHORIZED");
     expect(test.spawned).toEqual([]);
   });
 
@@ -273,9 +262,7 @@ describe("本机：没有就拉一个", () => {
       token: { value: "tok", fromTick: 0 },
       // 旧 pid 那个端口没人应答
       onConnect: (options) =>
-        options.target && typeof options.target === "object" && options.target.port === 8790
-          ? { ok: false, code: "host_unavailable" }
-          : { ok: true },
+        options.url.endsWith(":8790") ? { ok: false, code: "host_unavailable" } : { ok: true },
       onSpawn: (_context, files) => {
         files.set(HOST_FILE, {
           content: JSON.stringify({ pid: 222, host: "127.0.0.1", port: 6000 }),

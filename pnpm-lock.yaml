@@ -26,6 +26,9 @@ importers:
       '@ai-zen/agents-core':
         specifier: workspace:^
         version: link:../core
+      '@trpc/client':
+        specifier: ^11.29.5
+        version: 11.29.5(@trpc/server@11.29.5(@types/ws@8.18.2)(typescript@7.0.2))(typescript@7.0.2)
     devDependencies:
       '@ai-zen/agents-host':
         specifier: workspace:*
@@ -337,6 +340,12 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+
+  '@trpc/client@11.29.5':
+    resolution: {integrity: sha512-EGebaRjt/rDHt7gJ6nv262nLRPalzwSyI/dEMYtA+PBEy/HxhoVUW3bQqyE34cozJNj2HAgB+TqXVe76pWGk+Q==}
+    peerDependencies:
+      '@trpc/server': 11.29.5
+      typescript: '>=5.7.2'
 
   '@trpc/server@11.29.5':
     resolution: {integrity: sha512-8ET3fqBo4byVkjLNU047NFwmT3JQIjZCVpdJwanb6Tpv7b5P3M9pjN7JofqGyDQZaDR5XLkWX2hWrsIpjtt5wA==}
@@ -1286,6 +1295,11 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
+
+  '@trpc/client@11.29.5(@trpc/server@11.29.5(@types/ws@8.18.2)(typescript@7.0.2))(typescript@7.0.2)':
+    dependencies:
+      '@trpc/server': 11.29.5(@types/ws@8.18.2)(typescript@7.0.2)
+      typescript: 7.0.2
 
   '@trpc/server@11.29.5(@types/ws@8.18.2)(typescript@7.0.2)':
     dependencies:

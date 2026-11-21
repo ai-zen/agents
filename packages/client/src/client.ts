@@ -1,901 +1,295 @@
 /**
- * 一条到 `agents-host` 的连接（一条 WebSocket + JSON-RPC 2.0）。
+ * 一条到 `agents-host` 的连接：一条 WebSocket，上面跑 tRPC v11 的那条 ws 链路。
  *
  * ## 四件事
  *
- * `connect` / `call` / `subscribe` / `close`，就这四件：
- *   · `connect` 里把**握手**一次做完（`host.hello`），拿到 `Client` 就能直接调方法；
- *   · `call` 的入参与出参由宿主的 `MethodMap` 推出来（`MethodParams` / `MethodResult`）；
- *   · `subscribe` 按 `EventMap` 收窄载荷（`message.added` / `message.delta` / `state` / … 十三条事件）；
- *   · `close` 之后这条连接不再可用：在飞调用报 `closed`，`reconnect()` 也回 `closed` —— 要接
- *     回去得重新 {@link Client.connect}。
+ * {@link connect}（建连 + 握手）、`api`（`TRPCClient<AppRouter>`，类型直接从宿主推出来）、
+ * `subscribe`（宿主那一条事件流）、`close`（幂等）。另有 `reconnect()`，它是 `reconnect.ts`
+ * 认得的那一个口。
  *
- * 另有一层不在 JSON-RPC 里的东西：{@link Client.open} 用的**镜像**（`mirror.ts` —— 按事件重建
- * `messages` 与那四件事），以及 {@link Client.sendBinary}（上传分片的二进制帧）。后者的帧格式收在
- * `chunkFrame.ts`，上传本身是一次三段式（见 `upload.ts`）。
+ * ## 令牌只从握手帧上来
  *
- * ## 握手：首帧 `host.hello`，凭证不进 URL
+ * 令牌放进 `createWSClient` 的 `connectionParams` —— tRPC 在 socket 开了之后把它作为**第一帧**
+ * 送上去，宿主拿这一帧建上下文（`createContext` 校验它，验不过就回一帧错误并关掉连接）。它不进
+ * URL 查询串：查询串会进访问日志、进程表与反向代理的访问记录。
  *
- * `{ token, language?, clientInfo }` 放在**第一帧**里（`packages/host/src/wire/methods.ts` 的
- * `HostHelloParams`），而不是 URL 查询串 —— 查询串会进日志、进程表与反向代理的访问记录。
- * 握手成功之前 `call()` 一律在本地就被拒（`not_connected`），与宿主「未 `hello` 只放行
- * `hello`」那道门是同一件事的两侧。
+ * ## 断线之后补什么，不由这里决定
  *
- * ## 不重放、不 ack
+ * socket 断了之后 tRPC 按它自己的退避重开一条，并把挂着的订阅搬过去；要不要一直试、试到什么时候
+ * 放弃由调用方按 `reconnect.ts` 决定。**补什么也由调用方决定**：宿主有 `session.open`，一次就把
+ * 状态、消息与排队区全部取回，所以这里不维护任何本地镜像 —— 留一份副本只会多一份会和宿主对不上
+ * 的事实。
  *
- * 事件是 JSON-RPC 通知（无 `id`），断线即作废。重连之后由 {@link Client.resync} 把镜像补回来
- * （`session.state` 读那四件事 + `message.list({ after })` 拉增量，见 `mirror.ts`）。所以这里没有
- * 「补发」的逻辑，也没有「确认收到」的往返。
+ * ## 契约类型只从宿主的类型上来
+ *
+ * `AppRouter` / `HostEvent` 都是 `import type`：这个包被 cli 与桌面端各自捆进产物，运行期一个
+ * 字节都不 import `@ai-zen/agents-host`（它的包根会把整个宿主 —— 单根、SQLite worker、SDK 装配
+ * —— 拉进产物）。
  *
  * ## 传输用 Node 内建的全局 `WebSocket`
  *
- * 不是 `ws`：本包要能被 cli / 桌面端**捆进自己的产物**，运行期依赖越少越好，而 Node 26 的全局
- * `WebSocket` 就是浏览器那个（`open` / `message` / `close` / `error` + `send`）。代价记在明处：
- * 它的 `error` 事件不带底层原因（`ECONNREFUSED` 之类在内部被吞掉了），所以本地错误文案里自己
- * 带上端点（`host:port`）—— 连不上谁，是必须说出来的那一半。
- */
-
-import type {
-  ClientInfo,
-  EventName,
-  EventPayload,
-  JsonRpcId,
-  MethodName,
-  MethodParams,
-  MethodResult,
-  NoParams,
-  HostHelloParams,
-  HostHelloResult,
-} from "@ai-zen/agents-host";
-
-import { addressLabel, parseAddress, webSocketUrl, type HostTarget } from "./address.js";
-import { ClientError, fromHostError, localError } from "./errors.js";
-import { encodeFrame, parseIncoming, requestFrame } from "./frames.js";
-import { SessionMirror, toMirrorEvent, type MirrorEvent } from "./mirror.js";
-
-/** 取消订阅（`subscribe` / `onClose` / `onSync` 的返回值） */
-export type Unsubscribe = () => void;
-
-/** 单次调用的选项 */
-export interface CallOptions {
-  /** 这次调用等多久算超时；缺省用客户端的 `callTimeoutMs` */
-  timeoutMs?: number;
-}
-
-/**
- * 「能调契约方法」这一件事。
+ * 不引 `ws`：本包被捆进别人的产物，运行期依赖越少越好，而 Node 26 自带全局 `WebSocket` —— 它实现
+ * 的是浏览器那一套接口（WHATWG WebSocket：`addEventListener` + `send`），不是另一个方言。桌面端
+ * 要换成自己的实现时从 {@link ClientOptions.WebSocket} 进来。
  *
- * `Client` 结构上满足它；上传、取素材这些只关心帧的内容的模块只认这一个面——
- * 于是它们不必起 socket 就能单独验。
+ * 代价记在明处：它的 `error` 事件不带底层原因（`ECONNREFUSED` 之类在内部被吞掉了），所以本地
+ * 错误文案里自己带上端点 —— 连不上谁，是必须说出来的那一半。
  */
-export interface ContractCaller {
-  call<M extends MethodName>(method: M, params: MethodParams<M>): Promise<MethodResult<M>>;
-}
+
+import {
+  createTRPCClient,
+  createWSClient,
+  wsLink,
+  type TRPCClient,
+  type TRPCLink,
+  type TRPCWebSocketClient,
+} from "@trpc/client";
+import type { AppRouter, HostEvent } from "@ai-zen/agents-host";
+
+import { ClientError, fromTRPCError, localError, type HostErrorCode } from "./errors.js";
+
+/** 取消订阅（{@link HostClient.subscribe} 的返回值） */
+export type Unsubscribe = () => void;
 
 /** 建连参数 */
 export interface ClientOptions {
-  /** 连哪儿：结构化地址（发现文件给的）或用户填的那串（`ws://` / `host:port` 都认） */
-  target: HostTarget | string;
-  /** 握手凭证。没有就传空串 —— 宿主会回 `unauthorized`，那句话由它渲染 */
-  token: string;
-  /** 客户端身份（`hello` 的 `clientInfo`：名字、版本、平台） */
-  clientInfo: ClientInfo;
-  /** 连接语言（设置里的那一项）。留空 = 由宿主的默认语言决定（D8：缺省英文） */
-  language?: string;
-  /** 建连 + 握手的总时限 */
-  connectTimeoutMs?: number;
-  /** 单次 `call` 的缺省时限 */
-  callTimeoutMs?: number;
+  /** 连哪儿：`ws://` / `wss://`，地址由 `address.ts` 算（`webSocketUrl`） */
+  readonly url: string;
+  /** 握手凭证：只进握手帧，不进 URL */
+  readonly token: string;
+  /** socket 实现；缺省用运行期的全局 `WebSocket`（Node 26 与浏览器各有一份） */
+  readonly WebSocket?: typeof globalThis.WebSocket;
+  /**
+   * 本地文案用哪种语言。不上 wire：语言是宿主的用户级全局设置（`host` 那边的配置），
+   * 不属于任何一条连接。
+   */
+  readonly language?: string;
+  /** 建连之后多久还没调通一次调用就放弃；缺省 10 秒 */
+  readonly handshakeTimeoutMs?: number;
 }
 
-/** 握手用的是 `1` 号请求；之后从 `2` 起，独占一段号段免得与握手撞号 */
-const HELLO_ID = 1;
-/** 请求 id 的上界（JSON-RPC 允许字符串，这里用数字：够用、好对日志） */
-const MAX_REQUEST_ID = 0xffff_ffff;
-const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
-const DEFAULT_CALL_TIMEOUT_MS = 30_000;
-/**
- * 二进制写出去的「高水位」：`bufferedAmount` 超过它就等一等再写下一帧。
- *
- * 上传一个 20MB 的文件是几百帧，`send()` 是同步入队、不背压：一路写下去会把整份文件攒在
- * socket 的发送缓冲里。4MB 足够把一条链路的往返延迟盖住，又不至于把内存交给对端的接收速度。
- */
-const BINARY_HIGH_WATER_BYTES = 4 * 1024 * 1024;
-/** 等发送缓冲降下去时的轮询间隔（WS 没有 drain 事件，只能轮着看） */
-const BINARY_DRAIN_INTERVAL_MS = 2;
-
-/**
- * `call` 的其余入参：方法本身没有入参（`NoParams`）时可以整段省掉。
- *
- * 由 `MethodParams` 推出来，所以 `call("host.version")` 与
- * `call("session.state", { sessionId })` 各自是各自的样子 —— 不必为了「有的方法没参数」
- * 在契约或调用点写宽松重载。
- */
-export type MethodCallArgs<M extends MethodName> =
-  MethodParams<M> extends NoParams
-    ? [params?: MethodParams<M>, options?: CallOptions]
-    : [params: MethodParams<M>, options?: CallOptions];
-
-/** 一次补镜像的结果：补上了给镜像，没补上给原因（两条路都要让调用方看见） */
-export type SyncOutcome =
-  | { ok: true; sessionId: string; mirror: SessionMirror }
-  | { ok: false; sessionId: string; error: ClientError };
-
-/**
- * 一次快照的落法 —— `message.list` 怎么问、回来怎么并（见 {@link Client.loadSnapshot}）。
- *
- *   · `replace`：不带 `after` 问全量，回来后用 `replaceAll` 整段替换主线（首载、`memory_replaced`
- *     之后的重拉）；
- *   · `continue`：带本地主线最后一条 id 问增量，回来后按 `anchor` 替换 + 追加（重连补回）。
- */
-type SnapshotMode = "replace" | "continue";
-
-interface PendingCall {
-  resolve: (value: unknown) => void;
-  reject: (error: ClientError) => void;
-  timer: ReturnType<typeof setTimeout>;
+/** 一条连上了的宿主 */
+export interface HostClient {
+  /** 类型推导直达宿主：`client.api.session.open.query({ sessionId })` */
+  readonly api: TRPCClient<AppRouter>;
+  /** 订阅宿主那一条事件流；返回退订函数（幂等） */
+  subscribe(onEvent: (event: HostEvent) => void, onError?: (error: unknown) => void): Unsubscribe;
+  /** 等到这条连接又能调通（`reconnect.ts` 的那个口）；断线之后补什么由调用方决定 */
+  reconnect(): Promise<void>;
+  /** 关掉这条连接；幂等。之后这个 client 上的调用直接失败 */
+  close(): Promise<void>;
 }
 
-/** 一条连接。用 {@link Client.connect} 建，不要自己 `new` */
-export class Client implements ContractCaller {
-  private readonly target: HostTarget;
-  private readonly token: string;
-  private readonly clientInfo: ClientInfo;
-  private readonly connectTimeoutMs: number;
-  private readonly callTimeoutMs: number;
-  /** 设置里的语言；`host.setLanguage` 之后跟着变（重连时按它再握一次手） */
-  private configuredLanguage: string | undefined;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 
-  private socket: WebSocket | null = null;
-  private helloResult: HostHelloResult | null = null;
-  private nextId = HELLO_ID + 1;
-  private closing = false;
-  /** 正在进行的重连：两个调用方同时发现断线是常态（`onClose` 与「用户点了重试」），只该连一次 */
-  private reconnecting: Promise<void> | null = null;
+/**
+ * 连上一台宿主。
+ *
+ * 返回时一定已经调通过一次调用 —— 宿主拒一条连接的做法是「回一帧错误、再关掉 socket」，socket
+ * 开着并不等于这条连接被接受过。所以握手就是「第一条成功的调用」，而不是「socket open 了」。
+ */
+export async function connect(options: ClientOptions): Promise<HostClient> {
+  const client = new Connection(options);
+  await client.handshake();
+  return client;
+}
 
-  private readonly pending = new Map<number, PendingCall>();
-  /** 事件名 → 订阅者（键是字符串：客户端不维护第二份事件名清单，没人订阅的名字自然没人接） */
-  private readonly eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
-  private readonly closeHandlers = new Set<(error: ClientError) => void>();
-  private readonly syncHandlers = new Set<(outcome: SyncOutcome) => void>();
-  /**
-   * 打开着的镜像（`sessionId` → 镜像）。这张表就是「我要跟着哪几段会话」的全部依据：
-   * 重连之后按它逐段补回。
-   */
-  private readonly mirrors = new Map<string, SessionMirror>();
-  /**
-   * 拉快照期间到达的事件先攒在这里（`sessionId` → 按到达顺序排的队）。
-   *
-   * 有键 = 这一段正在拉快照。没键 = 事件直接折进镜像。
-   */
-  private readonly buffers = new Map<string, MirrorEvent[]>();
-  /** 正在路上的那一次快照（同一段不并发拉两份） */
-  private readonly snapshots = new Map<string, Promise<void>>();
+/** 一条连接的全部状态。用 {@link connect} 建，不要自己 `new` */
+class Connection implements HostClient {
+  readonly api: TRPCClient<AppRouter>;
 
-  private constructor(options: ClientOptions) {
-    this.target =
-      typeof options.target === "string" ? parseAddress(options.target) : options.target;
-    this.token = options.token;
-    this.clientInfo = options.clientInfo;
-    this.configuredLanguage = options.language;
-    this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this.callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  private readonly socket: TRPCWebSocketClient;
+  private readonly endpoint: string;
+  private readonly language: string | undefined;
+  private readonly handshakeTimeoutMs: number;
+
+  /** 关掉之后一直拿它失败；`null` = 这条连接还活着 */
+  private closed: ClientError | null = null;
+  /** 宿主在这条 socket 上拒过连接时留下的那一帧（握手要说得清是哪一种拒） */
+  private rejection: { code: string; message: string } | null = null;
+
+  constructor(options: ClientOptions) {
+    this.endpoint = options.url;
+    this.language = options.language;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+
+    const Base = options.WebSocket ?? globalThis.WebSocket;
+    this.socket = createWSClient({
+      url: options.url,
+      connectionParams: () => ({ token: options.token }),
+      WebSocket: watchingSocket(Base, (rejection) => {
+        this.rejection = rejection;
+      }),
+    });
+    this.api = createTRPCClient<AppRouter>({
+      links: [refusingWhenClosed(() => this.closed), wsLink<AppRouter>({ client: this.socket })],
+    });
   }
 
-  /**
-   * 建连 + 握手。返回时一定已经握过手 —— 把「先发 hello、等回执」摊给每个调用点，等于将来加鉴权
-   * 时每个调用点都要跟着改。
-   */
-  static async connect(options: ClientOptions): Promise<Client> {
-    const client = new Client(options);
-    await client.dial();
-    return client;
-  }
-
-  // -------------------------------------------------------------------------
-  // 状态
-  // -------------------------------------------------------------------------
-
-  /** 握手结果（语言、版本、能力 id、附件上限）；没握手成功时为空 */
-  get hello(): HostHelloResult | null {
-    return this.helloResult;
-  }
-
-  /**
-   * 这条连接说的是哪种语言：连上之后是**协商结果**（`Language`），没连上时是设置里那一项
-   * （可能是宿主不认识的写法，握手时它自己回落）。要那个更窄的联合类型就读 `hello.language`。
-   */
-  get language(): string | undefined {
-    return this.helloResult?.language ?? this.configuredLanguage;
-  }
-
-  /** 现在可用吗（socket 在、且握手成功过） */
-  get connected(): boolean {
-    return this.socket !== null && this.helloResult !== null;
-  }
-
-  /** 连的是哪儿（`host:port`，不含凭证） */
-  get endpoint(): string {
-    return addressLabel(this.target);
-  }
-
-  /** 结构化地址（`ensureHost` 与界面用） */
-  get address(): HostTarget {
-    return this.target;
-  }
-
-  // -------------------------------------------------------------------------
-  // 调用
-  // -------------------------------------------------------------------------
-
-  /**
-   * 调一个契约方法。
-   *
-   * 失败一律是 {@link ClientError}：宿主回的业务错误原样保留（`code` / `message` / `detail`），
-   * 传输层的失败用本地码。握手没成就发方法会被本地拒（`not_connected`）。
-   */
-  call<M extends MethodName>(method: M, ...args: MethodCallArgs<M>): Promise<MethodResult<M>> {
-    const params = args[0];
-    const options = args[1] as CallOptions | undefined;
-    return this.request(method, params, options?.timeoutMs) as Promise<MethodResult<M>>;
-  }
-
-  /**
-   * 往这条连接写一个**二进制帧**。上传分片走这里（帧的形状见 `chunkFrame.ts`）。
-   *
-   * 为什么单独开一条通道而不是把字节塞进 JSON：`asset.begin` 之后的分片是任意二进制，
-   * base64 进 JSON 会平白多出三分之一体积，而且宿主得先解一层编码才拿到字节。这条连接上
-   * 二进制帧只有一种含义（上传分片），所以不需要再用 JSON-RPC 那套 `id` / `method` 包装。
-   *
-   * 分片没有回执（宿主按 `uploadId` 收，出错时用 `id: null` 的错误帧说话）：调用方发完所有
-   * 分片再 `asset.end`，由那一步的长度与摘要校验给出最终答案。
-   *
-   * 没握手成功时本地就拒（`not_connected`），与宿主「未 `hello` 不收二进制」那道门是同一件事。
-   *
-   * 参数上那个 `<ArrayBuffer>` 不是废话：全局 `WebSocket.send` 只收底层是 `ArrayBuffer` 的视图，
-   * 而 `Uint8Array` 缺省可以挂在 `SharedArrayBuffer` 上。写在这里比在调用点转一道强。
-   */
-  async sendBinary(frame: Uint8Array<ArrayBuffer>): Promise<void> {
-    const socket = this.socket;
-    if (!socket || !this.helloResult) {
-      throw localError("not_connected", {
-        language: this.configuredLanguage,
-        params: { method: "asset.chunk", endpoint: this.endpoint },
-      });
-    }
-    await this.drain(socket);
+  /** 等到这条连接真的调得通一次；不成就把 socket 收干净再抛 */
+  async handshake(): Promise<void> {
     try {
-      socket.send(frame);
-    } catch {
-      throw this.lostError();
+      await this.probe("connect");
+    } catch (error) {
+      await this.close();
+      throw error;
     }
   }
 
-  /**
-   * 换这条连接的语言（`/lang` 那种连接级动作，D8）。
-   *
-   * 语言挂在连接上、断开即忘，所以这里记住协商结果，重连时照旧带上。
-   */
-  async setLanguage(language: string): Promise<HostHelloResult["language"]> {
-    const { language: negotiated } = await this.call("host.setLanguage", { language });
-    this.configuredLanguage = negotiated;
-    if (this.helloResult) this.helloResult = { ...this.helloResult, language: negotiated };
-    return negotiated;
-  }
-
-  // -------------------------------------------------------------------------
-  // 订阅
-  // -------------------------------------------------------------------------
-
-  /** 订阅一个事件（按 `EventMap` 收窄载荷）；返回取消订阅的函数 */
-  subscribe<E extends EventName>(
-    event: E,
-    handler: (payload: EventPayload<E>) => void,
-  ): Unsubscribe {
-    const set = this.eventHandlers.get(event) ?? new Set<(payload: unknown) => void>();
-    // 载荷在分派时按事件名查表拿到，形状由契约保证；这里只是把它交给按事件名收窄过的回调
-    set.add(handler as (payload: unknown) => void);
-    this.eventHandlers.set(event, set);
+  subscribe(onEvent: (event: HostEvent) => void, onError?: (error: unknown) => void): Unsubscribe {
+    if (this.closed !== null) return () => {};
+    const subscription = this.api.events.subscribe(undefined, {
+      onData: (event) => {
+        try {
+          // 事件过了一条 JSON 通道：推过来的是它的序列化形状（类的身份不剩，字段一个不少），
+          // 而调用方要的是宿主那个 `HostEvent`
+          onEvent(event as HostEvent);
+        } catch {
+          // 一个订阅者抛错不该弄坏这条事件流，也不该连累别的订阅
+        }
+      },
+      onError: (error) => {
+        onError?.(fromTRPCError(error));
+      },
+    });
+    let stopped = false;
     return () => {
-      set.delete(handler as (payload: unknown) => void);
+      if (stopped) return;
+      stopped = true;
+      subscription.unsubscribe();
     };
   }
 
-  /** 订阅「连接断了」（在一次成功握手之后真的断了时才有）；返回取消订阅的函数 */
-  onClose(handler: (error: ClientError) => void): Unsubscribe {
-    this.closeHandlers.add(handler);
-    return () => this.closeHandlers.delete(handler);
-  }
-
-  /** 订阅「镜像补好了 / 补失败」（`reconnect()` 之后自动补、或手动 `resync()` 时）；返回取消订阅的函数 */
-  onSync(handler: (outcome: SyncOutcome) => void): Unsubscribe {
-    this.syncHandlers.add(handler);
-    return () => this.syncHandlers.delete(handler);
-  }
-
-  // -------------------------------------------------------------------------
-  // 重连与镜像
-  // -------------------------------------------------------------------------
-
   /**
-   * 换一条 socket 重新握手（连上之后**自动把打开着的镜像补回来**，见 {@link Client.resync}）。
+   * 等到这条连接又能调通（`reconnect.ts` 认的就是这个口）。
    *
-   * 旧连接上的在飞调用在这里一并失败（它们本来就随断线作废），事件不重放 —— 断线期间发生的事
-   * 由补镜像回答。要不要一直重试、试几次由调用方决定（见 `reconnect.ts`）。
+   * 它不自己换 socket：换 socket 是 tRPC 那一层的事（断了它按退避重开一条，挂着的订阅跟着搬过去），
+   * 两边各开一条只会让排进去的请求落在已经退下来的那条上。这里只回答「现在能不能调通」，
+   * 调不通就把最后一次失败抛给调用方（试不试、试多久是 `reconnect.ts` 的事）。
+   *
+   * 连上之后的**补什么**也不在这里：宿主有 `session.open`，由调用方再取一次。
    */
-  reconnect(): Promise<void> {
-    if (this.closing) {
-      return Promise.reject(
-        localError("closed", {
-          language: this.configuredLanguage,
-          params: { endpoint: this.endpoint },
-        }),
-      );
-    }
-    this.reconnecting ??= this.doReconnect().finally(() => {
-      this.reconnecting = null;
-    });
-    return this.reconnecting;
+  async reconnect(): Promise<void> {
+    const closed = this.closed;
+    if (closed !== null) throw closed;
+    await this.probe("reconnect");
   }
 
-  /** 真正的那一次重连（同一时刻只有一条，见 {@link Client.reconnect}） */
-  private async doReconnect(): Promise<void> {
-    const previous = this.socket;
-    this.socket = null;
-    this.helloResult = null;
-    this.failPending(this.lostError());
-    // `close()` 不抛：它只是把 readyState 推到 CLOSING（已经在关 / 从没连上都一样安静），所以
-    // 这里不接失败 —— 真要有东西从这里抛出来，那是我们自己写错了，该炸在这里。
-    if (previous) previous.close();
-
-    await this.dial();
-    await this.resyncAll();
-  }
-
-  // -------------------------------------------------------------------------
-  // 镜像（打开 / 补回 / 关掉）
-  // -------------------------------------------------------------------------
-
-  /**
-   * 打开一段会话：**先订阅、再拉全量、把拉取期间到达的事件按序补上**。
-   *
-   * 这四步的先后不能换：
-   *   1. **先订阅**：镜像先进 {@link Client.mirrors} 表，并给它开一个缓冲队列。从这一刻起，
-   *      与镜像有关的事件一律先进队列 —— 拉取期间发生的事一条都不会丢。
-   *   2. **读四件事**（`session.state`）：为什么它排在全量之前，见 {@link Client.loadSnapshot}。
-   *   3. **拉全量**（`message.list`，不带 `after`）：整段主线消息。
-   *   4. **补事件**：快照落地之后，把队列里的那一批按**到达顺序**折进镜像；属于快照已包含
-   *      那些消息的增量不再折一遍（否则同一段字会写两遍，见 `mirror.ts`）。
-   *
-   * 2、3、4 合起来就是 {@link Client.loadSnapshot} 的那一次 `"replace"`（三处快照共用的一处）；
-   * 这个方法的其余内容只有「建镜像」。
-   *
-   * 已经在镜像表里的会话直接回那一个（同一段不并发拉两份快照）。拉取失败时**不留半份镜像**：
-   * 一个只有事件、没有历史的镜像比没有更糟。
-   */
-  async open(sessionId: string): Promise<SessionMirror> {
-    const existing = this.mirrors.get(sessionId);
-    if (existing) {
-      // 正在拉快照就跟它一起等：第二个调用方拿到的不该是「还没拉全」的那一份
-      await this.snapshots.get(sessionId);
-      return existing;
-    }
-
-    // 四件事先空着（`null` = 还没读到）：既不借「死」占位（那会让界面去提示复活一段好端端的
-    // 会话），也不借「闲」占位（那会让界面以为它会理你）；`applyReadout` 之后四件一次补齐
-    const mirror = new SessionMirror({ sessionId });
-    this.mirrors.set(sessionId, mirror);
-    try {
-      await this.loadSnapshot(sessionId, mirror, "replace");
-    } catch (error) {
-      this.mirrors.delete(sessionId);
-      this.buffers.delete(sessionId);
-      this.snapshots.delete(sessionId);
-      throw error;
-    }
-    return mirror;
-  }
-
-  /** 这段会话的镜像（没打开过就是空） */
-  mirror(sessionId: string): SessionMirror | undefined {
-    return this.mirrors.get(sessionId);
-  }
-
-  /** 不再跟着这段会话（关掉它 / 换会话时调） */
-  closeMirror(sessionId: string): void {
-    this.mirrors.delete(sessionId);
-    this.buffers.delete(sessionId);
-  }
-
-  /**
-   * 把镜像补回现在（重连之后自动走一次，也可以手动调）。
-   *
-   * 补法只有一条（{@link Client.loadSnapshot} 的 `"continue"`）：
-   * `message.list { after: 本地主线最后一条 id }`。
-   *   · 那条还在 → 回的就是「它最新内容 + 之后全部」，本地在它之前的部分留着，从它起整段换成
-   *     宿主的（替换 + 追加）；
-   *   · 那条不在（被撤回 / 删掉）→ 宿主回全量，本地整段替换。
-   * 两者接在哪里只看回执里的 `anchor`（`mirror.mergeFrom` 一处判定）。本地一条都没有时就相当于
-   * 一次全量拉取。
-   *
-   * 没打开过的会话就是一次 `open`。拉取期间到达的事件同样先攒后补（与 {@link Client.open} 同一条规矩）。
-   */
-  async resync(sessionId: string): Promise<SessionMirror> {
-    const mirror = this.mirrors.get(sessionId);
-    if (!mirror) return this.open(sessionId);
-
-    await this.loadSnapshot(sessionId, mirror, "continue");
-    return mirror;
-  }
-
-  // -------------------------------------------------------------------------
-  // 关闭
-  // -------------------------------------------------------------------------
-
-  /** 关掉这条连接。在飞调用当场失败（`closed`），之后再用它会一直报这个码 */
   async close(): Promise<void> {
-    this.closing = true;
-    const socket = this.socket;
-    this.socket = null;
-    this.helloResult = null;
-    this.failPending(
-      localError("closed", {
-        language: this.configuredLanguage,
-        params: { endpoint: this.endpoint },
-      }),
-    );
-    // 同 `doReconnect`：`close()` 不抛，没有要接的失败
-    if (!socket) return;
-    socket.close();
+    if (this.closed !== null) return;
+    // 先立起这一格：从那句话开始，新的调用由守卫直接拒，不必等 socket 收完
+    this.closed = localError("closed", { language: this.language });
+    await this.socket.close();
   }
 
-  // -------------------------------------------------------------------------
-  // 内部：连接
-  // -------------------------------------------------------------------------
+  /**
+   * 等到一次调用成功。
+   *
+   * 两条出口都可能是真的：宿主回了话（成功，或者一句带码的错），或者到了时限还没人应。前者按
+   * 宿主说的算 —— 令牌不对时它回的那一帧由 {@link watchingSocket} 记下来，那句话与那个码原样
+   * 上抛。
+   *
+   * `reason` 只影响宿主没说话时用哪个本地码：`connect` 是「还没连上过」（`host_unavailable`），
+   * `reconnect` 是「连过又没了」（`connection_lost`）。两者对 `connection.ts` 的轮询都是
+   * 「现在不行、等会儿再试」，分开是为了上屏那句话说得准。
+   */
+  private async probe(reason: "connect" | "reconnect"): Promise<void> {
+    const timeoutMs = this.handshakeTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            localError("handshake_timeout", {
+              language: this.language,
+              params: { endpoint: this.endpoint, timeoutMs },
+            }),
+          ),
+        timeoutMs,
+      );
+    });
 
-  /** 建一条 socket 并握手；成功才留下它 */
-  private async dial(): Promise<void> {
-    const socket = new WebSocket(webSocketUrl(this.target));
-    this.socket = socket;
-    this.helloResult = null;
-    this.attach(socket);
     try {
-      const hello = await this.handshake(socket);
-      // 握手期间连接被换掉（上一次 dial 的尾巴）时，这一条已经不作数了
-      if (this.socket !== socket) throw this.lostError();
-      // 握好手才发现本端已经关了：不要留下一条没人会用的连接
-      if (this.closing) {
-        this.dropSocket(socket);
-        throw localError("closed", {
-          language: this.configuredLanguage,
-          params: { endpoint: this.endpoint },
-        });
-      }
-      this.helloResult = hello;
-    } catch (error) {
-      if (this.socket === socket) {
-        this.socket = null;
-        socket.close();
-      }
-      // 原样往外抛，不改码：`handshake` 只会以 `ClientError` 拒绝（它自己就把别的收敛掉了），
-      // 所以走到这里的非 `ClientError` 只可能是**我们自己写错了** —— 翻成 `connection_lost` 会让
-      // `connection.ts` 的 `isNotReady()` 把框架 bug 当成「宿主还没起来」，一直轮询到超时。
-      throw error;
-    }
-  }
-
-  /** 挂三条入站事件；`close` / `error` 都走同一个「断了」的出口（全局 WebSocket 的 `error` 之后必有 `close`） */
-  private attach(socket: WebSocket): void {
-    socket.addEventListener("message", (event) => {
-      if (this.socket !== socket) return;
-      this.onMessage(event.data);
-    });
-    socket.addEventListener("error", () => this.onDisconnected(socket));
-    socket.addEventListener("close", () => this.onDisconnected(socket));
-  }
-
-  /**
-   * 握手：`open` 之后发首帧 `host.hello`，等它的回执。
-   *
-   * 三条出口——回执、`close`、`error`——都可能先到，所以用一个 `settled` 闸门只落定一次，并让
-   * 握手有独立时限：连上了但对面一句话都不回，是这条路上最容易发生的那种「卡住」。
-   */
-  private handshake(socket: WebSocket): Promise<HostHelloResult> {
-    return new Promise<HostHelloResult>((resolve, reject) => {
-      let settled = false;
-      const finish = (error?: ClientError, result?: HostHelloResult): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (error) reject(error);
-        else resolve(result as HostHelloResult);
-      };
-
-      const timer = setTimeout(() => {
-        finish(
-          localError("handshake_timeout", {
-            language: this.configuredLanguage,
-            params: { endpoint: this.endpoint },
-          }),
-        );
-        this.dropSocket(socket);
-      }, this.connectTimeoutMs);
-
-      socket.addEventListener(
-        "open",
-        () => {
-          const params: HostHelloParams = {
-            token: this.token,
-            clientInfo: this.clientInfo,
-            ...(this.configuredLanguage ? { language: this.configuredLanguage } : {}),
-          };
-          this.transmit(socket, HELLO_ID, "host.hello", params, this.connectTimeoutMs).then(
-            (result) => finish(undefined, result as HostHelloResult),
-            (error: unknown) => finish(error instanceof ClientError ? error : this.lostError()),
-          );
-        },
-        { once: true },
-      );
-
-      socket.addEventListener("error", () => finish(this.unavailableError()), { once: true });
-      socket.addEventListener("close", () => finish(this.lostError()), { once: true });
-    });
-  }
-
-  /** 一条连接确认没用了：清掉在飞调用，并在「本来连着」的情况下通知订阅者 */
-  private onDisconnected(socket: WebSocket): void {
-    // 已经被换掉（重连）或者不是当前那条：这条连接的消息不该再影响现在的状态
-    if (this.socket !== socket) return;
-    const wasConnected = this.helloResult !== null;
-    this.socket = null;
-    this.helloResult = null;
-    const error = this.lostError();
-    this.failPending(error);
-    if (!wasConnected || this.closing) return;
-    for (const handler of [...this.closeHandlers]) {
-      try {
-        handler(error);
-      } catch {
-        // 一个订阅者抛错不该连累其它订阅者，更不该让一条已经断了的连接出别的岔子
-      }
-    }
-  }
-
-  /**
-   * 等发送缓冲落回高水位以下（`bufferedAmount` 一路涨说明对端读得慢）。
-   *
-   * 轮询而不是等事件：全局 `WebSocket` 没有 drain 事件。连接在这一等里断了就当场失败 ——
-   * 否则上传会卡在一个永远不会降下来的数字上。
-   */
-  private async drain(socket: WebSocket): Promise<void> {
-    while (
-      typeof socket.bufferedAmount === "number" &&
-      socket.bufferedAmount > BINARY_HIGH_WATER_BYTES
-    ) {
-      await new Promise<void>((resolve) => setTimeout(resolve, BINARY_DRAIN_INTERVAL_MS));
-      if (this.socket !== socket) throw this.lostError();
-    }
-  }
-
-  private dropSocket(socket: WebSocket): void {
-    // `close()` 不抛（见 `doReconnect`）
-    socket.close();
-    if (this.socket === socket) this.socket = null;
-  }
-
-  private lostError(): ClientError {
-    return localError("connection_lost", {
-      language: this.configuredLanguage,
-      params: { endpoint: this.endpoint },
-    });
-  }
-
-  private unavailableError(): ClientError {
-    return localError("host_unavailable", {
-      language: this.configuredLanguage,
-      params: { endpoint: this.endpoint },
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // 内部：请求与分派
-  // -------------------------------------------------------------------------
-
-  /** 发一条请求并等它的回执；`call` 在这里挡住「还没握手就发方法」 */
-  private request(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
-    if (this.closing) {
-      return Promise.reject(
-        localError("closed", {
-          language: this.configuredLanguage,
-          params: { endpoint: this.endpoint },
-        }),
-      );
-    }
-    const socket = this.socket;
-    if (!socket || !this.helloResult) {
-      return Promise.reject(
-        localError("not_connected", {
-          language: this.configuredLanguage,
-          params: { method, endpoint: this.endpoint },
-        }),
-      );
-    }
-
-    const id = this.nextId;
-    this.nextId = id >= MAX_REQUEST_ID ? HELLO_ID + 1 : id + 1;
-    return this.transmit(socket, id, method, params, timeoutMs ?? this.callTimeoutMs);
-  }
-
-  /** 真正写一条请求帧并在在飞表里等回执（握手也走这一条） */
-  private transmit(
-    socket: WebSocket,
-    id: JsonRpcId & number,
-    method: string,
-    params: unknown,
-    timeoutMs: number,
-  ): Promise<unknown> {
-    return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
-          localError("call_timeout", {
-            language: this.configuredLanguage,
-            params: { method, timeoutMs, endpoint: this.endpoint },
-          }),
-        );
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-
-      try {
-        socket.send(encodeFrame(requestFrame(id, method, params)));
-      } catch (error) {
-        // 连接已经开始关了：这条调用当场失败，别挂到超时
-        this.pending.delete(id);
-        clearTimeout(timer);
-        reject(error instanceof ClientError ? error : this.lostError());
-      }
-    });
-  }
-
-  /** 一条入站消息 → 通知（事件）或回执（在飞表里的那一条） */
-  private onMessage(raw: unknown): void {
-    // 宿主不发二进制（它的结果全是 JSON），收到了说明对端搞错了
-    if (typeof raw !== "string") return;
-    const incoming = parseIncoming(raw);
-    if (!incoming) return;
-
-    switch (incoming.kind) {
-      case "notification":
-        this.dispatchEvent(incoming.frame.method, incoming.frame.params);
-        return;
-      case "success":
-      case "error": {
-        const id = incoming.frame.id;
-        if (typeof id !== "number") return;
-        const call = this.pending.get(id);
-        // 认不到就静默丢弃：迟到的回执（已超时落定的）与根本不是我发的 id，都没有可做的事
-        if (!call) return;
-        this.pending.delete(id);
-        clearTimeout(call.timer);
-        if (incoming.kind === "success") call.resolve(incoming.frame.result);
-        else call.reject(fromHostError(incoming.frame.error));
-        return;
-      }
-      default:
-        return;
-    }
-  }
-
-  /**
-   * 事件分派：先把与镜像有关的那几条折进镜像，再把载荷原样交给订阅者。
-   *
-   * 顺序是故意的：订阅者拿到事件时去读镜像，读到的应当已经包含这一条。
-   *
-   * 客户端不维护第二份事件名清单：名字来自 `EventMap`，没人订阅的名字自然没有订阅者 —— 宿主
-   * 加了新事件而客户端还不认识时，行为是「忽略」而不是「崩一下」。
-   */
-  private dispatchEvent(method: string, payload: unknown): void {
-    this.routeToMirror(method, payload);
-    this.reloadOnMemoryReplaced(method, payload);
-
-    const handlers = this.eventHandlers.get(method);
-    if (!handlers) return;
-    for (const handler of [...handlers]) {
-      try {
-        handler(payload);
-      } catch {
-        // 一个监听器抛错不该弄坏连接，也不该连累同事件的其它监听器
-      }
-    }
-  }
-
-  /**
-   * 一条事件 → 镜像：那段会话正在拉快照就先进队列，否则当场折进去。
-   *
-   * 认的是载荷**顶层**的 `sessionId`：它没有的事件（`notice` / `question` 把会话 id 放在载荷对象
-   * 里面，`error` 说的不是消息）这里就不认领 —— `toMirrorEvent` 对它们回空。
-   *
-   * `session.changed` 在这里也过一道：镜像只认它里面四条 change（`agent_started` / `agent_gone`
-   * 换死活，`handoff_started` / `memory_replaced` 换交接态），其余 change 一格不动 —— 这条路
-   * 只改镜像，**不**触发任何拉取（`memory_replaced` 的重拉在 {@link Client.reloadOnMemoryReplaced}，是另一件事）。
-   */
-  private routeToMirror(method: string, payload: unknown): void {
-    const mirror = this.mirrors.size > 0 ? this.mirrorByPayload(payload) : undefined;
-    if (!mirror) return;
-    const event = toMirrorEvent(method, payload);
-    if (!event) return;
-
-    const queue = this.buffers.get(mirror.sessionId);
-    if (queue) {
-      queue.push(event);
+      await Promise.race([this.api.host.version.query(), timedOut]);
+      this.rejection = null;
       return;
-    }
-    mirror.apply(event);
-  }
-
-  private mirrorByPayload(payload: unknown): SessionMirror | undefined {
-    if (payload === null || typeof payload !== "object") return undefined;
-    const sessionId = (payload as { sessionId?: unknown }).sessionId;
-    if (typeof sessionId !== "string") return undefined;
-    return this.mirrors.get(sessionId);
-  }
-
-  /**
-   * `session.changed` 里唯一需要客户端**动一次**的那一格：`memory_replaced`。
-   *
-   * 交接期间这段会话写出来的那几条只在内存里、从不落库（宿主那边只跳过写库，事件照推）。所以
-   * 提交或回滚之后，客户端手里那几条是**库里根本不存在**的消息 —— 宿主推这一条就是让这里
-   * **整段替换**：重拉一次 `session.state` 与 `message.list` 全量。
-   *
-   * 「正在交接」那一格不靠这次重拉收：它在事件到达的那一刻就被镜像自己清掉了
-   * （`mirror.ts` 的 `sessionChanged`，提交与回滚推的都是这一格），所以读数没回来之前界面
-   * 就已经不在交接态上了。
-   *
-   * 同这一段正在拉快照时不再并发拉第二份（`snapshotWhileBuffering` 自己会串起来），拉取期间
-   * 到达的事件照旧先攒后补。
-   *
-   * 没打开过这段会话就什么都不做：下次 `open` 本来就是一次全量。
-   */
-  private reloadOnMemoryReplaced(method: string, payload: unknown): void {
-    if (method !== "session.changed") return;
-    if (payload === null || typeof payload !== "object") return;
-    const fact = payload as { sessionId?: unknown; change?: unknown };
-    if (fact.change !== "memory_replaced") return;
-    const sessionId = typeof fact.sessionId === "string" ? fact.sessionId : "";
-    const mirror = this.mirrors.get(sessionId);
-    if (!mirror) return;
-    // 拉失败**必须有人听见**：镜像留在上一份 = 界面继续显示库里已经不存在的那些消息，而这件事
-    // 没有第二次机会（再一条 `memory_replaced` 是下一次交接）。`onSync` 就是订阅方显示「补拉
-    // 失败」的那一格，`resyncAll` 也走它 —— 两条补拉路径的失败落在同一个口上。
-    void this.reloadMirror(sessionId, mirror).catch((error: unknown) => {
-      this.notifySync({ ok: false, sessionId, error: toClientError(error) });
-    });
-  }
-
-  /**
-   * 整段重拉（`memory_replaced` 的唯一出口）。
-   *
-   * 就是 {@link Client.loadSnapshot} 的 `"replace"`：与首载同一份拉法（不带 `after` 的全量 +
-   * 整段替换），**但不建镜像** —— 手上这一份留着，subagent 那几栏也留着（`replaceAll` 只换主线；
-   * subagent 的消息不入库，重拉也拉不回来）。
-   */
-  private async reloadMirror(sessionId: string, mirror: SessionMirror): Promise<void> {
-    await this.loadSnapshot(sessionId, mirror, "replace");
-  }
-
-  /**
-   * 拉快照并折进镜像 —— `open`（首载）、`resync`（续传 / 全量）、`memory_replaced` 之后的重拉
-   * （全量替换）**共用的那一处**。
-   *
-   * 随调用点不同的只有两件事：
-   *   1. `mode`：`message.list` 带不带 `after`，回来用 `replaceAll` 还是 `mergeFrom`（见
-   *      {@link SnapshotMode}）；
-   *   2. 失败时镜像怎么办 —— 首载把半份镜像整段丢掉（{@link Client.open}），另两处留着上一份。
-   *
-   * 其余逐字相同，也正是这个方法的内容：先读 `session.state`（四件事 + 名册 + 交接态一起收下，
-   * 名册用来铺 subagent 那几栏），再拉消息，拉取期间到达的事件先攒后补
-   * （{@link Client.snapshotWhileBuffering}）。三处各写一遍时，任何一处漏掉「先攒后补」或漏读
-   * 一格都没人会发现；收在这里之后，`message.list` 再多一个参数也只改这一行。
-   *
-   * 四件事先读：之后再到达的事件总比这个读数值新，补在它后面不会把状态往回拨；反过来的话（先读
-   * 消息、后读状态），补的那一批就会把新的状态覆盖成旧的。交接态也在这里读到，于是重连中的窗口
-   * 里「正在交接」不会一直挂着。
-   */
-  private async loadSnapshot(
-    sessionId: string,
-    mirror: SessionMirror,
-    mode: SnapshotMode,
-  ): Promise<void> {
-    await this.snapshotWhileBuffering(sessionId, async () => {
-      const { state } = await this.call("session.state", { sessionId });
-      mirror.applyReadout(state);
-      if (mode === "replace") {
-        const listed = await this.call("message.list", { sessionId });
-        mirror.replaceAll(listed.messages);
-        return;
+    } catch (error) {
+      const rejection = this.rejection;
+      this.rejection = null;
+      if (rejection !== null) {
+        throw new ClientError(rejection.code as HostErrorCode, rejection.message);
       }
-      // 续传：`after` 就是本地主线最后一条（本地一条都没有时等于一次全量），接在哪里看 `anchor`
-      const after = mirror.lastMessageId();
-      const listed = await this.call("message.list", {
-        sessionId,
-        ...(after === undefined ? {} : { after }),
+      const failure = fromTRPCError(error);
+      // 宿主回过一句带码的错（入参、权限……）：那是它说的话，原样出去
+      if (failure.code !== "connection_lost") throw failure;
+      throw localError(reason === "connect" ? "host_unavailable" : "connection_lost", {
+        language: this.language,
+        params: { endpoint: this.endpoint },
       });
-      mirror.mergeFrom(listed.anchor, listed.messages);
-    });
-  }
-
-  /**
-   * 拉一次快照，并把拉取期间到达的事件按序补上 —— {@link Client.loadSnapshot} 用的那一条规矩
-   * （`open` / `resync` / `memory_replaced` 的重拉都经它到这里）。
-   *
-   * 快照落地之后才补：补的那一批用 `replay: true` 折进去（快照已包含的那几条不再折增量），
-   * 补完调 `endReplay()` 解除这条限制（之后到达的增量照常折）。
-   *
-   * 同一段已有一次快照在路上时，第二个调用方等那一次（同一时刻不并发拉两份）。
-   */
-  private async snapshotWhileBuffering(
-    sessionId: string,
-    load: () => Promise<void>,
-  ): Promise<void> {
-    const running = this.snapshots.get(sessionId);
-    if (running) return running;
-
-    const queue: MirrorEvent[] = [];
-    this.buffers.set(sessionId, queue);
-    const task = (async () => {
-      try {
-        await load();
-      } finally {
-        this.buffers.delete(sessionId);
-        this.snapshots.delete(sessionId);
-        const mirror = this.mirrors.get(sessionId);
-        if (mirror) {
-          for (const event of queue) mirror.apply(event, { replay: true });
-          mirror.endReplay();
-        }
-      }
-    })();
-    this.snapshots.set(sessionId, task);
-    return task;
-  }
-
-  /** 重连之后把打开着的镜像逐段补回来 */
-  private async resyncAll(): Promise<void> {
-    for (const sessionId of [...this.mirrors.keys()]) {
-      try {
-        // 一段补不上（会话被删 / 那一刻宿主出错）不该拖住其它段，所以逐段 try：
-        // 失败的这一段照旧留在表里，下次重连或调用方手动 `resync` 时再试
-        const mirror = await this.resync(sessionId);
-        this.notifySync({ ok: true, sessionId, mirror });
-      } catch (error) {
-        this.notifySync({ ok: false, sessionId, error: toClientError(error) });
-      }
-    }
-  }
-
-  private notifySync(outcome: SyncOutcome): void {
-    for (const handler of [...this.syncHandlers]) {
-      try {
-        handler(outcome);
-      } catch {
-        // 同 dispatchEvent：订阅者自己的错不该传出去
-      }
-    }
-  }
-
-  /** 连接不可用：让所有在飞的调用一起失败，且之后不再接受新调用 */
-  private failPending(error: ClientError): void {
-    for (const [id, call] of this.pending) {
-      clearTimeout(call.timer);
-      call.reject(error);
-      this.pending.delete(id);
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
 
-/** 任意抛出物收敛成 `ClientError`（本地兜底：原始信息进 `detail.reason`，不猜原因） */
-function toClientError(error: unknown): ClientError {
-  if (error instanceof ClientError) return error;
-  const reason = error instanceof Error ? error.message : String(error);
-  return localError("unexpected", { params: { reason }, detail: { reason } });
+/**
+ * 关掉之后的调用当场失败。
+ *
+ * 不能只靠 `WsClient.close()`：它关完之后，下一条调用会让它重新开一条 socket，于是「已经关掉」
+ * 在调用方眼里变成「又连上了」。守卫立在链路最前面，关掉之后一次网络动作都不发生。
+ *
+ * 抛出去的 `ClientError` 由 tRPC 包成它自己的错误类型给调用方；`fromTRPCError` 认得这一层，
+ * 会把原物取回来。
+ */
+function refusingWhenClosed(closed: () => ClientError | null): TRPCLink<AppRouter> {
+  return () => (opts) => {
+    const error = closed();
+    if (error !== null) throw error;
+    return opts.next(opts.op);
+  };
+}
+
+/**
+ * 在 socket 上看一眼「宿主拒了这条连接」的那一帧。
+ *
+ * 令牌验不过时宿主回 `{ id: null, error }` 再关连接（它 `createContext` 抛错那条路），而 tRPC
+ * 的客户端把这种帧只记成「这条连接被拒了」，不把码与句子交出来 —— 到了调用方手里只剩「连接
+ * 断了」。「令牌不对」与「宿主没起来」的处置不同（前者要改凭证，后者等一等就好），所以握手这
+ * 一层自己看这一帧。
+ */
+function watchingSocket(
+  base: typeof globalThis.WebSocket,
+  onRejection: (rejection: { code: string; message: string }) => void,
+): typeof globalThis.WebSocket {
+  return class extends base {
+    constructor(url: string | URL) {
+      super(url);
+      this.addEventListener("message", (event) => {
+        const rejection = rejectionOf(event.data);
+        if (rejection !== null) onRejection(rejection);
+      });
+    }
+  };
+}
+
+/** 一帧 `{ id: null, error }` → 它的码与句子；别的（结果帧、`PING`、二进制）都不认领 */
+function rejectionOf(raw: unknown): { code: string; message: string } | null {
+  if (typeof raw !== "string") return null;
+  let frame: unknown;
+  try {
+    frame = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (frame === null || typeof frame !== "object") return null;
+  const envelope = frame as { id?: unknown; error?: unknown };
+  if (envelope.id !== null) return null;
+  if (envelope.error === null || typeof envelope.error !== "object") return null;
+
+  const error = envelope.error as { code?: unknown; message?: unknown; data?: unknown };
+  const data = error.data === null || typeof error.data !== "object" ? undefined : error.data;
+  const code = data === undefined ? undefined : (data as { code?: unknown }).code;
+  const named = typeof code === "string" ? code : typeof error.code === "string" ? error.code : "";
+  if (named === "") return null;
+  return { code: named, message: typeof error.message === "string" ? error.message : "" };
 }

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { fromHostError, localError } from "./errors.js";
+import { ClientError, localError } from "./errors.js";
 import {
   DEFAULT_RECONNECT_POLICY,
   isRetryableByDefault,
@@ -31,15 +31,8 @@ describe("retryDelay", () => {
 
 describe("哪些失败值得重试", () => {
   it("被宿主拒 / 地址错 / 已经关掉的不重试", () => {
-    expect(
-      isRetryableByDefault(
-        fromHostError({
-          code: -32001,
-          message: "x",
-          data: { code: "unauthorized", message: "x", params: {} },
-        }),
-      ),
-    ).toBe(false);
+    expect(isRetryableByDefault(new ClientError("UNAUTHORIZED", "凭证没被接受"))).toBe(false);
+    expect(isRetryableByDefault(new ClientError("BAD_REQUEST", "入参不对"))).toBe(false);
     expect(isRetryableByDefault(localError("bad_address", { params: {} }))).toBe(false);
     expect(isRetryableByDefault(localError("closed"))).toBe(false);
   });
@@ -100,11 +93,7 @@ describe("reconnectUntilConnected", () => {
       {
         reconnect: async () => {
           attempts += 1;
-          throw fromHostError({
-            code: -32001,
-            message: "凭证没被接受",
-            data: { code: "unauthorized", message: "凭证没被接受", params: {} },
-          });
+          throw new ClientError("UNAUTHORIZED", "凭证没被接受");
         },
       },
       { policy: POLICY, sleep: async () => undefined },

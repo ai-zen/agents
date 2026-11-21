@@ -1,48 +1,65 @@
 /**
- * 错误：一个 `ClientError`，两处来源，一套判据。
+ * 失败：一个 `ClientError`，两处来源，一套判据。
  *
- * ## 宿主回的错：一个字都不改写
+ * ## 宿主那一侧出网的是 tRPC 的码
  *
- * 错误帧里 `error.data` 携带三样东西（`packages/host/src/wire/errors.ts`）：
- * `code`（稳定业务码）、`message`（**已按这条连接的语言渲染好的人话**）、`detail`（结构化事实）。
- * 本文件把它们原样搬进 `ClientError`：`message` 可以直接上屏，`code` 用来分支，`detail` 用来做
- * 「该往哪个输入框填什么」这类动作。
- *
- * 客户端**不另写一份业务码 → 文案的表**，理由不是省事：那样同一句失败会有两种说法，而宿主
- * 那一份是按用户当前语言渲染的、客户端那一份不是 —— 于是换个语言连回来，一部分错误换了语言、
- * 另一部分没换。文案归宿主（PRD D8），这里只做搬运。
+ * 宿主把它的 `HostError` 折成 tRPC 的形状再出网（`packages/host/src/modules/api/errors.ts`）：
+ * `data.code` 是 tRPC 的码（`NOT_FOUND` 这一种），`message` 是**已按当前语言渲染好的人话**，
+ * `data.details` 是结构化事实（`HostError.details` 原样带出）。宿主自己的 `ErrorCode`
+ * （`not_found` / `busy` / …）不出网 —— 它是源码与日志里的分类，而且几个码落到同一个 tRPC 码上
+ * （`busy` 与 `conflict` 都是 `CONFLICT`，`not_available` 与 `not_found` 都是 `NOT_FOUND`），
+ * 所以线上那一层能还原的只有 tRPC 这一套。客户端照搬这一套，不另造一套。
  *
  * ## 客户端自己造的错：只有宿主不在场时才有
  *
- * 连不上、握手超时、连接断了、拉起宿主失败 —— 这些处境宿主根本没法参与，没有 `data.message`
- * 可用，所以它们有自己的码与文案（{@link LocalErrorCode}）。这几句收在一张表里，按语言取
- * （缺省英文，与 D8 / R58 的口径一致）。
+ * 连不上、握手超时、本端关掉、读不了要上传的文件 —— 这些处境宿主根本没参与，没有它渲染好的
+ * 句子可用，所以它们有自己的码与文案（{@link LocalErrorCode}）。两套码不重名：大写下划线是宿主
+ * 的 tRPC 码，小写下划线是本地的，一眼看得出这句话是谁说的。
  */
 
-import type { BizCode } from "@ai-zen/agents-host";
+import { isTRPCClientError } from "@trpc/client";
+
+/**
+ * 宿主那侧会出现在 `data.code` 里的码 —— `packages/host/src/modules/api/errors.ts` 那张映射表
+ * 的值域，加上非 `HostError` 事故兜底的那一个。
+ *
+ * 认不出的码照样递出去（`code` 上是个字符串）：宿主加了新码而客户端还不认识时，那个码比丢掉
+ * 它有用 —— 调用方按已知的码分支，其余落进 `default` 即可。
+ */
+export type HostErrorCode =
+  /** `invalid_params`；入参在边界上被 zod 拒掉也是它 */
+  | "BAD_REQUEST"
+  /** `unauthorized`：握手帧里的令牌验不过，或某次调用要求凭证 */
+  | "UNAUTHORIZED"
+  /** `not_found` 与 `not_available`（这一版不存在） */
+  | "NOT_FOUND"
+  /** `conflict` 与 `busy`；两者对调用方都是「等一下再试」 */
+  | "CONFLICT"
+  /** `unsupported` */
+  | "NOT_IMPLEMENTED"
+  /** `config_invalid` */
+  | "PRECONDITION_FAILED"
+  /** 宿主自己的运行事故：那句话不出网，它换成了按语言渲染的兜底句 */
+  | "INTERNAL_SERVER_ERROR";
 
 /**
  * 客户端自己产生的失败码。
  *
- * 与宿主业务码（`BizCode`）不重名：一眼能看出这句话是谁说的、要不要按「改输入」去处理。
+ * 与宿主的码（{@link HostErrorCode}）不重名：一眼能看出这句话是谁说的。
  */
 export type LocalErrorCode =
   /** 地址不是合法 URL / scheme 不认识 */
   | "bad_address"
-  /** 还没握手成功就想发方法（宿主也会拒，这里在本地就挡住） */
-  | "not_connected"
-  /** 连接断了（在飞调用随之失败） */
+  /** 连不上这台宿主（socket 都没开成） */
+  | "host_unavailable"
+  /** 连上了，但限时内没调通任何一次调用（令牌不对、宿主还没起来都可能是它） */
+  | "handshake_timeout"
+  /** 连过之后连接断了（在飞调用随之失败） */
   | "connection_lost"
   /** 本端主动 `close()` 之后又用它 */
   | "closed"
-  /** 握手没在建连时限内完成 */
-  | "handshake_timeout"
-  /** 一次调用等超时了（宿主可能还在做，也可能已经不在了） */
-  | "call_timeout"
   /** 客户端自己出了意外（不该发生的那一类；`detail.reason` 留着原始信息） */
   | "unexpected"
-  /** 连不上这台宿主（显式地址那条路上连不上的，或本机拉起之前那一段） */
-  | "host_unavailable"
   /** 拉起了本地宿主，但到时限还没就绪 */
   | "host_did_not_start"
   /** 拉起的那个子进程自己退了（npx 装不上、入口起不来）；`reason` 是它最后一行输出 */
@@ -53,19 +70,11 @@ export type LocalErrorCode =
   | "host_version_range_missing"
   /** 找不到要拉起的宿主入口（调用方没给 `hostEntry`，本机也没装那个私有包） */
   | "host_entry_missing"
-  /** 单个附件超过上限（PRD D5：20MB/张；在 `asset.begin` 之前就拒） */
-  | "asset_too_large"
-  /** 一条消息的附件数超过上限（PRD D5：4 张/条；多出来的不静默丢，逐张给这个码） */
-  | "asset_count_exceeded"
-  /** 空文件（0 字节）没有可上传的内容 */
-  | "asset_empty"
   /** 读不了要上传的文件（不存在、没权限……） */
-  | "asset_unreadable"
-  /** 认不出这个文件的类型，且调用方没给 mime */
-  | "asset_mime_unknown";
+  | "asset_unreadable";
 
-/** 全部失败码：宿主的业务码，或客户端本地的码 */
-export type ClientErrorCode = BizCode | LocalErrorCode;
+/** 全部失败码：宿主那一套 tRPC 码，或客户端本地的码 */
+export type ClientErrorCode = HostErrorCode | LocalErrorCode;
 
 /** 一份本地文案：模板里的 `{name}` 按 `params` 替换，缺参数时占位符原样留着 */
 const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
@@ -73,9 +82,13 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
     zh: "不是合法的宿主地址：{endpoint}（要 ws:// 、wss:// 、http:// 或 https:// 开头的地址）",
     en: "Not a valid host address: {endpoint} (expected a ws://, wss://, http:// or https:// address)",
   },
-  not_connected: {
-    zh: "还没和宿主握手成功，这条连接不能发 {method}",
-    en: "The connection has not finished its handshake, so {method} cannot be sent yet",
+  host_unavailable: {
+    zh: "连不上宿主（{endpoint}）",
+    en: "Could not reach the host ({endpoint})",
+  },
+  handshake_timeout: {
+    zh: "与宿主（{endpoint}）握手超时：{timeoutMs} 毫秒内没有一次调用成功",
+    en: "Timed out during the handshake with the host ({endpoint}): no call succeeded within {timeoutMs}ms",
   },
   connection_lost: {
     zh: "与宿主（{endpoint}）的连接断了",
@@ -85,21 +98,9 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
     zh: "这条连接已经关掉了",
     en: "This connection has already been closed",
   },
-  handshake_timeout: {
-    zh: "与宿主（{endpoint}）握手超时",
-    en: "Timed out during the handshake with the host ({endpoint})",
-  },
-  call_timeout: {
-    zh: "调用 {method} 超过 {timeoutMs} 毫秒没有回应",
-    en: "{method} got no response within {timeoutMs}ms",
-  },
   unexpected: {
     zh: "客户端出错：{reason}",
     en: "Client error: {reason}",
-  },
-  host_unavailable: {
-    zh: "连不上宿主（{endpoint}）",
-    en: "Could not reach the host ({endpoint})",
   },
   host_did_not_start: {
     zh: "本地宿主在 {timeoutMs} 毫秒内没有就绪（数据根 {dataRoot}，日志 {log}）",
@@ -121,25 +122,9 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
     zh: "不知道该拉哪一版宿主：既没给宿主入口（hostEntry），也没给版本范围（versionRange）",
     en: "Nothing says which host to start: neither hostEntry nor versionRange was given",
   },
-  asset_too_large: {
-    zh: "图片太大（{size}），超过单张 {limit} 的上限",
-    en: "The image is too large ({size}); the limit is {limit} per file",
-  },
-  asset_count_exceeded: {
-    zh: "一条消息最多 {limit} 张图片",
-    en: "A message can carry at most {limit} images",
-  },
-  asset_empty: {
-    zh: "{name} 是空文件（0 字节），没有可上传的内容",
-    en: "{name} is empty (0 bytes): there is nothing to upload",
-  },
   asset_unreadable: {
     zh: "读不了 {path}：{reason}",
     en: "Could not read {path}: {reason}",
-  },
-  asset_mime_unknown: {
-    zh: "认不出 {name} 的类型（请显式给出 mime）",
-    en: "Cannot tell the type of {name} (pass an explicit mime)",
   },
 };
 
@@ -150,31 +135,23 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
  * 调用方不需要（也不该）自己再拼一句。
  */
 export class ClientError extends Error {
-  /** 宿主业务码，或本地码（见 {@link LocalErrorCode}） */
+  /** 宿主那一套 tRPC 码，或本地码（见 {@link LocalErrorCode}） */
   readonly code: ClientErrorCode;
   /** 结构化事实：哪个字段不对、还差什么（形状由各码约定，不要解析句子去猜） */
   readonly detail?: unknown;
   /** 渲染 `message` 用到的参数 */
   readonly params: Record<string, unknown>;
-  /** JSON-RPC 数字码：只有宿主回的错才有（数字码只做粗分类，判伪看 `code`） */
-  readonly rpcCode?: number;
 
   constructor(
     code: ClientErrorCode,
     message: string,
-    options: { detail?: unknown; params?: Record<string, unknown>; rpcCode?: number } = {},
+    options: { detail?: unknown; params?: Record<string, unknown> } = {},
   ) {
     super(message);
     this.name = "ClientError";
     this.code = code;
     this.params = options.params ?? {};
     if (options.detail !== undefined) this.detail = options.detail;
-    if (options.rpcCode !== undefined) this.rpcCode = options.rpcCode;
-  }
-
-  /** 这句失败是不是宿主说的（有宿主渲染好的文案与业务码） */
-  get fromHost(): boolean {
-    return this.rpcCode !== undefined;
   }
 }
 
@@ -184,39 +161,34 @@ export function isClientError(value: unknown): value is ClientError {
 }
 
 /**
- * 宿主错误帧 → `ClientError`。
+ * 任意抛出物 → `ClientError`。这是「tRPC 的错 → 能分支的码」的唯一实现处。
  *
- * 三样原样搬：`data.code` → `code`、`data.message` → `message`、`data.detail` → `detail`。
- * `data` 缺字段时按 `internal` 兜底（与接线层的解析同口径），而不是让「半截错误」变成一条空消息。
- *
- * 认不出来的业务码**照样递出去**：宿主加了新码而客户端还不认识时，未知的码比丢掉的码有用。
- * 调用方按已知的码分支、其余落进 `default` 即可 —— 这里不维护第二份码表。
+ * 三种来源，三种落法：
+ *   · 宿主回的错：`data.code` 是它的 tRPC 码（由它自己的错误格式化那一层写进去的），
+ *     `message` 是它渲染好的那句，`data.details` 进 `detail`；
+ *   · 客户端自己抛的（本端关掉、地址不合法……）：tRPC 把它包了一层，从 `cause` 里取回原物；
+ *   · 其余（连接断了、没有回包）：tRPC 说的是传输层的事实，那句英文原样留着当 `message` ——
+ *     这里编一句中文只会把「谁说的」搅浑。
  */
-export function fromHostError(error: {
-  code?: unknown;
-  message?: unknown;
-  data?: unknown;
-}): ClientError {
-  const data = (typeof error.data === "object" && error.data !== null ? error.data : {}) as Record<
-    string,
-    unknown
-  >;
-  const code = typeof data.code === "string" && data.code !== "" ? data.code : "internal";
-  const message =
-    typeof data.message === "string" && data.message !== ""
-      ? data.message
-      : typeof error.message === "string"
-        ? error.message
-        : "";
-  const detail = data.detail;
-  return new ClientError(code as ClientErrorCode, message, {
-    params:
-      typeof data.params === "object" && data.params !== null
-        ? (data.params as Record<string, unknown>)
-        : {},
-    ...(detail !== undefined ? { detail } : {}),
-    ...(typeof error.code === "number" ? { rpcCode: error.code } : {}),
-  });
+export function fromTRPCError(error: unknown): ClientError {
+  if (error instanceof ClientError) return error;
+
+  if (isTRPCClientError(error)) {
+    const hostError = hostErrorOf(error.data);
+    if (hostError) {
+      return new ClientError(hostError.code as HostErrorCode, error.message, {
+        ...(hostError.details === undefined ? {} : { detail: hostError.details }),
+      });
+    }
+    const cause: unknown = error.cause;
+    if (cause instanceof ClientError) return cause;
+    return new ClientError("connection_lost", error.message, {
+      detail: { reason: error.message },
+    });
+  }
+
+  const reason = error instanceof Error ? error.message : String(error);
+  return localError("unexpected", { params: { reason }, detail: { reason } });
 }
 
 /** 一条本地失败：句子按语言从 {@link LOCAL_TEXT} 取 */
@@ -236,6 +208,23 @@ export function localError(
 /** 地址不合法（`parseAddress` 的出口） */
 export function badAddress(input: string): ClientError {
   return localError("bad_address", { params: { endpoint: JSON.stringify(input) } });
+}
+
+/**
+ * 一个 tRPC 错误形状里宿主写进去的那两格；不是宿主回的错（`data` 空、`code` 不是字符串）时
+ * 返回 `null`。
+ *
+ * `code` 在 tRPC 的类型里是个数字（它的数字码表），而宿主那一层故意把 `data.code` 换成了码的
+ * **名字**（`NOT_FOUND` 这种，见它自己的错误格式化那一层）。两者对不上是那一步的本意，所以这里
+ * 读的是运行期的字符串，不按类型走。
+ */
+function hostErrorOf(data: unknown): { code: string; details?: unknown } | null {
+  if (data === null || typeof data !== "object") return null;
+  const shape = data as { code?: unknown; details?: unknown };
+  if (typeof shape.code !== "string" || shape.code === "") return null;
+  return shape.details === undefined
+    ? { code: shape.code }
+    : { code: shape.code, details: shape.details };
 }
 
 /** 这条连接说的是不是中文（缺省英文，与 D8 / R58 一致） */
