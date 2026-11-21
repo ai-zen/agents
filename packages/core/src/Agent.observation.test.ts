@@ -433,6 +433,83 @@ describe("定稿", () => {
   });
 });
 
+describe("序号与时刻", () => {
+  /** 把收到的每一条事实的「名字 + 序号 + 时刻」按到达顺序记下来 */
+  function recordFacts(agent: Agent): Array<{ name: string; seq: number; at: string }> {
+    const facts: Array<{ name: string; seq: number; at: string }> = [];
+    for (const name of ALL_EVENT_NAMES) {
+      agent.on(name, (payload) => facts.push({ name, seq: payload.seq, at: payload.at }));
+    }
+    return facts;
+  }
+
+  it("从 1 开始、连续、不重不掉", async () => {
+    const echo = new CallbackTool({
+      function: {
+        name: "echo",
+        description: "把收到的文本原样送回来",
+        parameters: { type: "object", properties: {} },
+      },
+      callback: (parsedArgs: any) => `回声：${parsedArgs?.text ?? ""}`,
+    });
+
+    // 带一次工具调用：两趟请求、一条 tool 消息，事件比只有文字那一趟多得多
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "echo", args: '{"text":"你好"}' }]),
+      textStream("收尾"),
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds(), tools: [echo] });
+
+    const facts = recordFacts(agent);
+
+    void agent.start();
+    agent.push(user("跑个工具"));
+    await settled(agent);
+
+    // 工具那一趟真的发生了（不然这一条问的事件太少）
+    expect(facts.some((fact) => fact.name === "toolFinished")).toBe(true);
+
+    // 序号是这个执行体自己的那一条链：1、2、3……不重、不掉、不跳
+    const seqs = facts.map((fact) => fact.seq);
+    expect(seqs[0]).toBe(1);
+    expect(seqs).toEqual(seqs.map((_, index) => index + 1));
+
+    // 时刻：每一条都解析得出
+    expect(facts.every((fact) => !Number.isNaN(Date.parse(fact.at)))).toBe(true);
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("死了之后序号不再往前走，也就不再有事实", async () => {
+    const gated = makeGatedStream([
+      chunk({ content: "前半" }),
+      chunk({ content: "后半" }),
+      chunk({}, "stop"),
+    ]);
+    const { client } = createMockClient([gated.stream]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const facts = recordFacts(agent);
+
+    const death = agent.start();
+    agent.push(user("说话"));
+    await until(() => facts.some((fact) => fact.name === "delta"));
+
+    // 正收着流的时候杀死：那一次请求的收尾还在后头，它会想再说几条
+    agent.kill();
+    gated.release();
+    await death;
+    // 再等一拍：迟到的收尾也在这一拍里（应当一条都发不出来）
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const last = facts.at(-1)!;
+    expect(last.name).toBe("killed");
+    // 号 = 收到的条数：门后面的那几条一条都没发出来，号也没被偷偷加
+    expect(last.seq).toBe(facts.length);
+  });
+});
+
 describe("死了之后不再有事实", () => {
   it("killed 之后一条事实都没有", async () => {
     // 这条钉的是**次序**，不是门：死亡那一条必须是最后一条。

@@ -118,12 +118,14 @@ export class AgentToolLazy implements Tool {
     const via = ctx.tool_call;
     const offs: Array<() => void> = [];
 
+    // 转发是一次新的发出：载荷里带着子执行体的 `seq` / `at`，父的 `emit` 会用**父自己的**号与时刻覆盖掉。
     for (const type of ["messageAdded", "messageChanged", "messageRemoved"] as const) {
       offs.push(
         sub.on(type, (payload) => host.emit(type, { ...payload, agent: host, subAgent: sub, via })),
       );
     }
 
+    // 同上：转发是一次新的发出，序号与时刻记的是父执行体自己的。
     for (const type of ["toolStarted", "toolFinished"] as const) {
       offs.push(
         sub.on(type, (payload) => host.emit(type, { ...payload, agent: host, subAgent: sub, via })),
@@ -137,12 +139,14 @@ export class AgentToolLazy implements Tool {
     //
     // 载荷改写与「消息」那几条**同一套**（`agent` 换成父、加 `subAgent` / `via`）；带出去的是
     // **那条活消息本身**、不是 id —— 接收方读它就把收尾三格一起拿到了，与 `messageChanged` 同理。
+    // 序号与时刻同样换成父自己的：转发是一次新的发出。
     offs.push(
       sub.on("responseFinished", (payload) =>
         host.emit("responseFinished", { ...payload, agent: host, subAgent: sub, via }),
       ),
     );
 
+    // `delta` 也一样：转发是一次新的发出，序号与时刻记的是父执行体自己的。
     offs.push(
       sub.on("delta", (payload) =>
         host.emit("delta", { ...payload, agent: host, source: { subAgent: sub, toolCall: via } }),

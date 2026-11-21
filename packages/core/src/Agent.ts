@@ -142,11 +142,23 @@ export interface AgentPlugin {
 // 事件：说发生了什么
 // ---------------------------------------------------------------------------
 
-export interface LifecycleEvent {
+/**
+ * 每条事件都带的三格：谁发的、这个执行体的第几条、什么时候。
+ *
+ * `seq` 是这个执行体自己的单调序号，从 1 开始，只增不减：订阅者靠它判重复与缺口，也靠它答
+ * 「从哪接着写」。它是**这个执行体**的序号，不是全局的 —— 委派时转发上来的那些事件记的是父
+ * 执行体自己的号（转发是一次新的发出）。
+ *
+ * `at` 是发出这一刻的 ISO 8601 串。
+ */
+export interface EventBase {
   agent: Agent;
+  seq: number;
+  at: string;
 }
-export interface StateEvent {
-  agent: Agent;
+
+export interface LifecycleEvent extends EventBase {}
+export interface StateEvent extends EventBase {
   from: AgentNS.AgentState;
 }
 
@@ -156,18 +168,14 @@ export interface StateEvent {
  * 载荷只带 agent —— 「此刻还取不取件」现读 `agent.isOutputPaused`，不在这里再报一份。
  * 它与「在干 / 闲」是两处状态，所以它的变化**不冒充**「到了哪一格」：它只说自己动了。
  */
-export interface OutputEvent {
-  agent: Agent;
-}
+export interface OutputEvent extends EventBase {}
 
 /**
  * 输入闸动了：关上（`input:paused`）/ 打开（`input:resumed`）。
  *
  * 载荷同样只带 agent（现读 `agent.isInputPaused`）。它与输出闸是两道闸，两条事件不互相冒充。
  */
-export interface InputEvent {
-  agent: Agent;
-}
+export interface InputEvent extends EventBase {}
 
 /**
  * 有人按了停（`abort()`）。
@@ -175,9 +183,7 @@ export interface InputEvent {
  * 它是**意图**，不是闸的副作用：闸可能本来就是关着的（那样 `output:paused` 一条都不发），
  * 但「这一下停」发生了。想读「掐没掐到东西」看那一条消息的 `status`（`aborted`）。
  */
-export interface AbortedEvent {
-  agent: Agent;
-}
+export interface AbortedEvent extends EventBase {}
 
 /**
  * 队列有三个时刻会说话：`inboxAdded` / `inboxTaken` / `inboxCleared`（`CORE.md` §3）。
@@ -188,8 +194,7 @@ export interface AbortedEvent {
  *
  * 进来一条。载荷是**那一条**（带 `messageId` / `createdAt` / `source` 与正文；钥匙没有正文）。
  */
-export interface InboxAddedEvent {
-  agent: Agent;
+export interface InboxAddedEvent extends EventBase {
   entry: AgentNS.InboxEntry;
 }
 
@@ -203,19 +208,16 @@ export interface InboxAddedEvent {
  * - 「消息已落、条目还在」→ 恢复时按 `messageId` 去重就能收拾（可救）；
  * - 反过来「条目没了、消息没落」→ 那条话凭空消失（不可救）。
  */
-export interface InboxTakenEvent {
-  agent: Agent;
+export interface InboxTakenEvent extends EventBase {
   entries: AgentNS.InboxEntry[];
 }
 
 /** 队列被**清空**（作废，不是取走）：载荷是被丢掉的那些，原顺序。 */
-export interface InboxClearedEvent {
-  agent: Agent;
+export interface InboxClearedEvent extends EventBase {
   entries: AgentNS.InboxEntry[];
 }
 
-export interface MessageEvent {
-  agent: Agent;
+export interface MessageEvent extends EventBase {
   message: AgentNS.Message;
   /** 这条消息属于某个 subagent（委派工具转发上来时才有） */
   subAgent?: Agent;
@@ -229,8 +231,7 @@ export interface MessageEvent {
 export type DeltaSource =
   { message: AgentNS.Message } | { subAgent: Agent; toolCall?: AgentNS.ToolCall };
 
-export interface DeltaEvent {
-  agent: Agent;
+export interface DeltaEvent extends EventBase {
   /** 原片本身，一个字节都不动 */
   chunk: unknown;
   source: DeltaSource;
@@ -244,17 +245,14 @@ export interface DeltaEvent {
  * 每条消息**恰一条**：`completed` / `error` / `aborted` 三种落定都算，出生就是终版的
  * （用户说的话、系统注入的）在出现之后紧接着也算。被删掉的那条没有这一条 —— 消失是另一件事。
  */
-export interface MessageFinishedEvent {
-  agent: Agent;
+export interface MessageFinishedEvent extends EventBase {
   message: AgentNS.Message;
 }
-export interface RequestSentEvent {
-  agent: Agent;
+export interface RequestSentEvent extends EventBase {
   /** 要发出去的那份请求体（一次性的，不是 `agent.messages`） */
   body: Record<string, unknown>;
 }
-export interface ResponseFinishedEvent {
-  agent: Agent;
+export interface ResponseFinishedEvent extends EventBase {
   message: AgentNS.Message;
   /** 这条消息属于某个 subagent（委派工具转发上来时才有） */
   subAgent?: Agent;
@@ -271,8 +269,7 @@ export interface ResponseFinishedEvent {
  * 被 `onInnerLoopStart` 拒掉的那一趟**不算开始** —— 那时连 assistant 占位都没有，没有事实
  * 可说，所以这一条与 {@link TurnFinishedEvent} 都不发。
  */
-export interface TurnStartedEvent {
-  agent: Agent;
+export interface TurnStartedEvent extends EventBase {
   message: AgentNS.Message;
 }
 /**
@@ -282,32 +279,27 @@ export interface TurnStartedEvent {
  *
  * 中断与出错的那一趟**照样有这一条**：它说的是「这一趟到此为止」，不是「这一趟跑得很好」。
  */
-export interface TurnFinishedEvent {
-  agent: Agent;
+export interface TurnFinishedEvent extends EventBase {
   message: AgentNS.Message;
 }
-export interface ToolStartedEvent {
-  agent: Agent;
+export interface ToolStartedEvent extends EventBase {
   toolCall: AgentNS.ToolCall;
   /** 这个工具跑在某个 subagent 里（委派工具转发上来时才有） */
   subAgent?: Agent;
   /** 是哪一次委派引起的 */
   via?: AgentNS.ToolCall;
 }
-export interface ToolFinishedEvent {
-  agent: Agent;
+export interface ToolFinishedEvent extends EventBase {
   toolCall: AgentNS.ToolCall;
   result: AgentNS.Message;
   subAgent?: Agent;
   via?: AgentNS.ToolCall;
 }
-export interface SubAgentEvent {
-  agent: Agent;
+export interface SubAgentEvent extends EventBase {
   subAgent: Agent;
   toolCall?: AgentNS.ToolCall;
 }
-export interface DeniedEvent {
-  agent: Agent;
+export interface DeniedEvent extends EventBase {
   hook: string;
   reason: string;
   /**
@@ -318,8 +310,7 @@ export interface DeniedEvent {
    */
   detail?: unknown;
 }
-export interface FailedEvent {
-  agent: Agent;
+export interface FailedEvent extends EventBase {
   error: AgentError | Error;
   /** 出错的那条消息（如果有）—— 与 `message.error` 是同一个实例 */
   message?: AgentNS.Message;
@@ -338,8 +329,7 @@ export interface FailedEvent {
  * 抛错都只该记在它自己头上，不该顺着 `emit` 走进外循环 / 内循环 —— 磁盘满了不能把推理一起
  * 打死。收成事件之后这条事实也仍然是「听得见」的：别的订阅者照样能收到它去记日志。
  */
-export interface ObserverFailedEvent {
-  agent: Agent;
+export interface ObserverFailedEvent extends EventBase {
   /** 炸掉的那一条事件的名字（订阅的是哪一个） */
   event: keyof AgentEvents;
   /** 订阅者抛出来的那个错；不是 `Error` 的已经收成 `Error` */
@@ -531,6 +521,13 @@ export class Agent extends AgentContext {
    * 消息没了这一项也跟着没了（不占着不放）。
    */
   private readonly settled = new WeakSet<AgentNS.Message>();
+  /**
+   * 这个执行体发出的**第几条**事件：{@link emit} 每发一条加一，从 1 开始，只增不减。
+   *
+   * 它是「一次发出」的属性，不是载荷的属性：载荷里没有它，只有事件出口填它（理由见 `emit`）。
+   * 死之后不再往前走 —— 门先关、号后加，所以「号 = 收到的条数」（`live-objects.md` 判据四）。
+   */
+  private seq = 0;
 
   /** `start()` 的那句 promise：到死才 resolve，且不 reject */
   private runPromise?: Promise<void>;
@@ -595,16 +592,28 @@ export class Agent extends AgentContext {
    *
    * 公开是因为委派工具要把 subagent 的事件**按同一套名字**发到父身上（§9-3）：
    * 不为 subagent 另起一套平行名字，只多「哪个 subagent + 哪个工具调用」两格。
+   *
+   * 序号与时刻**由这一个出口填**（`seq` / `at`，见 {@link EventBase}）：它们是「一次发出」的
+   * 属性，不是载荷的属性 —— 调用点照旧只给「谁 + 载荷」。让每个调用点各填一次就是同一件事写
+   * 五遍，而五个调用点里的号迟早重号；重号的订阅者只能靠猜来判缺口，那正是这一格要消掉的东西。
+   * 委派转发上来那一份带着子执行体的 `seq` / `at`，到这里被**父自己的**覆盖掉 —— 这正是要的：
+   * 转发是一次新的发出。
    */
-  emit<K extends keyof AgentEvents>(type: K, payload: AgentEvents[K]): void {
+  emit<K extends keyof AgentEvents>(type: K, payload: Omit<AgentEvents[K], "seq" | "at">): void {
     // 死了就是死了：这一条之后不再有任何事实（见 `live-objects.md` 判据四）。
     //
     // 这道门挡住的是什么：`kill()` 之后仍在收流的那一次请求，它的收尾会再走一遍
     // `messageChanged`（`touch`），甚至再冒一个 `failed` —— 而「订阅者在此之后拿不到任何
     // 事实」是这一层的承诺。丢掉的那几条不必补：重启装配时 `AgentRuntime` 会把 `pending` /
     // `writing` 归成 `aborted`，历史不会因此缺一块。
+    //
+    // 门在**号前面**：死之后号不再往前走，于是「最后一条的 `seq` = 收到的条数」。
     if (this.gone) return;
-    this.bus.emit(type as string, payload);
+    this.bus.emit(type as string, {
+      ...payload,
+      seq: ++this.seq,
+      at: new Date().toISOString(),
+    });
   }
 
   /** 注册一个插件 */
@@ -678,7 +687,7 @@ export class Agent extends AgentContext {
     ctx: SubAgentHookContext,
   ): Promise<string | undefined> {
     const denied = await this.dispatchHook(hook, ctx);
-    const payload: SubAgentEvent = {
+    const payload: Omit<SubAgentEvent, "seq" | "at"> = {
       agent: this,
       subAgent: ctx.subAgent,
       toolCall: ctx.toolCallContext.tool_call,
