@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { HostError } from "../../infra/errors.js";
 import { ensureDirectory } from "../../infra/files.js";
 import type { Translator } from "../i18n/index.js";
+import { probeImageSize } from "./probe.js";
 import type { assetTable, sessionAssetTable } from "./table.js";
 import type { Asset } from "./types.js";
 
@@ -33,6 +34,9 @@ export class AssetService {
    *
    * 库里已经有这个摘要时直接返回那一行，不写文件：去重命中还去写一遍，等于把写文件变成每次上传
    * 都要做的事。名字也跟着是第一次那一份 —— 摘要相同就是同一份字节，不该有第二个身份。
+   *
+   * 宽高在这里量一次（只读文件头，见 `probe.ts`）：量不到就是空，**不重试、不告警** —— 它只给
+   * 界面排版用，为一张认不出格式的图报一次警毫无用处。
    */
   store(bytes: Buffer, mime: string, name: string | null): Asset {
     const sha256 = contentHash(bytes);
@@ -50,7 +54,15 @@ export class AssetService {
       rmSync(temporary, { force: true });
     }
 
-    const asset: Asset = { id: randomUUID(), sha256, mime, name, createdAt: Date.now() };
+    const asset: Asset = {
+      id: randomUUID(),
+      sha256,
+      mime,
+      name,
+      createdAt: Date.now(),
+      // 解不出时 `size` 是 `undefined`，摊开就什么都不加（这两格是可选的）
+      ...probeImageSize(bytes),
+    };
     this.deps.assets.put(asset);
     return asset;
   }
@@ -73,6 +85,17 @@ export class AssetService {
 
   getBytes(id: string): Buffer {
     return readFileSync(this.pathOf(this.get(id).sha256));
+  }
+
+  /**
+   * 按 id 找一行，找不到就是 `undefined`。
+   *
+   * 与 {@link get} 并存不是重复：`get` 回答的是「取不到就是一条客户端认得出的失败」，而这个
+   * 回答的是「有没有」—— 发给厂商之前按 id 重建内容段的那一格端口要的是后者（素材可能已经被
+   * 删了，那是一种正常处境，不是失败）。
+   */
+  find(id: string): Asset | undefined {
+    return this.deps.assets.get(id);
   }
 
   listBySession(sessionId: string): Asset[] {

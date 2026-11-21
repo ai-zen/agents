@@ -351,6 +351,7 @@ export class HostApp {
     this.observer = new HostObserver({
       messages,
       inbox,
+      assets,
       events,
       onError,
       // 交接态会在一个执行体的寿命里变好几次，所以传函数不传值

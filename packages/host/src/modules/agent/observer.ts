@@ -2,6 +2,8 @@ import { AgentNS, type Agent } from "@ai-zen/agents-core";
 import type { AgentRuntime, RuntimeFact } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
+import type { AssetService } from "../asset/service.js";
+import { ASSET_ID_KEY } from "../asset/types.js";
 import type { HostEvent } from "../events.js";
 import type { messageTable } from "../session/messages.js";
 import type { inboxTable } from "./inbox.js";
@@ -9,6 +11,13 @@ import type { inboxTable } from "./inbox.js";
 export interface HostObserverDeps {
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
+  /**
+   * 素材域：消息落地那一刻把内容里的 `__asset_id` 登记成引用行。
+   *
+   * 观察者只揽这一件事：它把「这条消息引用了哪份素材」记下来；素材什么时候真的被删（引用归零）
+   * 是 `AssetService.sweepUnreferenced` 的事，那时才有人读这张表。
+   */
+  readonly assets: AssetService;
   readonly events: Bus<HostEvent>;
   readonly onError: (error: unknown, what: string) => void;
   /** 这一段此刻是否在交接。传函数不传值：交接态会在一个执行体的寿命里变两次以上 */
@@ -149,7 +158,10 @@ export class HostObserver {
        */
       case "delta":
         if ("message" in fact.source) {
-          this.changedMessage(fact.sessionId, fact.source.message);
+          // 不登记素材引用（第三格 `false`）：流式期间一片一次，而这时正文还在长 —— 引用等它落到
+          // `messageChanged` / `responseFinished` / `messageFinished` 那几处再记（`link` 幂等，
+          // 真在那里重记一次也只留一行）。
+          this.changedMessage(fact.sessionId, fact.source.message, false);
           return;
         }
         // subagent 的原始片只报「是哪个执行体」，消息本身不在载荷里（`DeltaSource` 的第二格
@@ -317,19 +329,47 @@ export class HostObserver {
    * 而用户看到的历史里会多出一段「上一代在想什么」。推给客户端照旧 —— 用户要看得见它在写。
    *
    * 判在写之前、而推送在写之后：两半共用一个入口，拆开写就会有人只给其中一半加这道判断。
+   *
+   * `linkAssets` 只有 `delta` 给 `false`（那一处正文还在长，见 `delta` 分支的注释）。
    */
-  private writeMessage(sessionId: string, message: AgentNS.Message): void {
+  private writeMessage(sessionId: string, message: AgentNS.Message, linkAssets = true): void {
     if (this.deps.isHandingOff(sessionId)) return;
     try {
       this.deps.messages.upsert(sessionId, message);
     } catch (error) {
       this.deps.onError(error, "message-write");
+      return;
+    }
+
+    // 行真的写进去了才登记引用：`session_assets.messageId` 是指向 `messages` 的外键，
+    // 反过来写会撞外键，而那时库里已经有一条「没有引用」的消息行。
+    if (linkAssets) this.linkAssets(message);
+  }
+
+  /**
+   * 把这条消息内容里带 `__asset_id` 的段登记成引用行。
+   *
+   * 为什么挂在落库那一处而不是投递那一处：引用是「这条消息引用了哪份素材」的事实，它与消息行
+   * 同生 —— 消息行的每一个落点（新增 / 变了 / 定稿）都走 {@link writeMessage}，挂在这里就漏不掉；
+   * 挂到某一个具体分支上，另外两个分支的消息（比如装载时补报的那几条）就永远没有引用行，那些
+   * 素材会被 `sweepUnreferenced` 提前当成无主删掉。
+   *
+   * 失败只报一句、不让这一次写库失败：一条登记没写进去，最坏的代价是那份素材被多留一会儿
+   *（或者被提前删掉，由下一次发送时「附件已不在」那一句推说），而消息本身不能因此丢。
+   */
+  private linkAssets(message: AgentNS.Message): void {
+    const assetIds = assetIdsOf(message.content);
+    if (assetIds.length === 0) return;
+    try {
+      this.deps.assets.link(message.id, assetIds);
+    } catch (error) {
+      this.deps.onError(error, "asset-link");
     }
   }
 
   /** 一条消息变了：落库、推出去。`messageChanged` / `delta` / `responseFinished` 都走这里 */
-  private changedMessage(sessionId: string, message: AgentNS.Message): void {
-    this.writeMessage(sessionId, message);
+  private changedMessage(sessionId: string, message: AgentNS.Message, linkAssets = true): void {
+    this.writeMessage(sessionId, message, linkAssets);
     this.emitEvent({ type: "message.changed", sessionId, message });
   }
 
@@ -379,4 +419,20 @@ export class HostObserver {
       this.deps.onError(error, "event-emit");
     }
   }
+}
+
+/**
+ * 内容里带 `__asset_id` 的段指回的那些素材 id（按出现顺序去重）。
+ *
+ * 读的是「形状上有没有这个键」：`__asset_id` 不是 `AgentNS` 的已知字段，落库那一份原样带着它，
+ * 出网那一份由 core 的白名单剥掉 —— 同一个段的两份内容只差这一个键。
+ */
+function assetIdsOf(content: AgentNS.MessageContent | undefined): string[] {
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const section of content) {
+    const assetId = (section as unknown as Record<string, unknown>)[ASSET_ID_KEY];
+    if (typeof assetId === "string" && !ids.includes(assetId)) ids.push(assetId);
+  }
+  return ids;
 }

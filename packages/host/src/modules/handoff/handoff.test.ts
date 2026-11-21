@@ -17,6 +17,8 @@
  * 「成了」与「失败」两种收口，没有第三种。
  */
 
+import { tmpdir } from "node:os";
+
 import { describe, expect, it } from "vitest";
 
 import { AgentNS, Message, type Agent, type OuterLoopContext } from "@ai-zen/agents-core";
@@ -33,6 +35,8 @@ import { createBus } from "../../infra/bus.js";
 import { openDatabase } from "../../infra/db.js";
 import { inboxTable } from "../agent/inbox.js";
 import { HostObserver } from "../agent/observer.js";
+import { AssetService } from "../asset/service.js";
+import { assetTable, sessionAssetTable } from "../asset/table.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
@@ -197,6 +201,14 @@ function setup() {
   new HostObserver({
     messages,
     inbox,
+    // 素材域：这几条用例的消息都是纯文本，引用登记不会走到写盘（`link` 只在带 `__asset_id`
+    // 的段上发生），所以数据根给一个存在的目录就够
+    assets: new AssetService({
+      assets: assetTable(db),
+      sessionAssets: sessionAssetTable(db),
+      dataRoot: tmpdir(),
+      t,
+    }),
     events,
     onError: (error) => errors.push(error),
     isHandingOff: (id) => handoff.isHandingOff(id),

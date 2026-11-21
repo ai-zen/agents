@@ -6,14 +6,27 @@ import { resolveModel, type SdkAgent } from "@ai-zen/agents-sdk";
 import { HostError } from "../../infra/errors.js";
 import { materialsFor } from "../agent/materials.js";
 import type { Session } from "../session/types.js";
+import { ASSET_ID_KEY } from "../asset/types.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
+
+/**
+ * 一条消息最多几张素材（`dev-docs/prd/09-attachments.md` 第 5 行）：与「一张最多 20MB」是同一
+ * 句话的两半，数值只在这里写一次。
+ */
+const MAX_ASSETS_PER_MESSAGE = 4;
 
 const sendInput = z.object({
   workspaceId: z.string(),
   /** 只有建行那一支用它：已有会话的助手是会话行上的事实，不听这一次调用怎么说 */
   agentId: z.string(),
-  content: z.string(),
+  /**
+   * 一段字符串，或者一组内容段（多模态：文字与素材引用混排）。
+   *
+   * 段的形状由 `AgentNS.MessageContentSection` 定义，宿主不在这里重描一遍：`__asset_id` 这类
+   * 本地键不在那个类型里，所以用 `z.custom` 原样放行、一个键都不删（落库那份就是发出那份）。
+   */
+  content: z.union([z.string(), z.array(z.custom<AgentNS.MessageContentSection>())]),
   /** 客户端给的 id：它据此在界面上先把这条消息显示出来，落地时用的就是这个 id */
   messageId: z.string(),
   /** 给了就投给这一段；不给就是这一段还不存在 —— 建行与投递是同一个动作 */
@@ -52,6 +65,9 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       .input(sendInput)
       .output(z.object({ sessionId: z.string(), messageId: z.string() }))
       .mutation(async ({ input }) => {
+        // 两条分支（投给已有的会话 / 建一段新的）都从这里过，所以判在分岔之前。
+        assertAssetCount(deps, input.content);
+
         // 给了 sessionId 就是往一段已有的会话投递。投递不创建会话、也不复活会话：没有活着
         // 的执行体就直接报错，「先唤醒再投递」是客户端的编排（先调 `wake`），不是宿主的兜底。
         if (input.sessionId !== undefined) {
@@ -180,6 +196,36 @@ async function createSession(deps: HostApiDeps, input: SendInput): Promise<Sessi
     autoHandoff: false,
     lineage: null,
   });
+}
+
+/**
+ * 一条消息里带素材引用的段最多 4 条。**判在投递之前**（也判在建行与唤醒之前）：投出去再拒，
+ * 用户已经看见它发出去了 —— 那一条已经在队列里、也已经落进了历史，「拒」这件事就变成了一次
+ * 事后报错。
+ *
+ * 数的是段不是素材 id：「带 `__asset_id` 的段」就是这个数 —— 同一张图在一句话里被引用两次，
+ * 厂商那边也是两段。内容是**原样入库**的，这里只读、不改一个字节，也不重排段。
+ */
+function assertAssetCount(deps: HostApiDeps, content: SendInput["content"]): void {
+  if (!Array.isArray(content)) return;
+
+  const count = content.filter(
+    (section) =>
+      typeof section === "object" &&
+      section !== null &&
+      typeof (section as unknown as Record<string, unknown>)[ASSET_ID_KEY] === "string",
+  ).length;
+
+  if (count > MAX_ASSETS_PER_MESSAGE) {
+    throw new HostError(
+      "invalid_params",
+      deps.t("一条消息最多 {max} 张素材，这一条带了 {count} 张", {
+        max: MAX_ASSETS_PER_MESSAGE,
+        count,
+      }),
+      { max: MAX_ASSETS_PER_MESSAGE, count },
+    );
+  }
 }
 
 function existingSession(deps: HostApiDeps, sessionId: string): Session {

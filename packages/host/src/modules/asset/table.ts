@@ -71,7 +71,17 @@ export function sessionAssetTable(db: DatabaseSync) {
   );
 
   return {
-    /** 已经写过的那一对不再写：同一条消息的重复投递会把它叫到这里 */
+    /**
+     * 登记「这条消息引用了这几份素材」。**同一对 `(messageId, assetId)` 反复 link 只留一行。**
+     *
+     * 幂等是这张表的硬要求，理由在时间轴那一侧：观察者**每收到一次消息事实就来登记一次**
+     *（新增 / 变了 / 定稿都算），而流式期间一条消息会被写很多次 —— 一百片的回答就是一百次。
+     * 不幂等的话引用行会成倍长出来，`countByAsset` 也就再也归不了零，素材永远删不掉。
+     *
+     * 判据交给上面那条 `UNIQUE (messageId, assetId)` 加插入时的 `ON CONFLICT DO NOTHING`，
+     * 不在这层「先查一次、没有再插」：那样的两步之间，另一段会话的一次写入就能把同一对插进去，
+     * 先查的那一次于是成了摆设。让库自己判，冲突只有它一个答案。
+     */
     link(messageId: string, assetIds: readonly string[]): void {
       for (const assetId of assetIds) {
         insert.run(crypto.randomUUID(), JSON.stringify({ messageId, assetId }));
