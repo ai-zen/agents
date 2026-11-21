@@ -136,6 +136,7 @@ const AGENT_EVENT_NAMES: { readonly [K in keyof AgentEvents]: K } = {
   messageAdded: "messageAdded",
   messageChanged: "messageChanged",
   messageRemoved: "messageRemoved",
+  messageFinished: "messageFinished",
   delta: "delta",
   requestSent: "requestSent",
   responseFinished: "responseFinished",

@@ -235,6 +235,19 @@ export interface DeltaEvent {
   chunk: unknown;
   source: DeltaSource;
 }
+/**
+ * 一条消息**定稿**：这一版是终版，此后不再变。
+ *
+ * 与 `messageChanged` 的区别：那一条说的是「现在变成了这样」，这一条说的是「到此为止」。
+ * 订阅者靠它做最后一次写、冲刷那一笔；流式期间它一次都不发。
+ *
+ * 每条消息**恰一条**：`completed` / `error` / `aborted` 三种落定都算，出生就是终版的
+ * （用户说的话、系统注入的）在出现之后紧接着也算。被删掉的那条没有这一条 —— 消失是另一件事。
+ */
+export interface MessageFinishedEvent {
+  agent: Agent;
+  message: AgentNS.Message;
+}
 export interface RequestSentEvent {
   agent: Agent;
   /** 要发出去的那份请求体（一次性的，不是 `agent.messages`） */
@@ -356,6 +369,7 @@ export interface AgentEvents {
   messageAdded: MessageEvent;
   messageChanged: MessageEvent;
   messageRemoved: MessageEvent;
+  messageFinished: MessageFinishedEvent;
   delta: DeltaEvent;
   requestSent: RequestSentEvent;
   responseFinished: ResponseFinishedEvent;
@@ -507,6 +521,16 @@ export class Agent extends AgentContext {
    * `emit` 打进循环里 —— 恰好是这里要挡住的那件事。立起来期间再炸就咽下去，不再报。
    */
   private reportingObserverFailure = false;
+  /**
+   * 「这条消息的定稿报过没有」—— {@link settle} 的判重那一格。
+   *
+   * 为什么非要它：会把状态推到终版的地方有好几个（正常收尾、中断、出错、工具定型、装载时的
+   * 修尾），而「这条定稿了」只能报一次。把判重放在一个地方，好过每个调用点各判一次。
+   *
+   * 用 WeakSet 而不是加一格字段：消息本身是可被外部丢掉的对象，记在它旁边的表按它自己算数，
+   * 消息没了这一项也跟着没了（不占着不放）。
+   */
+  private readonly settled = new WeakSet<AgentNS.Message>();
 
   /** `start()` 的那句 promise：到死才 resolve，且不 reject */
   private runPromise?: Promise<void>;
@@ -1225,6 +1249,11 @@ export class Agent extends AgentContext {
       ...reconcileAbortedMessages(this.messages, this.abortedMessageStrategy),
     ];
     for (const message of removed) this.emit("messageRemoved", { agent: this, message });
+
+    // 修完再**整段扫一遍**：`keep` 策略是就地改状态（`aborted` → `completed`）、不经过上面任何
+    // 一条正常路 —— 这里是那个唯一的例外口。已经报过的由 {@link settle} 的 WeakSet 挡掉，
+    // 所以扫一遍是幂等的（被删掉的那几条已经不在 `this.messages` 里，它们没有「定稿」）。
+    for (const message of this.messages) this.settle(message);
   }
 
   // -------------------------------------------------------------------------
@@ -1359,11 +1388,13 @@ export class Agent extends AgentContext {
 
       if (inflight.controller.signal.aborted) {
         assistant.status = AgentNS.MessageStatus.Aborted;
+        this.settle(assistant);
         return false;
       }
 
       assistant.status = AgentNS.MessageStatus.Completed;
       this.emit("responseFinished", { agent: this, message: assistant });
+      this.settle(assistant);
 
       const hadTools = await this.runTools(assistant, inflight);
       // 跑工具的时候按了中断：这一批到此为止 —— 再向模型要一次，它就会把整段话接着说完，
@@ -1374,6 +1405,7 @@ export class Agent extends AgentContext {
       if (inflight.controller.signal.aborted) {
         assistant.status = AgentNS.MessageStatus.Aborted;
         this.touch(assistant);
+        this.settle(assistant);
         return false;
       }
 
@@ -1384,6 +1416,7 @@ export class Agent extends AgentContext {
       assistant.error = agentError;
       this.touch(assistant);
       this.emit("failed", { agent: this, error: agentError, message: assistant });
+      this.settle(assistant);
       return false;
     } finally {
       this.inflight = undefined;
@@ -1473,6 +1506,8 @@ export class Agent extends AgentContext {
     const finalize = (status: AgentNS.MessageStatus) => {
       result.status = inflight.controller.signal.aborted ? AgentNS.MessageStatus.Aborted : status;
       this.touch(result);
+      // 工具消息定型也是「定稿」的一种来路（它不经过 `runTurn` 那几支）
+      this.settle(result);
     };
 
     try {
@@ -1640,10 +1675,31 @@ export class Agent extends AgentContext {
   // 消息
   // -------------------------------------------------------------------------
 
+  /**
+   * 说一条消息**定稿**了（{@link MessageFinishedEvent}）：这一版是终版，此后不再变。
+   *
+   * 两件都做才发：状态是终版（`completed` / `error` / `aborted`），且这一条**没报过**。
+   * 判重集中在这里、而不是每个调用点各判一次 —— 理由见 {@link settled}。
+   */
+  private settle(message: AgentNS.Message): void {
+    if (
+      message.status !== AgentNS.MessageStatus.Completed &&
+      message.status !== AgentNS.MessageStatus.Error &&
+      message.status !== AgentNS.MessageStatus.Aborted
+    ) {
+      return;
+    }
+    if (this.settled.has(message)) return;
+    this.settled.add(message);
+    this.emit("messageFinished", { agent: this, message });
+  }
+
   /** 追加一条消息并广播 `messageAdded` —— 广播点放在唯一的追加口上 */
   append(message: AgentNS.Message): AgentNS.Message {
     const appended = super.append(message);
     this.emit("messageAdded", { agent: this, message: appended });
+    // 出生就是终版的那几条（用户说的话、系统注入的）从这儿走：出现之后紧接着就是「定稿」
+    this.settle(appended);
     return appended;
   }
 

@@ -150,6 +150,7 @@ const ALL_EVENTS: { readonly [K in keyof AgentEvents]: K } = {
   messageAdded: "messageAdded",
   messageChanged: "messageChanged",
   messageRemoved: "messageRemoved",
+  messageFinished: "messageFinished",
   delta: "delta",
   requestSent: "requestSent",
   responseFinished: "responseFinished",
@@ -326,6 +327,106 @@ describe("一趟请求的边界", () => {
 
     const assistant = agent.messages.find((message) => message.role === AgentNS.Role.Assistant)!;
     expect(assistant.status).toBe(AgentNS.MessageStatus.Aborted);
+
+    agent.stop();
+    await agent.start();
+  });
+});
+
+describe("定稿", () => {
+  /** 收到一条 `messageFinished` 就记下那条消息与它**那一刻**的状态（活对象事后读到的是终值） */
+  function recordFinished(
+    agent: Agent,
+  ): Array<{ message: AgentNS.Message; status?: AgentNS.MessageStatus }> {
+    const finished: Array<{ message: AgentNS.Message; status?: AgentNS.MessageStatus }> = [];
+    agent.on("messageFinished", (payload) =>
+      finished.push({ message: payload.message, status: payload.message.status }),
+    );
+    return finished;
+  }
+
+  it("流式期间一次都不发，收尾发一条", async () => {
+    const { client } = createMockClient([textStream("答了")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const names = recordAllEvents(agent);
+    const finished = recordFinished(agent);
+
+    // 这一轮**只拧一把钥匙**、history 空着：于是这一轮里落地的消息只有那条 assistant 占位，
+    // 「整轮里只有一条」才是一句能直接钉的话（用户说的话那一条由下面那个用例单独管）。
+    void agent.start();
+    agent.push();
+    await settled(agent);
+
+    // 流式期间一片都不发：两片 delta 之后才有那一条
+    expect(names.filter((name) => name === "delta")).toHaveLength(2);
+    expect(finished).toHaveLength(1);
+
+    const assistant = agent.messages.find((message) => message.role === AgentNS.Role.Assistant)!;
+    expect(finished[0]!.message).toBe(assistant);
+    expect(finished[0]!.status).toBe(AgentNS.MessageStatus.Completed);
+
+    // 位置：最后一片 delta 之后，`responseFinished` 之后（「到此为止」排在「现在变成了这样」之后）
+    const at = names.indexOf("messageFinished");
+    expect(at).toBeGreaterThan(names.lastIndexOf("delta"));
+    expect(at).toBeGreaterThan(names.indexOf("responseFinished"));
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("用户说的话也有一条", async () => {
+    const { client } = createMockClient([textStream("答了")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const names = recordAllEvents(agent);
+    const finished = recordFinished(agent);
+
+    void agent.start();
+    agent.push(user("说话"));
+    await settled(agent);
+
+    const said = agent.messages.find((message) => message.role === AgentNS.Role.User)!;
+
+    // 出生就是终版：`messageAdded` 之后**紧接着**就是它（同一次 `append` 里发出去的两条）
+    expect(names.indexOf("messageFinished")).toBe(names.indexOf("messageAdded") + 1);
+    // 同一条消息恰一条：后面（修尾、收尾）不会再报一次
+    expect(finished.filter((entry) => entry.message === said)).toHaveLength(1);
+    expect(finished.find((entry) => entry.message === said)!.status).toBe(
+      AgentNS.MessageStatus.Completed,
+    );
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("中断的那一条也有", async () => {
+    const gated = makeGatedStream([
+      chunk({ content: "前半" }),
+      chunk({ content: "后半" }),
+      chunk({}, "stop"),
+    ]);
+    const { client } = createMockClient([gated.stream]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const names = recordAllEvents(agent);
+    const finished = recordFinished(agent);
+
+    void agent.start();
+    agent.push(user("说话"));
+    await until(() => names.includes("delta"));
+
+    // 第二片之前掐住：这一趟的收尾落在中断之后
+    agent.abort();
+    gated.release();
+    await settled(agent);
+
+    const assistant = agent.messages.find((message) => message.role === AgentNS.Role.Assistant)!;
+    // 中断也是一种落定：定稿照样有，恰一条，那一刻的状态就是 `aborted`
+    expect(finished.filter((entry) => entry.message === assistant)).toHaveLength(1);
+    expect(finished.find((entry) => entry.message === assistant)!.status).toBe(
+      AgentNS.MessageStatus.Aborted,
+    );
 
     agent.stop();
     await agent.start();
