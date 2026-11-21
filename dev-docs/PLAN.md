@@ -1,8 +1,7 @@
 # 计划：先做什么、怎么算做到了
 
 需求见 [`PRD.md`](PRD.md)，技术规范见 [`TRD.md`](TRD.md)，结构与风格见
-[`../packages/host/ARCHITECTURE.md`](../packages/host/ARCHITECTURE.md) 与
-[`../packages/host/STYLE.md`](../packages/host/STYLE.md)，术语见 [`GLOSSARY.md`](GLOSSARY.md)。
+[`ARCHITECTURE.md`](ARCHITECTURE.md) 与 [`STYLE.md`](STYLE.md)，术语见 [`GLOSSARY.md`](GLOSSARY.md)。
 
 ## 这个文件里只许写两样东西
 
