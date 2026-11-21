@@ -42,7 +42,7 @@
 
 - `infra/` 不认识业务：那个目录下不许出现 session / agent / message / workspace / asset。
 - 依赖单向：`modules/* → infra/`，反向不成立。
-- 只有 `app.ts` 同时 import 多个模块。
+- 只有两个入口同时 import 多个模块：装配根 `app.ts`，以及命令行 `cli.ts`。
 
 ## 六、一行一个 JSON
 
@@ -69,7 +69,8 @@ tRPC / Zod / `node:sqlite` / `EventEmitter`。造轮子的门槛是查过现成�
 src/
   index.ts    包出口
   app.ts      唯一装配根
-  infra/      不懂业务：db、json-table、bus、errors、files
+  cli.ts      命令行入口（serve / token / version）
+  infra/      不懂业务：db、json-table、bus、errors、files、paths、version、hostFile
   modules/
     events.ts         事件判别联合（唯一的业务事件形状）
     i18n/             文案：键是那句中文原文，英文表按它索引
