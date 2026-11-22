@@ -1,149 +1,351 @@
 # @ai-zen/agents-sdk
 
-AI-Zen SDK — 共享业务逻辑层，为 CLI 和 Desktop 提供统一的 Agent 运行时。开箱即用，包含预置厂商配置、默认 Agent 和 SubAgent。
+一个包名后面是两半。
 
-## 真相源
+- 能力面把内核装成一个能办事的执行体：能力从磁盘上发现，模型从配置里解析，还有权限与交接。
+- 运行时让这些执行体活着，并让它们互相发话：一段会话一个常驻执行体，事实往外转发，`post` 从一段会话寄到另一段。
 
-**[`../../PRD.md`](../../PRD.md)**（需求）与 **[`../../PLAN.md`](../../PLAN.md)**（实施）是本包行为的唯一真相源。所有实现必须与它们一致。
-## 架构
+## 安装
 
-```
-CLI ──┐
-      ├── @ai-zen/agents-sdk ──┐
-Desktop ──┘                    │
-                          LLM API
+```bash
+pnpm add @ai-zen/agents-sdk
 ```
 
-## 模块分层
+## 哪一半里有什么
 
+| 一半 | 成员 |
+|---|---|
+| 能力面 | `createAgent`、`SdkAgent`、`Scope` 与它的五个能力来源（`allInOne`）、`PermissionEvaluator`、`ConfigManager`、`AgentRepository`、`HandoffService` + `HandoffGuardPlugin`、`completeOnce` |
+| 运行时 | `AgentRuntime`（`wake` / `post` / `status` / `openPeer` / `kill` / `observe`）、`Scopes`、`RuntimePeerSessions` |
+
+内核本身（`@ai-zen/agents-core`）垫在两者下面：一个 `Agent`、它的循环、它的两道闸、它的事件与钩子。这个包加的是某一个产品在它周围需要的东西 —— 不加任何属于宿主的东西。
+
+## 分层：这个包不做什么
+
+| 不在这里 | 在哪里 |
+|---|---|
+| 存储、表、迁移 | 宿主 |
+| 连接、发现文件、凭证 | 宿主 |
+| 用户可见文案、语言、i18n | 宿主 |
+| 会话行 | 宿主 —— 在这个包里，会话只是一个不透明的身份字符串 |
+
+衡量分层的规矩：这个包永远不 import 宿主。会话以 `string` 的形式传来传去；它叫什么名字要问一个端口，从不存下来。一处代码若要知道「谁活着」「谁认识谁」「什么时候装、什么时候拆」，它属于运行时，不属于宿主。它若读写文件、写行、转发事件、校验凭证或渲染文案，它属于宿主。
+
+反过来，一个 `as unknown as` 强转、造出一个假实例来满足这个包里的某个东西，意味着缺一个端口：端口该在这里声明，由调用方实现。
+
+### 运行时借的四个端口
+
+`AgentRuntime` 这四件事一件都不自己做，但每一件必须有地方做：
+
+| 端口 | 调用方提供什么 |
+|---|---|
+| `openScope(cwd, peers)` | 为那个目录造一个能力容器 |
+| `open(input)` | 建一段会话：写行、定身份、交回 `WakeMaterials` |
+| `nameOf(sessionId)` | 这段会话当前的名字，从它的行上读；`undefined` = 没有这段会话 |
+| `log` | 一个 `LogSink`；不给就不记日志 |
+
+`WakeMaterials` 是装配一个执行体所需要的全部材料，从上面给下来：`cwd`、`agentId`、`modelId` / `modelParams`、`lineage`、`history`，以及上一次没被取走的 `waiting` 条目。
+
+## 能力面
+
+### Scope：一个目录一个容器
+
+一个 `Scope` 持有配置、工作目录、助手定义目录、插件，以及插件产出的工具。它给每个执行体跑一条三步管线（`discover` → `candidates` → `instantiate`），于是一个执行体能用什么，是在它被造出来的时候定下的，不是每次调用到来的时候。
+
+```ts
+const scope = new Scope({ getConfig: () => config.read(), agentsDir, cwd })
+  .use(...allInOne({ toolsPaths, skillsPaths, subAgentsPaths, mcpPaths }));
+await scope.init();
 ```
-types         ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
-config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
-crud          ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
-runtime       ← 模型工厂 + Agent 组装 + 任务交接/迁移（可 `AbortSignal` 取消；createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
-scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator / disclosure + plugins/（5 个自包含能力来源：发现 + 工具 + 插件）
-agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint、subAgentGuardInstaller）
-shared        ← 内容块（文件 → 内容块的传输决策）、实体仓储、日志、错误
+
+`getConfig` 是端口不是快照：配置改完之后，`refresh()` 重新读一遍，而不是重建容器。`use()` 必须在 `init()` 之前。
+
+### 五个能力来源
+
+`allInOne(options)` 按这个顺序返回五个标准插件 —— 内置工具、用户工具、技能、MCP、subagent —— 所以两者给出同名能力时，靠后的那个生效。
+
+| 插件 | 来源 |
+|---|---|
+| `BuiltinToolsScopePlugin` | 内置工具集；每个工具自己声明可用性（`isAvailable`） |
+| `UserToolsScopePlugin` | 磁盘上找到的工具脚本 |
+| `SkillsScopePlugin` | 技能目录，以及装载技能的那些工具 |
+| `McpScopePlugin` | MCP 服务器（见下） |
+| `SubAgentsScopePlugin` | 磁盘上的 subagent 定义，一条定义展开成一个委派工具 |
+
+`allInOne` 的选项：`skillsPaths`、`toolsPaths`、`subAgentsPaths`、`mcpPaths`、`logger`、`mcpTaskNotice`。要拿掉或换掉某个来源，就一个一个造插件，再 `use()` 它们。
+
+### 权限
+
+四个维度，各自独立，每个是 `{ allow: [...] }` 或 `{ deny: [...] }`，支持 `*`。没命中就是拒；某一维根本没有策略也是拒。过滤作用在候选名上、发生在实例化之前，于是被拒的能力不是「调用时才挡回来」—— 模型根本看不见它。
+
+```json
+{
+  "permissions": {
+    "tools": { "allow": ["*"] },
+    "skills": { "deny": ["deploy"] },
+    "mcps": { "allow": ["github"] },
+    "subagents": { "allow": ["reviewer"] }
+  }
+}
 ```
 
-依赖方向：`agent-plugins → runtime → scope`；`runtime → scope / crud / shared / types`，`scope → types / shared`。上层依赖下层，反之不行。
+`PermissionEvaluator` 是这条规矩唯一的实现（`filter`、`isAllowed`、`match`）。
 
-## 核心概念
+### 定义、配置与模型
 
-| 实体 | 说明 |
-|------|------|
-| **Scope** | 编排容器：全局上下文（`config` / `cwd` / `agentsDir`）+ 三阶段能力管线（发现 → 过滤 → 实例化）+ 插件注册表。经 `scope.use(...)` 显式装配 |
-| **ScopePlugin** | 能力插件（扩展点）：自持一类能力的发现状态、候选名与实例化（`discover` / `candidates` / `instantiate` / `dispose`）。内置 5 个标准插件，经 `allInOne()` 一键装配 |
-| **ToolEnv** | 工具环境 `{ cwd, config }`，内置工具插件（`BuiltinToolsScopePlugin`）实例化工具时注入，作为相对路径解析与配置读取的基准 |
-| **SdkCallbackTool** | 内置工具抽象基类：`env` 构造注入 + 子类实现 `call()` + `resolve()` 相对路径解析 |
-| **SdkAgent** | 继承 Core Agent，携带 SDK 元数据，支持 `use()` 插件注册 |
-| **AgentPlugin** | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`, `onInnerLoopsStart`, `onInnerLoopsEnd`, `onToolCall`, `onUnknownTool`, `onSubAgentStart`, `onSubAgentEnd`） |
-| **Endpoint** | API 端点（baseUrl + apiKey） |
-| **Model** | 模型配置，绑定 Endpoint |
-| **SubAgent** | 有 `function` 字段的 Agent，可被其他 Agent 作为工具调用 |
+| 成员 | 它管什么 |
+|---|---|
+| `ConfigManager` | `config.json` 和它旁边的目录：读写、出厂默认、坏文件恢复、思考档位、出厂技能、`mcp.json` |
+| `AgentRepository` | 一个文件一个助手定义，`<agentsDir>/<id>.json` |
+| `createAgent(scope, agentId, options)` | 一个装好的 `SdkAgent`：读定义、解析模型、按过滤后的候选造工具 |
+| `resolveModel` / `resolveModelParams` | 会话级覆盖 > 定义 > `config.defaultModel`，唯一的实现 |
+| `createModel` / `createModelFromConfig` | `OpenAI` 客户端、模型名与请求参数 |
+| `completeOnce` | 一次不带工具、不带历史的非流式调用 |
 
-## 权限模型
+`createAgent` 的选项：`modelId` 与 `modelParams`（会话那一级）、`lifetime`（跑一次就死的执行体用 `"one-shot"`）、`canOpenPeers`，以及两个中断策略 `abortedToolRoundStrategy` / `abortedMessageStrategy` —— 它们回落到配置，再回落到内核默认值。
 
-四维度各自独立，allow/deny 互斥，无命中即拒绝，权限即披露（deny 掉的项对 LLM 完全不可见）。
+模型解析从不混级：参数跟着提供模型的那一级走，于是换了模型的会话不会带着上一个模型的参数。
 
-```
-Agent.permissions
-  ├── tools:      { allow: string[] } | { deny: string[] }
-  ├── skills:     { allow: string[] } | { deny: string[] }
-  ├── mcps:       { allow: string[] } | { deny: string[] }
-  └── subagents:  { allow: string[] } | { deny: string[] }
-```
+`SdkAgent` 是一个 `Agent`，另外带着 `scope` 与 `definition`（生效中的那份定义，解析出来的模型已经写进去），还有 `useModel(modelId, modelParams?)` —— 就地换模型与参数，不杀执行体。
 
-## 消费模式
+### 交接
 
-```typescript
+`HandoffService` 写一份交接文档，并且可以选择用它换掉记忆。
+
+| 方法 | 干什么 |
+|---|---|
+| `handoff(params)` | 给执行体一条指令去写那份文档，会话的其余部分一概不动 |
+| `migrate(params)` | 写完文档，算出新的记忆并提交它 |
+
+谁写文档有两种模式：`self`（同一个执行体，在它自己的会话里 —— 默认）与 `summary`（拿序列化后的历史单独调一次模型）。旧消息怎么处置有两种策略：`omit`（打标记，之后的请求不再发 —— 默认）与 `prune`（物理删除）。`commitMemory` 决定新记忆落到哪：不给，SDK 就地拼 `agent.messages`；给了，由调用方去存。
+
+`HandoffGuardPlugin` 是交接那一批的守卫：在那一批里，唯一放行的写是写交接文档本身；其余写工具一律被拒，并给出一句模型能读懂、能照着办的句子。它还观察那次写到底发生了没有（`arm` 返回一个结果和一个「这批结束」的 promise；`disarm` 之后一切照旧放行）。它防的是工作目录被写坏，不是沙箱：shell 命令照样能写文件。取消以 `HandoffAbortedError` 的形式出现，并且绝不会悄悄换成另一种模式重跑。
+
+### 执行体插件
+
+挂在执行体上，不挂在容器上：`AutoMigratePlugin`（用量越过软线就交接）、`AutoRefreshToolsPlugin`、`ContextGuardPlugin`（会越过硬线的请求直接拒）、`SubAgentGuardInstallerPlugin`（把守卫也装到 subagent 上）、`HandoffGuardPlugin`、`UnknownToolHintPlugin`、`AssetTransportPlugin`。
+
+## 运行时
+
+`AgentRuntime` 一段会话一个常驻执行体，并把内核的事实转发出去。
+
+| 成员 | 干什么 |
+|---|---|
+| `wake(sessionId, materials)` | 装配、登记、开跑；幂等，并发的调用共用一次装配 |
+| `post({ from, to, content })` | 往另一段会话的 inbox 里放一句；回 `{ ok: true }` 或一个原因 |
+| `status(sessionId)` | 在干还是闲、叫什么名字、最后一条消息的摘要 |
+| `openPeer({ from, prompt, agentId?, modelId?, label? })` | 开一段平级会话、唤醒它、递上第一句、立刻返回 |
+| `kill(sessionId)` | 注销、杀死、报它没了 |
+| `close()` | 杀掉一切，拆掉每个容器 |
+| `observe(listener)` | 订阅事实；返回退订函数 |
+| `get(sessionId)` / `sessionOf(agent)` / `aliveOn(cwd)` | 快照：哪个执行体、哪段会话、那个目录上有哪几段会话活着 |
+| `scopes` / `peerSessions` | 容器登记表，以及这个运行时实现的平级会话端口 |
+
+事实是一个可判别联合：`resident:appeared` 与 `resident:gone`（运行时自己的两个）、`scope:appeared` / `scope:refreshed` / `scope:gone`（来自容器登记表），以及每个执行体的每条内核事件 —— 名字与载荷都不变，多一个 `sessionId`。
+
+运行时上没有「等到它做完」这种东西：常驻会话没有做完的一刻，它从在干回到闲，随时可以被再推一条。运行时里没有任何东西替调用方等；叫醒一段会话的是一次递话。
+
+### Scopes：容器按目录活着
+
+`Scopes` 持有容器登记表：一个 `cwd` 一个容器，那个目录上的每段会话共用它。
+
+| 成员 | 干什么 |
+|---|---|
+| `for(cwd)` | 那个目录的容器，第一次用到时造 |
+| `dispose(cwd)` | 拆掉它 —— 那个目录上还有会话活着时拒绝 |
+| `refreshAll()` | 让每个已经造好的容器重读配置；报刷新了几个、哪几个失败 |
+| `disposeAll()` | 全拆，给进程退出用 |
+
+没有空闲计时器，没有引用计数，也没有自动回收：容器活着是因为有人拿着它，有人拆它才拆。「没人用了」不是一个可判定的状态。拆的时候拒绝，而不是连带拆掉别的东西 —— 连带会悄悄杀掉正办到一半的会话。
+
+## 平级会话
+
+平级会话是执行体给自己开的另一段会话，有自己的执行体、自己的上下文、自己的用量，而且之后留在会话列表里。
+
+模型那一侧是三个工具（`packages/sdk/src/scope/plugins/peers/`）：
+
+| 工具 | 干什么 |
+|---|---|
+| `create_session` | 开一段平级会话，立刻回 `{ sessionId, label }` |
+| `read_session_status` | 它在干还是闲、还活着没有、叫什么名字、最后一条消息的摘要 |
+| `post_message` | 往那段会话的 inbox 里放一条消息 |
+
+它们自己不实现任何东西。`PeerSessionsScopePlugin` 收一个带三个方法的 `PeerSessionPort` —— `create`、`status`、`send` —— 不给端口就一个工具都不产出。运行时实现的正是这个端口（`RuntimePeerSessions`），所以没有宿主在场时那三个工具也能用。
+
+两条规矩是结构上的，不是调用时才校验的：
+
+- 本身就是被当作平级会话开出来的执行体，手上没有 `create_session`：给它调 `createAgent` 时传的是 `canOpenPeers: false`，于是开平级会话只有一层深，模型连试都试不了。`post_message` 与 `read_session_status` 留着，因为平级会话之间是双向的。
+- 一次性执行体三样都没有，两个后台工具也没有：它没有身份给一条消息签名，也开不出任何有人认领的东西，而且在后台结果回来之前它就已经没了。
+
+`post_message` 不看两段会话之间是什么关系，它的回执只说明那条消息被收下了。拒绝是结构化的：`gone`（没有这段会话）与 `dead`（行在，后面没有执行体，于是没人会取）。开平级会话也可能被 `depth_exceeded`（这段会话自己就是被开出来的平级会话，或者调用方根本不是一段会话）或 `model_unresolved` 拒掉；`PeerSessionRejectReason` 里还有 `too_many_peers`，给会限量的端口用。
+
+平级会话历史的摘要与消息条数一概不返回：模型只拿到一份摘要，于是它不会把另一段会话的记录当成自己的上下文。
+
+## 后台工具
+
+两个内置工具立刻返回、事后才报：
+
+| 工具 | 干什么 |
+|---|---|
+| `async_exec` | 在后台跑一条 shell 命令；它的输出与退出状态作为一条新消息递回这段会话 |
+| `async_timeout` | 一个定时器；到点时把带着任务 id 的一条消息递回来 |
+
+两个都在 `scope/plugins/builtin/` 里（`AsyncExecTool`、`AsyncTimeoutTool`、`asyncTasks`）。结果通过一次递话回到同一段会话，低优先级，于是永远不落在正跑着的那一批里。任务 id 来自每个执行体一个计数器（`async_exec-1`、`async_timeout-2`），执行体停下或被杀时，还在跑的全部收掉。
+
+一次性执行体两个都拿不到（`ASYNC_TASK_TOOL_NAMES` 在装配时被摘掉）：结果回来时它的调用栈已经退回去了，没有人可以递。这和内核就「常驻与一次性」说的那条是同一条规矩，落在「挑工具」这一步上。
+
+## MCP
+
+四样东西在 `scope/plugins/mcp/` 里。
+
+发现把一串有序的 `mcp.json` 合并，近的在前：同一个服务器 id，靠前的文件生效；近处文件里 `disabled: true` 的一条会取消远处文件里的定义。标准链条那五个位置由调用方拼好、作为 `mcpPaths` 传进来（知道那五个位置的是宿主），所以这个包合并的就是它拿到的那些。
+
+连接是懒的，归 `McpConnectionManager`：`load_mcp` 连一个服务器并交回它的清单，没人用的连接在空闲超时之后被丢掉（stdio 30 分钟，http 5 分钟），`disconnect` / `disconnectAll` 显式关掉它们。传输断掉时，那个服务器被标成已断开，而不是自己去重连 —— 重连发生在模型又要点这个服务器的时候，过期的清单不会被当作当前的那份出示。配置变了的时候 `McpScopePlugin` 做对账：删掉的和改过的断开，没改过的一律不碰。
+
+模型那一侧是五个工具：`load_mcp`、`call_mcp_tool`、`read_mcp_resource`、`get_mcp_task_result`、`cancel_mcp_task`。
+
+任务是 MCP 调用里那种长时间运行的形式。工具声明自己支持还是不支持任务（`forbidden` / `optional` / `required`）；一次调用产出任务时，`call_mcp_tool` 立刻交回任务 id，服务器推送状态通知，管理器记住是哪段会话起的这个任务。终态（`completed` / `failed` / `cancelled`，见 `isTerminalTaskStatus`）交给 `McpTaskNoticePort`，由宿主实现：`sessionOf(agent)` 说调用方属于哪段会话，`deliver(sessionId, notice)` 把通知放进它的 inbox。结果本身用任务 id 通过 `get_mcp_task_result` 取。
+
+## 示例一：从能力面造出一个执行体
+
+```ts
+import { Message } from "@ai-zen/agents-core";
+import { AgentRepository, ConfigManager, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
+
+const base = "/path/to/data"; // config.json and agents/ live here
+
+const config = new ConfigManager(`${base}/config.json`);
+await config.write({
+  endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." }],
+  models: [
+    {
+      id: "gpt-4o",
+      name: "GPT-4o",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 500_000, guard: 750_000 },
+    },
+  ],
+  defaultModel: "gpt-4o",
+});
+
+const agents = new AgentRepository(`${base}/agents`);
+await agents.write({
+  id: "demo",
+  name: "Demo",
+  messages: [Message.System("Answer in one sentence.")],
+  modelId: "gpt-4o",
+  permissions: {
+    tools: { allow: ["*"] },
+    skills: { allow: ["*"] },
+    mcps: { allow: ["*"] },
+    subagents: { allow: ["*"] },
+  },
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
+
 const scope = new Scope({
-  config,
-  cwd: "/path/to/workspace", // 每个 Scope 一个工作目录，多会话并行互不干扰
-  agentsDir,
+  getConfig: () => config.read(),
+  agentsDir: `${base}/agents`,
+  cwd: base,
 }).use(
-  ...allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths }),
+  ...allInOne({
+    toolsPaths: [`${base}/tools`],
+    skillsPaths: [`${base}/skills`],
+    subAgentsPaths: [`${base}/sub-agents`],
+    mcpPaths: [`${base}/mcp.json`],
+  }),
 );
 await scope.init();
 
-const agent = await createAgent(scope, "my-agent");
-const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
-agent.use(new ContextGuardPlugin({ guardTokens }));
-agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens }));
-agent.use(new AutoRefreshToolsPlugin());
-agent.use(new UnknownToolHintPlugin({ scope }));
-await agent.init();
-await agent.send("你好");
+const agent = await createAgent(scope, "demo");
 
-await scope.dispose(); // 断开 MCP、释放插件资源
+const idle = new Promise<void>((resolve) => {
+  const offIdle = agent.on("state:idle", () => {
+    offIdle();
+    resolve();
+  });
+});
+
+agent.push({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
+void agent.start();
+await idle;
+
+console.log(agent.messages.at(-1)?.content);
+agent.stop();
+await scope.dispose();
 ```
 
-## 内置工具
+## 示例二：两段会话，一条消息
 
-内置工具全部类化（继承 `SdkCallbackTool`），由内置工具插件（`BuiltinToolsScopePlugin`）用 `ToolEnv` 实例化——每个 Scope 一套实例，`cwd` 注入，相对路径以 `Scope.cwd` 为基准，不依赖全局 `process.cwd()`。
+```ts
+import {
+  AgentRuntime,
+  ConfigManager,
+  PeerSessionsScopePlugin,
+  Scope,
+  allInOne,
+  type RuntimeFact,
+  type WakeMaterials,
+} from "@ai-zen/agents-sdk";
 
-| 工具 | 说明 |
-|------|------|
-| `cwd` | 获取当前工作目录 |
-| `read` | 读取文件（可选 `range` 按行列范围读取；输出超限仅警告并提示用 `range` 分批） |
-| `inspect_file` | 勘察文件结构概况（行数、列数分布等），流式扫描不受 300KB 限制 |
-| `write` | 写入文件 |
-| `exec` | 执行命令（支持 `timeout` 超时参数；stdout+stderr 超限时分文件落盘 `stdout.log` / `stderr.log`） |
-| `spawn` | 异步执行命令，启动后立即返回，不等待结果 |
-| `mkdir` | 创建目录 |
-| `rm` | 删除文件或目录 |
-| `glob` | 使用 glob 模式扫描查找文件（输出超限落盘 `result.json`） |
-| `ls` | 列出目录内容（输出超限落盘 `result.json`） |
-| `exist` | 检查文件或目录是否存在 |
-| `find_text` | 在文件中搜索文本或正则（输出超限落盘 `result.json`） |
-| `download_file` | 从 URL 下载文件并保存到本地 |
-| `rename` | 重命名或移动文件/目录 |
-| `copy` | 复制文件或目录 |
-| `batch_edit` | 批量编辑文件文本（仅回显未匹配项，成功项只计数） |
-| `edit` | 编辑文件中的文本 |
-| `sleep` | 等待指定毫秒数后继续 |
+// config.json and the two definitions "lead" and "helper" already exist under `base`
+const base = "/path/to/data";
+const config = new ConfigManager(`${base}/config.json`);
+const names = new Map<string, string>();
 
-条件注入（按当前模型 / 配置决定是否注册）：
+const runtime = new AgentRuntime({
+  openScope: async (cwd, peers) => {
+    const scope = new Scope({ getConfig: () => config.read(), agentsDir: `${base}/agents`, cwd })
+      .use(...allInOne({ mcpPaths: [`${base}/mcp.json`] }))
+      .use(new PeerSessionsScopePlugin(peers)); // the peer tools need the port from the runtime
+    await scope.init();
+    return scope;
+  },
+  open: async (input) => {
+    // a real host writes a session row here and decides the identity
+    const sessionId = `session-${names.size + 1}`;
+    names.set(sessionId, input.label ?? input.prompt);
+    const materials: WakeMaterials = {
+      cwd: base,
+      agentId: input.agentId,
+      modelId: input.modelId,
+      lineage: input.lineage,
+      history: [],
+      waiting: [],
+    };
+    return { ok: true, sessionId, materials };
+  },
+  nameOf: async (sessionId) => names.get(sessionId),
+});
 
-| 工具 | 注入条件 | 说明 |
-|------|----------|------|
-| `generate_image` | 配置了 `defaultImageModel` 才注册 | 根据文字描述生成图片 |
-| `view_image` | 仅视觉模型可用（Agent 的 `modelId` 解析为 `vision: true` 的模型） | 查看/分析图片：本地图片自动经 Files API 上传，网络 URL 直接引用 |
+runtime.observe((fact: RuntimeFact) => {
+  if (fact.type === "messageFinished") console.log(fact.sessionId, fact.message.content);
+});
 
-工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。口径与边界见 [`../../PLAN.md`](../../PLAN.md) §9；具体行为以代码为准。
+names.set("lead", "lead");
+names.set("helper", "helper");
+await runtime.wake("lead", { cwd: base, agentId: "lead", lineage: null, history: [], waiting: [] });
+await runtime.wake("helper", { cwd: base, agentId: "helper", lineage: null, history: [], waiting: [] });
 
-中断策略进配置：`AppConfig.abortedMessageStrategy`（`keep` / `drop`，出厂 `keep`——中断后模型能接着半截往下说）与 `AppConfig.abortedToolRoundStrategy`（`fill` / `drop`，出厂 `fill`——整轮进出，`tool_calls` 必须与结果配对）。`createAgent()` 不传参数时直接取 `scope.config`，于是策略只有一个真相源。
+// the helper is woken up by this delivery, runs on its own, and comes back to idle
+console.log(await runtime.post({ from: "lead", to: "helper", content: "Say hi in one line." }));
+console.log(await runtime.status("helper"));
 
-## 内置插件
+await runtime.close();
+```
 
-| 插件 | 说明 |
-|------|------|
-| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移（历史按 `strategy` 处理：默认 `omit` 标记保留可审计，可选 `prune` 物理剔除），委托注入的 `HandoffService`；`resolveMode` 让调用方决定交接执行者或跳过本轮；`service.busy` 期间让行，避免「交接→迁移→交接」递归 |
-| `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
-| `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `guardTokens`（绝对值：没有倍数、没有放宽档）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控。它不在任何时刻让行（交接那一次请求也照拦）：要避免撞线就把 `guard` 配宽 |
-| `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |
+运行时上的 `peerSessions` 就是那三个工具最终对接的端口；`Scopes` 是运行时自己持有的容器登记表，所以示例不用自己造它。
 
-## 语言
+## 测试
 
-SDK 是 **English-only**：所有面向模型与面向用户的文案（工具 schema 描述、出厂提示词、运行期注入语、工具返回值、错误信息、出厂 catalog 数据）都是**固定英文字面量**。没有 locale 字段、没有语言包、没有运行期切换。界面语言完全属于各端（CLI 的 `i18n/`、Desktop 的语言设置）。
+```bash
+npm run pretest      # tsc --noEmit over src and the tests
+npx vitest run       # the suite that depends on nothing outside this repository
+```
 
-这是**性能边界**，不是图省事 —— **SDK 的行为与性能不得随用户语言变化**：
+两条命令都在 `packages/sdk` 下跑。`npm run test:e2e` 跑需要 API key 或真的 MCP 服务器的那些用例；`npm test` 绝不能需要这两样。用例所用的假端点在 `@ai-zen/agents-testing` 里（它转发 `@ai-zen/fake-llm`）。
 
-- **阈值是绝对量。** `Model.tokenThresholds.handoff` / `guard` 与 `AppConfig.maxToolOutput` 都以 token / 字符的绝对值为判据。工具 schema 换个语言就是另一组 token 数 —— 交接与上下文阻断会在**不同的实际内容量**上触发。同一份 `config.json` 在不同语言下跑出不同行为。
-- **schema 成本每轮都付。** 描述文字随每次请求重发，token 差异是摊在每一轮上的持续开销，会改变请求体积、上下文占用与费用，而不是一次性成本。
-- **缓存前缀不再可比。** prompt 缓存按前缀匹配；语言一旦进入 SDK，同一条代码路径就有了多个前缀形态，基准测试失去单一变量。
-- **基准与排查需要单一形态。** 性能数据、bug 复现、工具调用成功率都要能横向比较；行为若随 locale 漂移，任何结论都得先问「你是什么语言」。
+## 许可
 
-「模型跟随用户语言」由一条语言中立的 system prompt 指令承担 —— `Always reply in the same language the user writes in.` —— 按**每条消息**自适应，比按安装实例绑定 locale 更准确，也不需要 SDK 参与。边界见 [`../../PLAN.md`](../../PLAN.md) §9。
-
-## 设计原则
-
-参见项目根 [`PRINCIPLES.md`](../../PRINCIPLES.md)：
-
-1. 逻辑自洽
-2. 设计为先，文档为准
-3. 对称、统一
-4. 去除过度设计
-5. 奥卡姆剃刀
-6. 即时重构，保持分层
-7. 测试是基石
+MIT
