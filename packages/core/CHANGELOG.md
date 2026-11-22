@@ -1,5 +1,62 @@
 # Changelog
 
+## [5.0.0-alpha.1] - 2026-11-16
+
+> Republish only. `5.0.0-alpha.0` went out through `npm publish`, which left
+> `"@ai-zen/agents-testing": "workspace:*"` untouched in the published
+> `devDependencies` — `pnpm publish` is what rewrites the workspace protocol, and this
+> package has no `workspace:` entry under `dependencies` to catch the mistake for us.
+>
+> Harmless for consumers (npm ignores a dependency's devDependencies), but anyone who
+> unpacks the tarball and runs `npm install` inside it hits an unsupported protocol. No
+> code changed.
+
+## [5.0.0-alpha.0] - 2026-11-16
+
+> The engine was rewritten against `CORE.md`, its own requirement doc. The old `Agent.ts` carried
+> thirteen responsibilities in one class: `run()` was both the public entry point and the inner
+> loop, `deliver()` decided by itself whether to wake the agent, and "is it running" was answered
+> by a four-state `runStatus` plus a two-state `sendStatus` plus two sets of in-flight tasks.
+>
+> All of that had to go for one reason: **waiting cannot observe what you did not cause.** A
+> conversation can be pushed from idle to busy by any other party — another agent, a timer, an
+> external system. A promise that resolves "when it is idle" then resolves at the end of
+> *someone else's* round, and once it has resolved you are deaf to everything after it.
+
+### Added
+
+- Five lifecycle actions: `start` / `stop` (drain, then die) / `abort` (pause) / `resume` / `kill`
+  (hard landing). Death is final; reviving means constructing a new agent.
+- `push(input?)` — synchronous enqueue, throws `closed` afterwards. A bodyless input is a **key**:
+  it wakes the loop without landing a message.
+- `runOnce(input?, { signal })` — start, push, wait, close, die, hand back the messages. Available
+  only to `lifetime: "one-shot"` agents, because that is the only place where waiting has an owner.
+- `lifetime: "resident" | "one-shot"` — not just how long it lives, but what it can take: only a
+  resident agent may hold tools whose results arrive as events later.
+- `AgentError` with three codes (`request-failed` / `stream-failed` / `closed`), the very same
+  instance on both `failed` and `message.error`.
+- `Message.source` — a discriminated `{kind: "user" | "agent" | "system"}` on every user message.
+- `Agent.parent` / `children`, and sub-agent events relayed under the same names with `subAgent`
+  and `via`. `denied` carries structured `detail` next to the human-readable `reason`.
+- `inboxPending` — read the queue without consuming it, so events really are only notifications.
+
+### Changed
+
+- Repairing unfinished history moved to the **start** of a round (the only place that looks back).
+  `drop` is now a real delete plus `messageRemoved`; `omit` is left to "invalidated by compaction".
+- State reduced to three cells (`busy` / `idle` / `paused`). Everything else — thinking, streaming,
+  which tools are pending — is read off the live messages.
+- Events renamed to say *what happened* (`state`, `messageAdded`, `delta`, `toolFinished`, …);
+  hooks say *where the seam is*. `on(type, fn)` returns an unsubscribe function.
+- A throwing plugin no longer kills the loop: gate hooks fail closed, everything else fails open,
+  and both report `failed`.
+
+### Removed
+
+- `send()` / `deliver()` / `DeliveryReceipt` / `RunStatus` / `SendStatus`.
+- `AgentTool`, `preventDefault()` / `isPreventDefault`, `allowJsonParseError`.
+- Error text is never written into `content` any more.
+
 ## [4.5.5] - 2026-11-09
 
 > One new event, added because a round of parallel tools is otherwise unobservable from the

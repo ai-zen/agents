@@ -1,0 +1,32 @@
+{
+  "name": "@ai-zen/agents-testing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Test doubles shared by the AI-Zen Agents packages: the fake OpenAI-compatible endpoint from @ai-zen/fake-llm, re-exported so call sites keep one import",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:all": "npm run pretest && vitest run && npm run build"
+  },
+  "author": "LZQCN",
+  "license": "MIT",
+  "dependencies": {
+    "@ai-zen/fake-llm": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "rimraf": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  },
+  "files": [
+    "dist"
+  ]
+}

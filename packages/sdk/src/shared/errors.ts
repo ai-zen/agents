@@ -16,12 +16,17 @@ export class SdkError extends Error {
 }
 
 /**
- * 上下文超限错误。由 ContextGuardPlugin 在请求前抛出，用于中断对话。
+ * 上下文超限错误。由 ContextGuardPlugin 在请求前**用来拼拒绝理由**（返回它的 `message`）。
+ *
+ * 它自己不被抛出：钩子里抛错会穿到 `start()` 外面把整个循环打死（agent 变成僵尸），所以
+ * 护栏改成「返回字符串 = 拒这一次请求」（`onInnerLoopStart`）。拒绝理由只有字符串这一种
+ * 形状，用量 / 阈值这两个字段便于就地拼文案。
+ *
  * 触发条件通常是上下文 token 用量超过硬线（如读入超大文件），
- * 继续对话已无意义且会持续放大费用/延迟，故由上层捕获后向用户显式报错。
+ * 继续会话已无意义且会持续放大费用/延迟。
  */
 export class ContextOverflowError extends Error {
-  /** 触发中断时的刚用量（usage.prompt_tokens） */
+  /** 触发拦截时的用量（usage.prompt_tokens） */
   public readonly promptTokens: number;
   /** 被越过的强行阻断阈值（`tokenThresholds.guard`，绝对值） */
   public readonly guardTokens: number;
@@ -29,7 +34,7 @@ export class ContextOverflowError extends Error {
   constructor(promptTokens: number, guardTokens: number) {
     super(
       `🛑 Context critically over the limit: ${promptTokens} tokens used, above the blocking threshold of ${guardTokens}.` +
-        ` The conversation may have run away after reading an oversized file, so it has been interrupted — please inspect and start over.` +
+        ` The session may have run away after reading an oversized file, so it has been interrupted — please inspect and start over.` +
         ` (If you really need a longer context, raise tokenThresholds.guard for this model in config.json.)`,
     );
     this.name = "ContextOverflowError";

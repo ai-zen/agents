@@ -42,7 +42,7 @@ export const FALLBACK_HANDOFF_TEMPLATE = [
 /** 出厂 Skill：交接（handoff） */
 const HANDOFF_SKILL = `---
 name: handoff
-description: Write a task handoff document — when you stop work and leave the conversation, put the task goal, the actual current state, key decisions and next steps into a document that someone else can pick up directly.
+description: Write a task handoff document — when you stop work and leave the session, put the task goal, the actual current state, key decisions and next steps into a document that someone else can pick up directly.
 metadata:
   custom: "false"
 ---
@@ -70,7 +70,7 @@ After writing with the write tool, read it back once with the read tool to confi
 ## Document Structure (write in this order, keep the headings exactly as they are)
 
 ## 💬 Conversation Breakpoint
-What the user last asked for, and what you last replied with or delivered. One paragraph each; do not restate the whole conversation.
+What the user last asked for, and what you last replied with or delivered. One paragraph each; do not restate the whole session.
 
 ## 🎯 Task Goal
 What the user actually wants (intent and acceptance criteria), not a checklist of the steps you performed.

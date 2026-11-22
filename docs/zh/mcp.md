@@ -128,16 +128,6 @@ MCP 的工具**不预先注册**，而是注册「加载器工具」，由 LLM �
 
 （见 [SDK](sdk.md) 的权限模型。）MCP 采用 **server 级信任**：一个 server 被允许后，其全部工具 / 资源对 Agent 可用。`mcps` 维度按 server 名匹配（如 `github` / `postgres`）。
 
-## 深入
-
-SDK 包内维护了更细的 MCP 文档：
-
-- [`packages/sdk/docs/mcp-architecture.md`](../../packages/sdk/docs/mcp-architecture.md) —— MCP 架构
-- [`packages/sdk/docs/mcp-basic-lifecycle.md`](../../packages/sdk/docs/mcp-basic-lifecycle.md) —— 连接生命周期
-- [`packages/sdk/docs/mcp-client.md`](../../packages/sdk/docs/mcp-client.md) —— 客户端
-- [`packages/sdk/docs/mcp-server.md`](../../packages/sdk/docs/mcp-server.md) 及 `mcp-server-*.md` —— 服务器 / 工具 / 资源 / 提示
-- [`packages/sdk/docs/mcp-spec.md`](../../packages/sdk/docs/mcp-spec.md) —— 协议规范
-
 ## 相关文档
 
 - [SDK](sdk.md) —— `Scope` 与 MCP 管理器集成

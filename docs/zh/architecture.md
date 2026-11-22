@@ -1,129 +1,371 @@
 ---
 title: 架构
-description: AI-Zen Agents 的 core / sdk 分层、pnpm monorepo 结构、模块依赖方向与对话流程。
+description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 48 个方法 / 15 个事件、契约为什么是宿主的类型文件、client 的传输/门面/会话三层、host 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
 outline: deep
 ---
 
 # 架构
 
-AI-Zen Agents 是一个 **pnpm monorepo**，拆分为两个公开子包（`@ai-zen/agents-core` 与 `@ai-zen/agents-sdk`），并通过 workspace 根 `@ai-zen/agents-workspace`（私有）统一编排。
+AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspace`，私有，`2.0.0`）。`packages/` 下与本文件相关的是五个包：
 
-## 分层总览
-
-```
-上层应用（CLI / Desktop）
-        │
-        ▼
-@ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  openai 官方 SDK
- （能力管线 / Scope / MCP / 内置工具） （Agent 运行时）   （LLM API）
-        │
-        ▼
-LLM API / MCP 服务器（openai SDK / @modelcontextprotocol/sdk）
-```
-
-- **Core** 是框架「内核」：只关心对话运行时的通用抽象，不感知权限、文件系统等业务。
-- **SDK** 是「引擎层」：为 CLI / Desktop 提供统一能力，持有能力管线、Scope、MCP、内置工具。
-
-## 子包职责
-
-| 包 | 版本 | 职责 |
+| 包 | 版本 | 定位 |
 |----|------|------|
-| `@ai-zen/agents-core` | 4.5.5 | `Agent` / `Message` / `Tool` / `ToolCallContext`、插件机制（`AgentPlugin` + `HookResult` + `dispatchHook`）、事件系统 |
-| `@ai-zen/agents-sdk` | 1.1.0 | `Scope` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务交接与迁移、内置工具、`ConfigManager` |
+| `@ai-zen/agents-core` | 4.6.0-alpha.0 | 对话运行时内核 |
+| `@ai-zen/agents-sdk` | 1.2.0-alpha.2 | 业务能力层 |
+| `@ai-zen/agents-host` | 0.1.0-alpha.7 | 常驻宿主：会话编排 / 存档 / 工作区 |
+| `@ai-zen/agents-client` | 0.1.0-alpha.0 | 到宿主的连接层；**私有**，由 CLI / 桌面端在构建时内联 |
+| `@ai-zen/agents-testing` | 0.1.0 | 私有，测试替身（OpenAI 兼容的假流式端点） |
 
-> workspace 根包 `@ai-zen/agents-workspace` 为私有，版本 `2.0.0`。该版本号与两个公开子包各自独立的版本并不一致，仅用于 workspace 编排。
+（`packages/` 下共七个目录：上表五个（含 `testing`）之外，还有 `test-project`（私有 fixture 包，自带 `package.json`）与 `test-home`（唯一没有 `package.json` 的目录，不是包）。CLI 与桌面端是**独立仓库**，不在本 monorepo 内，但它们在本文件的依赖图里各有位置。）
 
-## SDK 内部模块分层
+## 分层与依赖方向
 
-```
-types         ← 纯类型，零业务依赖（含 ToolEnv、权限、MCP 类型）
-config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 原子写入 + 出厂默认
-crud          ← 能力实体 CRUD（AgentRepository；通用 EntityRepository 在 shared）
-runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务交接/迁移（createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
-scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator + disclosure + plugins/（5 个能力来源，各自自包含「发现 + 工具 + 插件」）
-agent-plugins ← AgentPlugin 插件（autoMigrate / autoRefreshTools / contextGuard / unknownToolHint）
-shared        ← EntityRepository、SdkError、Logger
-```
-
-**依赖方向**：
-
-```text
-agent-plugins → runtime → scope → crud → config → types
-                    │
-                    └──→ shared
-                    └──→ @ai-zen/agents-core
-```
-
-上层依赖下层，反之不行；同层模块互不依赖（例外：`scope` 的能力插件依赖 `runtime` 的 `createModel`，`runtime ⇆ scope` 仅剩一条类型级边）。三方依赖关系详见 [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)（该文档是 SDK 的单一设计真相源）。
-
-## Core 运行时设计
-
-### 插件是唯一扩展点
-
-`AgentContext` 不再提供任何 `onXxx` 构造钩子。**插件（`agent.use(plugin)`）是扩展 Agent 的唯一方式**。所有钩子统一走 `dispatchHook`：
-
-1. 先发出**非阻塞** kebab-case 事件（`agent.events.emit`，只通知、不干预）；
-2. 再按注册顺序**阻塞**调用插件钩子，任一返回字符串即短路。
-
-`HookResult = string | void | Promise<string | void>`：
-
-- **string** → 短路（拒绝 / 中断 / 提供结果，语义随钩子而定）；
-- **undefined / void** → 放行（继续后续插件或默认行为）。
-
-### 对话流程（一次 `send()`）
+依赖是**单向**的，永不反向：
 
 ```
-send(content)
-  ├── onBeforeSend 钩子 → 可能拒绝
-  ├── 追加 User 消息
-  └── run()
-        ├── onInnerLoopsStart 钩子（每次 send 一次）
-        ├── 内循环（只要还有工具调用就继续）
-        │     ├── 开头追加 Assistant 占位（Pending）
-        │     ├── onInnerLoopStart 钩子（每次请求前）
-        │     ├── client.chat.completions.create(...)（官方 SDK 流式）
-        │     ├── parseStreamData() → content / reasoning_content / tool_calls
-        │     ├── handleToolCall() → 执行工具调用
-        │     │     ├── onToolCall 拦截钩子 → 可能拒绝
-        │     │     ├── onUnknownTool 插件 → 兜底提示
-        │     │     ├── Tool.exec(ctx) 执行匹配工具
-        │     │     └── 子 Agent 工具（AgentTool / AgentToolLazy）→ onSubAgentStart / onSubAgentEnd 委派边界
-        │     └── onInnerLoopEnd 钩子
-        ├── onInnerLoopsEnd 钩子
-        └── 返回 this.messages
-  └── onAfterSend 钩子
+@ai-zen/agents-core ←──────────── @ai-zen/agents-sdk ←──────── @ai-zen/agents-host ←── bin: agents-host
+      ↑ (运行期)                                                   ↑
+@ai-zen/agents-client ───────────────────────→（只 import type）─┘
+      ↑
+@ai-zen/agents-client ←── bin: ai (cli) / desktop main
 ```
 
-ToolCallContext 同一实例贯穿「拦截决策（`onToolCall`）→ 执行（`Tool.exec`）」。
+读法：`A ← B` 是「B 依赖 A」。每一条都是 `package.json` 里的事实 ——
 
-## SDK 能力管线：三阶段
+| 从 | 到 | 形态 |
+|----|----|------|
+| `sdk` | `core` | 运行期依赖 |
+| `host` | `core` + `sdk` | 运行期依赖，`dependencies` 两项 |
+| `client` | `core` | 运行期依赖，`dependencies` **只有这一项** |
+| `client` | `sdk` | **只有类型**：`peerDependencies` + `devDependencies`（`ConfigPort` 的公开签名要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`）；运行期一行都不引用 |
+| `client` | `host` | **只有类型**：`peerDependencies`（宿主必须提供）+ `devDependencies`（本仓用例要起真 Daemon）；运行期一行都不引用 |
+| `cli` / `desktop main` | `client`（CLI 另加 `sdk` / `core`） | 应用侧依赖。拉起宿主的策略归宿主：CLI 用 `npx` 现下现起（版本由它自己的 `hostPackage` 钉），桌面端拉起随包分发的那个；方向上它们只是 `client` 的使用者 |
+
+### 三条硬性质
+
+每一条都能用命令证伪，而不是靠「记得别那么写」。
+
+**① `client` 与 `host` 之间没有运行期边。** 客户端对宿主只做 `import type`（形状与名字），
+运行期那几件（消息编解码、错误码判据、回环判据、发现文件读写、`callOnce`）在
+`packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以
+`dependencies` 里只有一个 `core`；`@ai-zen/agents-host` 是它的 **peerDependency**（宿主必须
+提供：类型面来自它）+ devDependency（本仓用例要起真 Daemon）。
+
+```bash
+# 依赖表：不许出现 agents-host / agents-sdk / agents-testing
+node -e 'const d=require("./packages/client/package.json").dependencies; const bad=Object.keys(d).filter((k)=>/agents-(host|sdk|testing)$/.test(k)); if(bad.length) throw new Error(bad.join())'
+
+# 产物侧才是真正的裁决：运行期只有 core
+(cd packages/client && npm run build && grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u)
+# 期望只有 @ai-zen/agents-core、./xxx.js 与 node:*
+```
+
+`ensure-host.ts` 默认用 `npx -y <hostPackage> serve` 拉起宿主：现下现起，不需要宿主预装
+`@ai-zen/agents-host`。这是**部署策略，不是分层** —— 所以包坐标由宿主给（`hostPackage`；
+预发布版本必须带 `@x.y.z`，否则 `npx` 没有 `latest` 可解），不想要这套的应用注入自己的
+`startHostProcess` 即可（桌面端拉起的就是随包分发的那个）。
+
+**② 契约是纯类型，零运行期导出。** `packages/host/src/protocol/` 里只有 `type` / `interface`：
+线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。带运行期的那些（消息编解码、
+错误码判据、回环判据、版本号、发现文件读写、`callOnce`）在 `packages/host/src/wire/`。
+
+```bash
+grep -rn '^export \(const\|function\|class\|async function\)' packages/host/src/protocol/*.ts | grep -v '\.test\.'
+# 必须为空
+```
+
+**③ 数据模型只有一份，契约只做类型转出。** `Message` / `Usage` / `ToolCall` / `ModelParams` 由
+`core` 声明，契约的 `model.ts` 只把它们**类型级**转出；`PhaseInfo` 这类线上载荷的形状由契约
+自己拥有。折 chunk（`applyChunk`）与用量求和（`sumUsage`）客户端直接引 `core` —— 引它，而不是
+抄一份。
+
+```bash
+# 契约对 core 的引用只能出现在类型位置
+grep -rn '@ai-zen/agents-core' packages/host/src/protocol | grep -v '^\S*:[0-9]*: *\*'
+# 期望只有 model.ts 的那一条 `import type`
+
+# 除相对路径与那一条 core 之外，契约不引任何东西
+grep -rn 'from "' packages/host/src/protocol/*.ts | grep -v '\.test\.' | grep -v 'from "\./' | grep -v '@ai-zen/agents-core'
+# 必须为空
+```
+
+为什么这值得一条硬性质：`Message` 的形状既是落盘格式（存档 JSON）也是线上形状。给它再造一份
+「线上镜像」就是第二份定义 —— 而这个项目最忌讳的正是第二份定义。所以它只在一个地方声明。
+
+### 反向没有边
+
+- `packages/sdk/src` 与 `packages/core/src` 里搜不到 `agents-host`；
+- `packages/host/src` 里没有对 `agents-client` 的 import；
+- `packages/client/src` 的生产代码对 `@ai-zen/agents-host` 只有 `import type`，运行期件在自己的 `src/wire/`；唯一 `require.resolve` 它的是 `ensure-host.ts`；
+- `packages/host/src/protocol` 里搜不到 `domain/` / `daemon/` / `lib/`（协议不认识任何一方的实现）。
+
+## 每层管什么、不管什么
+
+| 包 / 应用 | 管 | 不管 |
+|---|---|---|
+| `core` | 对话运行时：`Agent` / `Message` / `Tool` / `ToolCallContext`、插件与事件系统 | 权限、文件系统、配置、持久化 —— `src/` 里没有任何 `node:*` 内置模块的导入。依赖只有 `openai` 与 `@ai-zen/event-bus` |
+| `sdk` | 业务能力：能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务交接与迁移、内置工具、`ConfigManager` | 进程与连接、会话存档、工作区、任何「客户端长什么样」的事。依赖 `core`、`@modelcontextprotocol/sdk`、`dayjs`、`openai` |
+| `host` | 线上**契约**（`src/protocol/`：方法名与事件名的联合、载荷类型、错误码、阶段形状、数据模型的类型出口 —— 纯类型、零运行期导出）与其**运行期件**（`src/wire/`：消息编解码、`hello` 握手、错误码判据、回环判据、版本号、发现文件读写、`callOnce`），加会话编排、存档、工作区、配置与 Agent 定义的宿主读写、资产清单、事件出口，以及把这一切接到一条 WebSocket 连接上的 `Daemon` | UI 栈（不依赖 ink / react / 终端库 —— 包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。两条硬约束写在 `packages/host/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts` |
+| `client` | 一个前端到宿主之间**全部**需要在客户端发生的事：服务发现与拉起、一条 WebSocket 连接、会话与配置两张门面、**会话流状态机**（三个前端必须一致的那部分「想」）、两个判据（要不要把 cwd 递上去、宿主现在什么状态） | 渲染、本地化、进程级全局、任何宿主数据的本地读写 |
+| `cli`（独立仓） | 渲染与输入（ink）、斜杠命令与会话层、把 `SessionStream` 的状态画出来 | 会话编排、存档、工作区、配置写入 —— 那些都在宿主。它依赖 `client`，另加 `sdk` / `core`（应用要用 `AgentDefinition` 这类业务类型与 `Role` / `MessageStatus` 这类**运行期 enum**） |
+| `desktop main`（独立仓） | 应用级事实（`app.getVersion()` 当 `clientInfo`）、拉起宿主、订阅事件并把状态转给 renderer | 宿主实现本身。它今天还持有一份**自己的**会话状态机（见「已知缺口 / 未完成」） |
+
+## 协议面：48 个方法 / 15 个事件
+
+方法名与事件名都是**字面量联合类型**（不是运行期常量表）—— 它们定义在 `packages/host/src/protocol/`，只有类型，没有一行运行期代码。**统计口径**：数联合里的成员 —— 一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法；通知码不算事件，它们是 `session-notice` / `host-notice` 载荷里的枚举。
+
+| 命名空间 | 条数 | 定义处 |
+|----------|------|--------|
+| `workspace.*` | 6 | `sessions.ts` 的 `WorkspaceMethod` |
+| `session.*` | 21 | `sessions.ts` 的 `SessionMethod` |
+| `events.watch` | 1 | `sessions.ts` 的 `EventMethod`（连接级，不属于任何会话） |
+| `config.*` | 7 | `config.ts` 的 `ConfigMethod` |
+| `agent.*` | 5 | `config.ts` 的 `AgentMethod` |
+| `asset.*` | 1 | `assets.ts` 的 `AssetMethod` |
+| `content.*` | 1 | `content.ts` 的 `ContentMethod`（唯一带二进制载荷的方法） |
+| `notice.*` | 2 | `notice.ts` 的 `NoticeMethod`（`notice.list` 列全局通知的槽位；`notice.ack` 确认 —— 两类通知的 id 它都认） |
+| `hello`（握手） | 1 | 方法表里的 `hello`；两个形状是 `protocol/messages.ts` 的 `HelloParams` / `HelloResult`（字段逐个见 [线上协议](protocol.md) 的「握手」一节） |
+| 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DaemonMethod` |
+| **合计** | **48** | |
+
+事件共 **15** 条，分三个联合，都在 `sessions.ts`：
+
+| 联合 | 条数 | 事件名 | 定义 |
+|----|------|--------|------|
+| `AgentEventName` | 8 | `open`、`chunk`、`parsed`、`tool-call-end`、`error`、`finally`、`sub-agent-start`、`sub-agent-end` | 值逐字等于 core `Agent.events` 的原名，时机也照抄 core |
+| `SessionEventName` | 6 | `session-phase`、`session-turn-end`、`session-notice`、`session-question`、`session-id-changed`、`session-title-changed` | 宿主派生 / 宿主自己的动作 |
+| `HostEventName` | 1 | `host-notice` | 宿主自己的通知（不属于任何会话） |
+| **合计** | **15** | | |
+
+五条与本文件有关的性质：
+
+- 事件载荷只装**事实**（阶段 kind、工具名、正文字符串），不装文案——渲染成哪种语言由客户端决定。
+- `AgentEventName` 的 8 条是 core 的原名，宿主在 core 发它的**同一刻**原样转上线，一条不改名。其中 `open` / `parsed` / `error` / `finally` 客户端今天用不到，但照样发 —— 协议面是 core 的公开事实，用不用是客户端的事。
+- **core 的 `chunk-parsed` 与 `message` 不上线**：前者是「客户端折 `chunk` 就能得到的正文增量」，后者被 `tool-call-end`（工具结果定型那一刻，载荷就是 core 手里那条消息）与轮末快照覆盖。把一个既有事实摘一份另立事件，就是给它立第二个定义。
+- 时机是硬的：`error` 早于 `finally`；`finally` 早于 `session-turn-end`。`finally` 与 `session-turn-end` 是**两条不同的事件**，不是改名关系。
+- `send` 立刻返回 `turnId`，一轮的后续全部走事件：一轮可能跑几分钟，等它跑完再回，客户端就没有任何东西可渲染。
+
+每个方法/事件的入参、出参与语义**不在这里抄**——定义处（`packages/host/src/protocol/sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`）就是唯一的说明，需要更多篇幅的语义在 `packages/host/README.md`。这里只给分类与规模。
+
+## 契约为什么是宿主的类型文件
+
+`packages/host/src/protocol/` 里只有 `type` / `interface`：线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。**没有一个运行期导出**。带运行期的那些（消息编解码、错误码判据、回环判据、版本号、发现文件读写、`callOnce`）在 `packages/host/src/wire/`。
+
+**为什么不是独立的一个包**（也不是 core 里的东西）：线上有哪些方法 / 事件 / 载荷，是**宿主提供的形状**，它就该住在宿主里，没有一个单独的可安装单元。判据一句话：这份东西描述宿主提供什么，它归宿主；它要能被别的进程执行，它才是代码。
+
+**为什么客户端不会被拖上宿主运行时**：客户端对宿主只做 `import type`（形状与名字），运行期那几件在 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以 `@ai-zen/agents-client` 的 `dependencies` 只有 `@ai-zen/agents-core`；`@ai-zen/agents-host` 与 `@ai-zen/agents-sdk` 都是它的 **peerDependency**（宿主必须提供：类型面来自它们）+ devDependency（本仓用例要起真 Daemon）。装客户端不会把 openai / MCP SDK 拖进**产物**；它们只是宿主本来就装着的类型来源。
+
+**桌面端 main 是打包产物**，同一条理由的现实版：它只 import `@ai-zen/agents-host/protocol` 的类型，打包器不会跟进 daemon / 存档 / 工作区。
+
+两处细节：
+
+- **`export type *` 而不是逐个列符号**：每加一条方法就要补一行导出，忘了就是「导出不存在」，而这类遗漏不会被任何门禁抓到。
+- **契约也转出数据模型的类型**（`Message` / `Usage` / `ToolCall` / `ModelParams`，见 `model.ts`），因为落盘格式与线上形状本来就是同一份。这条与硬性质③是同一件事的两个说法。
+
+`client` 把这一层原样**类型转出**（`packages/client/src/index.ts` 的 `export type * from "@ai-zen/agents-host/protocol"`），所以上层只要认一个包：方法名、结果类型、数据模型类型都在手边，且**不是**第二份定义。
+
+## `client` 包的三个层次
+
+包内按「脏 / 纯」和「谁负责什么」分三层。凡是能纯的都不碰 I/O，这样状态机可以被直接单测。
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| **传输** | `transport/connection.ts`（`HostConnection`） | **一个进程一条连接**：每次取用都判 `closed`、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说（`onClose` / `onOpen`）。它**不重试** —— 重试是会话层的规则 |
+| | `ensure-host.ts` | 读 `<aiZenDir>/run/host.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-host serve`，轮询到 `ping` 通。它是包里**唯一**知道 `agents-host` 的地方（部署策略，不是分层） |
+| | `socket-host-client.ts` | 一条 WebSocket + JSON-RPC 2.0 连接：`hello` 握手、在飞调用（可带一段二进制载荷）、事件分发、断开通知 |
+| | `resolve-target.ts` + `wire/host-url.ts` / `wire/token.ts` | 「连哪儿 + 拿什么进门」的**唯一解析点**：地址优先级（显式 > 发现文件）、凭证优先级（显式 > `run/token`）、地址形状与 URL 拼法（`ws`/`wss`/`http`/`https`、可带 path）。地址能指向远端，凭证就不能只从本地文件读 —— 两件事同源 |
+| **门面** | `facade/sessions.ts`（`RemoteSessions`，28 条） | `session.*`(21) + `workspace.*`(6) + `content.*`(1) 的类型化薄封装 |
+| | `facade/config.ts`（`RemoteConfig`，13 条） | `config.*`(7) + `agent.*`(5) + `asset.*`(1) |
+| | `facade/coverage.test-d.ts` | 门面方法集合 **===** 协议方法表 key 集合，**100% 覆盖**由类型保证：少一条、多一条都编译不过 |
+| **会话** | `session/stream.ts`（`SessionStream`） | **纯**状态机：一轮之内的消息 / 阶段 / 模型 / 用量 / 子 Agent / 失败终态。零 I/O、零 timers、零全局 |
+| | `session/channel.ts`（`SessionChannel`） | 脏的那一半：订阅、请求、重连（三条不变式）、重新 `attach`、`close` 当场回收 |
+| | `session/errors.ts` | 「这段会话还在不在」的唯一判据：`session-missing` 与 `unknown-session` **都算**会话没了 |
+
+纯件还有一份在包根：`stream-merge.ts`（`mergeStreamedSnapshot`，本地增量与宿主快照的合并规则，唯一实现）。它放根上是因为前端与应用都要显式用它。**没有**「agent view」这类视图层文件：子 Agent 栏目是 `SessionStreamState.subAgents` 里的一份数据。
+
+**为什么这么切**：这一块**不是展示**。它决定「屏幕上的答案会不会凭空短一截」「子任务失败会不会被显示成成功」「这一轮到底结束没有」—— 三个前端都会错、且会错得一样。一纯一脏的分界（`SessionStream` / `SessionChannel`）与 `PhaseTracker`（纯）/ `SessionManager`（脏）那一刀是同一条道理：纯的那个可以直接单测，脏的那个只做接线。
+
+`SessionStream` 不给 `send()`，也不给「等这一轮」：**「等这一轮」在 `SessionChannel.waitForTurn(turnId)`**。因为 `session-turn-end` 有可能先于 `send()` 的回执落地，把两件事合成一个 promise 就得在里面记一份「已经收尾过的轮次」才能不挂死 —— 那正是 `waitForTurn` 干的事。
+
+### 三条硬约束（都能用命令检验）
+
+1. **运行期只有 `core` 一条依赖边** —— `core` 是折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）的**唯一实现**，客户端引它而不是抄一份镜像；与 `sdk` 和 `host` 之间**只是类型**（`import type`，见硬性质①），两个都是 peer。core 的产物运行期只加载 `@ai-zen/event-bus`，`openai` 在 core 里只占类型位置。`devDependencies` 里另有三个 workspace 包（其中 `sdk` 与 `host` 同时是 peer），只为类型与用例，不进产物。
+2. **产物的运行期依赖图必须闭合**：`npm run build` 之后 `dist/*.js` 的外部 import 只允许 `@ai-zen/agents-core`，其余是同级相对路径与 `node:*` —— **没有 `@ai-zen/agents-host`**。
+
+   ```bash
+   cd packages/client && npm run build
+   grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u
+   ```
+
+   > 检查命令必须锚在行首的 `^import`。不锚的话，本包文档注释里那句 `import type … from "@ai-zen/agents-sdk"` 会被自己 grep 到，得出「拖了 sdk」的错误结论 —— 这一步实际踩过。
+
+3. **不读进程级全局**：`aiZenDir`（配置根）与 `clientInfo`（握手时自称的身份）都由**组装根注入**。两者都是「应用级事实」，而本包是库，拍不了这个板 —— 否则桌面端拉起宿主时会自称是 CLI。
+
+## `host` 包的目录
 
 ```
-1. 发现（refresh）    discoverBuiltinTools / discoverUserTools / discoverSubAgents / discoverSkills / discoverMcpServers
-2. 过滤（filter）     安全预过滤 + 权限四维过滤 + 工具 isAvailable 过滤
-3. 实例化（instantiate） 名称 → Tool 实例 / 动态工具 / SubAgent 延迟构建 / 去重
+packages/host/src/
+  domain/       业务对象，每个子目录一个
+    session/      SessionManager + EventBridge + Persistence + QuestionBroker
+                  （+ LiveSession 形状、AutoTitle、store/ 存档端口与实现）
+    workspace/  agent/  config/  asset/  handoff/
+  lib/          无业务语义的通用零件：phase.ts（PhaseTracker）、events.ts（EventHub）
+  protocol/     线上契约（纯类型）：方法名 / 事件名的联合、载荷、错误码、阶段形状、数据模型出口
+  wire/         契约的运行期件：消息编解码、错误码判据、回环判据、版本号、发现文件 I/O、callOnce
+  daemon/       传输与接线：Daemon / wire（传输抽象）/ params / *Handlers
+  cli.ts        组装根（唯一读 env / argv 的地方）
+  index.ts      包对外桶（`export *`，撞名会编译失败——那正是提醒）
 ```
 
-`Scope` 是 SDK 的唯一入口对象，持有配置、`cwd`、`agentsDir` 与一组能力插件。每个 `Scope` 绑定一个工作目录（`cwd`），实现多会话并行互不干扰。详见 [SDK](sdk.md)。
+`domain/` 与 `lib/` 的**分界线**是这条：`domain/` 里是**业务对象**（它知道「会话」「工作区」是什么，也允许知道规则），`lib/` 里是**无业务语义的通用零件** —— `phase.ts` 是生成阶段的状态机，`events.ts` 是连接扇出，两者都不认识会话、存档与握手。`EventHub` 只有 50 来行，但别合并它：`watcherCount()` 承担一条真实业务判定（没人在看就别向客户端提问），而那条判定的用户在 `QuestionBroker` 手里。
 
-## 多会话并行
+其余两处：
 
-内置工具以 `ToolEnv.cwd` 为相对路径基准，**不再依赖全局 `process.cwd()`**。CLI / Desktop 可同时持有多个 `Scope` 服务不同工作目录的会话。
+- **`daemon/` 只管「WebSocket 消息 → JSON-RPC 消息 → 方法调用」**：`Daemon` 自己只带 `ping` / `status` / `shutdown`，其余方法表由组装根通过 `DaemonOptions.handlers` 注入。这一层**不做业务编排** —— 它只验参数形状、接线；需要读别的对象再决定做什么的判定属于 `domain/`（例：「删工作区要连带关活会话」下沉成了 `SessionManager.closeWorkspace`）。
+- **`cli.ts` 是组装根**：唯一允许读 env / argv 的地方（`AI_ZEN_DIR`、`HOME`、命令行参数），把路径解析成值后注入给下面的对象；`domain/`、`lib/`、`daemon/` 一律不读全局。**`index.ts` 是 `export *` 桶**，不是方法清单。
 
-```
-Desktop（workspaces.json）
-   │ 每 workspace 一个 Scope（1:1）
-   ▼
-Scope(cwd) ──ToolEnv──▶ 工具实例（cwd/config 注入）
-   │
-   ▼
-createAgent(scope, agentId) → SdkAgent（并行 send）
-```
+线上契约不在 `src/daemon/` 或 `src/domain/` 里 —— 它在同一包的 `src/protocol/`（纯类型），运行期件在 `src/wire/`。
+
+### Agent 装配按工作区
+
+`domain/agent/` 里一个工作区共用一个 `Scope`（一套 MCP 连接与一次工具发现），**不跨工作区共用**——缓存键是工作区路径，值是 `Promise`（并发建会话共享同一次初始化）。理由是两头的：同工作区分开装会每个会话多一套 MCP 连接；跨工作区共用则会把 A 项目的项目级 skills / tools / mcp 塞给 B 项目。见 `packages/host/src/domain/agent/SessionAgentFactory.ts` 文件头。
+
+## 宿主进程模型
+
+### 常驻进程与单实例
+
+`agents-host` 是 `@ai-zen/agents-host` 的 bin（`dist/cli.js`），子命令 `serve`（缺省）/ `token create|list|revoke` / `version`。
+
+`serve` 启动前先读发现文件：pid 还活着且能 `ping` 通，就打印 `already running on <host>:<port>` 并以退出码 1 收场；pid 已死则把残留文件收掉继续启动。**单实例判断只在宿主做一份**，客户端不重复实现（`packages/client/src/ensure-host.ts` 文件头）。
+
+### 发现文件
+
+位置 `<aiZenDir>/run/host.json`，形状由 `packages/host/src/wire/discovery.ts` 的 `HostDescriptor` 定义：
+
+| 字段 | 含义 |
+|------|------|
+| `pid` | 判断「上次是不是崩了」——进程不在了就收掉残留文件 |
+| `host` / `port` | 连哪儿（端口可能被占，宿主会退回系统分配，所以不能靠猜） |
+| `protocol` | 协议版本，连之前先做一次粗判 |
+| `version` | 宿主包版本，用于版本漂移提示与诊断 |
+| `startedAt` | 启动时刻 |
+| `schema` | 发现文件的 schema 版本，当前恒为 `1` |
+
+写是原子的（先写 `.tmp` 再 `rename`），避免客户端读到半个 JSON；读不到 / 内容坏掉一律返回 `null`（视为「没有在跑」）。
+
+### 传输与握手
+
+线上是 **WebSocket + JSON-RPC 2.0**：一条 WebSocket 消息就是一条完整的 JSON-RPC 2.0 消息，分帧交给 WebSocket 的消息边界；第一条消息必须是 `hello`，协议版本与凭证都在它的 `params` 里，版本对不上就不建连。消息分类、`id` 范围、二进制载荷、大小上限、鉴权与来源校验、错误码与「什么时候才断连」的分级、15 个事件、有状态的通知与题目，逐条见 [线上协议](protocol.md)；远程访问怎么搭见[部署与远程访问](deploy.md)。
+
+### 只绑回环
+
+`Daemon.start()` 对 host 做断言：不是回环地址就抛错拒绝启动（`packages/host/src/daemon/Daemon.ts`）。判据 `isLoopbackHost()` 在 `packages/host/src/wire/host.ts`，认 `localhost`、`::1`、以及 `127.0.0.0/8` 整段（按 RFC 1122，不是只有 `127.0.0.1`）。
+
+这条不是占位符，也**不是「因为没鉴权才这么干」**：宿主暴露的能力里有 `exec`（任意命令执行），把一个这样的端口直接摆到网络上，不是这个项目要的默认状态。远程访问走**防火墙 + 隧道 / 反向代理**（nginx 在同机反代到 `127.0.0.1`，正好落进这条断言）：宿主**永不实现 TLS、永不绑非 loopback** —— `wss://` 是**客户端**的一个能力，不是宿主的一个模式。默认 `127.0.0.1:8790`；`--port 0` 让系统分配。
+
+配合它的两道门是**凭证**（`hello` 的 `params.token`，宿主在 `start()` 时读或生成 `<aiZenDir>/run/token`，0600）与**来源校验**（升级时判 `Origin`，名单来自 `AI_ZEN_ALLOWED_ORIGINS`）。两者各自的判据与不变量见[线上协议](protocol.md)，部署侧的做法见[部署与远程访问](deploy.md)。
+
+两个 idle 是两个不同的东西：`--idle-timeout` 是整个守护进程（一个连接都没有了，多久后退出，缺省不退出），`--session-idle-timeout` 是单段会话（没人看着了，多久后回收）。
+
+日志写 `<aiZenDir>/logs/host.log`：守护进程是客户端 detached 拉起的，绝不能往客户端终端写。
+
+## 一段会话的寿命只有一条规则
+
+> 连接上有持有者 → 活着；持有者没了 → 宽限期后回收；`session.close` → 立刻回收。
+
+就这样三条，**没有第二个判据**。
+
+`holders` 是「此刻真有一条连接在看着它」：由传输层登记（`session.create` / `session.attach` 登记调用方那条连接），连接断开时摘掉（挂在 `connection.onClose` 上）。它不需要客户端配合 —— 连接消失是**内核保证的**（进程被 `kill -9`、崩溃、断电都会让那条 socket 消失）。宽限期是 `DEFAULT_SESSION_IDLE_TIMEOUT_MS`（60 s，`--session-idle-timeout`），够覆盖客户端最坏情况下的重连预算；到点时会**重新判一遍**规则，所以窗口内到达的 `attach` 只是取消这次回收，而还在跑的一轮会把回收推到 `session-turn-end`。
+
+**为什么没有「客户端上报的保活意图」**：那种设计的判据是「上报的意图 **与** 持有者的合取」，而两个事实里只有一个在**最难的情况**下还成立 —— 崩溃的进程发不出那条消息，声明会永远停在「要」，会话连同它占的 Agent 与消息历史永久留在内存里（本包跑在回环上，唯一的回收时机是重启守护进程）；而持有者是内核保证的事实，同样的崩溃恰好把它清干净。取合取只是把不可靠的那个当成了必要条件。这条理由的唯一「为什么」现场是 `SessionManager.ts` 的文件头。
+
+两条**行为后果**必须记账，不许说成「机制少一个、行为不变」：
+
+- 切走一段会话而连接仍在（TUI 的 `/new`、`/load`、`rollback` 后重挂载）时**必须显式 `close()` 旧的那段**，否则内存峰值随切换次数线性增长，直到宽限期才回落；
+- 一次性调用（`ai "…"`）跑完也要 `close()`，否则每跑一次就往常驻宿主留一段活会话。
+  这两件事的出口都在 `SessionChannel.close()`（它 `await session.close()`，让宿主当场回收）。
+
+## `SessionManager` 的四件
+
+`domain/session/` 下的会话是四个类加一份形状文件，全部靠构造参数拿协作者（互不 `import`）。拆分判据不是行数，是**「谁拥有 `LiveSession` 的哪些字段」**：
+
+| 文件 | 拿走的东西 | 职责 |
+|---|---|---|
+| `SessionManager.ts` | 注册表 `sessions` / `holders` / 回收 / turn 生命周期（`beginTurn` / `settleTurn` / `failTurn`）/ 目录（`list` / `last` / `rename` / `remove` / `rollback`）/ 交接（`handoff` / `migrate` / `autoMigrate`）/ `create` / `attach` / `close` / `dispose` | 注册表与轮次生命周期 —— 「我正在管的那批会话」 |
+| `EventBridge.ts` | 流式影子 / 子 Agent 栏目 | SDK 事件 → 协议事件。只依赖 `agent.events` + `hub`，**不需要会话表、不需要 store** |
+| `Persistence.ts` | `store` / `record` / `persistOnSettle` / `autoPersist` | 存档形状与全部写盘路径。**`recordOf` 是存档形状唯一定义处** |
+| `QuestionBroker.ts` | `questions` / `questionSeq` | 宿主向客户端提问：认领、超时、放行。唯一需要 `hub.watcherCount()` 的组件 —— **没人在看就不问** |
+| `LiveSession.ts` | — | 那段会话的形状，以及 `AgentLike` / `SubAgentLike` / `AskQuestionSpec`。四个类都只依赖它 |
+
+`LiveSession` 单独一份的理由是「拆了但还在一个团里」的反面：形状留在其中任一个类里，另外三个就得 `import` 那个类。字段仍然长在同一个对象上（不是四张表）—— 它们说的是同一段会话的四个面，分成四张表就意味着四条「按 id 查回来」的路径，而那种查不到的状态最难解释。
+
+`SessionManager` 不碰文件（只经 `SessionStore` 端口），也不读配置（要「配置 + Agent 定义」才算得出来的东西，由组装根注入成窄函数）。这条边界让它可测：给一个假 Agent 就能跑完整个事件流程。
+
+## 数据落盘布局
+
+配置根记为 `<aiZenDir>`：`--ai-zen-dir` 参数、否则 `AI_ZEN_DIR`、否则 `<HOME>/.ai-zen`（`packages/host/src/cli.ts` 的 `parseArgs`）。这条路径只由组装根解析一次，之后以参数注入。
+
+| 路径 | 内容 | 出处 |
+|------|------|------|
+| `<aiZenDir>/config.json` | 全局配置（形状 = SDK 的 `AppConfig`） | `domain/agent/agentPaths.ts` 的 `globalAgentPaths` |
+| `<aiZenDir>/agents/` | 顶层 Agent 定义（一实体一 JSON） | 同上；`sdk/src/config/constants.ts` 的 `CONFIG_SUB_DIRS` |
+| `<aiZenDir>/sub-agents/` | 子 Agent 定义 | `src/cli.ts` 注入 `ConfigService` 的 `subAgentsDir`；同上 `CONFIG_SUB_DIRS` |
+| `<aiZenDir>/skills/` | 全局 Skill | `agentPaths.ts` 的 `globalSkillsDirs`；`CONFIG_SUB_DIRS` |
+| `<aiZenDir>/tools/` | 全局用户工具 | `agentPaths.ts` 的 `globalToolsDirs`；`CONFIG_SUB_DIRS` |
+| `<aiZenDir>/mcp-oauth/` | MCP OAuth 凭据目录 | `sdk/src/config/constants.ts` 的 `CONFIG_SUB_DIRS` |
+| `<aiZenDir>/mcp.json` | 全局 MCP 配置 | `src/cli.ts` 注入 `ConfigService` 的 `globalMcpFile`；`agentPaths.ts` 的 `mcpConfigs` 末段 |
+| `<aiZenDir>/workspaces/<workspaceId>/workspace.json` | 工作区身份与位置（id 冻结） | `domain/workspace/workspace.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json` | 会话存档（正文 + 元数据，原子写） | `domain/session/store/FileSessionStore.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.meta.json` | 该会话的列表清单（无正文） | 同上 |
+| `<aiZenDir>/workspaces/<workspaceId>/last-session.json` | 「本工作区上一轮会话」指针 | 同上 |
+| `<aiZenDir>/run/host.json` | 服务发现文件 | `src/wire/discovery.ts` 中 `descriptorPath` |
+| `<aiZenDir>/run/token` | 访问凭证（0600；`start()` 时读或生成，**不进** `host.json`） | `src/wire/token.ts` 中 `tokenPath` |
+| `<aiZenDir>/logs/host.log` | 守护进程日志（追加写） | `src/cli.ts` 的 `openLog` |
+
+`<aiZenDir>` 下**没有按前端分家的目录**：会话属于**工作区**，CLI 与桌面端共享同一份数据。指针也不按 cwd 分键 —— 工作区自己就是分区键，所以它是单指针（`last-session.json`）。
+
+`workspaceId` 的形状是 `<目录名规范化>-<sha256(绝对路径) 前 8 位>`，例如 `/home/ubuntu/projects/ai-zen/cli` → `cli-3f9a1c2b`。它只是**首次分配**时的候选，分配之后冻结：`mv` 之后 id 不变，要靠 `workspace.relocate` 显式改记录里的 path，否则历史会「挪个目录就没了」（`workspace.ts` 文件头）。
+
+项目层的资产不在这里，挂在工作区目录上：`<ws>/.ai-zen/skills`、`<ws>/.ai-zen/tools`、`<ws>/.ai-zen/sub-agents`，MCP 配置的优先级链是 `<ws>/.mcp.json` → `<ws>/.ai-zen/mcp.json` → `<ws>/.agents/mcp.json` → `<aiZenDir>/mcp.json` → `~/.agents/mcp.json`（`agentPaths.ts`；顺序就是优先级，项目层在前）。
+
+## 构建与测试顺序
+
+根 `package.json` 的 scripts：
+
+| script | 做什么 |
+|--------|--------|
+| `build-core` | `pnpm --filter @ai-zen/agents-core build` |
+| `build-sdk` | `pnpm --filter @ai-zen/agents-sdk build` |
+| `build-host` | `pnpm --filter @ai-zen/agents-host build` |
+| `build-client` | `pnpm --filter @ai-zen/agents-client build` |
+| `test` | `pnpm build-testing && pnpm build-host && pnpm build-client`，然后依次跑 `testing` → `core` → `sdk` → `host` → `client` 的 `test` |
+
+**为什么是这个顺序**：包之间靠 `dist` 解析，不靠源码路径。每个包的 `main` / `types` / `exports` 都指向 `dist/`，pnpm 只是把 workspace 包软链进 `node_modules`（软链的落点还是包的 `package.json`，于是解析到 `dist`），各包也没有 `paths` 之类的源码映射；每个包的 `build` 是 `prebuild`（`rimraf ./dist`）+ `tsc`。上游不先产出 `dist`，下游连类型都看不见。
+
+于是操作口径是：
+
+- **改了契约**（`packages/host/src/protocol/`）→ `pnpm build-host`。契约是宿主的类型文件，随宿主一起产出；`client` 经 `@ai-zen/agents-host/protocol` 读到的是 `dist/protocol/*.d.ts`。
+- **改了客户端层**（`packages/client/src/`）→ `pnpm build-client`。
+- 两条脚本都不含 core / sdk（那两条是独立脚本）。干净检出要按 `build-core` → `build-sdk` → `build-host` → `build-client` 走一遍。
+- **`pnpm test` 显式构建 `testing` / `host` / `client`**；`core` / `sdk` 的产物必须事先由 `build-core` / `build-sdk` 备好，否则依赖它们的包会在 `pretest`（`tsc --noEmit`）与 `vitest` 阶段解析不到。client 的用例会起**真 Daemon**，所以 `host` 的 `dist` 也必须在。
+- 只跑单个包的用例：`pnpm --filter @ai-zen/agents-host test`（前提同上：它的上游 `dist` 在）。
+
+## 已知缺口 / 未完成
+
+- **桌面端 main 已经用上 `SessionStream`**（`desktop@49c82c1`，`events.ts` 838 → 665 行）：手写的增量累积、子 Agent 合并、收尾整份替换、`failed` 判定全部删了，只剩「喂事件 / 映射成 `ChatStreamEvent`」。留着没搬的两块**是桌面端独有的事实**，不是重复：① `user` 事件的正文（协议不推用户消息）；② 占位 assistant 消息的 id（render 的 `v-for` key 需要它，而状态机刻意不给流式消息编 id）。
+- **`SessionStream` 还差三个出口**（桌面端因为缺它们各留了一小段 workaround，都在 `events.ts` 里且有注释）：① 流式消息的稳定 id（现在 main 自己按 `一轮一个` 编）；② 「丢掉某段会话的拼接态」的公开入口（现在靠 `new SessionStream()` 整台替换）；③ `applySnapshot` 不对齐 `state.turnId`（现在 main 自己拿快照比对残影）。
+- **`Role` / `MessageStatus` 是 core 的 `enum`（运行期值）**，所以**应用**（CLI / 桌面端）依赖 core 是正当的。若要让应用也只依赖协议，得把数据词汇落到底层包 —— 本轮判定不划算，不做。
+- **`packages/sdk/src/config/constants.ts` 的注释仍在描述按前端分家的运行时目录**（`~/.ai-zen/<前端>/`），与「会话属于工作区、`config.json` 在 `<aiZenDir>` 下」的现状不符。
+- **一轮收尾时若快照取失败**，桌面端仍推 `error`（与改造前一致：本地近似里那条占位消息没有稳定 id，不能塞进 `done`）。真窗口里要确认错误条出现且输入框恢复。
 
 ## 相关文档
 
+- [线上协议](protocol.md) —— 线上契约逐条：传输、`id`、二进制帧、上限、握手、鉴权、来源校验、错误码、事件、有状态的通知与题目
+- [部署与远程访问](deploy.md) —— 三种访问形态、nginx 反代与它的默认值陷阱、客户端地址与凭证的优先级
 - [Core API](core.md) —— 运行时公开 API 与实现细节
 - [SDK](sdk.md) —— 能力层公开 API
 - [检索与 RAG](rag.md) —— 检索能力现状
 - [MCP](mcp.md) —— MCP 接入与生命周期
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源
+- [`packages/host/README.md`](../../packages/host/README.md) —— 宿主：方法逐个语义、会话层细节、运维口径
+- [`packages/client/README.md`](../../packages/client/README.md) —— 连接层：三个层次、三条硬约束与 grep 检验
+- [`PLAN.md`](../../PLAN.md) —— SDK 的需求 / 实施真相源（结构与落点）

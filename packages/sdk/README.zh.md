@@ -4,7 +4,7 @@ AI-Zen SDK — 共享业务逻辑层，为 CLI 和 Desktop 提供统一的 Agent
 
 ## 真相源
 
-**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** 是本包的唯一设计真相源。所有实现必须与文档一致。（重构前的设计保留在 [`docs/sdk-design-v0.md`](./docs/sdk-design-v0.md)。）
+**[`../../PRD.md`](../../PRD.md)**（需求）与 **[`../../PLAN.md`](../../PLAN.md)**（实施）是本包行为的唯一真相源。所有实现必须与它们一致。
 ## 架构
 
 ```
@@ -22,7 +22,7 @@ config        ← ConfigManager + constants：读写 config.json + 目录初始�
 crud          ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
 runtime       ← 模型工厂 + Agent 组装 + 任务交接/迁移（可 `AbortSignal` 取消；createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator / disclosure + plugins/（5 个自包含能力来源：发现 + 工具 + 插件）
-agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
+agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint、subAgentGuardInstaller）
 shared        ← 内容块（文件 → 内容块的传输决策）、实体仓储、日志、错误
 ```
 
@@ -33,7 +33,7 @@ shared        ← 内容块（文件 → 内容块的传输决策）、实体仓
 | 实体 | 说明 |
 |------|------|
 | **Scope** | 编排容器：全局上下文（`config` / `cwd` / `agentsDir`）+ 三阶段能力管线（发现 → 过滤 → 实例化）+ 插件注册表。经 `scope.use(...)` 显式装配 |
-| **ScopePlugin** | 能力插件（v1 扩展点）：自持一类能力的发现状态、候选名与实例化（`discover` / `candidates` / `instantiate` / `dispose`）。内置 5 个标准插件，经 `allInOne()` 一键装配 |
+| **ScopePlugin** | 能力插件（扩展点）：自持一类能力的发现状态、候选名与实例化（`discover` / `candidates` / `instantiate` / `dispose`）。内置 5 个标准插件，经 `allInOne()` 一键装配 |
 | **ToolEnv** | 工具环境 `{ cwd, config }`，内置工具插件（`BuiltinToolsScopePlugin`）实例化工具时注入，作为相对路径解析与配置读取的基准 |
 | **SdkCallbackTool** | 内置工具抽象基类：`env` 构造注入 + 子类实现 `call()` + `resolve()` 相对路径解析 |
 | **SdkAgent** | 继承 Core Agent，携带 SDK 元数据，支持 `use()` 插件注册 |
@@ -68,7 +68,7 @@ await scope.init();
 
 const agent = await createAgent(scope, "my-agent");
 const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
-agent.use(new ContextGuardPlugin({ guardTokens, isSuspended: () => handoffService.busy }));
+agent.use(new ContextGuardPlugin({ guardTokens }));
 agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 agent.use(new UnknownToolHintPlugin({ scope }));
@@ -77,18 +77,6 @@ await agent.send("你好");
 
 await scope.dispose(); // 断开 MCP、释放插件资源
 ```
-
-## 开发状态
-
-| 模块 | 状态 |
-|------|------|
-| `types` | ✅ 已实现 — 核心实体、权限模型、MCP 类型完整 |
-| `config` | ✅ 已实现 — ConfigManager + 出厂默认配置 + 一键 bootstrap |
-| `crud` | ✅ 已实现 — Agent 等能力实体 CRUD（会话/草稿由各端自行持久化） |
-| `scope` | ✅ 已实现 — Scope + ScopePlugin + 5 个标准插件（builtin / user-tools / skills / mcp / subagents）+ allInOne |
-| `runtime` | ✅ 已实现 — createAgent、MCP 连接管理、任务迁移 |
-| `agent-plugins` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
-| `shared` | ✅ 已实现 — 内容块传输决策（`content-blocks`）+ 实体仓储 + SdkError + 可注入 Logger |
 
 ## 内置工具
 
@@ -122,7 +110,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 | `generate_image` | 配置了 `defaultImageModel` 才注册 | 根据文字描述生成图片 |
 | `view_image` | 仅视觉模型可用（Agent 的 `modelId` 解析为 `vision: true` 的模型） | 查看/分析图片：本地图片自动经 Files API 上传，网络 URL 直接引用 |
 
-工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。详见 [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md)。
+工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。口径与边界见 [`../../PLAN.md`](../../PLAN.md) §9；具体行为以代码为准。
 
 中断策略进配置：`AppConfig.abortedMessageStrategy`（`keep` / `drop`，出厂 `keep`——中断后模型能接着半截往下说）与 `AppConfig.abortedToolRoundStrategy`（`fill` / `drop`，出厂 `fill`——整轮进出，`tool_calls` 必须与结果配对）。`createAgent()` 不传参数时直接取 `scope.config`，于是策略只有一个真相源。
 
@@ -132,7 +120,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 |------|------|
 | `AutoMigratePlugin` | 上下文超限时自动触发任务迁移（历史按 `strategy` 处理：默认 `omit` 标记保留可审计，可选 `prune` 物理剔除），委托注入的 `HandoffService`；`resolveMode` 让调用方决定交接执行者或跳过本轮；`service.busy` 期间让行，避免「交接→迁移→交接」递归 |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
-| `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `guardTokens`（绝对值：没有倍数、没有放宽档）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控。`isSuspended()` 让护栏自己在交接/迁移回合让行 |
+| `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `guardTokens`（绝对值：没有倍数、没有放宽档）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控。它不在任何时刻让行（交接那一次请求也照拦）：要避免撞线就把 `guard` 配宽 |
 | `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |
 
 ## 语言
@@ -146,7 +134,7 @@ SDK 是 **English-only**：所有面向模型与面向用户的文案（工具 s
 - **缓存前缀不再可比。** prompt 缓存按前缀匹配；语言一旦进入 SDK，同一条代码路径就有了多个前缀形态，基准测试失去单一变量。
 - **基准与排查需要单一形态。** 性能数据、bug 复现、工具调用成功率都要能横向比较；行为若随 locale 漂移，任何结论都得先问「你是什么语言」。
 
-「模型跟随用户语言」由一条语言中立的 system prompt 指令承担 —— `Always reply in the same language the user writes in.` —— 按**每条消息**自适应，比按安装实例绑定 locale 更准确，也不需要 SDK 参与。完整论述见 [`docs/sdk-design-v1.md` §1](docs/sdk-design-v1.md)。
+「模型跟随用户语言」由一条语言中立的 system prompt 指令承担 —— `Always reply in the same language the user writes in.` —— 按**每条消息**自适应，比按安装实例绑定 locale 更准确，也不需要 SDK 参与。边界见 [`../../PLAN.md`](../../PLAN.md) §9。
 
 ## 设计原则
 

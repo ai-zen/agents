@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-core",
-  "version": "4.5.5",
+  "version": "5.0.0-alpha.1",
   "description": "Core framework for building LLM agents: plugin-driven Agent runtime on the official OpenAI SDK, Messages, Tools",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,6 +14,7 @@
     "prebuild": "npm run clean",
     "build": "tsc",
     "prepublishOnly": "npm run build",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:integration": "vitest run --reporter=verbose src/integration.test.ts"
   },
@@ -21,6 +22,7 @@
   "author": "LZQCN",
   "license": "MIT",
   "devDependencies": {
+    "@ai-zen/agents-testing": "workspace:*",
     "@types/json-schema": "^7.0.15",
     "dotenv": "^17.4.2",
     "rimraf": "^6.0.0",
@@ -29,6 +31,7 @@
     "vitest": "^5.1.0"
   },
   "dependencies": {
+    "@ai-zen/async-queue": "^1.7.0-alpha.0",
     "@ai-zen/event-bus": "^1.1.0",
     "openai": "^7.5.0"
   }

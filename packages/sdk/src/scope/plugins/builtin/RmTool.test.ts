@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { RmTool } from "./RmTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 
 function tmpDir(): string {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
@@ -31,7 +31,7 @@ describe("RmTool", () => {
     expect(existsSync(filePath)).toBe(false);
 
     try {
-      unlinkSync(dir);
+      rmSync(dir, { recursive: true, force: true });
     } catch {}
   });
 

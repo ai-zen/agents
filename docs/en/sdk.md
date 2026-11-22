@@ -9,7 +9,7 @@ outline: deep
 `@ai-zen/agents-sdk` is the **engine / capability layer** built on top of `@ai-zen/agents-core`, providing a unified Agent runtime for CLI / Desktop.
 
 - **Installation**: `npm install @ai-zen/agents-sdk` (depends on `@ai-zen/agents-core`, linked via `workspace:^`).
-- **Source of truth**: [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) (the older `sdk-design-v0.md` is kept as a historical archive).
+- **Requirements / implementation source of truth**: [`PRD.md`](../../PRD.md) (requirements and decisions), [`PLAN.md`](../../PLAN.md) (structure and code locations).
 
 ## Scope — global context + capability assembly orchestrator
 
@@ -126,12 +126,12 @@ Notes:
 - **Capability is no longer inferred from the endpoint id**: the old code hard-coded `endpoint.id === "deepseek"` and broke as soon as a user renamed the endpoint. It is now an explicit `Endpoint.capabilities.filesApi` flag
 - **Missing capability bits are backfilled from the factory definition**: endpoints are not factory-managed (`syncManagedModels` only manages models), so any config written before alpha.12 kept `deepseek` without `capabilities` — the bit stayed `false` and local media silently degraded to inline. `migrateConfig()` now fills in a **wholly missing** `capabilities` object from the factory endpoint with the same id; an explicit `false` and user-built endpoints are never touched
 - **The endpoint is resolved from the current model** (`resolveModelAndEndpoint(config, ctx.agent.model)`): `file_id` is an endpoint-scoped resource, so uploading to the wrong endpoint yields not-found
-- **Upload cache**: `endpoint id + absolute path + mtime + size → file_id` (max 200 entries), so the same file is not uploaded twice
+- **The SDK does not remember vendor-side file ids**: whenever a `file_id` is needed, each call really uploads (the SDK only picks the transport and issues that HTTP request). Whether to remember "the id of this file on this endpoint" is the caller's decision — only the side that owns persistent storage has that view
 - `view_image`, `call_mcp_tool` and `read_mcp_resource` all normalise media through this module: images/binary from MCP are no longer always inlined as base64 — endpoints with Files API capability get a `file_id`; a failed conversion degrades to a text note instead of dropping the media block
-- In-memory sources (base64 provided by MCP) are **never decoded and re-encoded**: inline passthrough keeps the bytes identical, decoding only happens when an upload is actually needed, and the cache key is a sha256 of the content
+- In-memory sources (base64 provided by MCP) are **never decoded and re-encoded**: inline passthrough keeps the bytes identical, decoding only happens when an upload is actually needed, and callers that want content-based dedupe can use the exported `contentHash` (sha256)
 - **Non-vision models degrade automatically**: when `Model.vision !== true`, images (including those returned by MCP) become a one-line text note, so `image_url` blocks are never rejected with a 4xx
 - `call_mcp_tool` and `read_mcp_resource` share the same output guard: oversized text is dumped to `result.txt` and only a head/tail preview is returned, while media blocks stay in place
-- **Public API**: `fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `clearUploadCache` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES` are all exported from the package entry, so upper-layer apps (CLI / Desktop) reuse them instead of re-deciding "upload or inline" on their own
+- **Public API**: `fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES` are all exported from the package entry, so upper-layer apps (CLI / Desktop) reuse them instead of re-deciding "upload or inline" on their own
 
 Tool availability is declared by each tool's own `isAvailable(config, definition)` and filtered during the `buildTools` / `filter` stage; the discovery layer does no filtering.
 
@@ -271,7 +271,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 
 ## Consumption pattern (complete)
 
-See the "Consumption pattern (complete example)" and "Boundary with Core" sections in [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md).
+See the "SDK boundary" section of [`PLAN.md`](../../PLAN.md).
 
 ## Related documentation
 
@@ -279,4 +279,4 @@ See the "Consumption pattern (complete example)" and "Boundary with Core" sectio
 - [Architecture](architecture.md)
 - [Core API](core.md) — low-level runtime API
 - [MCP](mcp.md) — the SDK's MCP connection management
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) — source of truth for the SDK design
+- [`PLAN.md`](../../PLAN.md) — requirements / implementation source of truth for the SDK

@@ -1,23 +1,25 @@
 ---
 title: AI-Zen Agents
-description: AI-Zen Agents — 模块化 LLM Agent 框架（core + sdk monorepo），插件驱动运行时、能力管线、搜索工具与 MCP 支持。
+description: AI-Zen Agents — 模块化 LLM Agent 框架（core + sdk + host + client monorepo），插件驱动运行时、能力管线、常驻宿主与 MCP 支持。
 outline: deep
 ---
 
 # AI-Zen Agents
 
-AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace 形式组织为 monorepo。它提供从「对话运行时」到「业务能力管线」的分层能力，供 CLI / Desktop 等上层应用直接使用。
+AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace 形式组织为 monorepo。它提供从「对话运行时」到「常驻宿主」的分层能力，供 CLI / 桌面端经 `@ai-zen/agents-client` 使用。
 
 - **许可证**：MIT
-- **npm 包**：`@ai-zen/agents-workspace`（workspace 根，私有）；公开子包为 `@ai-zen/agents-core` 与 `@ai-zen/agents-sdk`
-- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.5.5`；`@ai-zen/agents-sdk` `1.1.0`
+- **npm 包**：`@ai-zen/agents-workspace`（workspace 根，私有）；公开子包为 `@ai-zen/agents-core`、`@ai-zen/agents-sdk` 与 `@ai-zen/agents-host`。`@ai-zen/agents-client` 与 `@ai-zen/agents-testing` 是**私有**包，不发布 —— 前者被 CLI / 桌面端在构建时内联，后者只给本仓用例用
+- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.6.0-alpha.0`；`@ai-zen/agents-sdk` `1.2.0-alpha.2`；`@ai-zen/agents-host` `0.1.0-alpha.7`；`@ai-zen/agents-client` `0.1.0-alpha.0`（私有）
 
 ## 这是什么
 
-框架围绕两个层次设计：
+框架分四层，依赖单向：
 
 1. **`@ai-zen/agents-core`** —— 插件驱动的 Agent 运行时。直接运行于官方 `openai` SDK 之上，不维护自己的请求层。负责对话生命周期、流式输出、工具调用、多轮递归对话、事件与插件扩展。
 2. **`@ai-zen/agents-sdk`** —— 建立在 core 之上的**引擎 / 能力层**。负责业务能力管线（发现 → 权限过滤 → 实例化）、Scope 全局上下文、MCP 连接管理、任务迁移，以及内置文件/命令工具集。
+3. **`@ai-zen/agents-host`** —— **常驻宿主**（`agents-host serve`）。会话编排、能力装配、存档、工作区、迁移都在这里；CLI 与桌面端只做渲染与输入。
+4. **`@ai-zen/agents-client`** —— 到宿主的**连接层**：服务发现与拉起、一条 WebSocket 连接、会话与配置门面。CLI 与桌面端 main 共用同一份实现。
 
 ## 项目结构
 
@@ -25,7 +27,10 @@ AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace �
 agents/
 ├── packages/
 │   ├── core/    # @ai-zen/agents-core — Agent / Message / Tool / 插件机制
-│   └── sdk/     # @ai-zen/agents-sdk — Scope / 能力管线 / MCP / 内置工具
+│   ├── sdk/     # @ai-zen/agents-sdk — Scope / 能力管线 / MCP / 内置工具
+│   ├── host/  # @ai-zen/agents-host — Daemon / 会话编排 / 存档 / 工作区 + protocol
+│   ├── client/  # @ai-zen/agents-client — 服务发现与拉起 / 连接 / 会话与配置门面
+│   └── testing/ # @ai-zen/agents-testing — 私有，测试替身
 ├── package.json # workspace 根（私有）
 └── pnpm-workspace.yaml
 ```
@@ -44,17 +49,19 @@ agents/
 ## 架构分层
 
 ```
-上层应用（CLI / Desktop）
+CLI / 桌面端 main
         │
         ▼
-@ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  openai 官方 SDK
-  （能力管线 / Scope / MCP）      （Agent 运行时）     （LLM API）
-        │
-        ▼
-LLM API / MCP 服务器
+@ai-zen/agents-client ──(运行期)──►  @ai-zen/agents-core ──►  openai 官方 SDK
+   （连接层）        │
+                    └──(仅类型)──►  @ai-zen/agents-host/protocol
+                                    （线上契约：方法/事件名、载荷、错误码、帧、发现文件）
+
+@ai-zen/agents-host  ──►  @ai-zen/agents-sdk
+ （会话编排 / 存档 / 工作区 / 契约 + 它的运行期件）
 ```
 
-依赖方向（SDK 内部）：`agent-plugins → runtime → scope → crud → config → types`。上层依赖下层，反之不行。详见 [架构](architecture.md)。
+依赖方向单向，永不反向：`core ← sdk ← host`，`client ← CLI / 桌面端 main`。`client` 的运行期只有 `core` 一条边，对宿主只做 `import type`（`@ai-zen/agents-host/protocol` 的类型），`@ai-zen/agents-sdk` 与 `@ai-zen/agents-host` 都是它的 **peer**（宿主必须提供）。详见 [架构](architecture.md)。
 
 ## 快速开始
 
@@ -83,7 +90,7 @@ console.log(agent.messages.at(-1)?.content);
 ## 文档索引
 
 - [快速开始](getting-started.md) —— 环境要求、安装、构建、第一个 Agent
-- [架构](architecture.md) —— core / sdk 分层与模块依赖
+- [架构](architecture.md) —— 五个包的分层与依赖方向、宿主进程模型与协议面、构建顺序与落盘布局
 - [Core API](core.md) —— 核心运行时公开 API（Agent / Message / Tool / 插件）
 - [SDK](sdk.md) —— 能力层（Scope / 权限 / 内置工具 / 迁移）
 - [检索与 RAG](rag.md) —— 检索能力现状、RAG 移除说明
@@ -91,7 +98,7 @@ console.log(agent.messages.at(-1)?.content);
 
 ## 相关仓库
 
-`@ai-zen/cli`（交互式 AI Agent 终端）与 Web UI 曾属于本 monorepo，已迁移至独立仓库或停止维护。详见仓库根 `README.md`。
+`@ai-zen/cli`（交互式 AI Agent 终端）与桌面端（`@ai-zen/desktop-main`）在各自仓库里，通过 `@ai-zen/agents-client` 连到本仓库的 `@ai-zen/agents-host`。
 
 ## 许可证
 

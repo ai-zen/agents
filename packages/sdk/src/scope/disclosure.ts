@@ -5,7 +5,7 @@ export interface DisclosureParam {
 }
 
 /**
- * 创建 load_skill / load_mcp 的参数 schema。
+ * 创建渐进式披露工具（`load_skill` / `call_skill_sub_agent` / `load_mcp`）的参数 schema。
  * 有候选项时生成枚举，无候选项时退化为自由文本并在描述中追加提示。
  */
 export function createDisclosureParam(

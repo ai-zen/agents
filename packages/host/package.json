@@ -1,0 +1,68 @@
+{
+  "name": "@ai-zen/agents-host",
+  "version": "0.1.0-alpha.8",
+  "description": "AI-Zen Agents Host — session/workspace service shared by CLI and Desktop",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "agents-host": "dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-zen/agents.git",
+    "directory": "packages/host"
+  },
+  "homepage": "https://github.com/ai-zen/agents/tree/main/packages/host#readme",
+  "bugs": {
+    "url": "https://github.com/ai-zen/agents/issues"
+  },
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "prepublishOnly": "node scripts/check-publish-tool.mjs && npm test && npm run build",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:all": "npm run pretest && vitest run && npm run build && vitest run --config vitest.e2e.config.ts",
+    "test:e2e": "npm run pretest && vitest run --config vitest.e2e.config.ts"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "host",
+    "session",
+    "workspace",
+    "llm"
+  ],
+  "author": "LZQCN",
+  "license": "MIT",
+  "dependencies": {
+    "@ai-zen/agents-core": "workspace:^",
+    "@ai-zen/agents-logger": "workspace:^",
+    "@ai-zen/agents-sdk": "workspace:^",
+    "@trpc/server": "^11.29.5",
+    "ws": "^8.22.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@ai-zen/agents-testing": "workspace:*",
+    "@types/node": "^24.12.2",
+    "@types/ws": "^8.18.2",
+    "rimraf": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ]
+}

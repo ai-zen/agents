@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { Agent, AgentToolLazy, CallbackTool, Message, ToolCallContext } from "@ai-zen/agents-core";
 import { createLoadSkillTool, createCallSkillSubAgentTool } from "./skillTools.js";
 import type { SkillInfo } from "./discover.js";
+import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
 
 let tmpDir: string;
 let skillDirs: string[];
@@ -101,7 +102,7 @@ describe("createLoadSkillTool", () => {
     expect(result).toContain("Skill directory path:");
     expect(result).toContain("Git operations guide");
     expect(result).toContain("Skill content starts");
-    // 不再注入 system message
+    // load_skill 只把正文拼进返回值，不往 agent.messages 里塞东西
     const injected = agent.messages.find((m) => String(m.content).includes("Skill"));
     expect(injected).toBeUndefined();
   });
@@ -114,7 +115,7 @@ describe("createCallSkillSubAgentTool", () => {
     skillInfo("docker", { description: "Docker 容器管理", subAgent: true }),
   ];
 
-  /** mock 流式客户端：子 Agent run 时返回固定文本 */
+  /** mock 流式客户端：subagent run 时返回固定文本 */
   function createMockClient(responseText = "sub-agent result") {
     const stream = {
       async *[Symbol.asyncIterator]() {
@@ -137,7 +138,7 @@ describe("createCallSkillSubAgentTool", () => {
     return { chat: { completions: { create: vi.fn(async () => stream) } } } as any;
   }
 
-  /** 宿主 Agent：带 read 工具，并挂载被测工具（模拟 Provider.instantiate 的结果） */
+  /** 宿主 Agent：带 read 工具，并挂载被测工具（模拟 Scope.instantiate 的结果） */
   function buildHost(tool: AgentToolLazy) {
     const readFileTool = new CallbackTool({
       function: {
@@ -186,7 +187,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("not found");
   });
 
-  it("被权限过滤掉的 Skill 不能被点名启动子 Agent", async () => {
+  it("被权限过滤掉的 Skill 不能被点名启动subagent", async () => {
     writeSkill("secret", "# 机密技能", { subAgent: true });
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills); // 不含 secret
     const host = buildHost(tool);
@@ -195,7 +196,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("not available");
   });
 
-  it("Skill 不支持子 Agent 模式时抛出错误", async () => {
+  it("Skill 不支持subagent 模式时抛出错误", async () => {
     // 磁盘上的 frontmatter 没有 sub-agent: true，而发现结果声称支持（后改的 frontmatter）：
     // 以磁盘为准，明确告知模型改用 load_skill 自己处理
     writeSkill("plain", "# 普通 Skill");
@@ -209,7 +210,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("does not support SubAgent mode");
   });
 
-  it("委派边界：分发 onSubAgentStart 与 sub-agent-start，子 Agent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
+  it("委派边界：分发 onSubAgentStart 与 subAgentStarted，subagent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
     writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit", {
       subAgent: true,
     });
@@ -223,7 +224,7 @@ describe("createCallSkillSubAgentTool", () => {
       },
     });
     const startEvent = vi.fn();
-    host.events.on("sub-agent-start", startEvent);
+    host.on("subAgentStarted", startEvent);
 
     const result = await tool.exec(
       buildCtx(host, { skill_id: "git", task: "commit these changes" }),
@@ -237,5 +238,54 @@ describe("createCallSkillSubAgentTool", () => {
     // 初始消息来自 SKILL.md 与 task 参数
     expect(String(captured!.messages[0].content)).toContain("Git operations guide");
     expect(captured!.messages[1].content).toBe("commit these changes");
+    // 委派造出来的必须是**一次性** agent（core 的 `buildAgent` 契约）
+    expect(captured!.lifetime).toBe("one-shot");
+    // 注入的那条 user 消息由委派工具补 `source`（谁注入谁填）
+    expect(captured!.messages[1].source).toEqual({ kind: "agent", label: "call_skill_sub_agent" });
+  });
+
+  it("被派出去的执行体没有平级会话那三个工具，别的工具还在", async () => {
+    writeSkill("git", "# Git operations guide", { subAgent: true });
+    const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
+
+    /** 照 `read` 的写法造一个只回占位值的工具（本用例只关心工具名字） */
+    const stubTool = (name: string) =>
+      new CallbackTool({
+        function: {
+          name,
+          description: `工具 ${name}`,
+          parameters: { type: "object", properties: {}, required: [] },
+        },
+        callback: () => "ok",
+      });
+
+    // 父 Agent 手上有 `read`，也有平级会话那三个
+    const host = new Agent({
+      client: createMockClient(),
+      model: "gpt-4",
+      messages: [Message.System("父 Agent")],
+      tools: [stubTool("read"), ...PEER_SESSION_TOOL_NAMES.map(stubTool), tool],
+    });
+
+    let captured: Agent | undefined;
+    host.use({
+      onSubAgentStart: (c) => {
+        captured = c.subAgent;
+      },
+    });
+
+    const result = await tool.exec(
+      buildCtx(host, { skill_id: "git", task: "commit these changes" }),
+    );
+
+    expect(result).toBe("sub-agent result");
+    expect(captured).toBeDefined();
+    const subAgentNames = captured!.tools.map((t) => t.function.name);
+    // 平级会话是会话级能力：父会话的执行体可以有，被派出去的没有
+    for (const name of PEER_SESSION_TOOL_NAMES) {
+      expect(subAgentNames).not.toContain(name);
+    }
+    // 剔除只掐那三个名字：其它工具照旧沿用
+    expect(subAgentNames).toContain("read");
   });
 });

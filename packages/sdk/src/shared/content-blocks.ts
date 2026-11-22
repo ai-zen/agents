@@ -1,24 +1,22 @@
 /**
  * 本地文件 → 消息内容块的唯一转换入口。
  *
- * 背景：这段逻辑原先散落三处，且各自为政 ——
- *   1. `ViewImageTool` 自己判断 `endpoint.id === "deepseek"` 再上传（端点 id 一变就失效）；
- *   2. `mcp/mcpTools.ts` 自己把 MCP 的 base64 归一成 `image_url` / `file` 块；
- *   3. CLI 侧又实现了一遍「上传 or base64」。
- *
- * 现在统一到这里，调用方只提供「文件 + 当前端点/模型」，传输方式由本模块决定：
+ * 调用方只提供「文件 + 当前端点/模型」，传输方式由本模块决定：
  *
  * | 条件 | 结果 |
  * |------|------|
  * | http(s) URL | 直接 `image_url`（不上传、不内联） |
- * | 端点声明 `capabilities.filesApi` | 上传 Files API → `file` 块（`file_id`），失败降级为内联 |
+ * | 端点声明 `capabilities.filesApi` 且有 `apiKey` | 上传 Files API → `file` 块（`file_id`）；上传失败即抛，不换传输方式 |
  * | 其余端点 + 图片 | `image_url` + base64 data URL |
  * | 其余端点 + 非图片 | `file` 块 + `file_data`（base64 data URL） |
- * | 模型明确不支持视觉（`vision === false`）且是图片 | 退化为 `text`，只给路径提示 |
+ * | 图片且模型不是视觉模型（`vision !== true`） | 退化为 `text`，只给路径提示 |
  * | 内联体积超过上限且无法上传 | 抛错（不静默塞进请求体） |
+ *
+ * 本模块只负责**选路**与**上传这一个 HTTP 动作**：需要 `file_id` 时每次调用都真上传，
+ * 不在进程里记「这个文件在这个端点上的 id 是什么」。要复用同一个 id 的是调用方 ——
+ * 模块级 Map 这类记录既看不到（不可观测）、也扛不住重启，该由持有持久存储的一侧承担。
  */
 
-import OpenAI, { toFile } from "openai";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -97,7 +95,11 @@ export interface FileToSectionResult {
   transport: ContentTransport;
   /** 实际处理的字节数（URL 来源为 0） */
   bytes: number;
-  /** 降级 / 退化时的人类可读说明，供上层拼提示 */
+  /**
+   * 退化为文本提示时的人类可读说明，供上层拼提示。
+   *
+   * 唯一产生者是下面「模型看不见图 → 退化为文本」那一支（上传失败直接抛错，不走这里）。
+   */
   warning?: string;
 }
 
@@ -129,54 +131,47 @@ export function supportsFilesApi(endpoint?: Endpoint | null): boolean {
   return endpoint?.capabilities?.filesApi === true;
 }
 
-/**
- * 上传缓存：`端点id + 绝对路径 + mtime + size` → `file_id`。
- *
- * file_id 是**端点维度**的资源，所以 key 必须带端点 id —— 同一张图传到两个端点
- * 会得到两个不同的 id，混用会让另一端返回 not found。
- */
-const uploadCache = new Map<string, string>();
-
-/** 清空上传缓存（测试用；进程内长期运行无需清理，条目有上限） */
-export function clearUploadCache(): void {
-  uploadCache.clear();
-}
-
-const UPLOAD_CACHE_LIMIT = 200;
-
-/** 内容哈希（sha256），用于给「内存里的字节」做上传缓存键 */
+/** 内容哈希（sha256）；调用方想按内容去重时可以拿它当键 */
 export function contentHash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function cacheKey(
-  endpoint: Endpoint,
-  absPath: string,
-  stat: { mtimeMs: number; size: number },
-): string {
-  return `${endpoint.id}\u0000${absPath}\u0000${stat.mtimeMs}\u0000${stat.size}`;
-}
-
-/** 内存来源的缓存键：没有路径与 mtime，改用内容哈希（同一张图不会重复上传） */
-function contentCacheKey(endpoint: Endpoint, hash: string): string {
-  return `${endpoint.id}\u0000sha256:${hash}`;
-}
-
-function rememberUpload(key: string, fileId: string): void {
-  uploadCache.set(key, fileId);
-  while (uploadCache.size > UPLOAD_CACHE_LIMIT) {
-    const oldest = uploadCache.keys().next();
-    if (oldest.done) break;
-    uploadCache.delete(oldest.value);
-  }
-}
-
-/** 默认上传实现：OpenAI 兼容的 `POST {baseUrl}/files`（`purpose=user_data`） */
+/**
+ * 默认上传实现：OpenAI 兼容的 `POST {baseUrl}/files`（`purpose=user_data`）。
+ *
+ * 用原生 `fetch` + `FormData`，不用 `openai` 包：这里要的只是「发一个 multipart、读回
+ * `id`」，而那 20 MB 的 SDK 会随着本模块的**静态 import** 进入任何打包它的人的产物 ——
+ * CLI 只为了粘贴一张图就得背上它。原生实现没有这个代价，HTTP 上完全等价。
+ */
 const defaultUpload: UploadFn = async ({ endpoint, data, filename, signal }) => {
-  const client = new OpenAI({ apiKey: endpoint.apiKey, baseURL: endpoint.baseUrl });
-  const file = await toFile(Buffer.from(data), filename);
-  const uploaded = await client.files.create({ file, purpose: "user_data" }, { signal });
-  return uploaded.id;
+  // 拷一份：`data` 的类型是 `Uint8Array<ArrayBufferLike>`，而 `BlobPart` 只收
+  // `ArrayBuffer` 支撑的（TS 5.7 起两者不再互相兼容）。上传是一次性的，拷一次
+  // 相对一次网络往返可以忽略。
+  const bytes = new Uint8Array(data.byteLength);
+  bytes.set(data);
+
+  const form = new FormData();
+  form.append("purpose", "user_data");
+  form.append(
+    "file",
+    new Blob([bytes], { type: mimeOf(filename) ?? "application/octet-stream" }),
+    filename,
+  );
+  const response = await fetch(`${endpoint.baseUrl.replace(/\/+$/, "")}/files`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${endpoint.apiKey}` },
+    body: form,
+    signal,
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `File upload failed: HTTP ${response.status}${detail ? ` — ${detail.slice(0, 200)}` : ""}`,
+    );
+  }
+  const body = (await response.json()) as { id?: unknown };
+  if (typeof body.id !== "string") throw new Error("File upload failed: response has no `id`");
+  return body.id;
 };
 
 function isRemoteUrl(value: string): boolean {
@@ -193,6 +188,8 @@ function textSection(text: string): AgentNS.MessageContentSection {
  * 抛错场景（均由调用方决定如何呈现给模型）：
  * - `source.url` 不是 http(s)（本地 URL 服务商访问不到）
  * - 本地文件不存在 / 不是文件 / 扩展名不支持
+ * - 端点声明了 Files API 但上传失败（HTTP 非 2xx、网络错误、取消）：不换成 base64 内联，
+ *   原错误原样抛——换传输方式是调用方该知道的事，不该在这里静默发生
  * - 需要内联但体积超过上限，且端点不支持上传
  */
 export async function fileToContentSection(
@@ -216,14 +213,13 @@ export async function fileToContentSection(
   }
 
   // ---- 2. 取得字节与 MIME ----
-  // 已经是 base64 的来源（MCP）：先不解码，内联时原样透传，只有真要上传/算哈希时才解码
+  // 已经是 base64 的来源（MCP）：先不解码，内联时原样透传，只有真要上传时才解码
   let base64: string | null = null;
   let bytes: Uint8Array | null = null;
   let byteLength: number;
   let mime: string;
   let filename: string;
   let absPath: string | null = null;
-  let stat: { mtimeMs: number; size: number } | null = null;
 
   if ("path" in source) {
     absPath = path.isAbsolute(source.path) ? source.path : path.resolve(source.path);
@@ -236,7 +232,6 @@ export async function fileToContentSection(
       );
     }
     mime = inferred;
-    stat = { mtimeMs: st.mtimeMs, size: st.size };
     bytes = new Uint8Array(await fs.readFile(absPath));
     byteLength = bytes.byteLength;
     filename = path.basename(absPath);
@@ -252,7 +247,7 @@ export async function fileToContentSection(
     filename = source.filename ?? "file";
   }
 
-  /** 需要真实字节时才解码（上传、算内容哈希） */
+  /** 需要真实字节时才解码（上传） */
   const ensureBytes = (): Uint8Array => {
     if (!bytes) bytes = new Uint8Array(Buffer.from(base64 ?? "", "base64"));
     return bytes;
@@ -277,34 +272,15 @@ export async function fileToContentSection(
     };
   }
 
-  // ---- 4. 端点支持 Files API：上传（带缓存），失败降级内联 ----
-  let warning: string | undefined;
+  // ---- 4. 端点支持 Files API：上传（每次调用都真上传），失败原样抛 ----
   if (supportsFilesApi(endpoint) && endpoint?.apiKey) {
-    const key =
-      absPath && stat
-        ? cacheKey(endpoint, absPath, stat)
-        : contentCacheKey(endpoint, contentHash(ensureBytes()));
-    const cached = uploadCache.get(key);
-    if (cached) {
-      return {
-        section: { type: "file", file_id: cached },
-        transport: "files-api",
-        bytes: byteLength,
-      };
-    }
-    try {
-      const upload = input.deps?.upload ?? defaultUpload;
-      const fileId = await upload({ endpoint, data: ensureBytes(), filename, signal });
-      rememberUpload(key, fileId);
-      return {
-        section: { type: "file", file_id: fileId },
-        transport: "files-api",
-        bytes: byteLength,
-      };
-    } catch (error: any) {
-      if (signal?.aborted) throw error;
-      warning = `Files API upload failed, falling back to base64 inline: ${error?.message ?? error}`;
-    }
+    const upload = input.deps?.upload ?? defaultUpload;
+    const fileId = await upload({ endpoint, data: ensureBytes(), filename, signal });
+    return {
+      section: { type: "file", file_id: fileId },
+      transport: "files-api",
+      bytes: byteLength,
+    };
   }
 
   // ---- 5. 内联（base64 data URL）----
@@ -323,6 +299,5 @@ export async function fileToContentSection(
       : { type: "file", file_data: dataUrl, filename },
     transport: "inline",
     bytes: byteLength,
-    warning,
   };
 }

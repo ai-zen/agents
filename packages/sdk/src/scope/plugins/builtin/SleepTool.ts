@@ -32,19 +32,18 @@ export class SleepTool extends SdkCallbackTool {
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
       return JSON.stringify({
         success: false,
-        error: "ms must be a positive integer",
+        error: "ms must be a non-negative number",
       });
     }
 
     if (ms > 300_000) {
-      // 超过 5 分钟给出警告
+      // 超过 5 分钟直接返回错误（不给一个「成功但没睡够」的结果）
       return JSON.stringify({
         success: false,
         error: `Wait time ${ms}ms is too long, keep it at or below 300000ms (5 minutes). For longer waits, split them into shorter steps`,
       });
     }
 
-    // 若 signal 已处于 aborted，直接返回中断结果，避免不必要的等待
     const signal = ctx?.signal;
 
     // 等待 ms 毫秒，中断（abort）时提前结束

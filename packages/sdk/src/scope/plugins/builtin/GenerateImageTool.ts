@@ -36,12 +36,9 @@ const defaultGenerateImage: GenerateImageFn = async ({
  * 根据文字描述生成图片。**统一返回字符串**（JSON，含图片 URL 列表）：
  * 生成结果如何处理（查看/下载/转发）由模型与上层自由决定——
  * 需要让模型看图时，模型可主动调用 view_image(URL)；需要保存时用 download_file。
- *
- * 依赖 AppConfig 中的 imageModels 和 defaultImageModel 配置（isAvailable 声明），
- * 未配置时由 buildTools 过滤，不暴露给 Agent。
  */
 export class GenerateImageTool extends SdkCallbackTool {
-  /** 依赖图片模型配置（defaultImageModel），未配置时由 buildTools 按 isAvailable 过滤 */
+  /** 可用性只判 `defaultImageModel`；`imageModels` 为空时由 call() 自己报错 */
   isAvailable(config: AppConfig, _definition: AgentDefinition): boolean {
     return !!config.defaultImageModel;
   }
@@ -139,7 +136,7 @@ export class GenerateImageTool extends SdkCallbackTool {
 
       const modelName = input.model || imageModel.modelName;
 
-      // 出网动作走注入的 deps（缺省时用 OpenAI SDK），测试无需 mock openai 模块
+      // 出网动作走注入的 deps（缺省时用 OpenAI SDK）
       const generateImage = this.env.deps?.generateImage ?? defaultGenerateImage;
       const result = await generateImage({
         endpoint,
@@ -175,9 +172,6 @@ export class GenerateImageTool extends SdkCallbackTool {
         });
       }
 
-      // 统一返回字符串（JSON）：生成结果如何处理（查看/下载/转发）由模型与上层自由决定，
-      // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 view_image；
-      // 需要保存 → download_file 下载。
       const hasUrl = images.some((img) => img.url);
       return JSON.stringify(
         {

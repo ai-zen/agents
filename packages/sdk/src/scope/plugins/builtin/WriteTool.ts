@@ -4,9 +4,17 @@ import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS } from "@ai-zen/agents-core";
 
+/**
+ * `write` 这个工具名只在这里命名一次。
+ *
+ * 别处（交接守卫的门、「这一段有没有 write 工具」的判据）都引它 —— 一个工具名散成四处
+ * 字面量，改一处漏三处的时候不会报错，只会默默失效。
+ */
+export const WRITE_TOOL_NAME = "write";
+
 export class WriteTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "write",
+    name: WRITE_TOOL_NAME,
     description: "Write a file",
     parameters: {
       type: "object",

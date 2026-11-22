@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { dirname } from "node:path";
 import { GenerateImageTool } from "./GenerateImageTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { AppConfig, GenerateImageFn } from "../../../types/index.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
-// 出网动作走依赖注入（ToolEnv.deps），不再 mock "openai" 模块：
+// 出网动作走依赖注入（ToolEnv.deps），不需要 mock "openai" 模块：
 // 默认返回一张图；signal 已 abort 时抛 AbortError（配合中止测试）
 const mockImagesGenerate = vi.fn<GenerateImageFn>(async ({ signal }) => {
   if (signal?.aborted) {
@@ -153,11 +155,12 @@ describe("GenerateImageTool", () => {
     expect(parsed.note).toContain("base64");
 
     // 真的写出了图片字节
-    const { readFileSync, unlinkSync } = await import("node:fs");
+    const { readFileSync } = await import("node:fs");
     const bytes = readFileSync(parsed.images[0].filePath);
     expect(bytes.length).toBeGreaterThan(50);
     expect(bytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-    unlinkSync(parsed.images[0].filePath);
+    // 落盘目录是 `<tmp>/ai-zen/generated-images/`（生产语义），用例要自己擦
+    cleanupDumpDir(dirname(parsed.images[0].filePath));
   });
 
   it("端点既无 url 也无 b64_json 时返回失败，而不是假成功", async () => {

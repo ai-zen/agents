@@ -2,17 +2,19 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Tool, CallbackTool } from "@ai-zen/agents-core";
-import { getLogger } from "../../../shared/logger.js";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
 /** 单个用户工具文件的加载参数 */
 export interface DiscoverUserToolsOptions {
   /** 静默：不写日志（测试 / 批量探测用） */
   silent?: boolean;
+  /** 日志口（可选）：某个文件被拒了从它报一句；不注入就不记（库缺省沉默） */
+  logger?: LogSink;
   /** 单文件 import 的超时（毫秒），默认 {@link DEFAULT_IMPORT_TIMEOUT_MS}；`0` 表示不限 */
   importTimeoutMs?: number;
 }
 
-/** 默认的单文件 import 超时：工具目录里不该有需要长过它的模块求值 */
+/** 默认的单文件 import 超时（毫秒） */
 const DEFAULT_IMPORT_TIMEOUT_MS = 5000;
 
 // ==================================================================
@@ -30,11 +32,9 @@ const DEFAULT_IMPORT_TIMEOUT_MS = 5000;
 //   · `console.log / info / debug`     → 改指 stderr，不撕宿主的 stdout（TUI 画面）；
 //   · 顶层 await 永不 settle（异步挂死）→ 超时放弃该文件。
 //
-// **挡不住**的（只有进程隔离能解，而那正是 MCP 的职责）：
+// **挡不住**的（只有进程隔离能解，那正是 MCP 的职责）：
 //   · 顶层同步死循环——事件循环被占，连超时定时器都不会跑；
 //   · `process.kill(process.pid)` 这类原生自杀。
-//
-// 所以 tools/ 的定位是**可信的本地扩展**；不可信的代码请写成 MCP 服务器。
 
 /** 正在被 import 的文件（护栏回报错误时用它定位） */
 let importingFile: string | null = null;
@@ -56,7 +56,6 @@ class UserToolExitError extends Error {
  *
  * 这个预检能把「放错目录的普通脚本」挡在求值之前——没有 export 的模块本来也会被
  * `normalizeToolExport` 判成 null，区别只在于：那时它已经被求值、副作用已经发生了。
- * 实测那 4 个一次性脚本的 export 计数全为 0。
  *
  * 读不出来（权限 / 编码 / 不是普通文件）时放行：预检只为省掉明显的白跑，
  * 不该因为读不了文件就把正常工具挡住。
@@ -108,7 +107,7 @@ function installHostGuards(): () => void {
  * `import()` + 超时。
  *
  * 超时只是「不再等它」：ESM 求值**不可取消**，该模块随后仍可能被求值完并产生副作用，
- * 因此超时只记告警、不声称已终止。真正的隔离需要独立进程（即 MCP）。
+ * 因此超时只记告警、不声称已终止。
  */
 async function importWithTimeout(url: string, timeoutMs: number): Promise<unknown> {
   if (timeoutMs <= 0) return import(url);
@@ -123,30 +122,57 @@ async function importWithTimeout(url: string, timeoutMs: number): Promise<unknow
   }
 }
 
-/** 「这个文件被拒了」的出口：只走 logger，怎么展示是宿主的事 */
+/** 「这个文件被拒了」的出口：只走注入进来的日志，怎么展示是宿主的事 */
 function reportReject(
   file: string,
   reason: string,
   opts: DiscoverUserToolsOptions,
   level: "warn" | "error" = "warn",
 ): void {
-  if (!opts.silent) getLogger()[level](`[usertools] ${file} — ${reason}`);
+  if (!opts.silent) (opts.logger ?? SILENT_LOG)[level](`[usertools] ${file} — ${reason}`);
+}
+
+/**
+ * 一个用户工具文件（加载成功的那一个）：文件身份 + 加载出来的实例。
+ *
+ * 为什么要成对给：`Tool` 自己不记「我是从哪个文件来的」（它只是 core 的一个工具对象），
+ * 而把发现结果报给上层的调用方（宿主 `DiscoveryService` 列配置层）需要的正是**文件**。
+ * 让调用方拿着工具名去某个目录里找同名文件，就是第二套扫描规则。
+ */
+export interface UserToolFile {
+  /** 文件名（不含扩展名）：同一条扫描里的唯一键，也是发现顺序的依据 */
+  name: string;
+  /** 文件绝对路径（`<某个 tools 目录>/<name>.js|.mjs`） */
+  path: string;
+  tool: Tool;
 }
 
 /**
  * 扫描多个 tools/ 目录，发现所有 .js / .mjs 文件，动态加载为 Tool 实例。
- * 使用原生 dynamic import() 加载（在 "type": "module" 下 .js 也是 ESM），
- * 每次添加时间戳 querystring 防止缓存。
  *
  * 按优先级从高到低传入路径列表，同名工具靠前的路径优先（先到先得）。
  * 按文件名排序以保证确定性。
+ *
+ * 本体在 {@link discoverUserToolFiles}，这里只是取出 `tool`。
  */
 export async function discoverUserTools(
   paths: string[],
   options: DiscoverUserToolsOptions = {},
 ): Promise<Tool[]> {
+  return (await discoverUserToolFiles(paths, options)).map((item) => item.tool);
+}
+
+/**
+ * 同 {@link discoverUserTools}，但把**文件**也一起交出来（路径 / 文件名）。
+ *
+ * 扫描规则只写在本函数里，另一个出口只是上面的 `map`。
+ */
+export async function discoverUserToolFiles(
+  paths: string[],
+  options: DiscoverUserToolsOptions = {},
+): Promise<UserToolFile[]> {
   const seen = new Set<string>();
-  const tools: Tool[] = [];
+  const items: UserToolFile[] = [];
 
   for (const dir of paths) {
     try {
@@ -168,13 +194,11 @@ export async function discoverUserTools(
       for (const { name, ext } of files) {
         if (!seen.has(name)) {
           seen.add(name);
-          try {
-            const tool = await loadToolFile(join(dir, name + ext), options);
-            if (tool) {
-              tools.push(tool);
-            }
-          } catch {
-            // 跳过加载失败的文件
+          const path = join(dir, name + ext);
+          // 不必再包一层：`loadToolFile()` 自己 catch-all，加载失败会走 `reportReject` 上报并回 null
+          const tool = await loadToolFile(path, options);
+          if (tool) {
+            items.push({ name, path, tool });
           }
         }
       }
@@ -183,7 +207,7 @@ export async function discoverUserTools(
     }
   }
 
-  return tools;
+  return items;
 }
 
 // ==================================================================
@@ -226,14 +250,14 @@ async function loadToolFile(
       default?: unknown;
     };
 
-    // import() 返回模块命名空间对象，取其 default 导出
+    // import() 返回模块命名空间对象，优先取 default 导出；没有 default 时整个命名空间当导出
     const exported = mod.default ?? mod;
 
     if (!exported || (typeof exported === "object" && Object.keys(exported).length === 0)) {
       return null;
     }
 
-    return normalizeToolExport({ default: exported }, filepath, opts.silent);
+    return normalizeToolExport({ default: exported }, filepath, opts);
   } catch (err: any) {
     reportReject(filepath, `failed to load — ${err?.message ?? err}`, opts, "error");
     return null;
@@ -250,7 +274,11 @@ async function loadToolFile(
 /**
  * 统一各种导出格式为 Tool 实例。
  */
-function normalizeToolExport(exported: any, filepath: string, silent?: boolean): Tool | null {
+function normalizeToolExport(
+  exported: any,
+  filepath: string,
+  opts: DiscoverUserToolsOptions = {},
+): Tool | null {
   // 情况 1：直接是 Tool 实例
   if (exported instanceof Tool) {
     return exported;
@@ -289,8 +317,8 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
     });
   }
 
-  if (!silent) {
-    getLogger().error(`[usertools] Unrecognized tool format: ${filepath}`);
+  if (!opts.silent) {
+    (opts.logger ?? SILENT_LOG).error(`[usertools] Unrecognized tool format: ${filepath}`);
   }
   return null;
 }

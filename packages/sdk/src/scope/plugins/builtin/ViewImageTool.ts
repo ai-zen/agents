@@ -20,21 +20,19 @@ function isLocalUrl(value: string): boolean {
 }
 
 /**
- * 查看图片工具 — 让 Agent 主动查看/分析一张图片。**仅对视觉模型可用**：
- * 由 `isAvailable(config, definition)` 声明（从 definition.modelId 解析模型，检查 Model.vision），
- * buildTools 阶段按声明过滤——非视觉模型不会拿到该工具，故无需运行时重复校验。
+ * 查看图片工具 — 让 Agent 主动查看/分析一张图片。
  *
  * 输入 `path_or_url`：
  *   - http(s) URL → 直接以 `image_url` 内容块返回；
  *   - 本地路径 → 交给 `fileToContentSection()` 统一处理：
  *       端点声明 `capabilities.filesApi`（出厂仅 deepseek）→ Files API 上传，`file` 块（file_id）；
- *       其余端点 → base64 data URL 内联（`image_url`），不再要求必须配置 deepseek。
+ *       其余端点 → base64 data URL 内联（`image_url`）。
  *
  * 端点按**当前模型**反查（`ctx.agent.model`），不硬编码端点 id——`file_id` 是端点维度
  * 资源，传错端点会返回 not found。
  */
 export class ViewImageTool extends SdkCallbackTool {
-  /** 仅视觉模型可用：从 definition.modelId 解析当前模型，非视觉模型由 buildTools 过滤 */
+  /** 仅视觉模型可用：从 definition.modelId 解析当前模型，非视觉模型不进候选集 */
   isAvailable(config: AppConfig, definition: AgentDefinition): boolean {
     const modelId = definition.modelId;
     const model = (config.models ?? []).find((m) => m.id === modelId);
@@ -116,14 +114,13 @@ export class ViewImageTool extends SdkCallbackTool {
           : result.transport === "inline"
             ? `, inlined as base64 (${(result.bytes / 1024).toFixed(0)} KB)`
             : "";
-      const extra = result.warning ? ` (fallback: ${result.warning})` : "";
-
-      return [{ type: "text", text: `${label}${how}${extra}` }, result.section];
+      return [{ type: "text", text: `${label}${how}` }, result.section];
     } catch (error: unknown) {
       // 中断（abort）时返回明确的中断结果
       if (signal?.aborted) {
         return "Image view aborted";
       }
+      // 上传失败等一律走这里：这一次没成，原因原样交给模型（不降级成内联 base64）
       return `Failed to view image: ${error instanceof Error ? error.message : String(error)}`;
     }
   }

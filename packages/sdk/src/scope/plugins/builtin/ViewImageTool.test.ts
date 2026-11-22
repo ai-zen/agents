@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { ViewImageTool } from "./ViewImageTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { AppConfig, UploadFn } from "../../../types/index.js";
 
 /** 上传走依赖注入（ToolEnv.deps.upload），不 mock "openai" 模块 */
@@ -13,7 +13,7 @@ const uploadDeps = { upload: mockUpload };
 
 /**
  * 工具运行上下文：端点按 `ctx.agent.model` 反查（`file_id` 是端点维度资源）。
- * 配置层已无 `defaultModel`，所以测试必须显式传当前模型名。
+ * 反查不拿 `config.defaultModel` 兜底，所以测试必须显式传当前模型名。
  */
 const visionCtx = { agent: { model: "ds-vision" } } as any;
 
@@ -169,6 +169,24 @@ describe("ViewImageTool", () => {
         { type: "text", text: "Fetched remote image: https://example.com/a.png" },
         { type: "image_url", image_url: { url: "https://example.com/a.png" } },
       ]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("上传失败：结果是「没看到这张图」+ 原错误，不改走 base64 内联", async () => {
+    mockUpload.mockRejectedValue(new Error("File upload failed: HTTP 413"));
+
+    const dir = await fs.mkdtemp(join(tmpdir(), "viewimg-"));
+    const imgPath = join(dir, "big.png");
+    await fs.writeFile(imgPath, Buffer.from([1, 2, 3]));
+
+    try {
+      const tool = new ViewImageTool(makeEnv(dir, deepseekConfig, uploadDeps));
+      const result = await tool.call({ path_or_url: "big.png" }, visionCtx);
+
+      expect(mockUpload).toHaveBeenCalledTimes(1);
+      expect(result).toBe("Failed to view image: File upload failed: HTTP 413");
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

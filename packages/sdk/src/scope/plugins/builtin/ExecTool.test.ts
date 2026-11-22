@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, unlinkSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { ExecTool } from "./ExecTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 import type { AppConfig } from "../../../types/index.js";
 
@@ -118,9 +119,11 @@ describe("ExecTool", () => {
     expect(parsed.stdout.tail).toBe("a".repeat(1000));
     expect(parsed.stdout.omitted).toBe(1000);
 
-    // 成功场景 exitCode 为 0（原先恒为 null，模型会误判命令未正常结束）
+    // 成功场景 exitCode 为 0（0 而不是 null：null 会让模型误判命令未正常结束）
     expect(parsed.exitCode).toBe(0);
     expect(parsed.killed).toBe(false);
+
+    cleanupDumpDir(dirname(stdoutPath));
   });
 
   it("输出未超过 maxToolOutput 时按原结构返回，不落盘", async () => {
@@ -170,7 +173,7 @@ describe("ExecTool", () => {
 
   it("输出达到 maxBuffer 时如实标注截断，不再谎称完整", async () => {
     const tool = new ExecTool(makeEnv(process.cwd(), { maxToolOutput: 100_000_000 } as AppConfig));
-    // 17MB > MAX_BUFFER(16MB)：exec 会在上限处杀掉进程，尾部内容必然丢失
+    // 17MB > MAX_BUFFER(16MB)：攒到上限就停手并杀掉进程组，尾部内容必然丢失
     const result = await tool.call({
       command: `node -e "process.stdout.write('a'.repeat(17 * 1024 * 1024))"`,
       timeout: 60_000,
@@ -179,7 +182,7 @@ describe("ExecTool", () => {
 
     expect(parsed.truncated).toBe(true);
     expect(parsed.truncationNote).toContain("truncated");
-    // 截断场景不再把字符串错误码当 exitCode 返回
+    // 截断场景 exitCode 仍是数字或 null，不会是字符串错误码
     expect(typeof parsed.exitCode === "number" || parsed.exitCode === null).toBe(true);
   }, 120_000);
 });

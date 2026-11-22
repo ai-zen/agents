@@ -5,7 +5,7 @@ import type { Scope, FilterOutput } from "../../Scope.js";
 import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 
 /**
- * 内置工具插件 —— 20 个内置工具类（BUILTIN_TOOL_CLASSES）。
+ * 内置工具插件 —— 注册表 `BUILTIN_TOOL_CLASSES` 里的那批内置工具。
  *
  * 发现层零过滤；可用性由各工具 `isAvailable(config, definition)` 自陈，
  * 在本插件 `candidates()` 阶段按声明剔除（如 GenerateImageTool 依赖 defaultImageModel、

@@ -1,10 +1,10 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type { AppConfig, McpServerConfig, ToolEnv, UploadFn } from "../../../types/index.js";
-import { clearUploadCache } from "../../../shared/content-blocks.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 
 /**
  * Files API 上传走依赖注入（`ToolEnv.deps.upload`）：不 mock "openai" 模块，
@@ -62,7 +62,6 @@ function textOnlyConfig(): Partial<AppConfig> {
 }
 
 beforeEach(() => {
-  clearUploadCache();
   mockUpload.mockReset();
   mockUpload.mockResolvedValue("file-mcp-1");
 });
@@ -75,8 +74,8 @@ function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
 /**
  * 工具运行上下文：模型名来自 `ctx.agent.model`（= Model.modelName ?? id）。
  *
- * 端点必须按当前模型反查（`file_id` 是端点维度资源），所以测试也必须把 ctx 传进去；
- * 配置层已无 `defaultModel`，不能再靠隐式回退找端点。
+ * 端点只能按当前模型反查（`file_id` 是端点维度资源，且不拿 `config.defaultModel` 兜底），
+ * 所以测试也必须把 ctx 传进去。
  */
 const visionCtx = { agent: { model: "ds-vision" } } as any;
 const chatCtx = { agent: { model: "ds-chat" } } as any;
@@ -110,6 +109,9 @@ function mockManager(overrides?: Record<string, any>): McpConnectionManager {
     getManifest: vi.fn(),
     getClient: vi.fn(),
     touch: vi.fn(),
+    // 缺省：没声明任务档位（= `forbidden`），同步调
+    taskSupportOf: () => "forbidden",
+    rememberTask: vi.fn(),
     ...overrides,
   } as unknown as McpConnectionManager;
 }
@@ -136,7 +138,7 @@ describe("createLoadMcpTool", () => {
     expect(tool.function.name).toBe("load_mcp");
     expect((tool.function.parameters.properties as any).server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
-    // 披露开关：可选参数，默认 true（不改变既有契约）
+    // 披露开关：可选参数，默认 true
     expect((tool.function.parameters.properties as any).include_manifest.type).toBe("boolean");
     expect((tool.function.parameters.properties as any).include_manifest.default).toBe(true);
     expect(tool.function.parameters.required).not.toContain("include_manifest");
@@ -511,12 +513,12 @@ describe("createCallMcpTool", () => {
       expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
-    it("同一张图（相同字节）重复调用只上传一次（内容哈希缓存）", async () => {
+    it("同一张图（相同字节）重复调用：每次都真上传（SDK 不记 id）", async () => {
       const manager = managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
       const tool = callMcpTool(manager, makeEnv(filesApiConfig()));
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
-      expect(mockUpload).toHaveBeenCalledTimes(1);
+      expect(mockUpload).toHaveBeenCalledTimes(2);
     });
 
     it("非视觉模型时 MCP 图片退化为文本提示（避免 4xx），且不上传", async () => {
@@ -534,7 +536,7 @@ describe("createCallMcpTool", () => {
       expect(mockUpload).not.toHaveBeenCalled();
     });
 
-    it("上传失败时降级为 base64 内联，媒体块不丢", async () => {
+    it("上传失败：媒体块换成一条失败说明（不降级内联，也不静默丢）", async () => {
       mockUpload.mockRejectedValueOnce(new Error("boom"));
       const tool = callMcpTool(
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
@@ -544,9 +546,8 @@ describe("createCallMcpTool", () => {
         { server: "github", tool: "shot", arguments: {} },
         visionCtx,
       );
-      expect(result).toEqual([
-        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
-      ]);
+      expect(result).toBe("[media] Failed to convert (image/png): boom");
+      expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
     it("resource_link 转为文本线索", async () => {
@@ -633,7 +634,7 @@ describe("createCallMcpTool", () => {
       const warned = JSON.parse(result[1].text);
       expect(warned.outputTooLarge).toBe(true);
       expect(warned.chars).toBe(50_000);
-      rmSync(dirname(warned.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(warned.files["result.txt"]));
     });
 
     it("多次文本超限时只保留一个警告块（其余文本已落盘）", async () => {
@@ -659,7 +660,7 @@ describe("createCallMcpTool", () => {
       const warned = JSON.parse(result[0].text);
       expect(warned.chars).toBe(60_000);
       expect(readFileSync(warned.files["result.txt"], "utf-8")).toHaveLength(60_001); // 两段 + 换行
-      rmSync(dirname(warned.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(warned.files["result.txt"]));
     });
 
     it("文本超限时只保护文本，图片仍原样透传", async () => {
@@ -693,7 +694,7 @@ describe("createCallMcpTool", () => {
         image_url: { url: "data:image/png;base64,GGGG" },
       });
 
-      rmSync(dirname(warned.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(warned.files["result.txt"]));
     });
   });
 
@@ -732,7 +733,7 @@ describe("createCallMcpTool", () => {
       const file = parsed.files["result.txt"];
       expect(existsSync(file)).toBe(true);
       expect(readFileSync(file, "utf-8")).toHaveLength(50_000);
-      rmSync(dirname(file), { recursive: true, force: true });
+      cleanupDumpDir(dirname(file));
     });
 
     it("未超过上限时原样返回，不落盘", async () => {
@@ -764,7 +765,7 @@ describe("createCallMcpTool", () => {
       );
       expect(parsed.outputTooLarge).toBe(true);
       expect(parsed.isError).toBe(true);
-      rmSync(dirname(parsed.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(parsed.files["result.txt"]));
     });
   });
 });
@@ -866,6 +867,12 @@ describe("createReadMcpResourceTool", () => {
     expect(typeof result).toBe("string");
     expect(result as string).toContain("Text output too large");
     expect(result as string).toContain("result.txt");
+    // 这条同样真的落了盘（只断言「警告里有 result.txt」不够），所以要自己擦
+    cleanupDumpDir(
+      dirname(
+        (JSON.parse(result as string) as { files: Record<string, string> }).files["result.txt"],
+      ),
+    );
   });
 
   it("文本与二进制混排时保持原序，且纯文本仍返回字符串", async () => {

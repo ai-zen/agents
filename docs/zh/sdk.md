@@ -9,7 +9,7 @@ outline: deep
 `@ai-zen/agents-sdk` 是建立在 `@ai-zen/agents-core` 之上的**引擎 / 能力层**，为 CLI / Desktop 提供统一 Agent 运行时。
 
 - **安装**：`npm install @ai-zen/agents-sdk`（依赖 `@ai-zen/agents-core`，以 `workspace:^` 关联）。
-- **设计真相源**：[`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)（旧版 `sdk-design-v0.md` 为历史存档）。
+- **需求 / 实施真相源**：[`PRD.md`](../../PRD.md)（需求与决策）、[`PLAN.md`](../../PLAN.md)（结构与落点）。
 
 ## Scope —— 全局上下文 + 能力装配编排容器
 
@@ -126,12 +126,12 @@ Agent.permissions
 - **能力判定不再靠端点 id**：旧实现写死 `endpoint.id === "deepseek"`，用户改端点 id 就失效；现改为 `Endpoint.capabilities.filesApi` 能力位，自建端点声明即可享受上传
 - **能力位缺失时会按出厂补上**：端点不参与出厂托管（`syncManagedModels` 只托管模型），所以 alpha.12 之前写下的配置其 `deepseek` 端点没有 `capabilities`，能力位恒为 `false`、本地媒体静默退化为内联。`migrateConfig()` 现在会补齐**整体缺失**的 `capabilities`（取同 id 出厂端点）：用户显式写的 `false` 与自建端点一律不动
 - **端点按当前模型反查**（`resolveModelAndEndpoint(config, ctx.agent.model)`）：`file_id` 是端点维度资源，传错端点会 not found
-- **上传缓存**：`端点id + 绝对路径 + mtime + size → file_id`（最多 200 条），同一文件不重复上传
+- **SDK 不记厂商侧的文件 id**：需要 `file_id` 时每次调用都真上传一次（SDK 只负责选路与发这个 HTTP 请求），要不要记「这个文件在这个端点上的 id」由调用方自己决定——持有持久存储的一侧才有这个视角
 - `view_image`、`call_mcp_tool`、`read_mcp_resource` 的媒体归一均复用此模块：MCP 返回的图片/二进制不再一律 base64 内联，端点有 Files API 能力时上传为 `file_id`；转换失败退化为文本说明而不是丢掉媒体块
-- 内存来源（MCP 给的 base64）**不做「解码再编码」**：内联时原样透传保证字节级一致，只有真要上传时才解码，缓存键用内容 sha256
+- 内存来源（MCP 给的 base64）**不做「解码再编码」**：内联时原样透传保证字节级一致，只有真要上传时才解码；调用方想按内容去重可以用导出的 `contentHash`（sha256）
 - **非视觉模型自动退化**：`Model.vision !== true` 时图片（含 MCP 返回的）退化为一行文本提示，避免 `image_url` 被服务端 4xx 拒掉
 - `call_mcp_tool` 与 `read_mcp_resource` 共用同一套输出保护：文本超限落盘 `result.txt` 并返回头尾预览，媒体块原位保留
-- **公共 API**：`fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `clearUploadCache` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES` 均从包入口导出；上层应用（CLI / Desktop）构造媒体消息时直接复用，不要自己判断「上传还是内联」
+- **公共 API**：`fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES` 均从包入口导出；上层应用（CLI / Desktop）构造媒体消息时直接复用，不要自己判断「上传还是内联」
 
 工具的可用性由各工具自己的 `isAvailable(config, definition)` 声明，在 `buildTools` / `filter` 阶段过滤；发现层不做任何过滤。
 
@@ -273,7 +273,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 
 ## 消费模式（完整）
 
-详见 [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) 的「消费模式（完整示例）」与「与 Core 的边界」章节。
+边界与落点见 [`PLAN.md`](../../PLAN.md) 的「SDK 边界」一节。
 
 ## 相关文档
 
@@ -281,4 +281,4 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 - [架构](architecture.md)
 - [Core API](core.md) —— 运行时底层 API
 - [MCP](mcp.md) —— SDK 的 MCP 连接管理
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源
+- [`PLAN.md`](../../PLAN.md) —— SDK 的需求 / 实施真相源

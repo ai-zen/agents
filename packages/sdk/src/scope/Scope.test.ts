@@ -3,6 +3,7 @@ import { Scope } from "./Scope.js";
 import { allInOne } from "./plugins/allInOne.js";
 import { BuiltinToolsScopePlugin } from "./plugins/builtin/BuiltinToolsScopePlugin.js";
 import { discoverBuiltinTools } from "./plugins/builtin/discover.js";
+import { ReadTool } from "./plugins/builtin/ReadTool.js";
 import type { AppConfig, AgentPermissions } from "../types/index.js";
 import type { AgentDefinition } from "../types/index.js";
 import { AgentNS, Tool, Message } from "@ai-zen/agents-core";
@@ -49,7 +50,7 @@ const DENY_ALL: AgentPermissions = {
   subagents: { deny: ["*"] },
 };
 
-/** 把权限包成 AgentDefinition（filter/buildTools 现在接收 definition） */
+/** 把权限包成 AgentDefinition（filter / buildTools 收的是 definition） */
 function makeDef(permissions?: AgentPermissions, modelId?: string): AgentDefinition {
   return {
     id: "t",
@@ -86,7 +87,7 @@ async function makeScope(
   } = {},
 ): Promise<Scope> {
   const scope = new Scope({
-    config: opts.config ?? MIN_CONFIG,
+    getConfig: () => opts.config ?? MIN_CONFIG,
     agentsDir: "",
     cwd: tmpDir,
   }).use(
@@ -159,7 +160,7 @@ describe("Scope 能力发现与过滤", () => {
     it("deps 透传到 env（工具因此可以不 mock openai 模块）", () => {
       const upload = async () => "file-x";
       const scope = new Scope({
-        config: MIN_CONFIG,
+        getConfig: () => MIN_CONFIG,
         agentsDir: "",
         cwd: tmpDir,
         deps: { upload },
@@ -168,7 +169,7 @@ describe("Scope 能力发现与过滤", () => {
     });
 
     it("未传 deps 时 env 不带 deps（缺省走真实 OpenAI SDK）", () => {
-      const scope = new Scope({ config: MIN_CONFIG, agentsDir: "", cwd: tmpDir });
+      const scope = new Scope({ getConfig: () => MIN_CONFIG, agentsDir: "", cwd: tmpDir });
       expect(scope.env.deps).toBeUndefined();
     });
   });
@@ -631,6 +632,55 @@ describe("Scope 能力发现与过滤", () => {
     });
   });
 
+  describe("配置随 refresh() 更新（配置改动不重建 Scope）", () => {
+    it("refresh 之后 scope.config 读到端口新返回的那一份", async () => {
+      let current: AppConfig = MIN_CONFIG;
+      const scope = new Scope({ getConfig: () => current, agentsDir: "", cwd: tmpDir });
+      // 同步端口：构造完就能读
+      expect(scope.config).toBe(MIN_CONFIG);
+      await scope.init();
+      expect(scope.config).toBe(MIN_CONFIG);
+
+      const next: AppConfig = { ...MIN_CONFIG, maxToolOutput: 4096 };
+      current = next;
+      await scope.refresh();
+
+      expect(scope.config).toBe(next);
+      expect(scope.config.maxToolOutput).toBe(4096);
+    });
+
+    it("env.config 是活的：同一个 Scope 实例，两次 refresh 之间换掉端口返回值，工具读到新配置", async () => {
+      let current: AppConfig = { ...MIN_CONFIG, maxToolOutput: 100_000 };
+      const scope = new Scope({ getConfig: () => current, agentsDir: "", cwd: tmpDir });
+      await scope.init();
+
+      writeFileSync(join(tmpDir, "big.txt"), "0123456789\nabcdefghij");
+      // 工具在「改配置之前」就实例化了：它拿的是 scope.env 这个对象，不是一份配置快照
+      const read = new ReadTool(scope.env);
+      expect(await read.call({ path: "big.txt" })).toBe("0123456789\nabcdefghij");
+
+      current = { ...MIN_CONFIG, maxToolOutput: 10 };
+      await scope.refresh();
+
+      expect(scope.env.config).toBe(scope.config);
+      expect(scope.env.config.maxToolOutput).toBe(10);
+      // 同一个工具实例，refresh 之后按新上限报超限
+      const after = await read.call({ path: "big.txt" });
+      expect(after).toContain("exceeding the limit of 10 characters");
+    });
+
+    it("异步端口：init() 之前读 config 抛错，init() 之后读到它返回的那一份", async () => {
+      const config: AppConfig = { ...MIN_CONFIG, defaultModel: "m-1" };
+      const scope = new Scope({ getConfig: async () => config, agentsDir: "", cwd: tmpDir });
+
+      expect(() => scope.config).toThrow(/not loaded/);
+
+      await scope.init();
+      expect(scope.config).toBe(config);
+      expect(scope.env.config).toBe(config);
+    });
+  });
+
   describe("refresh()", () => {
     it("重新发现文件系统变更", async () => {
       const scope = await makeScope({ skillsPaths: [join(tmpDir, "skills")] });
@@ -671,7 +721,7 @@ describe("Scope 能力发现与过滤", () => {
     });
 
     it("同名工具不重复（两个同名插件）", async () => {
-      const scope = new Scope({ config: MIN_CONFIG, agentsDir: "", cwd: tmpDir })
+      const scope = new Scope({ getConfig: () => MIN_CONFIG, agentsDir: "", cwd: tmpDir })
         .use(new BuiltinToolsScopePlugin())
         .use(new BuiltinToolsScopePlugin());
       await scope.init();

@@ -42,9 +42,7 @@ describe("Message", () => {
         role: AgentNS.Role.Assistant,
         content: "回复",
         name: "助手",
-        tool_calls: [
-          { id: "1", function: { name: "fn1", arguments: "{}" } },
-        ],
+        tool_calls: [{ id: "1", function: { name: "fn1", arguments: "{}" } }],
         reasoning_content: "思考中...",
         status: AgentNS.MessageStatus.Pending,
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
@@ -120,9 +118,7 @@ describe("Message", () => {
       const msg = Message.User(sections);
       const imageSection = (msg.content as AgentNS.MessageContentSection[])[1];
       expect(imageSection.type).toBe("image_url");
-      expect(
-        (imageSection as AgentNS.ImageUrlContentSection).image_url.detail,
-      ).toBe("low");
+      expect((imageSection as AgentNS.ImageUrlContentSection).image_url.detail).toBe("low");
     });
 
     it("应支持 file 内容块（file_id 引用）", () => {
@@ -133,9 +129,7 @@ describe("Message", () => {
       const msg = Message.User(sections);
       const fileSection = (msg.content as AgentNS.MessageContentSection[])[1];
       expect(fileSection.type).toBe("file");
-      expect((fileSection as AgentNS.FileContentSection).file_id).toBe(
-        "file-api-xxxxxxxxxxxxxxxx",
-      );
+      expect((fileSection as AgentNS.FileContentSection).file_id).toBe("file-api-xxxxxxxxxxxxxxxx");
     });
 
     it("应支持 file 内容块（file_data 内联 + filename）", () => {
@@ -198,5 +192,4 @@ describe("Message", () => {
       expect(msg.status).toBe(AgentNS.MessageStatus.Pending);
     });
   });
-
 });

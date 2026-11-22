@@ -9,15 +9,15 @@ export default {
       properties: {
         filepath: {
           type: "string",
-          description: "文件路径"
-        }
+          description: "文件路径",
+        },
       },
-      required: ["filepath"]
-    }
+      required: ["filepath"],
+    },
   },
-  exec: async function(args) {
+  exec: async function (args) {
     const content = fs.readFileSync(args.filepath, "utf-8");
-    const lines = content.split("\n").filter(line => line.trim() !== "");
+    const lines = content.split("\n").filter((line) => line.trim() !== "");
     return `文件 "${args.filepath}" 共有 ${lines.length} 行非空代码`;
-  }
+  },
 };

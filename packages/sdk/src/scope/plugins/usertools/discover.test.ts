@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { discoverUserTools } from "./discover.js";
+import { discoverUserToolFiles, discoverUserTools } from "./discover.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Tool, CallbackTool } from "@ai-zen/agents-core";
-import { setLogger } from "../../../shared/logger.js";
+import { recordingLog, messagesAt } from "../../../test-support/log.js";
 
 let dir: string;
 
@@ -20,15 +20,9 @@ function writeTool(filename: string, code: string) {
   writeFileSync(join(dir, filename), code);
 }
 
-/** 把 SDK logger 换成采集器：拒绝原因走 logger，不走任何回调 API */
-function captureLogs(): Array<[string, string]> {
-  const logs: Array<[string, string]> = [];
-  setLogger({
-    info: (m) => logs.push(["info", m]),
-    warn: (m) => logs.push(["warn", m]),
-    error: (m) => logs.push(["error", m]),
-  });
-  return logs;
+/** 记账的日志口：拒绝原因走注入进来的 `LogSink` */
+function captureLogs(): ReturnType<typeof recordingLog> {
+  return recordingLog();
 }
 
 // 辅助：生成一个简单的 ESM 工具文件内容（适用于 .js 和 .mjs）
@@ -322,9 +316,7 @@ export async function exec(args) {
 // 宿主护栏：tools/ 目录里的「坏文件」不能伤到宿主
 // ==================================================================
 //
-// 起因是一次真实事故：用户把一次性开发脚本（无参数时 `process.exit(2)`）放进
-// tools 目录，于是每次启动都在初始化途中被脚本杀掉；另有脚本在顶层直接写 PNG。
-// 这一组用例把四类危害逐个钉住。
+// 这一组用例把四类危害逐个钉住（护栏本身的实现在 `discover.ts` 顶部有说明）。
 describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
   it("没有 export 的文件：跳过且**不执行**（顶层副作用不会发生）", async () => {
     const marker = join(dir, "executed.marker");
@@ -334,33 +326,33 @@ describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
         `writeFileSync(${JSON.stringify(marker)}, "ran");\n` +
         `console.log("顶层副作用");\n`,
     );
-    const logs = captureLogs();
+    const log = captureLogs();
 
-    const result = await discoverUserTools([dir]);
+    const result = await discoverUserTools([dir], { logger: log.logger });
 
     expect(result).toEqual([]);
     // 关键：连求值的机会都不给，副作用根本没发生
     expect(existsSync(marker)).toBe(false);
-    const warned = logs.filter(([level]) => level === "warn");
+    const warned = messagesAt(log.records, "warn");
     expect(warned).toHaveLength(1);
-    expect(warned[0]![1]).toContain("cli-script.mjs");
-    expect(warned[0]![1]).toContain("no `export`");
+    expect(warned[0]).toContain("cli-script.mjs");
+    expect(warned[0]).toContain("no `export`");
   });
 
   it("顶层 process.exit()：抑制成异常，宿主不退出，后续文件照常加载", async () => {
     // 有 export → 能过静态预检 → 必须靠执行期护栏兜住
     writeTool("a-fatal.mjs", `export default {};\nprocess.exit(2);\n`);
     writeTool("z-good.mjs", simpleToolCode("good_tool", "Good tool"));
-    const logs = captureLogs();
+    const log = captureLogs();
 
-    const result = await discoverUserTools([dir]);
+    const result = await discoverUserTools([dir], { logger: log.logger });
 
     // 能走到这里就说明宿主还活着
     expect(result.map((t) => t.function.name)).toEqual(["good_tool"]);
-    const failed = logs.filter(([level]) => level === "error");
+    const failed = messagesAt(log.records, "error");
     expect(failed).toHaveLength(1);
-    expect(failed[0]![1]).toContain("a-fatal.mjs");
-    expect(failed[0]![1]).toContain("process.exit(2)");
+    expect(failed[0]).toContain("a-fatal.mjs");
+    expect(failed[0]).toContain("process.exit(2)");
   });
 
   it("顶层 console.log：不写 stdout（宿主的界面），改写 stderr", async () => {
@@ -382,15 +374,15 @@ describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
 
   it("顶层 await 永不 settle：超时放弃，不拖死启动", async () => {
     writeTool("hangs.mjs", `await new Promise(() => {});\nexport default {};\n`);
-    const logs = captureLogs();
+    const log = captureLogs();
     const t0 = Date.now();
 
-    const result = await discoverUserTools([dir], { importTimeoutMs: 100 });
+    const result = await discoverUserTools([dir], { importTimeoutMs: 100, logger: log.logger });
 
     expect(result).toEqual([]);
     expect(Date.now() - t0).toBeLessThan(3000);
-    const failed = logs.filter(([level]) => level === "error");
-    expect(failed[0]![1]).toContain("timed out");
+    const failed = messagesAt(log.records, "error");
+    expect(failed[0]).toContain("timed out");
   });
 
   it("护栏用完即还原：process.exit / console.log 变回原函数（宿主还能退出）", async () => {
@@ -402,5 +394,45 @@ describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
 
     expect(process.exit).toBe(realExit);
     expect(console.log).toBe(realLog);
+  });
+});
+
+/**
+ * 文件级出口：与 `discoverUserTools` 共用同一条扫描规则，只是把「文件」也交出来。
+ *
+ * 为什么需要它：上层（宿主 `DiscoveryService` 列配置层）要的是文件本身，而 `Tool` 不记
+ * 自己来自哪个文件。让调用方按工具名去目录里再找一遍，就等于把「目录顺序 / 同名去重 /
+ * 扩展名」这套规则抄第二份 —— 两份扫描规则迟早不一致。
+ */
+describe("discoverUserToolFiles", () => {
+  it("给出文件路径与文件名，顺序与 discoverUserTools 逐条一致", async () => {
+    writeTool("b_tool.mjs", simpleToolCode("b_tool", "b"));
+    writeTool("a_tool.js", simpleToolCode("a_tool", "a"));
+
+    const files = await discoverUserToolFiles([dir], { silent: true });
+    const tools = await discoverUserTools([dir], { silent: true });
+
+    expect(files.map((item) => item.name)).toEqual(["a_tool", "b_tool"]);
+    expect(files.map((item) => item.path)).toEqual([
+      join(dir, "a_tool.js"),
+      join(dir, "b_tool.mjs"),
+    ]);
+    // 同一个工具实例、同一个顺序：两个出口不是两条扫描
+    expect(files.map((item) => item.tool)).toEqual(tools);
+  });
+
+  it("靠前的目录优先：同名文件只出靠前那一个（去重规则也没分叉）", async () => {
+    const other = mkdtempSync(join(tmpdir(), "ai-zen-usertools-other-"));
+    try {
+      writeTool("same.mjs", simpleToolCode("same", "from-first"));
+      writeFileSync(join(other, "same.mjs"), simpleToolCode("same", "from-second"));
+
+      const files = await discoverUserToolFiles([dir, other], { silent: true });
+
+      expect(files).toHaveLength(1);
+      expect(files[0]!.path).toBe(join(dir, "same.mjs"));
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });

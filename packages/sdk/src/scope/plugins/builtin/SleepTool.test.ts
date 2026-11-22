@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SleepTool } from "./SleepTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 function makeCtxWithSignal(): { ctx: ToolCallContext; abort: () => void } {
@@ -50,7 +50,7 @@ describe("SleepTool", () => {
     const result = await tool.call({ ms: -1 });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("positive integer");
+    expect(parsed.error).toContain("non-negative number");
   });
 
   it("非数字 ms 返回错误", async () => {

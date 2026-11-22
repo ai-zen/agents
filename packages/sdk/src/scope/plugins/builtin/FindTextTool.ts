@@ -186,7 +186,7 @@ export class FindTextTool extends SdkCallbackTool {
 
   /**
    * 输出保护：结果 JSON 超过 maxToolOutput 时落盘为 result.json，
-   * 返回警告 + 头尾预览；未超限则原样返回。
+   * 返回警告 + 头部预览；未超限则原样返回。
    */
   private async protect(json: string): Promise<string> {
     const limit = this.env.config.maxToolOutput ?? DEFAULT_MAX_TOOL_OUTPUT;

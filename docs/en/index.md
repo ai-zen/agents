@@ -1,23 +1,25 @@
 ---
 title: AI-Zen Agents
-description: AI-Zen Agents — a modular LLM Agent framework (core + sdk monorepo) with a plugin-driven runtime, capability pipeline, search tools, and MCP support.
+description: AI-Zen Agents — a modular LLM Agent framework (core + sdk + host + client monorepo) with a plugin-driven runtime, capability pipeline, a resident host, and MCP support.
 outline: deep
 ---
 
 # AI-Zen Agents
 
-AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via pnpm workspace. It provides layered capabilities from "conversation runtime" to "business capability pipeline", to be consumed directly by upper-layer applications such as CLI / Desktop.
+AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via pnpm workspace. It provides layered capabilities from "conversation runtime" to "resident host", consumed by the CLI / desktop app through `@ai-zen/agents-client`.
 
 - **License**: MIT
-- **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core` and `@ai-zen/agents-sdk`
-- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.5.5`; `@ai-zen/agents-sdk` `1.1.0`
+- **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core`, `@ai-zen/agents-sdk` and `@ai-zen/agents-host`. `@ai-zen/agents-client` and `@ai-zen/agents-testing` are **private** and never published — the former is inlined by CLI / Desktop at build time, the latter only serves this repo's tests
+- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.6.0-alpha.0`; `@ai-zen/agents-sdk` `1.2.0-alpha.2`; `@ai-zen/agents-host` `0.1.0-alpha.7`; `@ai-zen/agents-client` `0.1.0-alpha.0` (private)
 
 ## What this is
 
-The framework is designed around two layers:
+The framework has four layers with a one-way dependency direction:
 
 1. **`@ai-zen/agents-core`** — A plugin-driven Agent runtime. It runs directly on the official `openai` SDK and does not maintain its own request layer. It is responsible for conversation lifecycle, streaming output, tool calls, multi-turn recursive dialogs, events, and plugin extension.
 2. **`@ai-zen/agents-sdk`** — The **engine / capability layer** built on top of core. It is responsible for the business capability pipeline (discover → permission-filter → instantiate), the global Scope context, MCP connection management, task migration, and the built-in file/command toolset.
+3. **`@ai-zen/agents-host`** — The **resident host** (`agents-host serve`). Session orchestration, capability assembly, archives, workspaces and migration all live here; the CLI and the desktop app only render and read input.
+4. **`@ai-zen/agents-client`** — The **connection layer** to the host: service discovery and spawning, one WebSocket connection, session and config facades. The CLI and the desktop main process share this one implementation.
 
 ## Project structure
 
@@ -25,7 +27,10 @@ The framework is designed around two layers:
 agents/
 ├── packages/
 │   ├── core/    # @ai-zen/agents-core — Agent / Message / Tool / plugin mechanism
-│   └── sdk/     # @ai-zen/agents-sdk — Scope / capability pipeline / MCP / built-in tools
+│   ├── sdk/     # @ai-zen/agents-sdk — Scope / capability pipeline / MCP / built-in tools
+│   ├── host/  # @ai-zen/agents-host — Daemon / session orchestration / archives / workspaces + protocol
+│   ├── client/  # @ai-zen/agents-client — discovery & spawning / connection / session & config facades
+│   └── testing/ # @ai-zen/agents-testing — private, test doubles
 ├── package.json # workspace root (private)
 └── pnpm-workspace.yaml
 ```
@@ -44,17 +49,24 @@ agents/
 ## Architecture layers
 
 ```
-Upper-layer apps (CLI / Desktop)
+CLI / desktop main
         │
         ▼
-@ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  official openai SDK
-  (capability pipeline / Scope / MCP)   (Agent runtime)    (LLM API)
-        │
-        ▼
-LLM API / MCP servers
+@ai-zen/agents-client ──(runtime)──►  @ai-zen/agents-core ──►  official openai SDK
+  (connection layer)   │
+                       └──(types only)──►  @ai-zen/agents-host/protocol
+                                           (wire contract: method/event names, payloads,
+                                            error codes, frames, discovery file)
+
+@ai-zen/agents-host  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core
+ (session orchestration / archives / workspaces / the contract + its runtime pieces)
 ```
 
-Dependency direction (inside SDK): `agent-plugins → runtime → scope → crud → config → types`. Upper layers depend on lower layers, not the other way around. See [Architecture](architecture.md).
+The dependency direction is one-way, never reversed: `core ← sdk ← host`, and
+`client ← CLI / desktop main`. `client` has exactly one runtime edge (`core`); towards the host it
+does `import type` only (the types of `@ai-zen/agents-host/protocol`), and both
+`@ai-zen/agents-sdk` and `@ai-zen/agents-host` are its **peers** (the host must provide them).
+See [Architecture](architecture.md).
 
 ## Quick start
 
@@ -83,7 +95,7 @@ For complete installation and usage, see [Quick Start](getting-started.md).
 ## Documentation index
 
 - [Quick Start](getting-started.md) — environment requirements, installation, build, first Agent
-- [Architecture](architecture.md) — core / sdk layering and module dependencies
+- [Architecture](architecture.md) — the five packages, their dependency direction, the host process model and protocol surface, build order and on-disk layout
 - [Core API](core.md) — core runtime public API (Agent / Message / Tool / plugins)
 - [SDK](sdk.md) — capability layer (Scope / permissions / built-in tools / migration)
 - [Retrieval & RAG](rag.md) — retrieval capability status, RAG removal note
@@ -91,7 +103,7 @@ For complete installation and usage, see [Quick Start](getting-started.md).
 
 ## Related repositories
 
-`@ai-zen/cli` (interactive AI Agent terminal) and the Web UI used to belong to this monorepo; they have been migrated to their own repositories or are no longer maintained. See the repository root `README.md`.
+`@ai-zen/cli` (interactive AI Agent terminal) and the desktop app (`@ai-zen/desktop-main`) live in their own repositories and connect to this repository's `@ai-zen/agents-host` through `@ai-zen/agents-client`.
 
 ## License
 

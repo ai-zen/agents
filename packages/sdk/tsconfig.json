@@ -15,5 +15,8 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"]
+  // `src/test-support/` 只被用例引用：从**生产构建**里排除，免得它跟着 `files: ["dist"]`
+  // 一起发出去（`tsconfig.test.json` 覆盖了 `exclude`，用例那边照样参与类型检查）。
+  // 与 `cli/tsconfig.json` 同一条规则。
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx", "src/test-support"]
 }

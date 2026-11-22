@@ -5,7 +5,7 @@ allowBuilds:
   '@parcel/watcher': false
   esbuild: false
 minimumReleaseAgeExclude:
-  - '@ai-zen/async-queue@1.4.0'
+  - '@ai-zen/async-queue@1.4.0 || 1.5.0 || 1.6.0 || 1.7.0-alpha.0'
   - '@vitest/mocker@5.1.0'
   - '@vitest/spy@5.1.0'
   - vitest@5.1.0

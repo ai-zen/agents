@@ -1,3 +1,23 @@
+## [2.0.0-alpha.0] - 2026-11-16
+
+> Follows `@ai-zen/agents-core` 5.0.0-alpha.0. Every plugin in this package was written against
+> hooks that no longer exist, so the migration was not mechanical: each one had to pick a new seam
+> and justify it.
+
+### Changed
+
+- `onUnknownTool` folded into `onToolStart`: an unknown tool now runs the same gate, and whatever
+  the hook returns *is* the tool message the model reads (core no longer wraps it in "tool X was
+  denied: …").
+- `ContextGuardPlugin` refuses by **returning a string** from `onInnerLoopStart` instead of throwing
+  `ContextOverflowError`. Throwing would tear down the whole loop; refusing leaves no placeholder
+  and reports `denied`.
+- `AutoMigratePlugin` moved from `onAfterSend` to `onIdle`: migration is "nothing is moving any more",
+  not "this round ended".
+- `HandoffService` no longer awaits an agent round it cannot own: it pushes the instruction and
+  watches `state`, accepting only an idle that follows a busy.
+- Sub-agents are built with `lifetime: "one-shot"`; injected messages carry `source`.
+
 ## [1.1.0] - 2026-11-09
 
 > Cancelling a handoff now means "go back to how it was". Before this release `Ctrl+C` only

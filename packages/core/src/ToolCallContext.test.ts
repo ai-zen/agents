@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { ToolCallContext, FunctionCallContext } from "./ToolCallContext.js";
+import { ToolCallContext } from "./ToolCallContext.js";
 import { Agent } from "./Agent.js";
 import { AgentNS } from "./AgentNS.js";
 import { Message } from "./Message.js";
@@ -38,7 +38,6 @@ describe("ToolCallContext", () => {
         agent,
         tool_call: { function: { name: "fn", arguments: "{invalid json}" } },
         resultMessage: resultMsg,
-        allowJsonParseError: true,
       });
 
       expect(ctx.parsedArgs).toBeUndefined();
@@ -46,18 +45,18 @@ describe("ToolCallContext", () => {
       expect(typeof ctx.parseError).toBe("string");
     });
 
-    it("解析失败且 allowJsonParseError=false 时应抛出异常", () => {
+    it("参数烂只有一种行为：不抛，交给上层当成「没给出有效结果」", () => {
       const agent = createMockAgent();
       const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
-      expect(() => {
-        new ToolCallContext({
-          agent,
-          tool_call: { function: { name: "fn", arguments: "{invalid}" } },
-          resultMessage: resultMsg,
-          allowJsonParseError: false,
-        });
-      }).toThrow();
+      const ctx = new ToolCallContext({
+        agent,
+        tool_call: { function: { name: "fn", arguments: "{invalid}" } },
+        resultMessage: resultMsg,
+      });
+
+      expect(ctx.parsedArgs).toBeUndefined();
+      expect(ctx.parseError).toBeDefined();
     });
 
     it("arguments 为 undefined 时 parsed_args 应为 undefined", () => {
@@ -75,21 +74,18 @@ describe("ToolCallContext", () => {
     });
   });
 
-  describe("preventDefault", () => {
-    it("调用后 is_prevent_default 应变为 true", () => {
-      const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
+  it("工具自己不再能停圈：没有 preventDefault", () => {
+    const agent = createMockAgent();
+    const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
-      const ctx = new ToolCallContext({
-        agent,
-        tool_call: { function: { name: "fn", arguments: "{}" } },
-        result_message: resultMsg,
-      });
-
-      expect(ctx.isPreventDefault).toBe(false);
-      ctx.preventDefault();
-      expect(ctx.isPreventDefault).toBe(true);
+    const ctx = new ToolCallContext({
+      agent,
+      tool_call: { function: { name: "fn", arguments: "{}" } },
+      resultMessage: resultMsg,
     });
+
+    expect((ctx as any).preventDefault).toBeUndefined();
+    expect((ctx as any).isPreventDefault).toBeUndefined();
   });
 
   describe("构造函数 - 字段赋值", () => {
@@ -104,11 +100,11 @@ describe("ToolCallContext", () => {
       });
 
       expect(ctx.agent).toBe(agent);
-      expect(ctx.function_call.name).toBe("fn");
+      expect(ctx.tool_call.function?.name).toBe("fn");
       expect(ctx.resultMessage).toBe(resultMsg);
     });
 
-    it("应正确保存统一形状 tool_call 与兼容字段 function_call", () => {
+    it("应正确保存统一形状 tool_call（名字与参数只在这一处，不另存一份 function_call）", () => {
       const agent = createMockAgent();
       const resultMsg = Message.Tool({ id: "call_1", function: { name: "fn" } });
 
@@ -126,30 +122,11 @@ describe("ToolCallContext", () => {
       // 统一形状
       expect(ctx.tool_call.id).toBe("call_1");
       expect(ctx.tool_call.function?.name).toBe("fn");
-      // 兼容字段（旧工具实现仍可用）
-      expect(ctx.function_call.name).toBe("fn");
+      // 一个概念一种形状：没有兼容字段可读
+      expect((ctx as any).function_call).toBeUndefined();
       // 匹配到的工具
       expect(ctx.tool).toBeDefined();
       // parsedArgs 由 tool_call.function.arguments 解析
-      expect(ctx.parsedArgs).toEqual({ x: 1 });
-    });
-  });
-
-  describe("向下兼容别名 FunctionCallContext", () => {
-    it("应等价于 ToolCallContext（同一个类，可构造 / instanceof / 类型注解）", () => {
-      const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
-
-      // 旧 API 仍可 new FunctionCallContext(...)
-      const ctx = new FunctionCallContext({
-        agent,
-        tool_call: { function: { name: "fn", arguments: '{"x":1}' } },
-        resultMessage: resultMsg,
-      });
-
-      expect(FunctionCallContext).toBe(ToolCallContext);
-      expect(ctx).toBeInstanceOf(ToolCallContext);
-      expect(ctx).toBeInstanceOf(FunctionCallContext);
       expect(ctx.parsedArgs).toEqual({ x: 1 });
     });
   });

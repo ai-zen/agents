@@ -1,13 +1,24 @@
 import type { AgentDefinition } from "../../../types/index.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
+
+/** 发现 SubAgent 时的选项 */
+export interface DiscoverSubAgentsOptions {
+  /** 日志口（可选）：有文件读不出来、被跳过时报一句；不注入就不记（库缺省沉默） */
+  logger?: LogSink;
+}
 
 /**
  * 扫描多个目录中发现的所有 SubAgent 完整定义。
  * 按优先级从高到低传入路径列表，同名 function.name 靠前的路径优先（先到先得）。
  * 跳过无 function 的普通 Agent 和解析失败的文件。
  */
-export async function discoverSubAgents(paths: string[]): Promise<AgentDefinition[]> {
+export async function discoverSubAgents(
+  paths: string[],
+  options: DiscoverSubAgentsOptions = {},
+): Promise<AgentDefinition[]> {
+  const logger = options.logger ?? SILENT_LOG;
   const seen = new Set<string>();
   const agents: AgentDefinition[] = [];
 
@@ -37,8 +48,12 @@ export async function discoverSubAgents(paths: string[]): Promise<AgentDefinitio
             agents.push(def);
           }
         }
-      } catch {
-        // 跳过解析失败的文件
+      } catch (error) {
+        // 跳过坏文件是对的（一个坏文件不该让整张 SubAgent 列表读不出来），但要留一行：
+        // 文件读不出来是个事实，静默跳过会让配置看着像生效了
+        logger.warn(
+          `[subagents] ${join(dir, file)} 读不出来或不是合法定义，跳过：${String(error)}`,
+        );
       }
     }
   }

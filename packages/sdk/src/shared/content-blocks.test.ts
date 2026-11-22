@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { promises as fs } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import {
   DEFAULT_MAX_INLINE_BYTES,
-  clearUploadCache,
   fileToContentSection,
   mimeOf,
   resolveModelAndEndpoint,
@@ -29,15 +31,21 @@ const openai: Endpoint = {
   apiKey: "sk-test",
 };
 
+/** 本文件造过的临时目录：`afterEach` 里收掉（不收就是每次跑都往 /tmp 加几个） */
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 async function tmpImage(content = "PNGDATA", ext = ".png"): Promise<string> {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
+  tempDirs.push(dir);
   await fs.mkdir(dir, { recursive: true });
   const file = join(dir, `img${ext}`);
   await fs.writeFile(file, content);
   return file;
 }
-
-beforeEach(() => clearUploadCache());
 
 describe("基础工具函数", () => {
   it("mimeOf 按扩展名（大小写不敏感），未知返回 undefined", () => {
@@ -72,7 +80,7 @@ describe("基础工具函数", () => {
     } as unknown as AppConfig;
 
     expect(resolveModelAndEndpoint(config, "gpt-x").endpoint?.id).toBe("openai");
-    // 未命中 → 不做任何隐式回退（模型真相源在 Agent 定义上，配置层无默认模型）
+    // 未命中 → 这里的反查不兜底（模型兜底走 `resolveModel`）
     expect(resolveModelAndEndpoint(config, "unknown").endpoint).toBeNull();
     expect(resolveModelAndEndpoint(config, undefined).endpoint).toBeNull();
   });
@@ -114,39 +122,27 @@ describe("fileToContentSection：传输方式选择", () => {
     expect(r.bytes).toBe(7);
   });
 
-  it("同一文件重复转换命中缓存，只上传一次", async () => {
-    const upload = vi.fn(async () => "file-cached");
+  it("同一文件每次转换都真上传（SDK 不记 id，去重由调用方决定）", async () => {
+    const upload = vi.fn(async () => "file-each-time");
     const file = await tmpImage();
     await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
     await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
-    expect(upload).toHaveBeenCalledTimes(1);
-  });
-
-  it("不同端点不复用缓存（file_id 是端点维度资源）", async () => {
-    const upload = vi.fn(async () => "file-x");
-    const file = await tmpImage();
+    // 换个端点再传一次：`file_id` 是端点维度资源，SDK 也不替调用方记
     const other: Endpoint = { ...deepseek, id: "deepseek-2" };
-    await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
     await fileToContentSection({ source: { path: file }, endpoint: other, deps: { upload } });
-    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload).toHaveBeenCalledTimes(3);
   });
 
-  it("上传失败自动降级为 base64 内联，并给出 warning", async () => {
+  it("上传失败原样抛错，不换成 base64 内联", async () => {
     const upload = vi.fn(async () => {
       throw new Error("boom");
     });
     const file = await tmpImage();
-    const r = await fileToContentSection({
-      source: { path: file },
-      endpoint: deepseek,
-      deps: { upload },
-    });
 
-    expect(r.transport).toBe("inline");
-    expect(r.warning).toMatch(/Files API upload failed/);
-    const section = r.section as { type: string; image_url: { url: string } };
-    expect(section.type).toBe("image_url");
-    expect(section.image_url.url.startsWith("data:image/png;base64,")).toBe(true);
+    await expect(
+      fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } }),
+    ).rejects.toThrow("boom");
+    expect(upload).toHaveBeenCalledTimes(1);
   });
 
   it("端点不支持 Files API：图片走 image_url + base64", async () => {
@@ -233,5 +229,89 @@ describe("fileToContentSection：传输方式选择", () => {
 
   it("默认内联上限为 8 MiB", () => {
     expect(DEFAULT_MAX_INLINE_BYTES).toBe(8 * 1024 * 1024);
+  });
+});
+
+/**
+ * 默认上传实现走的是**真 HTTP**（`fetch` + `FormData`，不用 `openai` 包）。
+ *
+ * 这里用本地 `node:http` 假端点钉住线格式：路径、鉴权头、multipart 的两个字段名。
+ * 换实现时这三样最容易悄悄错 —— 错了就是直接抛错，不会有人替它降级。
+ */
+describe("默认上传实现（真 HTTP，不注入 upload）", () => {
+  async function fakeEndpoint(): Promise<{
+    endpoint: Endpoint;
+    requests: Array<{ url?: string; auth?: string; body: string }>;
+    reply: { status: number; body: string };
+    close: () => Promise<void>;
+  }> {
+    const requests: Array<{ url?: string; auth?: string; body: string }> = [];
+    const reply = { status: 200, body: JSON.stringify({ id: "file-from-http" }) };
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk as Buffer));
+      req.on("end", () => {
+        requests.push({
+          url: req.url,
+          auth: req.headers.authorization,
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+        res.writeHead(reply.status, { "content-type": "application/json" });
+        res.end(reply.body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return {
+      endpoint: {
+        id: `fake-${randomBytes(4).toString("hex")}`,
+        name: "Fake",
+        // 末尾多一个 `/`：实现必须自己收掉，否则会拼出 `//files`
+        baseUrl: `http://127.0.0.1:${port}/v1/`,
+        apiKey: "sk-fake",
+        capabilities: { filesApi: true },
+      },
+      requests,
+      reply,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  it("POST {baseUrl}/files，带 Bearer，multipart 里是 purpose=user_data + file", async () => {
+    const fake = await fakeEndpoint();
+    try {
+      const file = await tmpImage("PNGDATA");
+      const r = await fileToContentSection({ source: { path: file }, endpoint: fake.endpoint });
+
+      expect(fake.requests).toHaveLength(1);
+      const [request] = fake.requests;
+      expect(request.url).toBe("/v1/files");
+      expect(request.auth).toBe("Bearer sk-fake");
+      expect(request.body).toContain('name="purpose"');
+      expect(request.body).toContain("user_data");
+      expect(request.body).toContain('name="file"');
+      expect(request.body).toContain('filename="img.png"');
+      expect(request.body).toContain("PNGDATA");
+      expect(request.body).toContain("image/png");
+
+      expect(r.transport).toBe("files-api");
+      expect(r.section).toEqual({ type: "file", file_id: "file-from-http" });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("端点返回非 2xx：原样抛错，不换成 base64 内联", async () => {
+    const fake = await fakeEndpoint();
+    fake.reply.status = 500;
+    fake.reply.body = JSON.stringify({ error: "nope" });
+    try {
+      const file = await tmpImage();
+      await expect(
+        fileToContentSection({ source: { path: file }, endpoint: fake.endpoint }),
+      ).rejects.toThrow(/File upload failed: HTTP 500/);
+    } finally {
+      await fake.close();
+    }
   });
 });

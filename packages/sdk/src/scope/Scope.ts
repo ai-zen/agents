@@ -19,8 +19,9 @@ export interface FilterOutput {
 }
 
 /**
- * 排除项黑名单（优先级高于 permissions）。
- * 与 permissions 四维对称，用于安全预过滤。
+ * 排除项黑名单，在权限过滤之前先剔除。
+ * 与 permissions 四维对称；实际用途是「这一层不该看见某个名字」（如 subagent 解析
+ * 自己的工具时排掉自身，防递归）。
  */
 export interface ExcludeOptions {
   tools?: string[];
@@ -31,14 +32,23 @@ export interface ExcludeOptions {
 
 /** filter / buildTools 的过滤选项 */
 export interface FilterOptions {
-  /** 排除项黑名单（优先级高于 permissions） */
   exclude?: ExcludeOptions;
 }
 
 /**
- * Scope — 全局上下文 + 能力装配编排容器（v1）。
+ * 取配置的端口 —— `Scope` 收的是「怎么拿到当下这一份」，不是一份配置快照。
  *
- * Scope 是 SDK 的唯一入口对象，持有：
+ * 配置的本质是磁盘上那几个 json：改完之后该由下一次 `refresh()` 现读读到，
+ * 而不是把整个 Scope 拆掉重建（拆掉会连带别的能力一起重来，且正在跑的那一次请求
+ * 会被抽掉能力）。端口可以是同步的（测试里给一份常量），也可以是异步的
+ * （宿主给 `ConfigManager.read()`）。
+ */
+export type ScopeConfigSource = () => AppConfig | Promise<AppConfig>;
+
+/**
+ * Scope — 全局上下文 + 能力装配编排容器。
+ *
+ * 持有：
  *   - 应用配置（端点、模型等）
  *   - 当前工作目录 cwd（相对路径解析基准，ToolEnv.cwd 的来源）
  *   - Agent 定义目录 agentsDir（createAgent 用）
@@ -46,24 +56,32 @@ export interface FilterOptions {
  *
  * 装配方式（插件必须显式注入，Scope 不装任何默认插件）：
  * ```ts
- * const scope = new Scope({ config, cwd, agentsDir })
+ * const scope = new Scope({ getConfig, cwd, agentsDir })
  *   .use(...allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths }));
  * await scope.init();
  * ```
  *
  * 设计原则：
- *   - Scope 只做编排：三阶段管线骨架（发现 → 过滤 → 实例化）+ 生命周期
+ *   - Scope 只做编排：三阶段管线骨架 + 生命周期，契约见 `ScopePlugin`
  *   - 能力来源（内置/用户工具、Skill、MCP、SubAgent）全部疏散到 ScopePlugin，各自自持
- *   - Scope 实例一旦创建，config/cwd/agentsDir/env 不变；refresh() 只让插件重新发现
+ *   - config 随 `refresh()` 更新（每次现读端口），cwd / agentsDir 创建之后不变
  */
 export class Scope {
-  /** 应用配置（端点、模型等） */
-  readonly config: AppConfig;
+  /** 取配置的端口：每次 `refresh()` 都问它要一份 */
+  private readonly getConfig: ScopeConfigSource;
+
+  /**
+   * 当下这一份配置。
+   *
+   * 只有一个字段、一个来源：`scope.config` 与 `scope.env.config` 读的都是它，
+   * 于是「按新配置算出来的东西」与「工具 exec 时看到的配置」不会分叉。
+   */
+  private current?: AppConfig;
 
   /** 当前工作目录 — 相对路径解析基准，也是 ToolEnv.cwd 的来源 */
   readonly cwd: string;
 
-  /** 工具环境 — 插件实例化内置工具时注入 */
+  /** 工具环境 — 插件实例化内置工具时注入（`config` 是活的，见构造函数的注释） */
   readonly env: ToolEnv;
 
   /** Agent 定义目录（createAgent 用） */
@@ -72,22 +90,51 @@ export class Scope {
   /** 已注册的插件 */
   private _plugins: ScopePlugin[] = [];
 
-  /** 是否已 init（init 之后禁止再 use） */
+  /** 是否已 init（init 之后再 use() 会抛错） */
   private _initialized = false;
 
   constructor(options: {
-    config: AppConfig;
+    /** 取配置的端口：配置改了不必重建 Scope，下一次 `refresh()` 就会读到新的那一份 */
+    getConfig: ScopeConfigSource;
     agentsDir: string;
     cwd?: string;
     /** 出网/外部依赖的注入点（缺省全部走真实 OpenAI SDK），会透传到 ToolEnv.deps */
     deps?: ToolEnvDeps;
   }) {
-    this.config = options.config;
+    this.getConfig = options.getConfig;
     this.cwd = options.cwd ?? process.cwd();
-    this.env = options.deps
-      ? { cwd: this.cwd, config: this.config, deps: options.deps }
-      : { cwd: this.cwd, config: this.config };
     this.agentsDir = options.agentsDir;
+
+    // 端口给的是现成的一份（同步）时，构造完就能读 config；给的是 Promise 时
+    // 留到 init() / refresh() 填 —— 那时候读之前先等一次即可。
+    const seeded = options.getConfig();
+    if (!isPromiseLike(seeded)) this.current = seeded;
+
+    const scope = this;
+    this.env = {
+      cwd: this.cwd,
+      // 活的 config：工具在 exec 时读到的永远是「当下这一份」，refresh 之后就是新的。
+      // 不在这里另存一份，否则 env.config 与 scope.config 会分叉。
+      get config(): AppConfig {
+        return scope.config;
+      },
+      ...(options.deps ? { deps: options.deps } : {}),
+    };
+  }
+
+  /**
+   * 应用配置（端点、模型等）。
+   *
+   * 同步读，读到的是**当下**那一份：`refresh()` 之后就是磁盘上的新配置。
+   * 配置端口是异步的且还没 `init()` 过时抛错（那时确实还没有「当下这一份」）。
+   */
+  get config(): AppConfig {
+    if (this.current === undefined) {
+      throw new Error(
+        "Scope.config is not loaded yet: the config port is async, await init() / refresh() first",
+      );
+    }
+    return this.current;
   }
 
   // ==================================================================
@@ -124,7 +171,7 @@ export class Scope {
   }
 
   /**
-   * 初始化：执行首次全局能力发现（遍历插件 discover()），随后锁定插件注册。
+   * 初始化：取一次配置 + 执行首次全局能力发现（遍历插件 discover()），随后锁定插件注册。
    */
   async init(): Promise<void> {
     await this.refresh();
@@ -132,10 +179,14 @@ export class Scope {
   }
 
   /**
-   * 重新执行全局发现（遍历插件 discover()）。
+   * 重新取配置 + 重新执行全局发现（遍历插件 discover()）。
+   *
+   * 顺序不能反：插件发现可能要用新配置算路径 / 开关（如内置工具的可用性、
+   * MCP 的连接对账），所以先把 `current` 换掉，再让插件看世界。
    */
   async refresh(options?: { silent?: boolean }): Promise<void> {
     const opts = { silent: options?.silent ?? false };
+    this.current = await this.getConfig();
     for (const plugin of this._plugins) {
       await plugin.discover?.(this, opts);
     }
@@ -156,7 +207,7 @@ export class Scope {
 
   /**
    * 按权限过滤候选集，返回过滤后的名称列表。
-   * 汇总各插件 candidates() → 应用 exclude 安全预过滤 → 四维权限过滤。
+   * 汇总各插件 candidates() → 剔除 `exclude` 里的名字 → 四维权限过滤。
    * 纯名称操作，不涉及 Tool 实例化。
    */
   filter(definition: AgentDefinition, options?: FilterOptions): FilterOutput {
@@ -179,7 +230,7 @@ export class Scope {
       c.subagents?.forEach((n) => subagents.add(n));
     }
 
-    // 2 + 3. exclude 预过滤 + 四维权限过滤
+    // 2 + 3. 剔除 exclude + 四维权限过滤
     const evaluator = new PermissionEvaluator(definition.permissions);
     const filtered = evaluator.filter({
       tools: [...tools].filter((n) => !excludeTools.has(n)),
@@ -214,6 +265,11 @@ export class Scope {
     }
     return dedupTools(result);
   }
+}
+
+/** 端口返回值是不是 Promise（同步端口因此可以省掉一次 await 的语义差别） */
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
 }
 
 function dedupTools(tools: Tool[]): Tool[] {

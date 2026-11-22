@@ -19,16 +19,14 @@ import { BatchEditTool } from "./BatchEditTool.js";
 import { EditTool } from "./EditTool.js";
 import { SpawnTool } from "./SpawnTool.js";
 import { SleepTool } from "./SleepTool.js";
+import { AsyncExecTool } from "./AsyncExecTool.js";
+import { AsyncTimeoutTool } from "./AsyncTimeoutTool.js";
 import { ViewImageTool } from "./ViewImageTool.js";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 
 /**
- * 全部内置工具类（20 个）。
- * 工具类由 Scope 的内置工具插件（BuiltinToolsScopePlugin）用 ToolEnv 实例化（每个 Scope 一套实例，注入其 cwd）。
- *
- * 发现层不做任何过滤——工具的可用性由各工具自行声明（SdkCallbackTool.isAvailable，
- * 入参含完整 config + 模型信息），在 buildTools/filter 阶段按声明过滤。
- * 如 GenerateImageTool 依赖 defaultImageModel、ViewImageTool 仅视觉模型可用。
+ * 全部内置工具类（22 个）。
+ * 由 BuiltinToolsScopePlugin 用 ToolEnv 实例化（每个 Scope 一套实例，注入其 cwd）。
  */
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
   CwdTool,
@@ -49,6 +47,8 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
   EditTool,
   SpawnTool,
   SleepTool,
+  AsyncExecTool,
+  AsyncTimeoutTool,
   ViewImageTool,
   GenerateImageTool,
 ];
@@ -72,6 +72,8 @@ export {
   EditTool,
   SpawnTool,
   SleepTool,
+  AsyncExecTool,
+  AsyncTimeoutTool,
   ViewImageTool,
   GenerateImageTool,
 };

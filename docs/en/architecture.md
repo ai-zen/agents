@@ -1,129 +1,410 @@
 ---
 title: Architecture
-description: The core / sdk layering, pnpm monorepo structure, module dependency direction, and conversation flow of AI-Zen Agents.
+description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 48-method / 15-event protocol surface, why the contract is the host's type files, the client's transport/facade/session layers, the host's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
 outline: deep
 ---
 
 # Architecture
 
-AI-Zen Agents is a **pnpm monorepo**, split into two public subpackages (`@ai-zen/agents-core` and `@ai-zen/agents-sdk`) and orchestrated by the private workspace root `@ai-zen/agents-workspace`.
+AI-Zen Agents is a **pnpm monorepo** (workspace root `@ai-zen/agents-workspace`, private, `2.0.0`). Five packages under `packages/` matter for this document:
 
-## Layered overview
+| Package | Version | Role |
+|---------|---------|------|
+| `@ai-zen/agents-core` | 4.6.0-alpha.0 | Conversation runtime kernel |
+| `@ai-zen/agents-sdk` | 1.2.0-alpha.2 | Business capability layer |
+| `@ai-zen/agents-host` | 0.1.0-alpha.7 | Resident host: session orchestration / archives / workspaces |
+| `@ai-zen/agents-client` | 0.1.0-alpha.0 | Connection layer to the host; **private**, inlined by CLI / Desktop at build time |
+| `@ai-zen/agents-testing` | 0.1.0 | Private, test doubles (a fake OpenAI-compatible streaming endpoint) |
 
-```
-Upper-layer apps (CLI / Desktop)
-        │
-        ▼
-@ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  official openai SDK
- (capability pipeline / Scope / MCP / built-in tools) (Agent runtime)   (LLM API)
-        │
-        ▼
-LLM API / MCP servers (openai SDK / @modelcontextprotocol/sdk)
-```
+(`packages/` holds seven directories in total: the five above (including `testing`), plus `test-project` (a private fixture package with its own `package.json`) and `test-home` (the only directory without a `package.json`, so not a package). The CLI and the desktop app live in **separate repositories**, not in this monorepo, but each has its own place in the dependency graph below.)
 
-- **Core** is the "kernel" of the framework: it only cares about general conversation-runtime abstractions and is unaware of business concerns such as permissions or the filesystem.
-- **SDK** is the "engine layer": it provides unified capabilities for CLI / Desktop, holding the capability pipeline, Scope, MCP, and built-in tools.
+## Layering and dependency direction
 
-## Subpackage responsibilities
-
-| Package | Version | Responsibility |
-|----|------|------|
-| `@ai-zen/agents-core` | 4.5.5 | `Agent` / `Message` / `Tool` / `ToolCallContext`, plugin mechanism (`AgentPlugin` + `HookResult` + `dispatchHook`), event system |
-| `@ai-zen/agents-sdk` | 1.1.0 | `Scope` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task handoff & migration, built-in tools, `ConfigManager` |
-
-> The workspace root package `@ai-zen/agents-workspace` is private and version `2.0.0`. This version number is not consistent with the independent versions of the two public subpackages; it is only used for workspace orchestration.
-
-## SDK internal module layering
+Dependencies are **one-way**, never reversed:
 
 ```
-types         ← pure types, zero business dependencies (includes ToolEnv, permissions, MCP types)
-config        ← ConfigManager + constants: read/write config.json + directory setup + atomic writes + factory defaults
-crud          ← capability entity CRUD (AgentRepository; the generic EntityRepository lives in shared)
-runtime       ← runtime residents: model factory + Agent assembly + task handoff/migration (createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
-scope         ← Scope orchestrator + ScopePlugin contract + PermissionEvaluator + disclosure + plugins/ (5 capability sources, each self-contained with discovery + tools + plugin)
-agent-plugins ← AgentPlugin plugins (autoMigrate / autoRefreshTools / contextGuard / unknownToolHint)
-shared        ← EntityRepository, SdkError, Logger
+@ai-zen/agents-core ←──────────── @ai-zen/agents-sdk ←──────── @ai-zen/agents-host ←── bin: agents-host
+      ↑ (runtime)                                               ↑
+@ai-zen/agents-client ───────────────────────→(import type only)─┘
+      ↑
+@ai-zen/agents-client ←── bin: ai (cli) / desktop main
 ```
 
-**Dependency direction**:
+Read `A ← B` as "B depends on A". Every edge is a fact in `package.json` —
 
-```text
-agent-plugins → runtime → scope → crud → config → types
-                    │
-                    └──→ shared
-                    └──→ @ai-zen/agents-core
+| From | To | Shape |
+|------|----|-------|
+| `sdk` | `core` | runtime dependency |
+| `host` | `core` + `sdk` | runtime dependencies, two entries in `dependencies` |
+| `client` | `core` | runtime dependency, **the only** entry in `dependencies` |
+| `client` | `sdk` | **types only**: a `peerDependencies` entry plus a devDependency (`ConfigPort`'s public signature needs `AppConfig` / `AgentDefinition` / `ReasoningPresets`); not a single runtime reference |
+| `client` | `host` | **types only**: a `peerDependencies` entry (the host must provide it) plus a devDependency (this repo's tests start a real Daemon); not a single runtime reference |
+| `cli` / `desktop main` | `client` (the CLI additionally `sdk` / `core`) | application-side dependency. How the host gets launched is the host's policy: the CLI pulls it on demand with `npx` (pinning the version through its own `hostPackage`), the desktop app launches the copy it ships; in direction they are users of `client` |
+
+### Three hard properties
+
+Each one can be falsified with a command; none of them rests on "remember not to write that".
+
+**① There is no runtime edge between `client` and `host`.** The client imports the host for
+**types only** (shapes and names); the runtime pieces (message codec, error-code judgement, loopback
+judgement, discovery-file I/O, `callOnce`) are its own copy under `packages/client/src/wire/` — the
+contract shares **types**, not code. So `dependencies` holds one entry, `core`;
+`@ai-zen/agents-host` is a **peerDependency** (the host must provide it: the type surface comes
+from it) plus a devDependency (this repo's tests start a real Daemon).
+
+```bash
+# dependency table: agents-host / agents-sdk / agents-testing must not appear
+node -e 'const d=require("./packages/client/package.json").dependencies; const bad=Object.keys(d).filter((k)=>/agents-(host|sdk|testing)$/.test(k)); if(bad.length) throw new Error(bad.join())'
+
+# the artifact is the real verdict: core is the only runtime import
+(cd packages/client && npm run build && grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u)
+# expect only @ai-zen/agents-core, ./xxx.js and node:*
 ```
 
-Upper layers depend on lower layers, not the other way around; modules at the same layer do not depend on each other (exception: `scope`'s capability plugins depend on `runtime`'s `createModel`, so `runtime ⇆ scope` keeps a single type-level edge). For third-party dependency relationships, see [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) (the single source of truth for the SDK design).
+`ensure-host.ts` launches the host with `npx -y <hostPackage> serve`: downloaded on demand, so
+the host does not need `@ai-zen/agents-host` installed. That is a **deployment policy, not a
+layering edge** — hence the package coordinate is supplied by the host (`hostPackage`; a prerelease
+must carry `@x.y.z`, otherwise `npx` has no `latest` to resolve). An app that does not want that path
+injects its own `startHostProcess` — which is exactly what the desktop app does with the copy it
+ships.
 
-## Core runtime design
+**② The contract is types only, with zero runtime exports.** `packages/host/src/protocol/` holds
+nothing but `type` / `interface`: wire shapes, the method-name and event-name unions, the error-code
+union, the type exit for the data model. Everything with a runtime (message codec, error-code
+judgement, loopback judgement, version constant, discovery-file I/O, `callOnce`) lives in
+`packages/host/src/wire/`.
 
-### Plugins are the only extension point
-
-`AgentContext` no longer offers any `onXxx` constructor hooks. **Plugins (`agent.use(plugin)`) are the only way to extend an Agent.** All hooks go through `dispatchHook`:
-
-1. First emit **non-blocking** kebab-case events (`agent.events.emit`, notification only, no intervention);
-2. Then **block** by calling plugin hooks in registration order; any one returning a string short-circuits.
-
-`HookResult = string | void | Promise<string | void>`:
-
-- **string** → short-circuit (reject / interrupt / provide a result; semantics depend on the hook);
-- **undefined / void** → allow (continue to the next plugin or default behavior).
-
-### Conversation flow (one `send()`)
-
-```
-send(content)
-  ├── onBeforeSend hook → may reject
-  ├── append User message
-  └── run()
-        ├── onInnerLoopsStart hook (once per send)
-        ├── inner loop (continues as long as there are tool calls)
-        │     ├── prepend an Assistant placeholder (Pending)
-        │     ├── onInnerLoopStart hook (before each request)
-        │     ├── client.chat.completions.create(...) (official SDK streaming)
-        │     ├── parseStreamData() → content / reasoning_content / tool_calls
-        │     ├── handleToolCall() → perform tool call
-        │     │     ├── onToolCall interception hook → may reject
-        │     │     ├── onUnknownTool plugin → fallback hint
-        │     │     ├── Tool.exec(ctx) run the matched tool
-        │     │     └── sub-agent tools (AgentTool / AgentToolLazy) → onSubAgentStart / onSubAgentEnd delegation boundary
-        │     └── onInnerLoopEnd hook
-        ├── onInnerLoopsEnd hook
-        └── return this.messages
-  └── onAfterSend hook
+```bash
+grep -rn '^export \(const\|function\|class\|async function\)' packages/host/src/protocol/*.ts | grep -v '\.test\.'
+# must be empty
 ```
 
-A single `ToolCallContext` instance spans "interception decision (`onToolCall`) → execution (`Tool.exec`)".
+**③ There is one shape of the data model, and the contract only re-exports types.** `Message` /
+`Usage` / `ToolCall` / `ModelParams` are declared by `core` and re-exported **type-only** by the
+contract's `model.ts`; wire payload shapes such as `PhaseInfo` are owned by the contract itself. The
+client imports `core` directly for chunk folding (`applyChunk`) and usage summing (`sumUsage`) — it
+imports them instead of copying a mirror.
 
-## SDK capability pipeline: three stages
+```bash
+# the contract may reference core in type position only
+grep -rn '@ai-zen/agents-core' packages/host/src/protocol | grep -v '^\S*:[0-9]*: *\*'
+# expect only the single `import type` in model.ts
+
+# apart from relative paths and that one core import, the contract imports nothing
+grep -rn 'from "' packages/host/src/protocol/*.ts | grep -v '\.test\.' | grep -v 'from "\./' | grep -v '@ai-zen/agents-core'
+# must be empty
+```
+
+Why this deserves a hard property: the shape of `Message` is both the on-disk format (the archive
+JSON) and the wire shape. Manufacturing a second "wire mirror" for it would be a second definition —
+and a second definition is exactly what this project refuses. So it is declared in one place only.
+
+### There are no reverse edges
+
+- `agents-host` does not appear anywhere under `packages/sdk/src` or `packages/core/src`;
+- `packages/host/src` holds no import of `agents-client`;
+- production code under `packages/client/src` references `@ai-zen/agents-host` in `import type` position only; the runtime pieces are its own `src/wire/`, and nothing in it resolves or spawns the host's `bin` (launching goes through `npx`);
+- `packages/host/src/protocol` contains no `domain/` / `daemon/` / `lib/` (the protocol knows no implementation on either side).
+
+## What each layer owns, and what it refuses
+
+| Package / app | Owns | Refuses |
+|---|---|---|
+| `core` | The conversation runtime: `Agent` / `Message` / `Tool` / `ToolCallContext`, the plugin and event system | Permissions, the filesystem, configuration, persistence — its `src/` imports no `node:*` builtin at all. Its only dependencies are `openai` and `@ai-zen/event-bus` |
+| `sdk` | Business capability: the capability pipeline (discover → filter → instantiate), the permission model, MCP lifecycle, task handoff and migration, built-in tools, `ConfigManager` | Processes and connections, session archives, workspaces, anything about what a client looks like. Depends on `core`, `@modelcontextprotocol/sdk`, `dayjs`, `openai` |
+| `host` | The wire **contract** (`src/protocol/`: the method-name and event-name unions, payload types, error codes, the phase shape, the type exit for the data model — types only, zero runtime exports) and its **runtime pieces** (`src/wire/`: message codec, `hello` handshake, error-code judgement, loopback judgement, version constant, discovery-file I/O, `callOnce`), plus session orchestration, archives, workspaces, host-side reads/writes of configuration and agent definitions, the asset listing, the event outlet, and the `Daemon` that puts all of it on one WebSocket connection | Any UI stack (no ink / react / terminal library — the package boundary is the process boundary), and no process-level globals (cwd / global config path / global locale). Both hard constraints are in the header of `packages/host/src/index.ts`; the only exception is the composition root `src/cli.ts` |
+| `client` | **Everything** that has to happen on the client side between a front end and the host: service discovery and spawning, one WebSocket connection, two facades (sessions, config), the **session-stream state machine** (the part of "thinking" all three front ends must agree on), two judgements (whether to hand up the cwd, what state the host is in) | Rendering, localisation, process-level globals, any local read/write of host-side data |
+| `cli` (separate repo) | Rendering and input (ink), slash commands and the session layer, drawing the state of a `SessionStream` | Session orchestration, archives, workspaces, config writes — those live on the host. It depends on `client`, plus `sdk` / `core` (the app needs business types such as `AgentDefinition` and **runtime enums** such as `Role` / `MessageStatus`) |
+| `desktop main` (separate repo) | Application-level facts (`app.getVersion()` as `clientInfo`), spawning the host, subscribing to events and turning that state over to the renderer | The host implementation itself. Its event translator is now a thin adapter over `SessionStream` |
+
+## The protocol surface: 48 methods / 15 events
+
+Method and event names are **string-literal union types**, not runtime constant tables — they are
+declared in `packages/host/src/protocol/`, which holds types only and not a single line of
+runtime code. **Counting rule**: one member of a union is one entry; param/result types do not
+count; the three built-in methods (`ping` / `status` / `shutdown`) **do** count; notice codes are
+not events, they are enums inside `session-notice` / `host-notice` payloads.
+
+| Namespace | Count | Declared in |
+|----------|------|--------|
+| `workspace.*` | 6 | `WorkspaceMethod` in `sessions.ts` |
+| `session.*` | 21 | `SessionMethod` in `sessions.ts` |
+| `events.watch` | 1 | `EventMethod` in `sessions.ts` (connection-level, belongs to no session) |
+| `config.*` | 7 | `ConfigMethod` in `config.ts` |
+| `agent.*` | 5 | `AgentMethod` in `config.ts` |
+| `asset.*` | 1 | `AssetMethod` in `assets.ts` |
+| `content.*` | 1 | `ContentMethod` in `content.ts` (the only method that carries a binary payload) |
+| `notice.*` | 2 | `NoticeMethod` in `notice.ts` (`notice.list` lists the global notice slots; `notice.ack` acknowledges — it takes ids of both global and per-session notices) |
+| `hello` (handshake) | 1 | `hello` in the method table; its two shapes are `HelloParams` / `HelloResult` in `protocol/messages.ts` (field by field in [Wire Protocol](protocol.md), under "Handshake") |
+| built-in `ping` / `status` / `shutdown` | 3 | `DaemonMethod` in `daemon.ts` |
+| **total** | **48** | |
+
+There are **15** events, in three unions, all in `sessions.ts`:
+
+| Union | Count | Names | Notes |
+|----|------|--------|------|
+| `AgentEventName` | 8 | `open`, `chunk`, `parsed`, `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end` | verbatim core `Agent.events` names; the timing is copied from core too |
+| `SessionEventName` | 6 | `session-phase`, `session-turn-end`, `session-notice`, `session-question`, `session-id-changed`, `session-title-changed` | host-derived / host's own actions |
+| `HostEventName` | 1 | `host-notice` | the host's own notice (belongs to no session) |
+| **total** | **15** | | |
+
+Five properties that matter here:
+
+- Event payloads carry **facts** only (phase kind, tool name, body text) — never prose. Rendering
+  into a language is the client's business.
+- The eight `AgentEventName` members are core's own names; the host forwards each at the very
+  moment core emits it, renaming nothing. `open` / `parsed` / `error` / `finally` are unused by
+  today's client but are still sent — the protocol surface is core's public fact.
+- **core's `chunk-parsed` and `message` never go on the wire**: the former is "the text delta you
+  get by folding `chunk`", the latter is covered by `tool-call-end` and the turn-end snapshot.
+- The ordering is hard: `error` before `finally`, `finally` before `session-turn-end`. Those are
+  two different events, not a rename.
+- `send` returns `turnId` immediately; the rest of the turn travels as events.
+
+The parameters, results and semantics of each method and event are **not** copied here — the
+definition site (`packages/host/src/protocol/sessions.ts` / `config.ts` / `assets.ts` /
+`daemon.ts`) is the only description, and the semantics that need more room live in
+`packages/host/README.md`.
+
+## Why the contract is the host's type files
+
+`packages/host/src/protocol/` holds nothing but `type` / `interface`: the wire shapes, the
+method/event name unions, the error-code union, and the type-only re-export of the data model.
+**Zero runtime exports.** Everything with runtime behaviour (message codec, error-code predicate,
+loopback predicate, version constant, discovery-file I/O, `callOnce`) lives in
+`packages/host/src/wire/`.
+
+**Why it is not a package of its own** (and not something in core): which methods / events /
+payloads exist is **what the host provides**, so it belongs inside the host — there is no
+separately installable unit. One-line criterion: if it describes what the host provides, it
+belongs to the host; if other processes must execute it, it is code.
+
+**Why a client never drags the host runtime in**: the client only does `import type` (shapes and
+names); the runtime pieces are its own copies under `packages/client/src/wire/`. Only types are
+shared, never code. Hence `@ai-zen/agents-client` has exactly one entry in `dependencies`
+(`@ai-zen/agents-core`), while `@ai-zen/agents-host` and `@ai-zen/agents-sdk` are both its
+**peerDependencies** (the host must provide them: the type faces come from them, and `ensure-host`
+spawns the host's bin) plus devDependencies (tests start a real Daemon). Installing the client
+pulls neither openai nor the MCP SDK into the **artifact**; they are only the type sources the host
+already has.
+
+**The desktop main process is a bundle artifact**, the same reason in practical clothes: it imports
+only the types of `@ai-zen/agents-host/protocol`, so no bundler follows daemon / archives /
+workspaces into the installer.
+
+Two details:
+
+- **`export type *` instead of listing symbols**: listing them means every new method needs a new
+  line, and forgetting one yields "exports nothing" — a mistake no gate catches.
+- **The contract re-exports the data-model types too** (`Message` / `Usage` / `ToolCall` /
+  `ModelParams`, see `model.ts`), because the on-disk format and the wire shape are the same thing.
+
+`client` re-exports that layer **as types** (`export type * from "@ai-zen/agents-host/protocol"`
+in `packages/client/src/index.ts`), so an upper layer only has to know one package — and it is
+**not** a second definition.
+
+## The three layers of the `client` package
+
+Inside the package the split is by "dirty / pure" and by responsibility. Whatever can be pure touches no I/O, so the state machine can be unit-tested directly.
+
+| Layer | File | Responsibility |
+|---|---|---|
+| **Transport** | `transport/connection.ts` (`HostConnection`) | **One connection per process**: every use checks `closed`, rebuilds when dead, re-subscribes to `events.watch` on the new connection, reports both disconnects and readiness upwards (`onClose` / `onOpen`). It does **not** retry — retrying is a session-layer rule |
+| | `ensure-host.ts` | Reads `<aiZenDir>/run/host.json`; if liveness (`callOnce` asking `ping`) fails it spawns `agents-host serve` detached and polls until `ping` answers. It is the **only** place in the package that knows about `agents-host` (deployment strategy, not a layer) |
+| | `socket-host-client.ts` | One WebSocket + JSON-RPC 2.0 connection: `hello` handshake, in-flight calls (optionally carrying a binary payload), event dispatch, disconnect notification |
+| | `resolve-target.ts` + `wire/host-url.ts` / `wire/token.ts` | The **single resolution point** for "where to connect + what gets you in": address precedence (explicit > discovery file), credential precedence (explicit > `run/token`), the address shape and the one URL builder (`ws` / `wss` / `http` / `https`, an optional path). Once the address can point at a remote machine, the credential can no longer be read from the local file alone — the two are resolved together |
+| **Facade** | `facade/sessions.ts` (`RemoteSessions`, 28) | Typed thin wrapper over `session.*` (21) + `workspace.*` (6) + `content.*` (1) |
+| | `facade/config.ts` (`RemoteConfig`, 13) | `config.*` (7) + `agent.*` (5) + `asset.*` (1) |
+| | `facade/coverage.test-d.ts` | Facade method set **===** protocol method-table key set; **100% coverage** is enforced by types: one method missing or one extra fails to compile |
+| **Session** | `session/stream.ts` (`SessionStream`) | The **pure** state machine: messages / phase / model / usage / sub-agents / terminal failure for one turn. Zero I/O, zero timers, zero globals |
+| | `session/channel.ts` (`SessionChannel`) | The dirty half: subscriptions, requests, reconnects (three invariants), re-`attach`, immediate reclaim on `close` |
+| | `session/errors.ts` | The single judgement for "does this session still exist": `session-missing` and `unknown-session` **both count** as gone |
+
+One more pure piece sits at the package root: `stream-merge.ts` (`mergeStreamedSnapshot`, the merge rule between local streaming deltas and a host snapshot, single implementation). It lives at the root because both front ends and the package itself use it explicitly. There is **no** "agent view" style view-layer file: the sub-agent column is a piece of data inside `SessionStreamState.subAgents`.
+
+**Why the cut is where it is**: this block **is not presentation**. It decides whether the answer on screen comes up short, whether a failed sub-task is shown as a success, and whether the turn is actually over — three front ends would all get it wrong, and all get it wrong the same way. The pure/dirty boundary (`SessionStream` / `SessionChannel`) is the same cut as `PhaseTracker` (pure) / `SessionManager` (dirty): the pure one can be unit-tested, the dirty one only wires things up.
+
+`SessionStream` has no `send()` and no "wait for this turn": **waiting happens in `SessionChannel.waitForTurn(turnId)`**. `session-turn-end` can land before the reply to `send()`, so folding both into one promise would require keeping a record of "turns already settled" inside it — which is exactly what `waitForTurn` does.
+
+### Three hard constraints (each machine-checkable)
+
+1. **It has exactly one runtime dependency edge, `core`** — `core` holds the **only** implementations of chunk folding (`applyChunk`), usage summing (`sumUsage`) and the role enum (`AgentNS.Role`), so the client imports them instead of copying a mirror; with `sdk` and `host` it is **types only** (`import type`, see hard property ①), and both are peers. At runtime core's artifact only loads `@ai-zen/event-bus`; `openai` appears in core in type position only. `devDependencies` holds three more workspace packages (`sdk` and `host` are also peers), all for types and test cases only; none reaches the artifact.
+2. **The emitted runtime dependency graph must be closed**: after `npm run build`, external imports in `dist/*.js` may only be `@ai-zen/agents-core`; everything else is a sibling relative path or `node:*` — **no `@ai-zen/agents-host`**.
+
+   ```bash
+   cd packages/client && npm run build
+   grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u
+   ```
+
+   > The check must anchor on a leading `^import`. Without the anchor, the `import type … from "@ai-zen/agents-sdk"` inside this package's own doc comments is grepped by itself and you conclude "it drags sdk in" — this has actually happened once.
+
+3. **No process-level globals**: `aiZenDir` (config root) and `clientInfo` (the identity claimed in the handshake) are both **injected by the composition root**. Both are application-level facts and this package is a library that cannot make that call — otherwise the desktop app would claim to be the CLI when it spawns the host.
+
+## The `host` package's directories
 
 ```
-1. Discover (refresh)    discoverBuiltinTools / discoverUserTools / discoverSubAgents / discoverSkills / discoverMcpServers
-2. Filter                safety pre-filter + four-dimension permission filter + tool isAvailable filter
-3. Instantiate           name → Tool instance / dynamic tool / SubAgent lazy build / dedupe
+packages/host/src/
+  domain/       business objects, one subdirectory each
+    session/      SessionManager + EventBridge + Persistence + QuestionBroker
+                  (+ the LiveSession shape, AutoTitle, store/ archive port and implementation)
+    workspace/  agent/  config/  asset/  handoff/
+  lib/          generic parts with no business semantics: phase.ts (PhaseTracker), events.ts (EventHub)
+  protocol/     the wire contract (types only): method-name / event-name unions, payloads, error codes, phase shape, data-model exit
+  wire/         the contract's runtime pieces: message codec, error-code judgement, loopback judgement, version constant, discovery-file I/O, callOnce
+  daemon/       transport and wiring: Daemon / wire (transport abstraction) / params / *Handlers
+  cli.ts        composition root (the only reader of env / argv)
+  index.ts      the package barrel (`export *`; a name clash fails the build — that is the point)
 ```
 
-`Scope` is the sole entry object of the SDK, holding configuration, `cwd`, `agentsDir`, and a set of capability plugins. Each `Scope` binds to one working directory (`cwd`), enabling parallel multi-session operation without interference. See [SDK](sdk.md).
+The **dividing line** between `domain/` and `lib/` is this: `domain/` holds **business objects** (they know what a session or a workspace is, and are allowed to know the rules), while `lib/` holds **generic parts with no business semantics** — `phase.ts` is the generation-phase state machine, `events.ts` is connection fan-out, and neither knows about sessions, archives or the handshake. `EventHub` is barely 50 lines, but do not merge it away: `watcherCount()` carries a real business decision (if nobody is watching, do not ask the client anything), and the user of that decision is `QuestionBroker`.
 
-## Parallel multi-session
+Two more:
 
-Built-in tools use `ToolEnv.cwd` as the base for relative paths and **no longer depend on the global `process.cwd()`**. CLI / Desktop can hold multiple `Scope`s at the same time, serving sessions in different working directories.
+- **`daemon/` handles only "WebSocket message → JSON-RPC message → method call"**: `Daemon` itself carries just `ping` / `status` / `shutdown`, and the rest of the method table is injected by the composition root through `DaemonOptions.handlers`. This layer does **no business orchestration** — it validates parameter shapes and wires things up; any decision that needs to read another object belongs to `domain/` (e.g. "removing a workspace must close its live sessions" is `SessionManager.closeWorkspace`).
+- **`cli.ts` is the composition root**: the only place allowed to read env / argv (`AI_ZEN_DIR`, `HOME`, command-line flags); it resolves paths into values and injects them, while `domain/`, `lib/` and `daemon/` read no globals. **`index.ts` is an `export *` barrel**, not a manifest of methods.
 
-```
-Desktop (workspaces.json)
-   │ one Scope per workspace (1:1)
-   ▼
-Scope(cwd) ──ToolEnv──▶ tool instance (cwd/config injected)
-   │
-   ▼
-createAgent(scope, agentId) → SdkAgent (parallel send)
-```
+The wire contract is not in `src/daemon/` or `src/domain/` — it is `src/protocol/` in this same package (types only), with the runtime pieces in `src/wire/`.
+
+### Agent assembly is per workspace
+
+Inside `domain/agent/`, one workspace shares one `Scope` (one set of MCP connections and one capability discovery), and it is **never shared across workspaces** — the cache key is the workspace path and the value is a `Promise` (concurrent session creation shares one initialization). Both halves have a reason: splitting per session would add one set of MCP connections per session, while sharing across workspaces would hand project A's project-level skills / tools / mcp to project B. See the header of `packages/host/src/domain/agent/SessionAgentFactory.ts`.
+
+## Host process model
+
+### A resident process, single instance
+
+`agents-host` is the bin of `@ai-zen/agents-host` (`dist/cli.js`), with subcommands `serve` (the default) / `token create|list|revoke` / `version`.
+
+Before starting, `serve` reads the discovery file: if the pid is alive and answers `ping`, it prints `already running on <host>:<port>` and exits with code 1; if the pid is gone, it removes the leftover file and continues. The **single-instance decision is made only on the host**; the client does not reimplement it (header of `packages/client/src/ensure-host.ts`).
+
+### The discovery file
+
+Located at `<aiZenDir>/run/host.json`; the shape is `HostDescriptor` in `packages/host/src/wire/discovery.ts`:
+
+| Field | Meaning |
+|-------|---------|
+| `pid` | Detects "did it crash last time" — if the process is gone, the leftover file is removed |
+| `host` / `port` | Where to connect (a port may be taken, in which case the host falls back to an OS-assigned one, so it must never be guessed) |
+| `protocol` | Protocol version, a cheap pre-check before connecting |
+| `version` | Host package version, used for drift warnings and diagnostics |
+| `startedAt` | Start timestamp |
+| `schema` | Schema version of the discovery file, currently always `1` |
+
+Writes are atomic (write `.tmp`, then `rename`) so a client never reads half a JSON document; a missing or corrupt file reads back as `null` ("not running").
+
+### Transport and handshake
+
+The wire is **WebSocket + JSON-RPC 2.0**: one WebSocket message is exactly one complete JSON-RPC 2.0 message, and framing is the WebSocket message boundary; the first message must be `hello`, the protocol version and the credential both ride in its `params`, and a version that does not match means no connection. For message classification, the `id` range, binary payloads, size ceilings, authentication and the origin check, error codes and when a connection is dropped, the 15 events, and the stateful notices and questions, see [Wire Protocol](protocol.md) item by item; for how to set up remote access, see [Deployment & Remote Access](deploy.md).
+
+### Loopback only
+
+`Daemon.start()` asserts on the host: anything that is not a loopback address throws and refuses to start (`packages/host/src/daemon/Daemon.ts`). The judgement `isLoopbackHost()` lives in `packages/host/src/wire/host.ts` and accepts `localhost`, `::1`, and the whole `127.0.0.0/8` range (per RFC 1122, not just `127.0.0.1`).
+
+This is not a placeholder, and it is **not** "loopback because there is no authentication": the host's capability set includes `exec` (arbitrary command execution), and putting such a port straight onto a network is not the default this project wants. Remote access goes through **tunnels / a reverse proxy** (nginx on the same machine proxying to `127.0.0.1`, which lands exactly on this assertion): the host **never implements TLS and never binds a non-loopback address** — `wss://` is a **client** capability, not a host mode. The default is `127.0.0.1:8790`; `--port 0` lets the OS pick.
+
+The two gates that go with it are the **credential** (`params.token` of `hello`; the host reads or generates `<aiZenDir>/run/token`, mode 0600, in `start()`) and the **origin check** (judged during the upgrade, the list coming from `AI_ZEN_ALLOWED_ORIGINS`). Their criteria and invariants are in [Wire Protocol](protocol.md); the deployment side is in [Deployment & Remote Access](deploy.md).
+
+The two idle timeouts are different things: `--idle-timeout` covers the whole daemon (no connections left — exit after that long; off by default), `--session-idle-timeout` covers a single session (nobody watching it any more — reclaim it after that long).
+
+Logs go to `<aiZenDir>/logs/host.log`: the daemon is spawned detached by a client, so it must never write to the client's terminal.
+
+## A session's lifetime has exactly one rule
+
+> A connection holds it → it stays alive; the last holder goes away → reclaim after a grace period; `session.close` → reclaim immediately.
+
+That is all of it, and **there is no second judgement**.
+
+`holders` means "at this moment one connection is actually watching it": the transport registers it (`session.create` / `session.attach` register the calling connection) and removes it when that connection closes (hooked on `connection.onClose`). It requires no cooperation from the client — the disappearance of a connection is **guaranteed by the kernel** (a `kill -9`, a crash or a power cut all take that socket away). The grace period is `DEFAULT_SESSION_IDLE_TIMEOUT_MS` (60 s, `--session-idle-timeout`), long enough to cover the client's worst-case reconnect budget; at the deadline the rule is **re-checked**, so an `attach` arriving inside the window merely cancels the reclaim, and a turn still running pushes it to `session-turn-end`.
+
+**Why there is no client-reported "keep-alive intent"**: that design used the conjunction of "the declared intent **and** a holder", and of those two facts only one survives the hardest case — a crashed process cannot send that message, so the declaration stays at "keep it" forever and the session, together with its Agent and message history, pins itself in memory (this package runs on loopback, so the only reclaiming event would be a daemon restart); whereas a holder is a kernel-guaranteed fact that the very same crash cleans up. Taking the conjunction just made the unreliable half a necessary condition. The single "why" for this decision is the header of `SessionManager.ts`.
+
+Two **behavioural consequences** must be booked, and must not be described as "one mechanism fewer, behaviour unchanged":
+
+- switching away from a session while the connection stays up (the TUI's `/new`, `/load`, re-mounting after `rollback`) **must explicitly `close()` the old one**, otherwise the memory peak grows linearly with the number of switches until the grace period expires;
+- a one-shot call (`ai "…"`) must `close()` when it finishes, otherwise every invocation leaves a live session behind on the resident daemon.
+  Both exits are `SessionChannel.close()` (which `await`s `session.close()`, so the host reclaims on the spot).
+
+## The four parts of `SessionManager`
+
+The session under `domain/session/` is four classes plus one shape file, all taking their collaborators through constructor arguments (they never import each other). The criterion is not line count but **"who owns which fields of `LiveSession`"**:
+
+| File | What it took | Responsibility |
+|---|---|---|
+| `SessionManager.ts` | the registry `sessions` / `holders` / reclaiming / the turn lifecycle (`beginTurn` / `settleTurn` / `failTurn`) / the catalogue (`list` / `last` / `rename` / `remove` / `rollback`) / handoff (`handoff` / `migrate` / `autoMigrate`) / `create` / `attach` / `close` / `dispose` | The registry and the turn lifecycle — "the batch of sessions I am currently managing" |
+| `EventBridge.ts` | the streaming shadow / the sub-agent column | SDK events → protocol events. Depends only on `agent.events` + `hub`, **needs neither the session table nor the store** |
+| `Persistence.ts` | `store` / `record` / `persistOnSettle` / `autoPersist` | The archive shape and every write path. **`recordOf` is the single definition of the archive shape** |
+| `QuestionBroker.ts` | `questions` / `questionSeq` | Host → client questions: claiming, timeouts, releasing. The only component that needs `hub.watcherCount()` — **if nobody is watching, do not ask** |
+| `LiveSession.ts` | — | The shape of that session, plus `AgentLike` / `SubAgentLike` / `AskQuestionSpec`. All four classes depend on it alone |
+
+`LiveSession` is a separate file for the opposite reason of "split but still in one lump": leave the shape inside any one class and the other three have to import that class. The fields still live on one object (not four tables) — they are four faces of the same session, and four tables would mean four "look it up by id" paths, and state that cannot be found is the hardest state to explain.
+
+`SessionManager` touches no files (only the `SessionStore` port) and reads no configuration (anything that needs "config + agent definition" is injected by the composition root as a narrow function). That boundary is what makes it testable: one fake agent is enough to run the whole event flow.
+
+## On-disk layout
+
+The config root is written as `<aiZenDir>`: the `--ai-zen-dir` flag, else `AI_ZEN_DIR`, else `<HOME>/.ai-zen` (`parseArgs` in `packages/host/src/cli.ts`). It is resolved once, by the composition root, and injected as a value afterwards.
+
+| Path | Contents | Source |
+|------|----------|--------|
+| `<aiZenDir>/config.json` | Global configuration (shape = the SDK's `AppConfig`) | `globalAgentPaths` in `domain/agent/agentPaths.ts` |
+| `<aiZenDir>/agents/` | Top-level agent definitions (one JSON per entity) | Same; `CONFIG_SUB_DIRS` in `sdk/src/config/constants.ts` |
+| `<aiZenDir>/sub-agents/` | Sub-agent definitions | `subAgentsDir` injected into `ConfigService` in `src/cli.ts`; same `CONFIG_SUB_DIRS` |
+| `<aiZenDir>/skills/` | Global skills | `globalSkillsDirs` in `agentPaths.ts`; `CONFIG_SUB_DIRS` |
+| `<aiZenDir>/tools/` | Global user tools | `globalToolsDirs` in `agentPaths.ts`; `CONFIG_SUB_DIRS` |
+| `<aiZenDir>/mcp-oauth/` | MCP OAuth credential directory | `CONFIG_SUB_DIRS` in `sdk/src/config/constants.ts` |
+| `<aiZenDir>/mcp.json` | Global MCP configuration | `globalMcpFile` injected into `ConfigService` in `src/cli.ts`; the tail of `mcpConfigs` in `agentPaths.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/workspace.json` | Workspace identity and location (the id is frozen) | `domain/workspace/workspace.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json` | One session archive (body plus metadata, atomic write) | `domain/session/store/FileSessionStore.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.meta.json` | The listing sidecar for that session (no body) | Same |
+| `<aiZenDir>/workspaces/<workspaceId>/last-session.json` | "The last session of this workspace" pointer | Same |
+| `<aiZenDir>/run/host.json` | Service discovery file | `descriptorPath` in `src/wire/discovery.ts` |
+| `<aiZenDir>/run/token` | Access credential (0600; read or generated in `start()`, **never** inside `host.json`) | `tokenPath` in `src/wire/token.ts` |
+| `<aiZenDir>/logs/host.log` | Daemon log (appended) | `openLog` in `src/cli.ts` |
+
+There is **no per-front-end directory** under `<aiZenDir>`: a session belongs to a **workspace**, and the CLI and the desktop app share one set of data. The pointer is not keyed by cwd either — the workspace is the partition key, so it is a single pointer (`last-session.json`).
+
+A `workspaceId` looks like `<normalised directory name>-<first 8 hex of sha256(absolute path)>`, e.g. `/home/ubuntu/projects/ai-zen/cli` → `cli-3f9a1c2b`. It is only a **candidate for the first assignment** and is frozen once assigned: after an `mv` the id stays the same and the recorded path has to be rewritten explicitly with `workspace.relocate`, otherwise history dies the moment a directory is renamed (header of `workspace.ts`).
+
+Project-level assets are not here — they hang off the workspace directory: `<ws>/.ai-zen/skills`, `<ws>/.ai-zen/tools`, `<ws>/.ai-zen/sub-agents`, and the MCP configuration priority chain is `<ws>/.mcp.json` → `<ws>/.ai-zen/mcp.json` → `<ws>/.agents/mcp.json` → `<aiZenDir>/mcp.json` → `~/.agents/mcp.json` (`agentPaths.ts`; order is priority, project level first).
+
+## Build and test order
+
+Scripts in the root `package.json`:
+
+| script | What it does |
+|--------|--------------|
+| `build-core` | `pnpm --filter @ai-zen/agents-core build` |
+| `build-sdk` | `pnpm --filter @ai-zen/agents-sdk build` |
+| `build-host` | `pnpm --filter @ai-zen/agents-host build` |
+| `build-client` | `pnpm --filter @ai-zen/agents-client build` |
+| `test` | `pnpm build-testing && pnpm build-host && pnpm build-client`, then the `test` script of `testing` → `core` → `sdk` → `host` → `client`, in that order |
+
+**Why that order**: packages resolve each other through `dist`, not through source paths. Every package's `main` / `types` / `exports` point into `dist/`, pnpm only symlinks the workspace packages into `node_modules` (the symlink lands on the package's `package.json`, which resolves into `dist`), and no package declares `paths` or any other source mapping; each `build` is `prebuild` (`rimraf ./dist`) followed by `tsc`. Until an upstream package has emitted `dist`, a downstream one cannot even see its types.
+
+Which gives these operating rules:
+
+- **Changed the contract** (`packages/host/src/protocol/`) → run `pnpm build-host`. The contract is the host's type files and ships with the host; what `client` reads through `@ai-zen/agents-host/protocol` is `dist/protocol/*.d.ts`.
+- **Changed the client layer** (`packages/client/src/`) → run `pnpm build-client`.
+- Neither script includes core / sdk (those are separate scripts). A clean checkout needs `build-core` → `build-sdk` → `build-host` → `build-client`.
+- **`pnpm test` builds `testing` / `host` / `client` explicitly**; the artifacts of `core` / `sdk` must already be there from `build-core` / `build-sdk`, otherwise the packages that depend on them fail to resolve during `pretest` (`tsc --noEmit`) and `vitest`. The client's tests start a **real Daemon**, so the `host` `dist` must be present too.
+- To run a single package's tests: `pnpm --filter @ai-zen/agents-host test` (same precondition: its upstream `dist` is there).
+
+## Known gaps / unfinished
+
+- **The desktop main process already uses `SessionStream`** (`desktop@49c82c1`; `events.ts` went from 838 to 665 lines): the hand-written delta accumulation, sub-agent merging, whole-snapshot replacement on settle and `failed` terminal check are all gone. What remains is "feed the event in / map it out to `ChatStreamEvent`". The two pieces **not** moved are desktop-only facts, not duplication: ① the body of the `user` event (the protocol never pushes user messages); ② the id of the placeholder assistant message (render's `v-for` key needs one, and the state machine deliberately gives streamed messages no id).
+- **`SessionStream` is still missing three exits** (each of which forces a small, commented workaround in the desktop `events.ts`): ① a stable id for the streamed message (main now mints one per turn); ② a public way to *discard* a session's accumulated stream (main now swaps in a fresh `new SessionStream()`); ③ `applySnapshot` does not align `state.turnId` (main compares against the snapshot itself to detect a stale slot).
+- **`Role` / `MessageStatus` are `enum`s in core (runtime values)**, so **applications** (CLI / desktop) depending on core is legitimate. Making applications depend on the protocol alone would mean dropping the data vocabulary into a lower-level package — judged not worth it this round, so not done.
+- **A comment in `packages/sdk/src/config/constants.ts` still describes per-front-end runtime directories** (`~/.ai-zen/<front-end>/`), which contradicts the current rule that sessions belong to workspaces and `config.json` lives under `<aiZenDir>`.
+- **If the settle snapshot fails** (connection dropped, session just reclaimed), the desktop still pushes `error` — same as before the refactor: the local approximation of that message has no stable id, so it cannot ride inside `done`. Someone should confirm in a real window that the error bar appears and the input box recovers.
 
 ## Related documentation
 
+- [Wire Protocol](protocol.md) — the wire contract item by item: transport, `id`, binary frames, ceilings, handshake, authentication, the origin check, error codes, events, stateful notices and questions
+- [Deployment & Remote Access](deploy.md) — the three access shapes, the nginx reverse proxy and its default-value traps, the client's address and credential precedence
 - [Core API](core.md) — runtime public API and implementation details
 - [SDK](sdk.md) — capability-layer public API
 - [Retrieval & RAG](rag.md) — retrieval capability status
 - [MCP](mcp.md) — MCP integration and lifecycle
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) — source of truth for the SDK design
+- [`packages/host/README.md`](../../packages/host/README.md) — the host: per-method semantics, session-layer details, operating notes
+- [`packages/client/README.md`](../../packages/client/README.md) — the connection layer: three layers, three hard constraints plus grep checks
+- [`PLAN.md`](../../PLAN.md) — requirements / implementation source of truth for the SDK (structure and code locations)

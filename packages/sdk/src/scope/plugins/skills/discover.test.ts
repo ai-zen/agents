@@ -54,6 +54,15 @@ describe("discoverSkills", () => {
     expect(result[1].id).toBe("deploy");
   });
 
+  it("dirPath 等于 SKILL.md 所在目录（不含 SKILL.md 本身）", async () => {
+    writeSkill("my-skill", "my-skill", "A skill with a directory path");
+
+    const result = await discoverSkills([dir]);
+    expect(result).toHaveLength(1);
+    expect(result[0].dirPath).toBe(join(dir, "my-skill"));
+    expect(result[0].dirPath).not.toContain("SKILL.md");
+  });
+
   it("跳过没有 SKILL.md 的目录", async () => {
     mkdirSync(join(dir, "empty-dir"), { recursive: true });
     writeSkill("valid", "valid", "A valid skill");
@@ -127,7 +136,7 @@ describe("discoverSkills", () => {
 // ==================================================================
 
 describe("parseFrontmatter", () => {
-  // ---- 向后兼容：现有字段 ----
+  // ---- 核心字段 ----
 
   it("解析 name、description、sub-agent", () => {
     const fm = parseFrontmatter(`---
@@ -166,7 +175,7 @@ sub-agent: false
     expect(fm).toEqual({});
   });
 
-  // ---- 新增：规范字段 ----
+  // ---- 规范字段 ----
 
   it("解析 license 和 compatibility", () => {
     const fm = parseFrontmatter(`---

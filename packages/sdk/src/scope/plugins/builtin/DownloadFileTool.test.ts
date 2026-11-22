@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { DownloadFileTool } from "./DownloadFileTool.js";
-import { makeEnv } from "./test-helpers.js";
+import { makeEnv } from "../../../test-support/test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 const mockFetch = vi.fn();
@@ -41,11 +41,11 @@ function tmpDir(): string {
 function cleanUpDir(dir: string, ...files: string[]): void {
   for (const file of files) {
     try {
-      unlinkSync(join(dir, file));
+      rmSync(join(dir, file), { recursive: true, force: true });
     } catch {}
   }
   try {
-    unlinkSync(dir);
+    rmSync(dir, { recursive: true, force: true });
   } catch {}
 }
 

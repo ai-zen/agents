@@ -3,6 +3,7 @@ import { Scope } from "../src/scope/Scope.js";
 import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { createAgent } from "../src/runtime/createAgent.js";
 import { ConfigManager } from "../src/config/ConfigManager.js";
+import { DEFAULT_HANDOFF_THRESHOLD } from "../src/config/normalize.js";
 import { AgentRepository } from "../src/crud/AgentRepository.js";
 import { readSkill, discoverSkills } from "../src/scope/plugins/skills/discover.js";
 import { discoverSubAgents } from "../src/scope/plugins/subagents/discover.js";
@@ -46,9 +47,8 @@ async function checkPaths() {
 
 /** 用真实路径装配一个标准 Scope（allInOne）并完成发现 */
 async function makeScope(): Promise<Scope> {
-  const config = await new ConfigManager(TEST_CONFIG).read();
   const scope = new Scope({
-    config,
+    getConfig: () => new ConfigManager(TEST_CONFIG).read(),
     agentsDir: TEST_AGENTS_DIR,
   }).use(
     ...allInOne({
@@ -96,7 +96,12 @@ describe("端到端：真实文件系统路径", () => {
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
       expect(config.imageModels).toHaveLength(1);
-      expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds.handoff).toBe(500000);
+      // 夹具里的模型只写了旧字段 maxContextTokens，没有 tokenThresholds：读出来的
+      // 是补位后的形状，两条线都取出厂值（软线取出厂 handoff，硬线取其 1.5 倍）
+      expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds).toEqual({
+        handoff: DEFAULT_HANDOFF_THRESHOLD,
+        guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+      });
     });
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generate_image", async () => {
@@ -371,15 +376,15 @@ describe("端到端：真实文件系统路径", () => {
       // 注册并触发 autoRefreshTools
       agent.use(new AutoRefreshToolsPlugin());
 
-      // 模拟 onBeforeSend
-      const ctx = { agent, content: "hello", messages: agent.messages };
+      // 内循环开头那一缝的 ctx（新 core：`{ agent, body }`）
+      const ctx = { agent, body: { messages: [] } };
 
       // 先 init
-      agent.init();
+      await agent.init();
 
-      // 执行 onBeforeSend（通过模拟）
+      // 执行 onInnerLoopStart（默认 `inner-loop-start` 档）
       const plugin = (agent as any)._plugins[0];
-      await plugin.onBeforeSend(ctx);
+      await plugin.onInnerLoopStart(ctx);
 
       // 刷新后工具列表应仍然完整
       const afterNames = agent.tools.map((t: Tool) => t.function.name);

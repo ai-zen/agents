@@ -27,29 +27,49 @@ describe("sumUsage", () => {
 
   it("累加 assistant 的 usage 与 tool 的 subAgentUsage（互斥出现）", () => {
     const messages: AgentNS.Message[] = [
-      { role: AgentNS.Role.System, content: "系统", id: "s" },
-      { id: "a1", role: AgentNS.Role.Assistant, content: "回复", usage: usage(100, 20, 120) },
-      // 工具消息：内部委派（子 Agent）的累计
-      { id: "t1", role: AgentNS.Role.Tool, content: "结果", subAgentUsage: usage(200, 30, 230) },
+      { createdAt: Date.now(), role: AgentNS.Role.System, content: "系统", id: "s" },
+      {
+        id: "a1",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Assistant,
+        content: "回复",
+        usage: usage(100, 20, 120),
+      },
+      // 工具消息：内部委派（subagent）的累计
+      {
+        id: "t1",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Tool,
+        content: "结果",
+        subAgentUsage: usage(200, 30, 230),
+      },
     ];
     expect(sumUsage(messages)).toEqual(usage(300, 50, 350));
   });
 
   it("忽略既无 usage 也无 subAgentUsage 的消息", () => {
-    const messages = [
-      Message.User("你好"),
-      Message.Assistant("无用量"),
-    ] as AgentNS.Message[];
+    const messages = [Message.User("你好"), Message.Assistant("无用量")] as AgentNS.Message[];
     expect(sumUsage(messages)).toEqual(ZERO_USAGE);
   });
 
-  it("嵌套自动成立：对子 Agent 的 messages 求和即含孙级", () => {
-    // 子 Agent 自己的 messages：一轮自身回复 + 一次孙级委派
+  it("嵌套自动成立：对 subagent 的 messages 求和即含孙级", () => {
+    // subagent 自己的 messages：一轮自身回复 + 一次孙级委派
     const subAgentMessages: AgentNS.Message[] = [
-      { id: "sa", role: AgentNS.Role.Assistant, content: "子回复", usage: usage(50, 10, 60) },
-      { id: "st", role: AgentNS.Role.Tool, content: "孙结果", subAgentUsage: usage(80, 12, 92) },
+      {
+        id: "sa",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Assistant,
+        content: "子的回复",
+        usage: usage(50, 10, 60),
+      },
+      {
+        id: "st",
+        createdAt: Date.now(),
+        role: AgentNS.Role.Tool,
+        content: "孙的结果",
+        subAgentUsage: usage(80, 12, 92),
+      },
     ];
-    const subTotal = sumUsage(subAgentMessages);
-    expect(subTotal).toEqual(usage(130, 22, 152));
+    expect(sumUsage(subAgentMessages)).toEqual(usage(130, 22, 152));
   });
 });

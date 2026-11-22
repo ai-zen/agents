@@ -1,8 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import { createAgent } from "./createAgent.js";
+import { AgentRepository } from "../crud/AgentRepository.js";
 import { Scope } from "../scope/Scope.js";
 import { allInOne } from "../scope/plugins/allInOne.js";
+import { PeerSessionsScopePlugin } from "../scope/plugins/peers/PeerSessionsScopePlugin.js";
+import {
+  CREATE_SESSION_TOOL,
+  PEER_SESSION_TOOL_NAMES,
+  POST_MESSAGE_TOOL,
+  READ_SESSION_STATUS_TOOL,
+} from "../scope/plugins/peers/peerSessionTools.js";
+import { ASYNC_TASK_TOOL_NAMES } from "../scope/plugins/builtin/asyncTasks.js";
+import type { PeerSessionPort } from "../scope/plugins/peers/peerSessionTools.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -28,6 +38,16 @@ const config: AppConfig = {
       name: "GPT-4",
       endpointId: "openai",
       tokenThresholds: { handoff: 500000, guard: 750000 },
+      // 出厂参数：参数解析的用例要能看出「覆盖有没有生效」（以及没覆盖时它还在）
+      defaultParams: { temperature: 0.3 },
+    },
+    // 三级解析要用到第二个模型（会话级覆盖 / 全局兜底各取一个，才能看出谁赢）
+    {
+      id: "gpt4-mini",
+      name: "GPT-4 mini",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 400000, guard: 600000 },
+      defaultParams: { thinking: { type: "enabled" } },
     },
   ],
 };
@@ -38,13 +58,40 @@ async function makeScope(
     skillsPaths?: string[];
     toolsPaths?: string[];
     mcpPaths?: string[];
+    /** 覆盖/追加配置（三级解析的用例要看 `defaultModel`） */
+    config?: Partial<AppConfig>;
+    /**
+     * 装不装平级会话插件（装了才有那三个会话级工具）。
+     *
+     * 它不在 `allInOne` 里：平级会话不是磁盘上的定义，是宿主的运行时能力（候选名固定三个，
+     * 从端口进来），所以标准插件包里没有它 —— 要测那三个名字就得自己装一个。
+     */
+    peerSessions?: boolean;
   } = {},
 ): Promise<Scope> {
-  const scope = new Scope({ config, agentsDir: join(dir, "agents"), cwd: dir }).use(
-    ...allInOne(opts),
-  );
+  const scope = new Scope({
+    getConfig: () => ({ ...config, ...opts.config }),
+    agentsDir: join(dir, "agents"),
+    cwd: dir,
+  }).use(...allInOne(opts));
+  if (opts.peerSessions) scope.use(new PeerSessionsScopePlugin(fakePeerSessionPort()));
   await scope.init();
   return scope;
+}
+
+/** 假端口：会话级工具的用例只数工具名单，三个端口方法都不会被调到 */
+function fakePeerSessionPort(): PeerSessionPort {
+  return {
+    async create() {
+      return { ok: true, sessionId: "session-1", label: "占位会话" };
+    },
+    async status() {
+      return { found: false, status: null };
+    },
+    async send() {
+      return { ok: true };
+    },
+  };
 }
 
 async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
@@ -124,7 +171,26 @@ describe("createAgent", () => {
   it("Agent 不存在时抛异常", async () => {
     const scope = await makeScope();
 
-    await expect(createAgent(scope, "nonexistent")).rejects.toThrow();
+    await expect(createAgent(scope, "nonexistent")).rejects.toThrow(
+      'Agent "nonexistent" not found',
+    );
+  });
+
+  it("定义文件在但读不出来：报真实原因，不说「找不到这个助手」", async () => {
+    const agentsDir = join(dir, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    await fs.writeFile(join(agentsDir, "broken.json"), "{ 这里坏掉了", "utf-8");
+
+    const scope = await makeScope();
+    const error = await createAgent(scope, "broken").then(
+      () => null,
+      (thrown: Error) => thrown,
+    );
+    if (error === null) throw new Error("坏文件竟然装配成功了");
+
+    // 这是两个答案：「这一条坏了」与「没这一条」，不能对用户说错的那一个
+    expect(error.message).toContain('Agent "broken" definition could not be read');
+    expect(error.message).not.toContain("not found");
   });
 
   it("可选的发现目录不存在不抛异常", async () => {
@@ -145,7 +211,7 @@ describe("createAgent", () => {
     const templateBefore = agent.definition.messages!.map((m) => ({ ...m }));
     const templateCount = templateBefore.length;
 
-    // 对话过程中 append 新消息（模拟 send 行为）
+    // 会话过程中 append 新消息（模拟一轮对话）
     agent.append(Message.User("你好"));
     agent.append(Message.Assistant("你好！"));
 
@@ -157,7 +223,7 @@ describe("createAgent", () => {
     expect(agent.messages).not.toBe(agent.definition.messages);
   });
 
-  it("Agent 未绑定模型（缺 modelId）时直接报错，不做任何隐式回退", async () => {
+  it("Agent 未绑定模型（且无全局兜底）时报错，带上 agentId、不隐式回退", async () => {
     const agentsDir = join(dir, "agents");
     await fs.mkdir(agentsDir, { recursive: true });
     const def: AgentDefinition = {
@@ -170,7 +236,114 @@ describe("createAgent", () => {
     await fs.writeFile(join(agentsDir, "no-model.json"), JSON.stringify(def, null, 2));
 
     const scope = await makeScope();
-    await expect(createAgent(scope, "no-model")).rejects.toThrow(/has no model bound/);
+    // 带上 agentId：同一条错误在服务端日志里必须能指出是哪份定义没绑模型
+    await expect(createAgent(scope, "no-model")).rejects.toThrow(/Agent "no-model" has no model/);
+  });
+
+  it("会话级覆盖优先：传了 options.modelId 就用它，Agent 定义不被改写", async () => {
+    await writeAgentFile("my-agent", { modelId: "gpt4" });
+    const scope = await makeScope();
+
+    const agent = await createAgent(scope, "my-agent", { modelId: "gpt4-mini" });
+
+    // 运行期看到的就是覆盖后的模型（状态栏 / 阀值 / 插件都读 definition.modelId）
+    expect(agent.definition.modelId).toBe("gpt4-mini");
+    // 磁盘上的定义一个字没动：覆盖只属于这一段会话
+    const onDisk = await new AgentRepository(join(dir, "agents")).read("my-agent");
+    expect(onDisk!.modelId).toBe("gpt4");
+  });
+
+  it("没会话级覆盖时用 Agent 定义（全局兜底不该越位）", async () => {
+    await writeAgentFile("my-agent", { modelId: "gpt4" });
+    const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+    const agent = await createAgent(scope, "my-agent");
+
+    expect(agent.definition.modelId).toBe("gpt4");
+  });
+
+  it("Agent 定义没绑模型时用 config.defaultModel 兜底", async () => {
+    await writeAgentFile("my-agent", { modelId: undefined });
+    const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+    const agent = await createAgent(scope, "my-agent");
+
+    expect(agent.definition.modelId).toBe("gpt4-mini");
+  });
+
+  it("会话级覆盖与全局兜底同时在场时取会话级（三级顺序不许乱）", async () => {
+    await writeAgentFile("my-agent", { modelId: undefined });
+    const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+    const agent = await createAgent(scope, "my-agent", { modelId: "gpt4" });
+
+    expect(agent.definition.modelId).toBe("gpt4");
+  });
+
+  /**
+   * 参数与模型同源：**参数取「模型来自哪一级」那一份**。
+   *
+   * 三条用例对应三档。跨级那一对（会话级模型 + 定义参数）是重点：定义那份参数是配给旧
+   * 模型的（这里用 `thinking` 举例子），跟到会话级模型上就是「旧模型参数发给新模型」。
+   */
+  describe("模型参数跟着档位走", () => {
+    it("会话级：取会话级参数，定义那份一个字段都不进来", async () => {
+      await writeAgentFile("my-agent", {
+        modelId: "gpt4",
+        modelParams: { thinking: { type: "disabled" } },
+      });
+      const scope = await makeScope();
+
+      const agent = await createAgent(scope, "my-agent", {
+        modelId: "gpt4-mini",
+        modelParams: { reasoning_effort: "high" },
+      });
+
+      // 出厂参数照旧在，覆盖只有会话级那一份
+      expect(agent.modelConfig).toEqual({
+        thinking: { type: "enabled" },
+        reasoning_effort: "high",
+      });
+    });
+
+    it("会话级换模型但没给参数：只用新模型的出厂参数（不退回定义那份）", async () => {
+      await writeAgentFile("my-agent", {
+        modelId: "gpt4",
+        modelParams: { thinking: { type: "disabled" } },
+      });
+      const scope = await makeScope();
+
+      const agent = await createAgent(scope, "my-agent", { modelId: "gpt4-mini" });
+
+      expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
+    });
+
+    it("定义级：取 Agent 定义参数（三级解析之前的行为，逐字不变）", async () => {
+      await writeAgentFile("my-agent", {
+        modelId: "gpt4",
+        modelParams: { reasoning_effort: "low" },
+      });
+      const scope = await makeScope();
+
+      const agent = await createAgent(scope, "my-agent");
+
+      expect(agent.modelConfig).toEqual({ temperature: 0.3, reasoning_effort: "low" });
+    });
+
+    it("全局兜底：没有任何一层的参数，只用模型出厂参数", async () => {
+      // 定义没绑模型、却写着参数：那一层参数属于「定义绑定的模型」，不该跟到兜底模型上
+      await writeAgentFile("my-agent", {
+        modelId: undefined,
+        modelParams: { thinking: { type: "disabled" } },
+      });
+      const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+      const agent = await createAgent(scope, "my-agent", {
+        modelParams: { reasoning_effort: "max" },
+      });
+
+      expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
+    });
   });
 
   it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {
@@ -189,11 +362,11 @@ describe("createAgent", () => {
   it("中断策略取自 scope.config；显式参数优先", async () => {
     await writeAgentFile("my-agent");
     const scope = new Scope({
-      config: {
+      getConfig: () => ({
         ...config,
         abortedMessageStrategy: "drop",
         abortedToolRoundStrategy: "drop",
-      },
+      }),
       agentsDir: join(dir, "agents"),
       cwd: dir,
     }).use(...allInOne());
@@ -216,5 +389,65 @@ describe("createAgent", () => {
 
     expect(agent.abortedMessageStrategy).toBe("drop");
     expect(agent.abortedToolRoundStrategy).toBe("fill");
+  });
+
+  /**
+   * 寿命是**能力差**，不是「活多久」的小事：`resident`（缺省）能 `push` 多次，`one-shot` 只能
+   * `send` / `runOnce` 一次（宿主的一次性会话、subagent 走的后一条）。缺省不许被默默改掉 ——
+   * 常驻是能力更大的那个。
+   */
+  it("lifetime：缺省造常驻执行体，显式 one-shot 才是一次性", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope();
+
+    const resident = await createAgent(scope, "my-agent");
+    expect(resident.lifetime).toBe("resident");
+
+    // 显式要一次性：那一格透传到 core 的构造参数（`send` / `runOnce` 的准入判据就是它）
+    const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
+    expect(once.lifetime).toBe("one-shot");
+  });
+
+  /**
+   * 寿命不只改「能投几次」，还改**手上有什么工具**：会话级工具跟着「是不是一段会话的执行体」走，
+   * 两个后台工具跟着「将来还有没有人收结果」走。
+   *
+   * 一次性执行体不属于任何一段会话（没有可署名的身份、也开不出有人认领的新会话），那三个工具
+   * 在它手上只有必错的路；它也没有能收到后台结果的将来（寿命在调用栈里）。所以造工具时一并排掉
+   *（`createAgent.ts` 里那处 exclude，与 `subAgentTools.ts` 给 subagent 的是同一件事的两处）。
+   * 常驻的那一侧两样都有：它**就是**一段会话的执行体。
+   */
+  it("一次性执行体拿不到平级会话那三个工具与两个后台工具，常驻的两样都有", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope({ peerSessions: true });
+
+    const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
+    const oneShotNames = once.tools.map((t) => t.function.name);
+    for (const name of [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES]) {
+      expect(oneShotNames).not.toContain(name);
+    }
+
+    const resident = await createAgent(scope, "my-agent");
+    const residentNames = resident.tools.map((t) => t.function.name);
+    for (const name of [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES]) {
+      expect(residentNames).toContain(name);
+    }
+  });
+
+  /**
+   * 别人开出来的那一段会话（`canOpenPeers: false`）：手上少了 `create_session` 一个工具，
+   * 投递与问状态那两个照旧在 —— 平级之间是双向说话的，少掉的只是「再开一层」。
+   */
+  it("canOpenPeers 为 false 时只少了 create_session", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope({ peerSessions: true });
+
+    const peer = await createAgent(scope, "my-agent", { canOpenPeers: false });
+    const names = peer.tools.map((t) => t.function.name);
+    expect(names).not.toContain(CREATE_SESSION_TOOL);
+    expect(names).toContain(POST_MESSAGE_TOOL);
+    expect(names).toContain(READ_SESSION_STATUS_TOOL);
+    // 它是常驻执行体：两个后台工具的结果有人收，照旧在
+    for (const name of ASYNC_TASK_TOOL_NAMES) expect(names).toContain(name);
   });
 });

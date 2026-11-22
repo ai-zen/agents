@@ -14,7 +14,7 @@ describe("AgentContext", () => {
     expect(ctx.model).toBe("gpt-4");
     expect(ctx.messages).toEqual([]);
     expect(ctx.tools).toEqual([]);
-    expect(ctx.allowJsonParseError).toBe(true);
+    expect(ctx.id).toBeTruthy();
   });
 
   it("缺少 client 时应抛出错误", () => {
@@ -33,7 +33,11 @@ describe("AgentContext", () => {
     const tool1 = new (class extends Tool {
       constructor() {
         super();
-        this.function = { name: "fn1", description: "", parameters: { type: "object", properties: {} } };
+        this.function = {
+          name: "fn1",
+          description: "",
+          parameters: { type: "object", properties: {} },
+        };
       }
       async exec() {
         return "ok";
@@ -46,14 +50,14 @@ describe("AgentContext", () => {
       modelConfig: { temperature: 0.7 },
       messages: [Message.System("你好")],
       tools: [tool1],
-      allowJsonParseError: false,
+      id: "my-agent",
     });
 
     expect(ctx.modelConfig).toEqual({ temperature: 0.7 });
     expect(ctx.messages).toHaveLength(1);
     expect(ctx.messages[0].role).toBe(AgentNS.Role.System);
     expect(ctx.tools).toHaveLength(1);
-    expect(ctx.allowJsonParseError).toBe(false);
+    expect(ctx.id).toBe("my-agent");
   });
 
   describe("append", () => {
@@ -77,9 +81,9 @@ describe("AgentContext", () => {
     });
   });
 
-  it("默认 allowJsonParseError 为 true", () => {
+  it("没有给 id 时自动生成一个", () => {
     const ctx = new AgentContext({ client: {} as any, model: "gpt-4" });
-    expect(ctx.allowJsonParseError).toBe(true);
+    expect(typeof ctx.id).toBe("string");
+    expect(ctx.id.length).toBeGreaterThan(0);
   });
-
 });

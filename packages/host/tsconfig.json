@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // 与 sdk 一致：TS 7 不再自动从 node_modules/@types 收集全局类型
+    "types": ["node"]
+  },
+  "include": ["src"],
+  // `*TestSupport.ts` 是用例共用的脚手架（假 Agent / 假存档 / 假时钟），只被 `*.test.ts`
+  // import。它必须和用例一起被排除在产物之外 —— 否则 dist 里会带上一份测试代码。
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx", "**/*TestSupport.ts"]
+}

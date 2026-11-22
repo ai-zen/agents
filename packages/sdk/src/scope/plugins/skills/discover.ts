@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
-import { getLogger } from "../../../shared/logger.js";
+import { dirname, join } from "node:path";
+import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
 // ---- 类型 ----
 
@@ -11,7 +11,7 @@ export interface Frontmatter {
   compatibility?: string;
   metadata?: Record<string, string>;
   allowedTools?: string[];
-  /** @extension Claude Code 启发：声明此 Skill 可作为子 Agent 运行 */
+  /** @extension Claude Code 启发：声明此 Skill 可作为 subagent 运行 */
   subAgent?: boolean;
 }
 
@@ -21,7 +21,10 @@ export interface SkillValidationError {
   message: string;
 }
 
-/** Skill 完整信息。id = 目录名 = SKILL.md 的 name 字段 */
+/**
+ * Skill 完整信息。id = 目录名；`name` 取自 SKILL.md 的 frontmatter，
+ * 两者不一致时 `validateSkill()` 只报一条错误，不拦收录。
+ */
 export interface SkillInfo {
   id: string;
   name: string;
@@ -36,7 +39,15 @@ export interface SkillInfo {
   allowedTools?: string[];
 }
 
-// ---- 发现（返回完整 SkillInfo，不再丢失 subAgent 等信息）----
+// ---- 发现（返回完整 SkillInfo，含 subAgent 等元数据）----
+
+/** 发现 / 读取一个 Skill 时的选项 */
+export interface DiscoverSkillsOptions {
+  /** 静默：不写日志（批量探测 / 只读一层目录清单时用） */
+  silent?: boolean;
+  /** 日志口（可选）：合规校验没过时每条报一句；不注入就不记（库缺省沉默） */
+  logger?: LogSink;
+}
 
 /**
  * 扫描多个目录中发现的所有 Skill（含 SKILL.md 的子目录）。
@@ -45,9 +56,8 @@ export interface SkillInfo {
  */
 export async function discoverSkills(
   paths: string[],
-  options?: { silent?: boolean },
+  options?: DiscoverSkillsOptions,
 ): Promise<SkillInfo[]> {
-  const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const items: SkillInfo[] = [];
 
@@ -70,13 +80,8 @@ export async function discoverSkills(
       if (seen.has(entry.name)) continue;
 
       const skillMdPath = join(dir, entry.name, "SKILL.md");
-      try {
-        await fs.access(skillMdPath);
-      } catch {
-        continue;
-      }
-
-      const skill = await readSkillFromPath(entry.name, skillMdPath, silent);
+      // 不必先 `access`：`readSkillFromPath()` 自己 catch-all，读不到就回 null
+      const skill = await readSkillFromPath(entry.name, skillMdPath, options);
       if (skill) {
         seen.add(entry.name);
         items.push(skill);
@@ -87,7 +92,7 @@ export async function discoverSkills(
   return items;
 }
 
-// ---- 完整读取（用于加载 Skill 正文和子 Agent 判断）----
+// ---- 完整读取（用于加载 Skill 正文和 subagent 判断）----
 
 /**
  * 读取单个 Skill 的完整内容与元数据。
@@ -97,17 +102,12 @@ export async function discoverSkills(
 export async function readSkill(
   skillDirs: string[],
   skillId: string,
-  options?: { silent?: boolean },
+  options?: DiscoverSkillsOptions,
 ): Promise<SkillInfo | null> {
-  const silent = options?.silent ?? false;
   for (const dir of skillDirs) {
-    const candidate = join(dir, skillId, "SKILL.md");
-    try {
-      await fs.access(candidate);
-      return await readSkillFromPath(skillId, candidate, silent);
-    } catch {
-      continue;
-    }
+    // `readSkillFromPath()` 读不到就回 null，所以不必先探测再读
+    const skill = await readSkillFromPath(skillId, join(dir, skillId, "SKILL.md"), options);
+    if (skill) return skill;
   }
   return null;
 }
@@ -117,18 +117,19 @@ export async function readSkill(
 async function readSkillFromPath(
   skillId: string,
   skillMdPath: string,
-  silent?: boolean,
+  options: DiscoverSkillsOptions = {},
 ): Promise<SkillInfo | null> {
   try {
     const content = await fs.readFile(skillMdPath, "utf-8");
     const fm = parseFrontmatter(content);
     if (!fm.name) return null;
 
-    // 规范合规校验
-    if (!silent) {
+    // 规范合规校验（只报不拦；且 `silent` 时连校验都不跑）
+    if (!options.silent) {
       const errors = validateSkill(skillId, fm);
+      const logger = options.logger ?? SILENT_LOG;
       for (const err of errors) {
-        getLogger().warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
+        logger.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
       }
     }
 
@@ -138,7 +139,7 @@ async function readSkillFromPath(
       description: fm.description ?? "",
       subAgent: fm.subAgent ?? false,
       content,
-      dirPath: skillMdPath.replace(/\/SKILL\.md$/, ""),
+      dirPath: dirname(skillMdPath),
       license: fm.license,
       compatibility: fm.compatibility,
       metadata: fm.metadata,

@@ -8,17 +8,22 @@ import {
 import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
+import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
+import type { LogSink } from "../../../shared/logger.js";
 import { promises as fs } from "node:fs";
 
 const EMPTY_HINT = "(No Skills are currently available, please ask the user to add one)";
 
 /**
  * 创建 load_skill 工具。
- * 枚举所有允许的 skill（不限是否支持子 Agent），由 filteredSkills 提供完整信息。
+ * 枚举所有允许的 skill（不限是否支持 subagent），由 filteredSkills 提供完整信息。
+ *
+ * @param logger 日志口（可选）：加载时合规校验没过的那几句走它；不注入就不记
  */
 export function createLoadSkillTool(
   skillDirs: string[],
   filteredSkills: SkillInfo[],
+  logger?: LogSink,
 ): CallbackTool {
   const ids = filteredSkills.map((s) => s.id);
   const allowedIds = new Set(ids);
@@ -56,7 +61,7 @@ export function createLoadSkillTool(
       if (!allowedIds.has(skillId)) {
         return `❌ Skill "${skillId}" is not available here. Available skills: ${ids.join(", ") || "(none)"}`;
       }
-      const skill = await readSkill(skillDirs, skillId);
+      const skill = await readSkill(skillDirs, skillId, { logger });
       if (!skill) {
         return `❌ Skill "${skillId}" not found, please verify the name`;
       }
@@ -89,18 +94,17 @@ export function createLoadSkillTool(
 
 /**
  * 创建 call_skill_sub_agent 工具。
- * 只展示 subAgent: true 的 Skill，枚举中自动排除不支持子 Agent 模式的 skill。
+ * 只展示 subAgent: true 的 Skill，枚举中自动排除不支持 subagent 模式的 skill。
  *
- * 工具由 AgentToolLazy 承载：子 Agent 在 exec 时构建，从而复用统一的委派边界
- * （onSubAgentStart / onSubAgentEnd 钩子与 sub-agent-start / sub-agent-end 事件）。
- * 子 Agent 沿用父 Agent 的工具能力（不做权限过滤），但剔除 call_skill_sub_agent 自身，
- * 避免 skill 链式自递归。
+ * 工具由 AgentToolLazy 承载：subagent 在 exec 时构建，从而复用统一的委派边界
+ * （onSubAgentStart / onSubAgentEnd 钩子与 subAgentStarted / subAgentFinished 事件）。
  */
 export function createCallSkillSubAgentTool(
   skillDirs: string[],
   filteredSkills: SkillInfo[],
+  logger?: LogSink,
 ): AgentToolLazy {
-  // 只保留支持子 Agent 模式的 skill
+  // 只保留支持 subagent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
   const ids = subAgentSkills.map((s) => s.id);
   const allowedIds = new Set(ids);
@@ -139,7 +143,8 @@ export function createCallSkillSubAgentTool(
       },
     },
     // 初始消息依赖运行时参数（skill_id → SKILL.md 内容），故不传 messages 模板，
-    // 由 buildAgent 读取 SKILL.md 后自行决定；abort 联动与委派边界由 AgentToolLazy 统一处理
+    // 由 buildAgent 读取 SKILL.md 后自行决定；中断信号与委派边界由 AgentToolLazy 统一处理
+    // （父的 `abort` 直接把 signal 交给 subagent 的 `runOnce`）
     buildAgent: async (
       parsedArgs: Record<string, unknown>,
       ctx: ToolCallContext,
@@ -152,7 +157,7 @@ export function createCallSkillSubAgentTool(
           `❌ Skill "${skillId}" is not available here. Available SubAgent skills: ${ids.join(", ") || "(none)"}`,
         );
       }
-      const skill = await readSkill(skillDirs, skillId);
+      const skill = await readSkill(skillDirs, skillId, { logger });
       if (!skill) {
         throw new Error(`❌ Skill "${skillId}" not found, please verify the name`);
       }
@@ -164,7 +169,14 @@ export function createCallSkillSubAgentTool(
 
       // 沿用父 Agent 的工具能力（不做权限过滤），剔除自身以防自递归
       const parentAgent = ctx.agent;
-      const tools = parentAgent.tools.filter((t) => t.function.name !== "call_skill_sub_agent");
+      // 一并排掉平级会话那三个工具：它们是会话级能力，父会话的执行体可以有，被派出去的执行体
+      // 不该有 —— 委派出来的执行体不属于任何一段会话，没有可以署名的身份（发话要写「来自哪
+      // 一段会话」），也开不出有人认领的新会话，留着这三个只会在调用时必错。
+      const peerSessionToolNames = new Set<string>(PEER_SESSION_TOOL_NAMES);
+      const tools = parentAgent.tools.filter(
+        (t) =>
+          t.function.name !== "call_skill_sub_agent" && !peerSessionToolNames.has(t.function.name),
+      );
 
       return new Agent({
         client: parentAgent.client,
@@ -172,6 +184,8 @@ export function createCallSkillSubAgentTool(
         modelConfig: parentAgent.modelConfig,
         messages: [Message.System(skill.content), Message.User(task)],
         tools,
+        // 一次性委派（`CORE.md` §9）：跑完就死透，不与父会话共用寿命。
+        lifetime: "one-shot",
       });
     },
   });
