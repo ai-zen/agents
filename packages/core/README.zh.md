@@ -1,474 +1,342 @@
 # @ai-zen/agents-core
 
-AI Agent 核心框架，提供构建智能代理所需的基础抽象层。支持 Node.js 和浏览器环境。
+一个执行体运行时。一段会话的消息 —— 那个活的、唯一的数组 —— 以及它跑着的时候发生的事实，都以事件的形式交出去。产物只有这两样：没有存储，没有界面，没有文案，没有权限，没有配置。
 
-Agent 运行时是**插件驱动**的，直接构建在 **OpenAI 官方 SDK**（`openai` 包）之上。
+它跑在官方 `openai` 包上：一个 `OpenAI` 客户端、一个模型名、一个消息数组，构造一个执行体所需要的就这三样。
 
 ## 安装
 
 ```bash
-npm install @ai-zen/agents-core
+pnpm add @ai-zen/agents-core
 ```
 
-## 核心概念
+## 知道什么、不知道什么
 
-### Agent（代理）
+| 必须知道 | 不许知道 |
+|---|---|
+| 消息、工具、模型请求、流、用量、中断、排队、委派 | 存储、多端、i18n、权限、界面、谁在听、`Scope` 怎么装配、模型怎么解析、素材怎么变成真东西 |
 
-`Agent` 是核心类，继承 `AgentContext`，管理对话生命周期，支持流式解析、工具调用、多轮递归对话。
+这张表是任何「core 该不该知道 X」的问题的尺子：先看左栏。
 
-```typescript
+## 六个寿命动作
+
+| 动作 | 干什么 |
+|---|---|
+| `start()` | 起来等条目。返回一个只在执行体死掉时才 resolve 的 promise，永不 reject |
+| `stop()` | 关上输入闸，让已经排队的条目走完，然后死 |
+| `pauseOutput()` | 翻上输出闸：从下一批起不再取件。在途的活一概不碰 |
+| `abort()` | 中止在途的请求与工具，然后翻上输出闸，然后报 `aborted` |
+| `resumeOutput()` | 翻回输出闸。只动这一个开关，`state` 不碰 |
+| `kill()` | 立刻死，排着的一切作废，不做任何收尾 |
+
+「停」是两个正交问题的组合：停完之后还有没有命，以及现在要不要中止在途。
+
+| | 让它自己收手 | 现在中止在途 |
+|---|---|---|
+| 以后不再跑（排队清空或作废） | `stop()` | `kill()` |
+| 先不跑（排队留着） | `pauseOutput()` | `abort()` |
+
+- `stop()` 与 `kill()` 动的是整条命；`pauseOutput()` 与 `abort()` 动的是下一批。
+- `abort()` 必然含着「不再取件」（中止之后没法往下走）；反过来不成立：`pauseOutput()` 不中止任何东西。
+- `kill()` 不是更快一点的 `stop()`，它是不处理残余的 `stop()`。
+- 六个动作重复调用都是空动作。只有递话会抛（已关门的执行体上 `push()`，已关门或形状不全的执行体上 `restore()`）。
+- `stop()` 与 `kill()` 都不可撤销：死了就死透，复活就是新建一个。
+- `start()` 返回的 promise 永不 reject。一次请求失败就是一次请求失败 —— 它落在那条消息的 `error` 上和 `failed` 事件上，循环接着等下一个条目。
+
+输出闸两边都会放行：`resumeOutput()` 翻它，`stop()` / `kill()` 也放掉所有等在它上面的东西。否则停在暂停上的循环会等一个永远不来的 `resumeOutput()`，`start()` 那个 promise 就永远不 resolve。
+
+## 一次性与常驻
+
+寿命在构造时定下（`lifetime: "resident" | "one-shot"`，默认常驻）。它不只是活多久的差别，还是能干什么的差别。
+
+| | 常驻 | 一次性 |
+|---|---|---|
+| 怎么起 | `start()`，起来之后等条目 | `runOnce()`，寿命塞在调用栈里 |
+| 谁给它递话 | 谁都行，多少次都行（`push()`） | 只有发起它的那一个调用方，而且只一次 |
+| 怎么收尾 | 没人再递的时候 `stop()` | 自己收尾：第二次 `push()` 抛 `closed` |
+| 结果将来才回来的工具 | 支持 | 不支持 |
+
+最后一行是硬的：将来某个时刻才回来的结果，到那一刻必须还有人在收。一次性执行体的调用栈那时已经退回去了，所以这类工具只能挂在常驻执行体上，而且要在装配那一步就拒掉。
+
+常驻会话没有「递一条进去再等它闲」这个动作。`send()` 与 `runOnce()` 在它上面一律抛：常驻会话随时可能被任何触发方推一条进来，「我等到它闲」没有可以挂靠的东西。只有一次性执行体有一条因果链 —— 调用方自己那一次调用。
+
+| 入口 | 干什么 | 等不等 |
+|---|---|---|
+| `push(input?)` | 往 inbox 放一个条目就返回；已关门的执行体上抛 `closed`；不给 `input` = 只拧钥匙 | 不等 |
+| `send(input?, { signal })` | 需要就先起，递进去，等到闲，交回 `messages`（不关门） | 等 |
+| `runOnce(input?, { signal })` | 起、`send`、关门、等到死透，交回 `messages` | 等 |
+
+`send()` 与 `runOnce()` 拒掉一切 `lifetime` 不是 `"one-shot"` 的执行体。`runOnce()` 还拒已经开始的执行体，也拒 `messages` 为空且没有正文的调用 —— 没燃料的钥匙发出去是一个空请求。这些都是调用方代码写错了，所以抛裸 `Error` 而不是 `AgentError`：那几个错误码是给会落到 `message.error`、会被从存储里读回来的失败用的。
+
+## 循环
+
+```ts
+for await (const batch of inbox.asTakeAll()) {
+  // a batch is in hand
+}
+```
+
+队列既是 inbox 也是唤醒信号：空着的时候循环挂在队列自己的推送通知上，不必另造一个信号。那一条 `for await` 就是外循环；队列本身属于 `Agent` 内部，要点在于除了它没有第二套唤醒机制。
+
+```text
+start() → outer loop
+ └─ wait on the output gate                     ← once, before taking anything
+    for await (batch of inbox.asTakeAll())
+        state = "working"
+        repair history                          ← the only place that looks back
+        land this batch (one user message per entry with content, nothing for a key)
+        report inboxTaken
+        onOuterLoopStart → inner loop → onOuterLoopEnd
+        queue empty → state = "idle"
+        wait on the output gate                 ← once per batch, at the tail
+```
+
+在输出闸上等待有两处 —— 进去之前一次，每批尾部一次。这就是「批与批之间不取件」的实际含义：输出闸翻上的时候到达的条目留在队列里，看得见条数，可以落库，之后可以恢复。
+
+`state` 只由循环的位置决定，别的什么都不参与：取到一批 → `working`；这批跑完且队列真空 → `idle`。输出闸不参与这个判断，所以「不取件期间到的那批跑完了」与「输出仍然不取件」是两个事实，都报得出来。
+
+已经取出来的那一批算已经开始。`pauseOutput()` 从下一批生效，不把它收回：它可能已经落了消息，工具也可能跑了一半。要立刻停就用 `abort()`。
+
+内循环在「刚才那次响应要了工具」时继续。它是 `while`，不是递归：每递归一层就多一个栈帧、多一份私有的局部状态，「现在走到第几层」就变得答不出来。一批之内，一次响应要的工具并行执行，结果消息按调用顺序落地，不是按完成顺序。
+
+## 状态与两道闸
+
+三处，三个答案，谁也不替谁说话。
+
+| 处 | 成员 | 说的是 | 谁改它 | 事件 |
+|---|---|---|---|---|
+| 对外那一格 | `state: "working" \| "idle"` | 手上有没有活 | 只有循环的位置 | `state:working` / `state:idle` |
+| 输出闸 | `isOutputPaused` | 还取不取件（`true` = 从下一批起不取） | `pauseOutput()` / `resumeOutput()` | `output:paused` / `output:resumed` |
+| 输入闸 | `isInputPaused` | 还接不接递话（`true` = `push()` 被拒） | `pauseInput()` / `resumeInput()`；`stop()` / `kill()` 是它的生产者 | `input:paused` / `input:resumed` |
+
+一句话把两道闸分开：输入闸拦递话，输出闸拦取件。输入闸关着的时候 `push()` 抛 `closed`，而队列与手上那一批一件不动；输出闸翻上之后不取件，递话照收、条目留在队列里。两道闸都不参与 `state`。
+
+`stop()` 与 `kill()` 自己把输入闸关上，此后它不再打开：队列已经宣告不会有新条目了，这时候放一条进去，等于把它交给一个没人取的队列。
+
+- `pauseOutput()` 从下一批生效：手上那一批跑完。
+- `abort()` 中止在途的活（请求与工具）并报 `aborted`；执行体不死，只是输出闸翻上了。死是 `kill()` 的事。
+- 每道闸各有自己的一对事件，当前值从活对象上现读（`agent.isOutputPaused` / `agent.isInputPaused`），不放在事件载荷里。
+- 没有「出错」这一格：错误是消息上的一个事实，读它的 `status` / `error`。也没有「死」这一格：死就是没有执行体这个对象。
+
+## inbox
+
+条目有两种形状。两种都是纯数据 —— 不带任何活引用 —— 因为条目要存下来、再读回来。
+
+```ts
+// an entry with content: lands as one user message
+interface InboxEntryWithContent {
+  messageId?: string;                 // chosen by the sender, so a client can echo optimistically
+  createdAt: string;                  // filled by core: the moment it arrived
+  priority: "high" | "low";           // high: takeable inside the inner loop; low: outer loop only
+  source: AgentNS.MessageSource;
+  content: AgentNS.MessageContent;
+}
+
+// a key: wakes the loop up and lands nothing
+interface InboxKey {
+  createdAt: string;
+  priority: "low";                    // the inner loop only looks at high, so a key is never taken there
+  content?: undefined;
+}
+```
+
+`source` 有三种，都是文字：`{ kind: "user" }`，`{ kind: "agent", label }` 指另一段会话，`{ kind: "system", label }` 指宿主、定时器或外部系统。每条 `role: user` 的消息都带一个 —— 宿主注入的隐藏消息也不例外 —— 于是「这是用户说的」只有一个判据：`source.kind === "user"`。`source` 里不许放活的 `Agent` 引用：消息要落库，而执行体带着客户端和自己那份消息数组。
+
+除 `user` 之外的每种来源，落地时 core 都在正文前面加一行注释 —— 它写出来的就是下面这一行：
+
+```text
+// 这条消息来自 <label> 自动推送（<createdAt>）
+
+<the content, unchanged>
+```
+
+正文是内容块数组的时候，这行注释变成最前面一个 `text` 块，其余块的位置不动。时间用条目自己的 `createdAt`，不是「现在」：外部通知可能说的是很久以前发生的事，模型得能分辨。
+
+不取件，只读队列：
+
+| 成员 | 给什么 |
+|---|---|
+| `inboxPending` | 还没被取走的条目，按到达顺序 —— 数组是拷贝，条目是同一批对象 |
+| `inboxSize` | 队列里有几条 |
+
+`restore(entries)` 把存下来的条目原样放回去：`createdAt` 不变，不补任何默认值，也不发 `inboxAdded`（行已经在存储里，恢复不是新变化）。它拒一次性执行体（寿命在调用栈里，没有「重启之后接着等」这回事）、已关门或已被杀的执行体，以及形状不全的条目 —— 半截条目当场拒掉，不装进队列。
+
+三个事实会报出来，inbox 每变一次就是其中一个：
+
+| 事件 | 载荷 | 什么时候 |
+|---|---|---|
+| `inboxAdded` | `entry` | 放进了一个条目 |
+| `inboxTaken` | `entries` | 这些条目离开了队列，它们的消息已经落地 |
+| `inboxCleared` | `entries` | 队列被作废（`clearInbox()`），不是被取走 |
+
+`inboxTaken` 在消息落地之后报，不是之前。进程若在两者之间死掉，「消息写了、条目还在队列里」是可以用 `messageId` 去重的重复，反过来则是消息丢了。
+
+## 事件
+
+每条事件都带 `agent`、`seq`（这个执行体自己的计数器，从 1 起，只增）和 `at`。凡是带消息、条目或流增量的，带的就是那个活对象本身，不是拷贝。
+
+| 事件 | 发生了什么 | 载荷 |
+|---|---|---|
+| `started` / `stopped` / `killed` | 起来了 / 排空之后死了 / 被杀 | — |
+| `state:working` / `state:idle` | 对外那一格到了这个值 | `from` |
+| `output:paused` / `output:resumed` | 从下一批起不取件了 / 又开始取件 | —（现读 `agent.isOutputPaused`） |
+| `input:paused` / `input:resumed` | 递话关了 / 又开了 | —（现读 `agent.isInputPaused`） |
+| `aborted` | 有人按了停 | —（有没有东西被中止，读消息的 `status`） |
+| `inboxAdded` / `inboxTaken` / `inboxCleared` | 来了一个条目 / 这些被取走 / 队列被作废 | 条目本身 |
+| `messageAdded` / `messageChanged` / `messageRemoved` | 一条消息出现 / 就地变了 / 被删了 | 那条消息 |
+| `messageFinished` | 这条消息的这一版是终版，不会再变 | 那条消息 |
+| `delta` | 到了一片原始的流增量 | `chunk` + `source`（`{ message }` 或 `{ subAgent, toolCall }`） |
+| `requestSent` / `responseFinished` | 请求发出去了 / 这次响应结束了 | 请求体 / 定型后的消息 |
+| `turnStarted` / `turnFinished` | 一次请求与它引发的工具开始了 / 结束了 | assistant 占位消息，两边是同一个实例 |
+| `toolStarted` / `toolFinished` | 一个工具开始了 / 结束了 | 工具调用 / 结果消息 |
+| `subAgentStarted` / `subAgentFinished` | 一次委派开始了 / 结束了 | subagent 与工具调用 |
+| `denied` | 钩子拒了，这一次根本没有跑 | `hook`、`reason`、结构化的 `detail` |
+| `failed` | 跑了，失败了 | 一个 `AgentError`，有的话还有那条消息 |
+| `observerFailed` | 某个订阅者抛了 | 事件名与错误 |
+
+`seq` 让订阅者判出重复与缺口。`denied` 与 `failed` 是两个名字，因为之后的历史长得不一样：`denied` 一个字都不留，`failed` 留下一条半截的 assistant 消息，`status: "error"`。
+
+订阅是旁路。`on(type, handler)` 返回退订函数；抛错的 handler 当场被接住，报成 `observerFailed`，不打扰执行体 —— 磁盘满不该打死正在被观察的那次请求。
+
+## 钩子
+
+`use(plugin)` 挂一个插件。钩子说的是循环里的一个位置，不是一个事实（事实是事件）。
+
+| 钩子 | 能不能拒 | 位置 |
+|---|---|---|
+| `onInit` | 不能 | 注册之后，与寿命无关 |
+| `onStart` / `onStop` / `onKill` | 不能 | 寿命的两端 |
+| `onOutputPaused` / `onOutputResumed` | 不能 | 输出闸翻了 |
+| `onAbort` | 不能 | 有人按了停（闸本来就翻着也照发） |
+| `onIdle` | 不能 | 对外那一格变成 `idle` |
+| `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 一批开始了 / 结束了 |
+| `onInnerLoopStart` | 能 | assistant 占位消息还不存在的时候；也允许改写请求体 |
+| `onInnerLoopEnd` | 不能 | 那次请求结束了 |
+| `onToolStart` | 能 | 工具存在；问要不要跑它 |
+| `onUnknownTool` | 能 | 工具不存在；问该回模型什么 |
+| `onToolEnd` | 不能 | 工具跑完了（只对存在的工具） |
+| `onSubAgentStart` / `onSubAgentEnd` | 只有 start 能 | 委派的边界 |
+
+`onOuterLoopStart` 不能拒：这批已经从队列里取出来了，拒了它就没主。关于一批的判决属于递话之前。
+
+钩子抛错的时候，能拒的那四个 fail-closed —— 它们是闸，会放行的坏闸不叫闸 —— 其余钩子 fail-open，当作没说过话。两种都报 `failed`；抛错的插件不能留下一个看着还活着、其实什么都不干的执行体。
+
+能拒的钩子返回字符串时，那个字符串就是工具消息的正文或拒绝的理由；core 不拿自己的措辞去包它。`onInnerLoopStart` 在 assistant 占位消息造出来之前跑，所以拒了不会留下一条卡在 `pending` 的消息。
+
+同一个位置上钩子先于事件，只有一个例外：`state:*` 由状态 setter 在 `onIdle` 之前发出，`started` 在 `onStart` 之前发出 —— setter 是同步的边界，订阅者得能在钩子跑之前看见那个值。
+
+## 在循环开头修历史
+
+循环取下一批之前，把历史修一遍。这是唯一回头看的地方，它做三件事：把遗留的 `writing` / `pending` 消息定型，按「丢」的策略删掉不该留的，按「填」的策略补上没配对的工具结果。判断只用两样东西 —— 消息的 `status`，以及 `tool_calls` 与工具消息的配对 —— 于是中断、失败、崩溃在这里长得一样。
+
+| 成员 | 取值 | 默认 | 决定什么 |
+|---|---|---|---|
+| `abortedToolRoundStrategy` | `"fill"` / `"drop"` | `"fill"` | 被中断的一组工具调用：留着并补上缺的那条结果（`abortedToolRoundReason`），还是整组删掉 |
+| `abortedMessageStrategy` | `"drop"` / `"keep"` | `"drop"` | 被中断的 assistant 消息：删掉，还是留下已经写出来的那部分 |
+
+两个都是构造选项。「丢」是真的删 —— 内存和存储里都删 —— 并报 `messageRemoved`；`omit` 是另一件事（消息还在，只是不再发出去）。修在开头而不是结尾，界面才能在中途停下之后显示真相：那半句话和没回话的工具留在原地，直到执行体真的重新开始。
+
+## 错误
+
+一个类，同一个实例出现在两处。
+
+```ts
+export type AgentErrorCode =
+  | "request-failed"   // could not connect / no response
+  | "stream-failed"    // a response came, but the stream broke or did not fit
+  | "closed"           // the agent is finished: pushing will never be taken again
+  | "input_paused";    // the input gate is closed right now: wait and push again
+
+export class AgentError extends Error {
+  readonly code: AgentErrorCode;
+  constructor(code: AgentErrorCode, message: string, options?: { cause?: unknown });
+}
+```
+
+同一个实例既是 `failed` 事件的载荷，也是它所归属那条消息的 `error`。`{ code, message }` 足够从存储里把它重建出来（`AgentError.fromJSON()`），`cause` 与 `stack` 留给写那行的人。
+
+错误的文字永远不进 `content`。`content` 是模型说过的话；配上「留」的策略，一条存下来的 `ECONNREFUSED` 会以模型自己说过的话的身份回到模型面前。`role: tool` 的消息是例外：它的 `content` 本来就是模型要读的结果。
+
+core 只分类它知道的那一维（哪一部分失败）。错误可不可重试、401 是不是「密钥错了」、要不要退避、要不要重试，它一概不判。
+
+## 零件
+
+| 导出 | 是什么 |
+|---|---|
+| `Message` | 消息类；`Message.System()`、`Message.User()`、`Message.Assistant()`、`Message.Tool()` 造一条，`id` 与 `createdAt` 由构造函数补 |
+| `Tool` | 工具抽象基类：继承它并实现 `exec(ctx): Promise<MessageContent>`；定义放在 `function` 上 |
+| `CallbackTool` | 用一个回调而不是子类定义的工具 |
+| `ToolCallContext` | 工具收到的东西：`agent`、`tool_call`、`parsedArgs`、`parseError`、`resultMessage`、`signal` |
+| `AgentToolLazy` | 把一个执行体当工具：按需造它、把它的事件转发给父级、跑一次并交回它说过的话 |
+| `applyChunk` | 一片流增量就地攒进一条消息 —— 这件事唯一的实现 |
+| `formatContent` | 内容块收敛成模型认识的字段；`__` 开头的键与不认识的块丢掉 |
+| `sumUsage` / `addUsage` / `ZERO_USAGE` | 跨消息求和用量：消息自己的 `usage` 加上工具消息的 `subAgentUsage` |
+
+`Tool.exec` 停不下循环：它返回什么，就是一条交回模型的工具消息。能停的两种办法是钩子拒绝和 `abort()`。
+
+## 最小示例
+
+```ts
 import OpenAI from "openai";
 import { Agent, Message } from "@ai-zen/agents-core";
 
-// 1. 创建 OpenAI SDK client（任何 OpenAI 兼容端点均可通过 baseURL 接入）
 const client = new OpenAI({
-  apiKey: "sk-xxx",
+  apiKey: process.env.OPENAI_API_KEY,
   baseURL: "https://api.openai.com/v1",
 });
 
-// 2. 创建 Agent
 const agent = new Agent({
   client,
   model: "gpt-4o",
-  modelConfig: { temperature: 0.7 },
+  messages: [Message.System("Answer in one sentence.")],
 });
 
-// 3. 添加系统消息
-agent.append(Message.System("你是一个AI助手，请用中文回复。"));
+// on() returns the unsubscribe function; the handler receives the live message
+const offFinished = agent.on("messageFinished", ({ message }) => {
+  if (message.role === "assistant" && message.content) console.log(message.content);
+});
 
-// 4. 发送消息并等待回复
-await agent.send("你好，请介绍一下你自己。");
+// resolve when one batch is done and the queue is empty
+const idle = new Promise<void>((resolve) => {
+  const offIdle = agent.on("state:idle", () => {
+    offIdle();
+    resolve();
+  });
+});
 
-// 5. 获取回复
+agent.push({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
+
+void agent.start();  // resolves only when the agent is dead
+await idle;          // the batch in hand finished
+agent.stop();        // drain what is queued, then die
+offFinished();
 console.log(agent.messages.at(-1)?.content);
 ```
 
-`client` 是 `openai` SDK 实例——任何 OpenAI 兼容厂商（OpenAI、DeepSeek、智谱 BigModel、Azure OpenAI 兼容端点等）均可通过 `baseURL` 接入。
-
-### AgentContext（上下文基类）
-
-`AgentContext` 是所有 Agent 的基类，持有以下核心配置：
-
-```typescript
-interface AgentContext {
-  client: OpenAI;
-  model: string;
-  modelConfig: Record<string, unknown>; // 模型参数（temperature 等），展开进请求体；可含厂商特有字段（如 DeepSeek `thinking`）
-  messages: AgentNS.Message[];
-  tools: Tool[];
-  allowJsonParseError: boolean;      // 是否允许 JSON 解析错误（默认 true）
-  abortedToolRoundStrategy: AbortedToolRoundStrategy; // 工具轮次被中断时的归一策略（默认 "fill"）
-  abortedToolRoundReason: string;    // fill 策略下未完成工具结果的填充原因（默认「用户中断了会话」）
-  abortedMessageStrategy: AbortedMessageStrategy; // 被中断的 assistant（内容/思考）是否保留（默认 "drop"）
-}
-```
-
-- `append(message)` — 追加一条消息并返回
-- 扩展方式：通过**插件**（`agent.use(plugin)`）
-
-### Message（消息）
-
-使用静态工厂方法创建各种角色的消息：
-
-```typescript
-import { Message, AgentNS } from "@ai-zen/agents-core";
-
-// 系统消息
-Message.System("你是一个助手。");
-
-// 用户消息（纯文本）
-Message.User("你好");
-
-// 用户消息（多模态：文字 + 图片）
-Message.User([
-  { type: "text", text: "这是什么？" },
-  { type: "image_url", image_url: { url: "https://example.com/img.jpg" } },
-]);
-
-// 用户消息（文字 + 图片，带细节级别：low / high / original / auto）
-Message.User([
-  { type: "text", text: "读出这张截图里的文字" },
-  { type: "image_url", image_url: { url: "https://example.com/img.jpg", detail: "high" } },
-]);
-
-// 用户消息（文字 + 通过 Files API 上传的文件，以 file_id 引用）
-Message.User([
-  { type: "text", text: "这张图片里有什么？" },
-  { type: "file", file_id: "file-api-xxxxxxxxxxxxxxxx" },
-]);
-
-// 助手消息（默认 Pending 状态，等待 AI 回复）
-Message.Assistant();
-
-// 工具调用结果
-Message.Tool(toolCall, "执行结果");
-
-// 函数调用结果
-Message.Function(functionCall, "执行结果");
-```
-
-消息状态枚举：
-
-| 状态 | 说明 |
-|------|------|
-| `Unknown` | 未设置（消息刚构造时的取值） |
-| `Pending` | 等待处理 |
-| `Writing` | AI 正在生成 |
-| `Completed` | 已完成 |
-| `Error` | 发生错误 |
-| `Aborted` | 已中止 |
-
-> 消息会带上可归因的 token 消耗：助手消息的 `usage`（自身那次响应，由流式最后一个 chunk 写入），以及工具消息的 `subAgentUsage`（内部委派——如子 Agent——的累计用量）。两者随消息持久化；用 `sumUsage(agent.messages)` 求和即得本会话累计（含所有层级的子 Agent）。`agent.lastUsage` 是**只读派生值**：读最近一条未 `omit` 助手消息的 `usage`，不再另存一份，故插件替换 `messages` 后会自动跟随。
-
-### Tool（工具基类）
-
-抽象基类，扩展 Agent 的能力。自定义工具需继承 `Tool`，声明 `function` 定义并实现 `exec()` 方法：
-
-```typescript
-import { Tool, ToolCallContext } from "@ai-zen/agents-core";
-
-class WeatherTool extends Tool {
-  // 工具定义与实现放在一起（类体字段）
-  function = {
-    name: "get_weather",
-    description: "查询天气",
-    parameters: {
-      type: "object",
-      properties: {
-        city: { type: "string", description: "城市名" },
-      },
-      required: ["city"],
-    },
-  };
-
-  async exec(ctx: ToolCallContext) {
-    const { city } = ctx.parsedArgs;
-    return `今日${city}天气晴朗，气温22°C。`;
-  }
-}
-
-// 注册到 Agent
-const agent = new Agent({ client, model: "gpt-4o", tools: [new WeatherTool()] });
-```
-
-`exec()` 返回 `AgentNS.MessageContent` —— 可以是普通字符串（文本结果），也可以是内容块数组（多模态结果）。返回内容块数组可以让工具把结构化内容回传给模型，例如图片：
-
-```typescript
-async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
-  // 文本结果
-  return `今日${city}天气晴朗。`;
-
-  // 图片/文件结果：模型可直接看到
-  return [
-    { type: "text", text: "当前截图：" },
-    { type: "image_url", image_url: { url: "https://example.com/shot.png" } },
-  ];
-}
-```
-
-### 内置工具
-
-#### CallbackTool（回调工具）
-通过回调函数快速定义工具。回调签名 `(parsedArgs, ctx)` —— 通过 `ctx`（`ToolCallContext`）访问 agent、中止信号等。
-
-```typescript
-import { CallbackTool } from "@ai-zen/agents-core";
-
-const tool = new CallbackTool({
-  function: {
-    name: "calculator",
-    description: "计算两数之和",
-    parameters: {
-      type: "object",
-      properties: {
-        a: { type: "number", description: "第一个数" },
-        b: { type: "number", description: "第二个数" },
-      },
-      required: ["a", "b"],
-      additionalProperties: false,
-    },
-  },
-  callback(parsedArgs, ctx) {
-    // ctx: ToolCallContext —— 如 ctx.agent、ctx.signal、ctx.preventDefault()
-    return parsedArgs.a + parsedArgs.b;
-  },
-});
-```
-
-#### CodeTool（代码工具）
-> **已废弃** —— 字符串代码工具（`new Function`）缺少类型安全与清晰的参数映射。建议改用 `CallbackTool` 或自定义 `Tool` 子类。为向后兼容保留。
-
-#### AgentTool（子 Agent 工具）
-将一个子 Agent 暴露为工具，实现 Agent 嵌套调用。子 Agent 拥有独立的 client、模型、消息列表和工具。
-
-```typescript
-import { AgentTool, Message } from "@ai-zen/agents-core";
-
-const tool = new AgentTool({
-  function: {
-    name: "general_assistant",
-    description: "将复杂任务交给通用助手处理",
-    parameters: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: "要处理的任务" },
-      },
-      required: ["task"],
-    },
-  },
-  client,           // 可复用主 Agent 的 client，或使用独立 client
-  model: "gpt-4o",  // 子 Agent 的模型名
-  messages: [
-    Message.System("你是一个通用助手，擅长独立完成各类任务。"),
-    Message.User("请完成以下任务：{{task}}"), // {{变量}} 会被调用时替换
-  ],
-  tools: [], // 子 Agent 可使用的工具列表
-});
-```
-
-> **注意**：AgentTool 的消息列表最后一条必须是 User 消息，其中可使用 `{{变量名}}` 占位符，调用时会被 `parsedArgs` 自动替换。
-
-#### AgentToolLazy（延迟构建子 Agent 工具）
-与 AgentTool 类似，但子 Agent 不在构造时创建，而是在执行时通过 `buildAgent(parsedArgs, ctx)` 回调延迟构建。可避免构建工具列表时的递归创建问题（SubAgent → 构建工具列表 → SubAgent → …）。
-
-`messages` 为可选：提供时按其 `{{变量名}}` 模板注入 `parsedArgs` 后覆盖子 Agent 的消息；省略时子 Agent 的初始消息完全由 `buildAgent` 决定（适用于初始消息依赖运行时参数的工具）。
-
-```typescript
-import { AgentToolLazy, Agent, Message } from "@ai-zen/agents-core";
-
-const tool = new AgentToolLazy({
-  function: { /* ... */ },
-  messages: [Message.System("..."), Message.User("...")],
-  async buildAgent(parsedArgs, ctx) {
-    // ctx.agent 可访问父 Agent
-    return new Agent({
-      client: ctx.agent.client,
-      model: parsedArgs.model ?? "gpt-4o",
-      tools: [/* ... */],
-    });
-  },
-});
-```
-
-#### IndexedSearchTool（索引搜索工具）
-基于关键词索引的本地搜索工具，自动从 entries 提取关键词作为 enum。
-
-```typescript
-import { IndexedSearchTool } from "@ai-zen/agents-core";
-
-const tool = new IndexedSearchTool({
-  entries: [
-    { keywords: ["价格", "费用"], text: "本产品价格为99元/月" },
-    { keywords: ["售后", "保修"], text: "产品提供一年免费保修" },
-  ],
-});
-```
-
-### 插件——唯一的扩展方式
-
-**插件是扩展 Agent 的唯一途径。** 通过 `agent.use(plugin)` 注册插件，然后 `await agent.init()`。
-
-```typescript
-import { Agent, Message } from "@ai-zen/agents-core";
-import type { AgentPlugin, SendContext, ToolCallContext, UnknownToolContext } from "@ai-zen/agents-core";
-
-const guard: AgentPlugin = {
-  // 发送前触发；返回 string 拒绝本次发送（抛错）
-  onBeforeSend(ctx: SendContext) {
-    if (ctx.content.includes("secret")) {
-      return "该内容不允许发送。";
-    }
-  },
-
-  // 每个工具调用执行前触发；返回 string 拒绝该工具（原因回给 LLM）
-  onToolCall(ctx: ToolCallContext) {
-    if (ctx.tool_call.function?.name === "rm") {
-      return `工具 "rm" 被拒绝：需要用户明确授权。`;
-    }
-    // undefined = 放行
-  },
-
-  // LLM 调用未注册工具时触发；返回 string 作为工具结果
-  onUnknownTool(ctx: UnknownToolContext) {
-    return `工具 "${ctx.toolCall.function?.name}" 不可用。`;
-  },
-};
-
-const agent = new Agent({ client, model: "gpt-4o", tools: [weatherTool] });
-agent.use(guard);
-await agent.init();
-```
-
-#### AgentPlugin 钩子
-
-| 钩子 | 入参 | 返回 string 的语义 |
-|------|------|---------------------|
-| `onInit` | — | 初始化，不短路 |
-| `onBeforeSend` | `SendContext` | 拒绝本次 send（抛错中断） |
-| `onAfterSend` | `SendContext` | 仅短路后续插件 |
-| `onInnerLoopStart` | `SendContext` | 中断本轮（抛错） |
-| `onInnerLoopEnd` | `SendContext` | 仅短路后续插件 |
-| `onInnerLoopsStart` | `SendContext` | 中断整组（抛错） |
-| `onInnerLoopsEnd` | `SendContext` | 仅短路后续插件 |
-| `onToolCall` | `ToolCallContext` | 拒绝该工具，原因作为工具结果回给 LLM |
-| `onUnknownTool` | `UnknownToolContext` | 作为工具结果返回；`undefined` 走默认提示 |
-| `onSubAgentStart` | `SubAgentContext` | 拒绝本次委派，原因作为工具结果回给 LLM |
-| `onSubAgentEnd` | `SubAgentContext` | 仅短路后续插件 |
-
-#### HookResult —— 统一的短路语义
-
-所有钩子统一返回 `HookResult = string | void | Promise<string | void>`：
-
-- **string** → 短路（拒绝 / 中断 / 提供结果，语义见上表）
-- **undefined / void** → 放行（继续后续插件或默认行为）
-
-多个插件按注册顺序调用，任一返回字符串即短路。
-
-#### dispatchHook —— 事件 + 插件的统一入口
-
-内部每个钩子都经过 `dispatchHook`：先发出**非阻塞**的 kebab-case 事件（`agent.events`），再**阻塞**调用插件钩子。因此可以通过事件观察（非阻塞、不影响流程），也可以通过插件干预（阻塞、可短路）。
-
-事件名：`before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool`。
-
-**未知工具兜底**：Agent 内置返回简单文本提示；更智能的提示通过 `onUnknownTool` 插件提供（如 SDK 的 `UnknownToolHintPlugin` 提供 MCP 引导，由调用方显式注册）。插件优先级最高；插件返回 undefined 时回落到内置提示。
-
-### ToolCallContext（工具调用上下文）
-
-一个类贯穿**拦截决策 → 执行**：同一个实例既传给 `onToolCall` 钩子（执行前拦截），也传给 `Tool.exec(ctx)`（真正执行）。
-
-| 属性 | 说明 |
-|------|------|
-| `agent` | 触发调用的 Agent 实例 |
-| `tool_call` | 统一形状的工具调用（`{ id?, type?, function: { name, arguments } }`） |
-| `tool` | 匹配到的已注册工具（未注册则为 undefined） |
-| `function_call` | 兼容字段，等价于 `tool_call.function`（旧版形状） |
-| `parsedArgs` | JSON 解析后的参数字典 |
-| `resultMessage` | 工具结果消息 —— 执行结果 / 拒绝原因 / 解析错误均写入此处 |
-| `isPreventDefault` | 是否阻止后续自动继续对话 |
-| `parseError` | JSON 解析错误信息（当 `allowJsonParseError=true` 时） |
-| `signal` | 本次工具执行的中止信号（`abort()` 时触发；工具可监听以真正中断执行） |
-| `preventDefault()` | 标记阻止自动继续下一轮对话 |
-
-## Agent 运行机制
-
-### 对话流程
-
-```
-send(content)
-  ├── onBeforeSend 钩子 → 可拒绝
-  ├── 追加 User 消息
-  └── run()
-        ├── onInnerLoopsStart 钩子（一次 send 仅一次）
-        ├── 内循环（工具调用持续则重复）
-        │     ├── 开头追加 Assistant 占位（Pending）
-        │     ├── onInnerLoopStart 钩子（每次请求前）
-        │     ├── client.chat.completions.create(...) — 官方 SDK 流式请求
-        │     ├── parseStreamData() → content / reasoning_content / tool_calls
-        │     ├── handleToolCall() → 执行工具调用
-        │     │     ├── onToolCall 拦截钩子 → 可拒绝
-        │     │     ├── onUnknownTool 插件（可提供提示）→ 内置兜底
-        │     │     └── Tool.exec(ctx) 执行匹配工具
-        │     └── onInnerLoopEnd 钩子
-        ├── onInnerLoopsEnd 钩子
-        └── 返回 this.messages
-  ├── onAfterSend 钩子（可整体替换 this.messages，如迁移）
-  └── 返回 this.messages（在钩子之后取，替换结果对调用方可见）
-```
-
-### 工具调用处理
-
-- 当模型返回 `tool_calls` 时，Agent 自动（并行）执行对应工具
-- 工具执行结果作为 Tool 角色消息追加到消息列表
-- 如果所有工具执行成功且未调用 `preventDefault()`，Agent 自动开启新一轮对话（将结果回传给模型）
-- 如果 `allowJsonParseError = true`（默认），参数解析失败时会自动将错误信息返回给 AI 修正
-- 未注册的工具依次经过 `onUnknownTool` 插件（返回字符串即作为工具结果），最终兜底简单内置提示
-
-### 事件系统
-
-Agent 提供事件总线。事件是**非阻塞通知**（不影响流程——要干预请用插件）：
-
-```typescript
-// 生命周期事件（payload = 对应钩子的 ctx）
-agent.events.on("before-send", (ctx: SendContext) => {});
-agent.events.on("after-send", (ctx: SendContext) => {});
-agent.events.on("inner-loop-start", (ctx: SendContext) => {});
-agent.events.on("inner-loop-end", (ctx: SendContext) => {});
-agent.events.on("inner-loops-start", (ctx: SendContext) => {});
-agent.events.on("inner-loops-end", (ctx: SendContext) => {});
-agent.events.on("tool-call", (ctx: ToolCallContext) => {});
-agent.events.on("unknown-tool", (ctx: UnknownToolContext) => {});
-
-// 流式 / 生命周期事件
-agent.events.on("open", () => {});                       // 连接已建立
-agent.events.on("chunk", (chunk) => {});                 // 原始流式 chunk
-agent.events.on("chunk-parsed", (receiver, chunk) => {});// chunk 合并进 receiver 消息后
-agent.events.on("parsed", (receiver) => {});             // 完整响应解析完成
-agent.events.on("error", (error) => {});                 // 发生错误
-agent.events.on("finally", () => {});                    // 运行结束（无论成功或失败）
-
-// 子 Agent 委派边界（载荷区分主/子 Agent：agent = 主，subAgent = 子）
-agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {}); // 子 Agent 启动前
-agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});   // 子 Agent 结束后
-```
-
-### 中止
-
-```typescript
-agent.abort(); // 中止当前轮所有进行中的内循环任务
-```
-
-#### 中断的工具轮次（aborted tool rounds）
-
-`abort()` 会把在途消息**各自**标记为 `Aborted`，而 `formatHistory()` 又**按 status 独立过滤**——二者都不把一个工具轮次当作整体。因此一次被中断的**并行工具调用**可能留下「带 `tool_calls` 的 assistant 被剔除、部分已完成的结果仍在」（反向亦成立），这些没有父调用的孤儿 `role:"tool"` 消息会被服务端拒绝。
-
-为此 `Agent.run()` 在内循环结束后调用导出的 `reconcileAbortedToolRounds()`，令每条带 `tool_calls` 的 assistant 与其结果**同进同出**。行为由两个 `AgentContext` 选项决定：
-
-| 选项 | 默认 | 说明 |
-|------|------|------|
-| `abortedToolRoundStrategy` | `"fill"` | `fill` 保留整轮（恢复 assistant 为 `Completed`，给未完成/缺失的结果补原因）；`drop` 整轮丢弃 |
-| `abortedToolRoundReason` | `"用户中断了会话"` | `fill` 策略下未完成工具结果的填充内容 |
-
-仅处理含 `Aborted` 消息的轮次；其它状态（如 `allowJsonParseError=false` 时工具报错标记的 `Error`）语义不变。
-
-#### 中断的思考与内容（aborted messages）
-
-`formatHistory()` 只放行 `undefined | Completed`，于是被中断的 assistant 消息在下一轮请求里**整条消失**：模型已经吐出来的 `reasoning_content` 与 `content` 都不见了 —— 用户在屏幕上看到的半句话，模型自己完全不记得。`reconcileAbortedMessages()` 就是补这一段的；`Agent.run()` 在 `reconcileAbortedToolRounds()` **之后**调用它，由 `abortedMessageStrategy` 决定去留：
-
-| 选项 | 默认 | 说明 |
-|------|------|------|
-| `abortedMessageStrategy` | `"drop"` | `drop` 不保留；`keep` 把**确有输出**的被中断 assistant 恢复为 `Completed`，使已输出的内容/思考进入下一轮上下文 |
-
-`keep` 的边界：
-
-- **带 `tool_calls` / `function_call` 的消息不归它管**，仍由 `abortedToolRoundStrategy` 决定——否则会造出「有调用无结果」的非法历史；
-- **一个字都没输出**（`content` 与 `reasoning_content` 均为空白、多模态数组为空）的被中断消息仍会丢弃，避免空 assistant 消息污染上下文；
-- 已被置 `omit` 的消息不会被复活；
-- `reasoning_content` 会随 `keep` 一并回传，个别厂商对思维链回传有额外约束时，请自行清空该字段。
-
-## 更多示例
-
-### 带工具的多轮对话
-
-```typescript
-const agent = new Agent({
-  client,
-  model: "gpt-4o",
-  tools: [new WeatherTool(), new CalculatorTool()],
-  allowJsonParseError: true, // 允许 AI 参数格式错误时自动修正
-});
-
-// 添加系统提示
-agent.append(Message.System("你是一个天气助手，可以使用工具查询天气。"));
-
-// 发送消息，Agent 会自动处理工具调用和多轮对话
-await agent.send("北京和上海今天天气怎么样？");
-```
+`start()` 返回的 promise 在死的时候才 resolve，所以它不能在 `stop()` 之前 await。等一批就是等 `state:idle`：那条事件的载荷只说是到了哪个值，当前值从 `agent.state` 读。
+
+## 不做什么
+
+| 不做 | 为什么 |
+|---|---|
+| 重试、分类、降级 | 产品策略；引擎里的重试循环得懂网络、厂商与幂等 |
+| 归一厂商错误码 | 每上一个 provider 就得改一次 core |
+| i18n | 引擎层的文字是英文；语言属于宿主 |
+| 认识素材、端点或存储 | 顺着那条线会自己长成一个应用 |
+| 空闲回收、引用计数、定时器 | 寿命只跟六个动作走 |
+| 递归的内循环 | 每层多一个栈，「现在走到第几层」就说不清 |
+| 全局的「已中止」标志或「出错」状态 | 全局标志是执行体沦落到需要人工复活的开始；错误是消息上的事实 |
+| 错误文字进 `content` | 模型会把它读成自己说过的话 |
+| 一次性执行体上结果将来才回来的工具 | 没有人留在那里收 |
 
 ## 测试
 
 ```bash
-pnpm test
+npm run pretest      # tsc --noEmit over src and the tests
+npx vitest run       # the suite
 ```
+
+两条命令都在 `packages/core` 下跑。用例不需要网络，也不需要 API key：模型客户端是传进来的，用例自己给一个。
 
 ## 许可
 
