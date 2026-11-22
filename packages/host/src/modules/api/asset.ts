@@ -28,12 +28,12 @@ const assetSchema = z.object({
 });
 
 /**
- * 一张素材的上限：**20MB**（`dev-docs/prd/09-attachments.md` 第 5 行）。
+ * 一张素材的上限：**4MB**（`dev-docs/prd/09-attachments.md` 第 5 行，用户拍定的那一个数）。
  *
- * 宿主这一条路与客户端粘贴那一条是同一套数值：一张截图内联成 base64 常 1~3MB，再多一次请求
- * 就是几十 MB，所以两条路都得卡在同一个数上。
+ * 数值只在这里写一次：超出上限**报错、不截断** —— 截断过的图片是另一张图，用户还会以为它
+ * 完整地发出去了。
  */
-const MAX_ASSET_BYTES = 20 * 1024 * 1024;
+const MAX_ASSET_BYTES = 4 * 1024 * 1024;
 
 /** 这两个 procedure 用到的只有素材这一个域，加一个翻译口（超限那条文案要说清数值） */
 export interface AssetApiDeps {
@@ -76,7 +76,7 @@ export function assetRouter(deps: AssetApiDeps, api: Trpc) {
         if (bytes > MAX_ASSET_BYTES) {
           throw new HostError(
             "invalid_params",
-            deps.t("一张素材最多 {max} 字节（20MB），这一张 {bytes} 字节；超出上限报错，不截断", {
+            deps.t("一张最多 4MB（{max} 字节），这一张 {bytes} 字节；超出上限报错，不截断", {
               max: MAX_ASSET_BYTES,
               bytes,
             }),

@@ -50,6 +50,8 @@ export const en: Record<string, string> = {
   "助手 {agentDefinitionId} 没有可用的模型":
     'The agent definition "{agentDefinitionId}" has no usable model',
   "找不到 id 为 {assetId} 的素材": 'Cannot find the asset "{assetId}"',
+  "一张最多 4MB（{max} 字节），这一张 {bytes} 字节；超出上限报错，不截断":
+    "One image may be up to 4MB ({max} bytes); this one is {bytes} bytes. Over the limit is an error, the bytes are not truncated",
   "找不到 id 为 {credentialId} 的凭证": 'Cannot find the credential "{credentialId}"',
   "找不到 id 为 {questionId} 的题": 'Cannot find the question "{questionId}"',
   "题 {questionId} 的候选项里没有 {value}": 'The question "{questionId}" has no choice "{value}"',

@@ -11,7 +11,7 @@ import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
 
 /**
- * 一条消息最多几张素材（`dev-docs/prd/09-attachments.md` 第 5 行）：与「一张最多 20MB」是同一
+ * 一条消息最多几张素材（`dev-docs/prd/09-attachments.md` 第 5 行）：与「一张最多 4MB」是同一
  * 句话的两半，数值只在这里写一次。
  */
 const MAX_ASSETS_PER_MESSAGE = 4;
