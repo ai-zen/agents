@@ -1,150 +1,434 @@
 # @ai-zen/agents-sdk
 
-AI-Zen SDK — shared business logic layer providing a unified Agent runtime for CLI and Desktop. Works out of the box, with preconfigured vendor settings, a default Agent, and a default SubAgent.
+Two halves behind one package name.
 
-## Source of Truth
+- The capability face turns the kernel into an agent that can do something: capabilities discovered
+  from disk, a model resolved from configuration, permissions, handoff.
+- The runtime keeps those agents alive and lets them talk to each other: one resident agent per
+  session, facts forwarded outward, `post` from one session to another.
 
-**[`../../dev-docs/PRD.md`](../../dev-docs/PRD.md)** (requirements) and **[`../../dev-docs/PLAN.md`](../../dev-docs/PLAN.md)** (implementation) are the single sources of truth for this package's behaviour. All implementations must stay consistent with them.
+## Installation
 
-## Architecture
-
-```
-CLI ──┐
-      ├── @ai-zen/agents-sdk ──┐
-Desktop ──┘                    │
-                          LLM API
+```bash
+pnpm add @ai-zen/agents-sdk
 ```
 
-## Module Layering
+## What is in which half
 
+| Half | Members |
+|---|---|
+| Capability face | `createAgent`, `SdkAgent`, `Scope` + its five capability sources (`allInOne`), `PermissionEvaluator`, `ConfigManager`, `AgentRepository`, `HandoffService` + `HandoffGuardPlugin`, `completeOnce` |
+| Runtime | `AgentRuntime` (`wake` / `post` / `status` / `openPeer` / `kill` / `observe`), `Scopes`, `RuntimePeerSessions` |
+
+The kernel itself (`@ai-zen/agents-core`) is underneath both: an `Agent`, its loop, its two gates, its
+events and hooks. This package adds what one particular product needs around it — and nothing that
+belongs to a host.
+
+## Layering: what this package does not do
+
+| Not here | Where it lives |
+|---|---|
+| storage, tables, migrations | the host |
+| connections, discovery files, credentials | the host |
+| user-visible copy, languages, i18n | the host |
+| session rows | the host — a session is an opaque identity string here |
+
+The rule the layering is measured by: this package never imports the host. A session is passed
+around as a `string`; what that session is called is asked from a port, never stored. If a piece of
+code needs to know "who is alive", "who knows whom", or "when to build and when to tear down", it
+belongs to the runtime, not the host. If it reads or writes files, writes rows, relays events,
+validates credentials or renders copy, it belongs to the host.
+
+Conversely, an `as unknown as` cast that fakes an instance of something in this package means a port
+is missing: the port should be declared here and implemented by the caller.
+
+### The four ports the runtime borrows
+
+`AgentRuntime` does none of these itself, but each of them has to happen somewhere:
+
+| Port | What the caller provides |
+|---|---|
+| `openScope(cwd, peers)` | build a capability container for that directory |
+| `open(input)` | create a session: write the row, choose the identity, hand back `WakeMaterials` |
+| `nameOf(sessionId)` | the session's current name, read from its row; `undefined` = no such session |
+| `log` | a `LogSink`; omit it and nothing is logged |
+
+`WakeMaterials` is everything needed to assemble one agent, given from above: `cwd`, `agentId`,
+`modelId` / `modelParams`, `lineage`, `history` and the `waiting` entries not taken last time.
+
+## The capability face
+
+### Scope: one container per directory
+
+A `Scope` holds the configuration, the working directory, the agent-definition directory, the
+plugins, and the tools that came out of them. It runs a three-stage pipeline per agent
+(`discover` → `candidates` → `instantiate`), so what an agent can use is decided when that agent is
+built, not when each call arrives.
+
+```ts
+const scope = new Scope({ getConfig: () => config.read(), agentsDir, cwd })
+  .use(...allInOne({ toolsPaths, skillsPaths, subAgentsPaths, mcpPaths }));
+await scope.init();
 ```
-types         ← pure types, zero business dependencies (incl. ToolEnv)
-config        ← ConfigManager + constants: config.json read/write + directory setup + factory defaults
-crud          ← capability-entity CRUD (Agent definitions; conversations/drafts are persisted by each consumer)
-runtime       ← model factory + Agent assembly + task handoff/migration (cancellable via `AbortSignal`; createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
-scope         ← Scope orchestration container + ScopePlugin contract + PermissionEvaluator / disclosure + plugins/ (5 self-contained capability sources: discovery + tools + plugin)
-agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint, subAgentGuardInstaller)
-shared        ← content blocks (file → content block transport), entity repository, logging, errors
+
+`getConfig` is a port rather than a snapshot: after a configuration change, `refresh()` reads it
+again instead of rebuilding the container. `use()` must happen before `init()`.
+
+### The five capability sources
+
+`allInOne(options)` returns the five standard plugins in this order — built-in tools, user tools,
+skills, MCP, sub-agents — so a later source wins when two of them offer the same name.
+
+| Plugin | Source |
+|---|---|
+| `BuiltinToolsScopePlugin` | the built-in tool set; each tool declares its own availability (`isAvailable`) |
+| `UserToolsScopePlugin` | tool scripts found on disk |
+| `SkillsScopePlugin` | skill directories, plus the tools that load a skill |
+| `McpScopePlugin` | MCP servers (see below) |
+| `SubAgentsScopePlugin` | sub-agent definitions on disk, exposed as one delegation tool each |
+
+`allInOne` options: `skillsPaths`, `toolsPaths`, `subAgentsPaths`, `mcpPaths`, `logger`,
+`mcpTaskNotice`. To drop or replace one source, construct the plugins one by one and `use()` them.
+
+### Permissions
+
+Four dimensions, each independent, each `{ allow: [...] }` or `{ deny: [...] }`, with `*` supported.
+No match means denied; a dimension with no policy at all means denied. Filters are applied to
+candidate names before instantiation, so a denied capability is not merely refused when called — the
+model never sees it.
+
+```json
+{
+  "permissions": {
+    "tools": { "allow": ["*"] },
+    "skills": { "deny": ["deploy"] },
+    "mcps": { "allow": ["github"] },
+    "subagents": { "allow": ["reviewer"] }
+  }
+}
 ```
 
-Dependency direction: `agent-plugins → runtime → scope`; `runtime → scope / crud / shared / types`, `scope → types / shared`. Upper layers depend on lower layers.
+`PermissionEvaluator` is the only implementation of that rule (`filter`, `isAllowed`, `match`).
 
-## Core Concepts
+### Definitions, configuration and models
 
-| Entity | Description |
-|--------|-------------|
-| **Scope** | Orchestration container: global context (`config` / `cwd` / `agentsDir`) + the three-phase capability pipeline (discover → filter → instantiate) + plugin registry. Explicitly assembled via `scope.use(...)` |
-| **ScopePlugin** | Capability plugin (the extension point): self-owns one capability source's discovery state, candidate names, and instantiation (`discover` / `candidates` / `instantiate` / `dispose`). 5 standard plugins ship out of the box, assembled via `allInOne()` |
-| **ToolEnv** | Tool environment `{ cwd, config }`; injected when the built-in-tools plugin (`BuiltinToolsScopePlugin`) instantiates tools, serving as the base for relative path resolution and config reads |
-| **SdkCallbackTool** | Abstract base for built-in tools: `env` constructor injection + subclass `call()` + `resolve()` relative path resolution |
-| **SdkAgent** | Extends the Core Agent, carries SDK metadata, supports `use()` plugin registration |
-| **AgentPlugin** | Plugin interface (`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`, `onInnerLoopsStart`, `onInnerLoopsEnd`, `onToolCall`, `onUnknownTool`, `onSubAgentStart`, `onSubAgentEnd`) |
-| **Endpoint** | API endpoint (baseUrl + apiKey) |
-| **Model** | Model config, bound to an Endpoint |
-| **SubAgent** | An Agent with a `function` field, callable by other Agents as a tool |
+| Member | What it owns |
+|---|---|
+| `ConfigManager` | `config.json` and the directories beside it: read, write, factory defaults, recovery of a broken file, reasoning presets, factory skills, `mcp.json` |
+| `AgentRepository` | one agent definition per file, `<agentsDir>/<id>.json` |
+| `createAgent(scope, agentId, options)` | one assembled `SdkAgent`: definition read, model resolved, tools built from the filtered candidates |
+| `resolveModel` / `resolveModelParams` | session override > definition > `config.defaultModel`, the only implementation |
+| `createModel` / `createModelFromConfig` | the `OpenAI` client, the model name and the request parameters |
+| `completeOnce` | one non-streaming call with no tools and no history |
 
-## Permission Model
+`createAgent` options: `modelId` and `modelParams` (the session-level level), `lifetime`
+(`"one-shot"` for an agent that runs once and dies), `canOpenPeers`, and the two interruption
+strategies `abortedToolRoundStrategy` / `abortedMessageStrategy`, which fall back to the configuration
+and then to the kernel defaults.
 
-The four dimensions are independent; allow/deny are mutually exclusive, no match means deny, and permission is disclosure (denied items are completely invisible to the LLM).
+Model resolution never mixes levels: the parameters come from whichever level supplied the model, so
+a session that switches model does not carry the previous model's parameters.
 
-```
-Agent.permissions
-  ├── tools:      { allow: string[] } | { deny: string[] }
-  ├── skills:     { allow: string[] } | { deny: string[] }
-  ├── mcps:       { allow: string[] } | { deny: string[] }
-  └── subagents:  { allow: string[] } | { deny: string[] }
-```
+`SdkAgent` is an `Agent` that also carries `scope` and `definition` (the definition as it is in
+effect, with the resolved model written into it), plus `useModel(modelId, modelParams?)` to change
+model and parameters in place without killing the agent.
 
-## Consumption
+### Handoff
 
-```typescript
+`HandoffService` writes a handoff document, and optionally replaces the memory with it.
+
+| Method | What it does |
+|---|---|
+| `handoff(params)` | gives the agent one instruction to write the document, and changes nothing else about the session |
+| `migrate(params)` | writes the document, then computes the new memory and commits it |
+
+Two modes for who writes the document: `self` (the same agent, in its own session — the default) and
+`summary` (one separate model call over a serialized history). Two strategies for what happens to the
+old messages: `omit` (marked and kept out of later requests — the default) and `prune` (physically
+removed). `commitMemory` decides where the new memory lands: without it the SDK splices
+`agent.messages` in place, with it the caller stores it.
+
+`HandoffGuardPlugin` is the guard for the handoff batch: during it, the only write that passes is the
+one to the handoff document itself; every other write tool is refused with a sentence the model can
+read and act on. It also observes whether that write happened (`arm` returns an outcome and a
+"batch over" promise; `disarm` lets everything through again). It is a guard against mistakes in the
+workspace, not a sandbox: a shell command can still write files. Cancellation surfaces as
+`HandoffAbortedError`, and it is never silently retried with the other mode.
+
+### Agent plugins
+
+Mounted on an agent, not on the container: `AutoMigratePlugin` (hand off when usage crosses the soft
+line), `AutoRefreshToolsPlugin`, `ContextGuardPlugin` (refuse a request that would cross the hard
+line), `SubAgentGuardInstallerPlugin` (install the guard on sub-agents too), `HandoffGuardPlugin`,
+`UnknownToolHintPlugin`, `AssetTransportPlugin`.
+
+## The runtime
+
+`AgentRuntime` keeps one resident agent per session and forwards the kernel's facts.
+
+| Member | What it does |
+|---|---|
+| `wake(sessionId, materials)` | assemble, register, start; idempotent, concurrent calls share one assembly |
+| `post({ from, to, content })` | put one sentence in another session's inbox; answers `{ ok: true }` or a reason |
+| `status(sessionId)` | whether it is working or idle, its name, an excerpt of the last thing it said |
+| `openPeer({ from, prompt, agentId?, modelId?, label? })` | open a peer session, wake it, post the first prompt, return immediately |
+| `kill(sessionId)` | unregister, kill, report that it is gone |
+| `close()` | kill everything and tear every container down |
+| `observe(listener)` | subscribe to the facts; returns an unsubscribe function |
+| `get(sessionId)` / `sessionOf(agent)` / `aliveOn(cwd)` | the snapshots: which agent, which session, which sessions on that directory |
+| `scopes` / `peerSessions` | the container registry, and the peer-session port this runtime implements |
+
+Facts are a discriminated union: `resident:appeared` and `resident:gone` (the runtime's own two),
+`scope:appeared` / `scope:refreshed` / `scope:gone` (from the container registry), and every kernel
+event of every agent, unchanged in name and payload, with the `sessionId` added.
+
+There is no "wait until it is done" on the runtime: a resident session is never done, it goes from
+working to idle and can be pushed again at any moment. Nothing in the runtime waits for a caller; a
+delivery is what wakes a session up.
+
+### Scopes: containers live by directory
+
+`Scopes` owns the container registry: one container per `cwd`, shared by every session working in
+that directory.
+
+| Member | What it does |
+|---|---|
+| `for(cwd)` | the container for that directory, built on first use |
+| `dispose(cwd)` | tear it down — refuses while any session is still alive on that directory |
+| `refreshAll()` | let every already-built container re-read the configuration; reports how many were refreshed and which failed |
+| `disposeAll()` | tear down everything, for process shutdown |
+
+There is no idle timer, no reference counting and no automatic collection: a container lives because
+someone holds it, and it is torn down when someone tears it down. "Nobody is using it" is not a
+decidable state. Tearing down refuses rather than cascading, because a cascade would silently kill
+sessions that are in the middle of work.
+
+## Peer sessions
+
+A peer session is another session an agent opens for itself, with its own agent, its own context and
+its own usage, and it stays in the session list afterwards.
+
+The model side is three tools (`packages/sdk/src/scope/plugins/peers/`):
+
+| Tool | What it does |
+|---|---|
+| `create_session` | open a peer session and return `{ sessionId, label }` at once |
+| `read_session_status` | whether it is working or idle, whether it is alive, its name, an excerpt of its last message |
+| `post_message` | put one message in that session's inbox |
+
+They implement nothing themselves. `PeerSessionsScopePlugin` takes a `PeerSessionPort` with three
+methods — `create`, `status`, `send` — and without a port it produces no tools at all. The runtime
+implements that port (`RuntimePeerSessions`), which is why the three tools also work when no host is
+around.
+
+Two rules are structural rather than validated at call time:
+
+- an agent that was itself opened as a peer has no `create_session` on its hands: `createAgent` is
+  called with `canOpenPeers: false` for it, so creating is one level deep and the model cannot even
+  try. `post_message` and `read_session_status` stay, because peers talk both ways.
+- a one-shot agent has neither of the three nor the two background tools: it has no identity to sign
+  a message with, it can open nothing that anybody would own, and it is gone before a background
+  result comes back.
+
+`post_message` does not depend on the relation between the two sessions, and its receipt says only
+that the message was accepted. Refusals are structured: `gone` (no such session) and `dead` (the row
+exists, no agent behind it, so nobody will take it). Creating can also be refused with
+`depth_exceeded` (this session was itself opened as a peer, or the caller is not a session at all)
+or `model_unresolved`; `PeerSessionRejectReason` also carries `too_many_peers`, for a port that
+enforces a limit.
+
+Neither an excerpt of a peer's history nor a message count is ever returned: an excerpt is all the
+model gets, so it does not start treating another session's transcript as its own context.
+
+## Background tools
+
+Two built-in tools return immediately and report later:
+
+| Tool | What it does |
+|---|---|
+| `async_exec` | run a shell command in the background; its output and exit status are pushed back into the session as a new message |
+| `async_timeout` | a timer; when it fires, a message carrying the task id is pushed back |
+
+Both are in `scope/plugins/builtin/` (`AsyncExecTool`, `AsyncTimeoutTool`, `asyncTasks`). The result
+comes back through a delivery into the same session, at low priority, so it never lands inside the
+batch that is currently running. Task ids come from one counter per agent (`async_exec-1`,
+`async_timeout-2`), and everything still running is reaped when the agent is stopped or killed.
+
+A one-shot agent gets neither of them (`ASYNC_TASK_TOOL_NAMES` is stripped at assembly): the result
+arrives after its call stack has returned, so there would be nobody to deliver it to. This is the same
+rule the kernel states for resident versus one-shot, enforced where the tools are chosen.
+
+## MCP
+
+Four things live in `scope/plugins/mcp/`.
+
+Discovery merges an ordered list of `mcp.json` files, nearest first: an earlier file wins for the
+same server id, and a `disabled: true` entry in a nearer file cancels the definition in a farther
+one. The five locations of the standard chain are assembled by the caller and passed as `mcpPaths`
+(the host is the one that knows them), so this package merges exactly what it is given.
+
+Connections are lazy and belong to `McpConnectionManager`: `load_mcp` connects a server and returns
+its manifest, an unused connection is dropped after an idle timeout (30 minutes for stdio, 5 for
+http), and `disconnect` / `disconnectAll` close them explicitly. A dropped transport marks the server
+disconnected instead of reconnecting on its own — reconnecting happens when the model asks for that
+server again, and the stale manifest is never shown as current. When the configuration changes,
+`McpScopePlugin` reconciles: removed and changed servers are disconnected, unchanged ones are left
+untouched.
+
+The model side is five tools: `load_mcp`, `call_mcp_tool`, `read_mcp_resource`,
+`get_mcp_task_result`, `cancel_mcp_task`.
+
+Tasks are the long-running shape of an MCP call. A tool declares its task support
+(`forbidden` / `optional` / `required`); when a call produces a task, `call_mcp_tool` returns the task
+id at once, the server pushes status notifications, and the manager remembers which session started
+the task. A terminal status (`completed` / `failed` / `cancelled`, see `isTerminalTaskStatus`) is
+handed to `McpTaskNoticePort`, which the host implements: `sessionOf(agent)` says which session a
+caller belongs to, `deliver(sessionId, notice)` puts the notice in its inbox. The result itself is
+fetched by task id with `get_mcp_task_result`.
+
+## Example 1: one agent from the capability face
+
+```ts
+import { Message } from "@ai-zen/agents-core";
+import { AgentRepository, ConfigManager, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
+
+const base = "/path/to/data"; // config.json and agents/ live here
+
+const config = new ConfigManager(`${base}/config.json`);
+await config.write({
+  endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." }],
+  models: [
+    {
+      id: "gpt-4o",
+      name: "GPT-4o",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 500_000, guard: 750_000 },
+    },
+  ],
+  defaultModel: "gpt-4o",
+});
+
+const agents = new AgentRepository(`${base}/agents`);
+await agents.write({
+  id: "demo",
+  name: "Demo",
+  messages: [Message.System("Answer in one sentence.")],
+  modelId: "gpt-4o",
+  permissions: {
+    tools: { allow: ["*"] },
+    skills: { allow: ["*"] },
+    mcps: { allow: ["*"] },
+    subagents: { allow: ["*"] },
+  },
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
+
 const scope = new Scope({
-  config,
-  cwd: "/path/to/workspace", // one working directory per Scope; parallel sessions don't interfere
-  agentsDir,
+  getConfig: () => config.read(),
+  agentsDir: `${base}/agents`,
+  cwd: base,
 }).use(
-  ...allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths }),
+  ...allInOne({
+    toolsPaths: [`${base}/tools`],
+    skillsPaths: [`${base}/skills`],
+    subAgentsPaths: [`${base}/sub-agents`],
+    mcpPaths: [`${base}/mcp.json`],
+  }),
 );
 await scope.init();
 
-const agent = await createAgent(scope, "my-agent");
-const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
-agent.use(new ContextGuardPlugin({ guardTokens }));
-agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens }));
-agent.use(new AutoRefreshToolsPlugin());
-agent.use(new UnknownToolHintPlugin({ scope }));
-await agent.init();
-await agent.send("Hello");
+const agent = await createAgent(scope, "demo");
 
-await scope.dispose(); // disconnect MCP, release plugin resources
+const idle = new Promise<void>((resolve) => {
+  const offIdle = agent.on("state:idle", () => {
+    offIdle();
+    resolve();
+  });
+});
+
+agent.push({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
+void agent.start();
+await idle;
+
+console.log(agent.messages.at(-1)?.content);
+agent.stop();
+await scope.dispose();
 ```
 
-## Built-in Tools
+## Example 2: two sessions, one message between them
 
-All built-in tools are classes (extending `SdkCallbackTool`), instantiated by the built-in-tools plugin (`BuiltinToolsScopePlugin`) with a `ToolEnv` — one set of instances per Scope, with `cwd` injected and relative paths resolved against `Scope.cwd`, never depending on the global `process.cwd()`.
+```ts
+import {
+  AgentRuntime,
+  ConfigManager,
+  PeerSessionsScopePlugin,
+  Scope,
+  allInOne,
+  type RuntimeFact,
+  type WakeMaterials,
+} from "@ai-zen/agents-sdk";
 
-| Tool | Description |
-|------|-------------|
-| `cwd` | Get the current working directory |
-| `read` | Read a file (optional `range` for line/column slicing; oversized output warns and suggests batched reads) |
-| `inspect_file` | Inspect a file's structural overview (line count, column distribution, etc.); streamed scan, not limited by the 300KB read threshold |
-| `write` | Write a file |
-| `exec` | Execute a command (supports `timeout`; oversized stdout+stderr is dumped to `stdout.log` / `stderr.log`) |
-| `spawn` | Execute a command asynchronously, returns immediately without waiting |
-| `mkdir` | Create a directory |
-| `rm` | Delete a file or directory |
-| `glob` | Scan and find files using glob patterns (oversized output dumped to `result.json`) |
-| `ls` | List directory contents (oversized output dumped to `result.json`) |
-| `exist` | Check whether a file or directory exists |
-| `find_text` | Search for text or regex in files (oversized output dumped to `result.json`) |
-| `download_file` | Download a file from a URL and save it locally |
-| `rename` | Rename or move a file/directory |
-| `copy` | Copy a file or directory |
-| `batch_edit` | Batch-edit file text (only unmatched items are echoed back; successful ones are counted) |
-| `edit` | Edit text in a file |
-| `sleep` | Wait for a specified number of milliseconds |
+// config.json and the two definitions "lead" and "helper" already exist under `base`
+const base = "/path/to/data";
+const config = new ConfigManager(`${base}/config.json`);
+const names = new Map<string, string>();
 
-Conditionally injected based on the active model / config:
+const runtime = new AgentRuntime({
+  openScope: async (cwd, peers) => {
+    const scope = new Scope({ getConfig: () => config.read(), agentsDir: `${base}/agents`, cwd })
+      .use(...allInOne({ mcpPaths: [`${base}/mcp.json`] }))
+      .use(new PeerSessionsScopePlugin(peers)); // the peer tools need the port from the runtime
+    await scope.init();
+    return scope;
+  },
+  open: async (input) => {
+    // a real host writes a session row here and decides the identity
+    const sessionId = `session-${names.size + 1}`;
+    names.set(sessionId, input.label ?? input.prompt);
+    const materials: WakeMaterials = {
+      cwd: base,
+      agentId: input.agentId,
+      modelId: input.modelId,
+      lineage: input.lineage,
+      history: [],
+      waiting: [],
+    };
+    return { ok: true, sessionId, materials };
+  },
+  nameOf: async (sessionId) => names.get(sessionId),
+});
 
-| Tool | Injection Condition | Description |
-|------|---------------------|-------------|
-| `generate_image` | Only when `defaultImageModel` is configured | Generate an image from a text description |
-| `view_image` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
+runtime.observe((fact: RuntimeFact) => {
+  if (fact.type === "messageFinished") console.log(fact.sessionId, fact.message.content);
+});
 
-Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. Targets and boundaries: [`../../PLAN.md`](../../PLAN.md) §9; the exact behaviour lives in the code.
+names.set("lead", "lead");
+names.set("helper", "helper");
+await runtime.wake("lead", { cwd: base, agentId: "lead", lineage: null, history: [], waiting: [] });
+await runtime.wake("helper", { cwd: base, agentId: "helper", lineage: null, history: [], waiting: [] });
 
-Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`keep` / `drop`, factory `keep` — the model can continue the half-sentence after an interrupt) and `AppConfig.abortedToolRoundStrategy` (`fill` / `drop`, factory `fill` — whole rounds go in or out, because `tool_calls` must pair with results). `createAgent()` reads them from `scope.config` when no explicit option is passed, keeping a single source of truth.
+// the helper is woken up by this delivery, runs on its own, and comes back to idle
+console.log(await runtime.post({ from: "lead", to: "helper", content: "Say hi in one line." }));
+console.log(await runtime.status("helper"));
 
-## Built-in Plugins
+await runtime.close();
+```
 
-| Plugin | Description |
-|--------|-------------|
-| `AutoMigratePlugin` | Automatically triggers task migration when `usage.prompt_tokens` exceeds `handoffTokens`; delegates the actual migration to the injected `HandoffService` (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it). `resolveMode` lets the caller pick the handoff executor or skip the round. Steps aside while `service.busy` to avoid the handoff→migrate→handoff recursion |
-| `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
-| `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `guardTokens` (an absolute value: no multiplier, no looser tier), preventing context runaway from reading oversized files. it never steps aside, not even for the handoff turn: to avoid hitting it, configure a larger `guard` |
-| `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |
+`peerSessions` on the runtime is the port those three tools end up talking to; `Scopes` is the
+container registry the runtime owns, so the example does not construct it.
 
-## Language
+## Testing
 
-The SDK is **English-only**: every model-facing and user-facing string — tool schema descriptions, factory prompts, runtime-injected guidance, tool results, error messages, factory catalog data — is a fixed English literal. There is no locale field, no message catalog, and no runtime language switch. UI language belongs entirely to each consumer (the CLI's `i18n/`, the Desktop's language setting).
+```bash
+npm run pretest      # tsc --noEmit over src and the tests
+npx vitest run       # the suite that depends on nothing outside this repository
+```
 
-This is a performance boundary, not a convenience choice — **SDK behaviour and performance must not vary by the user's language**:
+Both are run from `packages/sdk`. `npm run test:e2e` runs the cases that need an API key or a real
+MCP server; `npm test` must never need either. The fake endpoint used by the suite lives in
+`@ai-zen/agents-testing` (which re-exports `@ai-zen/fake-llm`).
 
-- **Thresholds are absolute.** `Model.tokenThresholds.handoff` / `guard` and `AppConfig.maxToolOutput` are absolute token / character counts. A localized tool schema is a different token count, so handoff and context-guard would trip at *different amounts of real content* for the same `config.json` — same config, different behaviour per language.
-- **Schema cost is paid every turn.** Description text is re-sent with every request, so a token delta is a standing cost in request size, context usage and spend rather than a one-off.
-- **Cache prefixes stop being comparable.** Prompt caching matches on the prefix; letting language into the SDK multiplies the prefix shapes of one code path and removes the single variable that benchmarks rely on.
-- **Diagnosis needs one shape.** Performance data, bug reproductions and tool-call success rates have to be comparable across users; once behaviour drifts with locale, every conclusion needs a "what language are you on?" qualifier first.
+## License
 
-Following the user's language is handled by one language-neutral instruction in the factory system prompt — `Always reply in the same language the user writes in.` — which adapts per **message** rather than per installation, and needs no locale plumbing in the SDK. Boundary: [`../../PLAN.md`](../../PLAN.md) §9.
-
-## Design Principles
-
-See the project-root [`PRINCIPLES.md`](../../PRINCIPLES.md):
-
-1. Logical consistency
-2. Design first, documentation as the source of truth
-3. Symmetry and uniformity
-4. No over-engineering
-5. Occam's razor
-6. Refactor as you go; keep clean layering
-7. Tests are the foundation
+MIT
