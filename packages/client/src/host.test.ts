@@ -59,6 +59,37 @@ function stated(events: readonly unknown[], status: "working" | "idle"): boolean
   );
 }
 
+/**
+ * 建一段会话、把执行体叫起来、递一句进去：三件事各有一条口。
+ *
+ * 宿主那一侧它们是正交的（`session.create` 只写一行、`agent.wake` 造执行体、`agent.send` 只投给
+ * 活着的执行体），所以这里的准备动作也是三句。回执给的是后面断言要用的那两格：`sessionId` 是
+ * 这段会话的 id，`messageId` 是递进去那一句的 id（由客户端给出，落地时用的就是它）。
+ */
+async function startSession(
+  client: HostClient,
+  input: { workspaceId: string; agentId?: string; content: string },
+): Promise<{ sessionId: string; messageId: string }> {
+  const agentId = input.agentId ?? "default";
+
+  const { session } = await client.api.session.create.mutate({
+    workspaceId: input.workspaceId,
+    agentId,
+  });
+  await client.api.agent.wake.mutate({ sessionId: session.id });
+
+  const messageId = randomUUID();
+  await client.api.agent.send.mutate({
+    workspaceId: input.workspaceId,
+    agentId,
+    content: input.content,
+    messageId,
+    sessionId: session.id,
+  });
+
+  return { sessionId: session.id, messageId };
+}
+
 let dataRoot: string;
 let previousDataRoot: string | undefined;
 let previousHome: string | undefined;
@@ -211,11 +242,10 @@ describe("事件流", () => {
     const unsubscribe = client.subscribe((event) => events.push(event));
 
     try {
-      const sent = await client.api.agent.send.mutate({
+      const sent = await startSession(client, {
         workspaceId,
         agentId: "default",
         content: SAID,
-        messageId: randomUUID(),
       });
 
       await vi.waitFor(() => expect(stated(events, "idle")).toBe(true), {
@@ -252,11 +282,10 @@ describe("事件流", () => {
     const witness: unknown[] = [];
     const stop = client.subscribe((event) => witness.push(event));
     try {
-      await client.api.agent.send.mutate({
+      await startSession(client, {
         workspaceId,
         agentId: "default",
         content: "another line",
-        messageId: randomUUID(),
       });
       await vi.waitFor(() => expect(stated(witness, "idle")).toBe(true), {
         timeout: 30_000,
@@ -305,11 +334,10 @@ describe("撤回：跑着的时候不许撤", () => {
     const stop = client.subscribe((event) => events.push(event));
 
     try {
-      const sent = await client.api.agent.send.mutate({
+      const sent = await startSession(client, {
         workspaceId,
         agentId: "default",
         content: "rewind me while it runs",
-        messageId: randomUUID(),
       });
 
       // 让那一轮真的在吐：假端点把答复切成三片、片间等 80ms，所以「在干」这一段有几百毫秒的窗口
@@ -362,12 +390,11 @@ describe("重连的口子", () => {
       const sessions = await client.api.session.list.query({ workspaceId });
       expect(sessions.length).toBeGreaterThan(0);
 
-      // 新的执行体是新的会话：不给 sessionId 就是「建一段再递一句」
-      await client.api.agent.send.mutate({
+      // 重启之后那段会话已经没有执行体了：建一段新的、把它叫起来、再递一句进去
+      await startSession(client, {
         workspaceId,
         agentId: "default",
         content: `after restart ${randomUUID()}`,
-        messageId: randomUUID(),
       });
       await vi.waitFor(() => expect(stated(events, "idle")).toBe(true), {
         timeout: 30_000,
