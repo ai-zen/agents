@@ -7,6 +7,7 @@ import {
   CREATE_SESSION_TOOL,
   PEER_SESSION_TOOL_NAMES,
 } from "../scope/plugins/peers/peerSessionTools.js";
+import { ASYNC_TASK_TOOL_NAMES } from "../scope/plugins/builtin/asyncTasks.js";
 import { resolveModel, resolveModelParams } from "./resolveModel.js";
 import type { AgentDefinition, ModelParams } from "../types/index.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
@@ -139,21 +140,23 @@ export async function createAgent(
   const tools = scope.buildTools(definition, {
     exclude: {
       subagents: definition.function?.name ? [definition.function.name] : undefined,
-      // 平级会话那三个工具是**会话级**能力，谁手上没有哪一个，判据都是「它是不是一段能自己开平级
+      // 平级会话那三个工具是会话级能力，谁手上没有哪一个，判据都是「它是不是一段能自己开平级
       // 会话的会话」。下面两支各自排掉哪些，理由不同：
       //
-      // - 一次性执行体手上三个都不该有（第一处是 `subAgentTools.ts` 给 subagent 的 exclude，那边
+      // - 一次性执行体手上什么都没有（第一处是 `subAgentTools.ts` 给 subagent 的 exclude，那边
       //   的判据是「被派出去的」，这边的判据是「一次性的」，结论一样）：它不是一段会话的执行体
       //   —— 没有可以署名的身份（`post_message` 要写「来自哪一段会话」，它会把发起方标签算成
       //   agentId 那串字符串），也开不出有人认领的新会话（`create_session` 必然回
-      //   `depth_exceeded`）。那三个工具在它手上只有必错的路，而每一条必错的路都要烧一次模型
-      //   调用去走 —— 不如一开始就不给。
+      //   `depth_exceeded`）；而 `async_exec` / `async_timeout` 的结果在将来某个时刻才回来，
+      //   那时它的调用栈已经退了，推回来的那条没有收件人。这些工具在它手上只有必错的路，而每一条
+      //   必错的路都要烧一次模型调用去走 —— 不如一开始就不给。
       // - 别人开出来的那一段会话（`canOpenPeers: false`）只排 `create_session`：再开一层就是
-      //   套娃；投递与问状态那两个照旧留着，平级之间是双向说话的。
+      //   套娃；投递与问状态那两个照旧留着，平级之间是双向说话的。两个后台工具也照旧留着
+      //   —— 它是常驻执行体，结果有人收。
       //
       // 取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的配置，这条规矩不长在那儿；
       // 而 filter 先按 exclude 剔除、再按权限过滤，定义写 `allow: ["*"]` 也照样剔得掉。
-      tools: excludedPeerTools(options),
+      tools: excludedTools(options),
     },
   });
 
@@ -184,13 +187,15 @@ export async function createAgent(
 }
 
 /**
- * 这一段手上不该有的平级会话工具。
+ * 这一段手上不该有的工具。
  *
- * 两种情形排掉的名单不一样（一次性执行体三个都不给、别人开出来的那一段只少了 `create_session`），
- * 名单只在这一处算 —— 调用方只说自己是什么，不自己拼名字。
+ * 两种情形排掉的名单不一样（一次性执行体既没有会话级能力、也没有能收到结果的将来，别人开出来的
+ * 那一段只少了 `create_session`），名单只在这一处算 —— 调用方只说自己是什么，不自己拼名字。
  */
-function excludedPeerTools(options: CreateAgentOptions): string[] | undefined {
-  if (options.lifetime === "one-shot") return [...PEER_SESSION_TOOL_NAMES];
+function excludedTools(options: CreateAgentOptions): string[] | undefined {
+  if (options.lifetime === "one-shot") {
+    return [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES];
+  }
   if (options.canOpenPeers === false) return [CREATE_SESSION_TOOL];
   return undefined;
 }

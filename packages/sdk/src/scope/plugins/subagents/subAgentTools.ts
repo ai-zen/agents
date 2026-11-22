@@ -5,6 +5,7 @@ import type { AgentDefinition } from "../../../types/index.js";
 import type { Scope } from "../../Scope.js";
 import { createModel } from "../../../runtime/createModel.js";
 import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
+import { ASYNC_TASK_TOOL_NAMES } from "../builtin/asyncTasks.js";
 
 /**
  * 创建 SubAgent 工具（AgentToolLazy）。
@@ -60,7 +61,9 @@ export function createSubAgentTool(def: AgentDefinition, scope: Scope): Tool {
           // depth_exceeded）。取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的
           // 配置，这条规矩不长在那儿；而 filter 先按 exclude 剔除、再按权限过滤，定义写
           // `allow: ["*"]` 也照样剔得掉。
-          tools: [...PEER_SESSION_TOOL_NAMES],
+          //
+          // 两个后台工具同理：被派出去的是个一次性执行体，结果回来时它的调用栈已经退了。
+          tools: [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES],
         },
       });
       const tools = scope.instantiate(subFiltered);

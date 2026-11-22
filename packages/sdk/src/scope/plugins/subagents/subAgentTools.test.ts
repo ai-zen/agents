@@ -5,6 +5,7 @@ import { Scope, type FilterOutput } from "../../Scope.js";
 import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 import { PeerSessionsScopePlugin } from "../peers/PeerSessionsScopePlugin.js";
 import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
+import { ASYNC_TASK_TOOL_NAMES } from "../builtin/asyncTasks.js";
 import type { PeerSessionPort } from "../peers/peerSessionTools.js";
 import type { AgentDefinition, AppConfig } from "../../../types/index.js";
 
@@ -168,7 +169,7 @@ describe("createSubAgentTool", () => {
     expect(userMessage.content).toBe("do it");
   });
 
-  it("被派出去的执行体没有平级会话那三个工具，别的工具还在", async () => {
+  it("被派出去的执行体没有平级会话那三个工具与两个后台工具，别的工具还在", async () => {
     // 这里要一个**真实**的 Scope：`mockScope()` 的 filter 与 instantiate 都是桩，会把 exclude 吃掉，
     // 那样这条用例就证明不了剔除真的发生了。
     const scope = new Scope({
@@ -207,10 +208,10 @@ describe("createSubAgentTool", () => {
 
     expect(result).toBe("denied by test");
     const subAgentNames = captured!.tools.map((t) => t.function.name);
-    for (const name of PEER_SESSION_TOOL_NAMES) {
+    for (const name of [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES]) {
       expect(subAgentNames).not.toContain(name);
     }
-    // 剔除只掐那三个名字：普通工具照旧在
+    // 剔除只掐那几个名字：普通工具照旧在
     expect(subAgentNames).toContain("ordinary_tool");
 
     // 收窄只发生在被派出去的那一层：同一个定义，父会话那一侧照旧拿得到那三个

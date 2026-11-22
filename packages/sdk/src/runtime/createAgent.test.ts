@@ -11,6 +11,7 @@ import {
   POST_MESSAGE_TOOL,
   READ_SESSION_STATUS_TOOL,
 } from "../scope/plugins/peers/peerSessionTools.js";
+import { ASYNC_TASK_TOOL_NAMES } from "../scope/plugins/builtin/asyncTasks.js";
 import type { PeerSessionPort } from "../scope/plugins/peers/peerSessionTools.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -408,26 +409,27 @@ describe("createAgent", () => {
   });
 
   /**
-   * 寿命不只改「能投几次」，还改**手上有什么工具**：会话级工具跟着「是不是一段会话的执行体」走。
+   * 寿命不只改「能投几次」，还改**手上有什么工具**：会话级工具跟着「是不是一段会话的执行体」走，
+   * 两个后台工具跟着「将来还有没有人收结果」走。
    *
    * 一次性执行体不属于任何一段会话（没有可署名的身份、也开不出有人认领的新会话），那三个工具
-   * 在它手上只有必错的路 —— 所以造工具时一并排掉（`createAgent.ts` 里那处 exclude，与
-   * `subAgentTools.ts` 给 subagent 的是同一件事的两处）。常驻的那一侧照旧有：它**就是**一段
-   * 会话的执行体。
+   * 在它手上只有必错的路；它也没有能收到后台结果的将来（寿命在调用栈里）。所以造工具时一并排掉
+   *（`createAgent.ts` 里那处 exclude，与 `subAgentTools.ts` 给 subagent 的是同一件事的两处）。
+   * 常驻的那一侧两样都有：它**就是**一段会话的执行体。
    */
-  it("一次性执行体拿不到平级会话那三个工具，常驻的照旧有", async () => {
+  it("一次性执行体拿不到平级会话那三个工具与两个后台工具，常驻的两样都有", async () => {
     await writeAgentFile("my-agent");
     const scope = await makeScope({ peerSessions: true });
 
     const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
     const oneShotNames = once.tools.map((t) => t.function.name);
-    for (const name of PEER_SESSION_TOOL_NAMES) {
+    for (const name of [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES]) {
       expect(oneShotNames).not.toContain(name);
     }
 
     const resident = await createAgent(scope, "my-agent");
     const residentNames = resident.tools.map((t) => t.function.name);
-    for (const name of PEER_SESSION_TOOL_NAMES) {
+    for (const name of [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES]) {
       expect(residentNames).toContain(name);
     }
   });
@@ -445,5 +447,7 @@ describe("createAgent", () => {
     expect(names).not.toContain(CREATE_SESSION_TOOL);
     expect(names).toContain(POST_MESSAGE_TOOL);
     expect(names).toContain(READ_SESSION_STATUS_TOOL);
+    // 它是常驻执行体：两个后台工具的结果有人收，照旧在
+    for (const name of ASYNC_TASK_TOOL_NAMES) expect(names).toContain(name);
   });
 });
