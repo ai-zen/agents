@@ -71,7 +71,8 @@ function setup() {
   const sessionAssets = sessionAssetTable(db);
   const assets = new AssetService({ assets: assetRows, sessionAssets, dataRoot, t });
   const events = createBus<HostEvent>();
-  const errors: unknown[] = [];
+  /** 观察者交给 `onError` 的每一条：错误本身与它贴的那个标签 */
+  const errors: Array<{ error: unknown; what: string }> = [];
 
   const listeners: Array<(fact: RuntimeFact) => void> = [];
   const observer = new HostObserver({
@@ -79,7 +80,7 @@ function setup() {
     inbox,
     assets,
     events,
-    onError: (error) => errors.push(error),
+    onError: (error, what) => errors.push({ error, what }),
     isHandingOff: () => false,
   });
   observer.attach({
@@ -210,5 +211,56 @@ describe("关机时排队区不作废", () => {
       "m-pending-1",
       "m-pending-2",
     ]);
+  });
+});
+
+/** 投递那条路写下去的那一条（宿主自己投的条目都带 `messageId`） */
+function pendingEntry(messageId: string, content: string) {
+  return {
+    messageId,
+    createdAt: "2026-01-01T00:00:03.000Z",
+    priority: "high" as const,
+    source: { kind: "user" as const },
+    content,
+  };
+}
+
+/** 一段有正文的条目进队时 core 报的那一条 */
+function inboxAddedFact(
+  sessionId: string,
+  entry: ReturnType<typeof pendingEntry>,
+): RuntimeFact {
+  return {
+    type: "inboxAdded",
+    sessionId,
+    agent,
+    seq: 1,
+    at: "2026-01-01T00:00:03.000Z",
+    entry,
+  };
+}
+
+describe("观察者写 inbox", () => {
+  it("投递那条路已经先写过同一行：再来一条 `inboxAdded` 不报错，也不多一行", () => {
+    const { emit, inbox, errors } = setup();
+    const entry = pendingEntry("m-1", "这句话还在等");
+
+    // 投递那一路的「先落库」：它排在 `push` 之前，所以观察者收到事实时这一行已经在库里
+    inbox.insert("s-1", entry);
+    emit(inboxAddedFact("s-1", entry));
+
+    expect(errors).toEqual([]);
+    expect(inbox.listBySession("s-1")).toHaveLength(1);
+    expect(inbox.listBySession("s-1")[0]).toEqual(entry);
+  });
+
+  it("`sessionId` 指不到会话：这一次写库失败照旧被报成错误", () => {
+    const { emit, errors } = setup();
+
+    emit(inboxAddedFact("no-such-session", pendingEntry("m-1", "没处安放")));
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.what).toBe("inbox-write");
+    expect(String(errors[0]?.error)).toMatch(/FOREIGN KEY|constraint/);
   });
 });

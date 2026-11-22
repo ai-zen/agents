@@ -24,10 +24,21 @@ export function inboxTable(db: DatabaseSync) {
   `);
 
   const insertSql = `INSERT INTO inbox (id, payload, sessionId, seq)
-    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM inbox WHERE sessionId = ?))`;
+    VALUES (?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM inbox WHERE sessionId = ?))
+    ON CONFLICT (id) DO NOTHING`;
 
   return {
-    /** `entry` 必须带 `messageId`：它就是这一行的身份，也是客户端拿去做乐观回显的那个 id */
+    /**
+     * `entry` 必须带 `messageId`：它就是这一行的身份，也是客户端拿去做乐观回显的那个 id。
+     *
+     * 同一个 id 写两次是正常的，不是错误：投递那一路为了「落库先于入队」会先写一次，入队之后
+     * 那条 `inboxAdded` 又会让观察者照事实再写一次。后一次撞的是 `id` 这个主键，`DO NOTHING`
+     * 让它什么都不做 —— 不报错、不覆盖先写的那一份载荷、也不再占一个 `seq`（`seq` 是排队顺序，
+     * 重写一遍不该把这一条挪到队尾；「先删再插」正是会挪到队尾的那种写法）。
+     *
+     * 只有 `id` 这一处冲突被咽掉：`sessionId` 指不到会话（外键）、磁盘写不进去这些照旧抛给
+     * 调用方，由它报成错误 —— 那些是这一条真的没落进库，不是重复。
+     */
     insert(sessionId: string, entry: AgentNS.InboxEntryWithContent & { messageId: string }): void {
       db.prepare(insertSql).run(entry.messageId, JSON.stringify(entry), sessionId, sessionId);
     },

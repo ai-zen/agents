@@ -257,6 +257,10 @@ export class HostObserver {
         // 带正文而没有 `messageId` 的也落不了库：这一行的身份就是那个 id（表拿它当主键），
         // 而它可以是 core 在落地那一刻现生成的 —— 那种条目连「这是哪一条」都答不出。
         // 宿主自己投递的条目一律带 id。
+        //
+        // 宿主投递的那条路已经先写过同一行了（它要先落库再入队），所以这里会撞上那个 id：
+        // 表那一侧的写是幂等的，第二次什么都不做，这不报错也不算漏写 —— 事实照旧是「这一条
+        // 在排队区里」，库里那一行是它先写下的。
         if (fact.entry.content !== undefined && fact.entry.messageId !== undefined) {
           const storable = { ...fact.entry, messageId: fact.entry.messageId };
           try {

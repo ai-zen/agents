@@ -10,7 +10,15 @@
  * 这样验的是「一句话真的走到了执行体、模型说的话真的流回来了」，而不是把请求层整个打掉。
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -503,6 +511,77 @@ describe("宿主跑起来", () => {
     } finally {
       admitted.close();
     }
+  }, 60_000);
+
+  /**
+   * 每投一句话都会走两次写库：`deliver()` 先落库（落库先于入队），入队之后那条 `inboxAdded`
+   * 又让观察者写一次同一个 id。第二次撞的是主键，它必须是一次安静的空动作 —— 否则每说一句，
+   * 宿主日志里就多一条 `inbox-write` 的 ERROR，而库里那一条其实好好地在那儿。
+   */
+  it("发一句话之后日志里没有 inbox-write，排队区那一条照样在库", async () => {
+    // 日志文件先立起来写一行标记：这份日志是追加写的，读回来看得见标记才说明读的确实是它写的
+    // 那一份文件 —— 否则「文件还不存在」会让下面那句「不含 inbox-write」变成一句空话
+    const logFile = join(dataRoot, "logs", "host.log");
+    const marker = `用例标记 ${randomUUID()}`;
+    mkdirSync(join(dataRoot, "logs"), { recursive: true });
+    appendFileSync(logFile, `${marker}\n`);
+
+    const events: HostEvent[] = [];
+    await client.subscribe("events", (payload) => events.push(payload as HostEvent));
+
+    // 不给 `sessionId`：这一段会话就是这一次发送产生的，建行、唤醒、投递都在这一句里
+    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+      workspaceId,
+      agentId: "default",
+      content: SAID,
+      messageId: randomUUID(),
+    });
+    const sessionId = sent.sessionId;
+
+    // 等这一段会话跑完一拍：投递那一路的两次写库都发生在这一拍之前
+    const idled = () =>
+      events.some(
+        (event) =>
+          event.type === "agent.status" &&
+          event.sessionId === sessionId &&
+          event.status === "idle",
+      );
+    await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
+
+    // 留一条没被取走的：abort 之后取件那道闸关着，这一条此后只可能躺在排队区
+    await client.mutation("agent.abort", { sessionId });
+    const pendingText = "这句还排在队列里";
+    const pendingId = randomUUID();
+    await client.mutation("agent.send", {
+      workspaceId,
+      agentId: "default",
+      sessionId,
+      content: pendingText,
+      messageId: pendingId,
+    });
+
+    const db = openDatabase(join(dataRoot, "ai-zen.db"));
+    try {
+      const waiting = () => inboxTable(db).listBySession(sessionId);
+      // 整个窗口里每一次都要成立：日志是排队异步写的，只看一眼不足以说明这一刻之后不会再冒出
+      // 那条 ERROR
+      await quietFor(async () => {
+        const log = readFileSync(logFile, "utf8");
+        expect(log).toContain(marker);
+        expect(log).not.toContain("inbox-write");
+
+        const rows = waiting();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.messageId).toBe(pendingId);
+        expect(rows.map(entryText)).toEqual([pendingText]);
+      });
+    } finally {
+      db.close();
+    }
+
+    // 公开面那一条照旧：用户看得见的排队区里就它一条（它读的正是这张表）
+    const opened = await client.query<Opened>("session.open", { sessionId });
+    expect(opened.inbox.map(entryText)).toEqual([pendingText]);
   }, 60_000);
 });
 
