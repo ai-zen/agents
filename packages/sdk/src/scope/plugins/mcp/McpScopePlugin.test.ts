@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Scope } from "../../Scope.js";
 import { McpConnectionManager } from "./McpConnectionManager.js";
 import { McpScopePlugin, staleMcpConnections } from "./McpScopePlugin.js";
-import type { AppConfig, McpServerConfig } from "../../../types/index.js";
+import type { AgentDefinition, AppConfig, McpServerConfig } from "../../../types/index.js";
 
 /**
  * MCP 连接与发现结果的对账。
@@ -157,5 +157,23 @@ describe("McpScopePlugin.discover — 连接跟着发现结果对账", () => {
 
     expect(ledger.disconnected()).toEqual([]);
     expect(ledger.connects()).toBe(0);
+  });
+
+  it("两条任务工具与 call_mcp_tool 同一档位：有配置就有", async () => {
+    writeServers({ github: { type: "stdio", command: "gh" } });
+    const scope = await makeScope();
+    const definition = {
+      id: "t",
+      name: "t",
+      messages: [],
+      permissions: { tools: { allow: ["*"] }, mcps: { allow: ["*"] } },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as unknown as AgentDefinition;
+
+    const names = scope.buildTools(definition).map((tool) => tool.function.name);
+    expect(names).toEqual(
+      expect.arrayContaining(["call_mcp_tool", "get_mcp_task_result", "cancel_mcp_task"]),
+    );
   });
 });

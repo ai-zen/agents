@@ -1,8 +1,16 @@
 import type { Tool } from "@ai-zen/agents-core";
 import { isAbsolute, join } from "node:path";
 import { discoverMcpServers } from "./discover.js";
-import { createCallMcpTool, createLoadMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
+import {
+  createCallMcpTool,
+  createCancelMcpTaskTool,
+  createGetMcpTaskResultTool,
+  createLoadMcpTool,
+  createReadMcpResourceTool,
+} from "./mcpTools.js";
 import { McpConnectionManager } from "./McpConnectionManager.js";
+import { CANCEL_MCP_TASK_TOOL, GET_MCP_TASK_RESULT_TOOL } from "./mcpTaskNotice.js";
+import type { McpTaskNoticePort } from "./mcpTaskNotice.js";
 import type { McpServerConfig } from "../../../types/index.js";
 import type { LogSink } from "../../../shared/logger.js";
 import type { Scope, FilterOutput } from "../../Scope.js";
@@ -12,10 +20,12 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
  * MCP 插件 —— 发现 mcp.json + 自持连接管理器 + 装配渐进式披露元工具。
  *
  * 渐进式披露：
- *   - `load_mcp`            枚举所有允许的 server（含 include_manifest 开关）
- *   - `call_mcp_tool`       调用已连接 server 的工具
- *   - `read_mcp_resource`   读取已连接 server 的资源
- * 三个元工具名恒上报 `tools` 维度；`mcpManager` 由本插件私有持有，
+ *   - `load_mcp`                枚举所有允许的 server（含 include_manifest 开关）
+ *   - `call_mcp_tool`           调用已连接 server 的工具（可带任务参数）
+ *   - `read_mcp_resource`       读取已连接 server 的资源
+ *   - `get_mcp_task_result`     按任务 id 取回一个任务的结果
+ *   - `cancel_mcp_task`         取消一个任务
+ * 五个元工具名恒上报 `tools` 维度；`mcpManager` 由本插件私有持有，
  * 有配置路径时在构造时创建，`dispose()` 时统一断开。
  *
  * 每次 `discover()` 除了重读 mcp 文件，还会把连接与发现结果对账一次（见 `reconcileConnections`）。
@@ -30,12 +40,15 @@ export class McpScopePlugin implements ScopePlugin {
   private readonly logger?: LogSink;
   private servers: McpServerConfig[] = [];
 
-  constructor(options?: { paths?: string[]; logger?: LogSink }) {
+  /**
+   * @param options.taskNotice 任务通知的投递口（可选）：不给就是任务状态没有人接，其余照常
+   */
+  constructor(options?: { paths?: string[]; logger?: LogSink; taskNotice?: McpTaskNoticePort }) {
     this.paths = options?.paths ?? [];
     this.logger = options?.logger;
     this.mcpManager =
       this.paths.length > 0
-        ? new McpConnectionManager(undefined, undefined, options?.logger)
+        ? new McpConnectionManager(undefined, undefined, options?.logger, options?.taskNotice)
         : undefined;
   }
 
@@ -73,7 +86,13 @@ export class McpScopePlugin implements ScopePlugin {
   candidates(): ScopeCandidates {
     return {
       mcps: this.servers.map((s) => s.id),
-      tools: ["load_mcp", "call_mcp_tool", "read_mcp_resource"],
+      tools: [
+        "load_mcp",
+        "call_mcp_tool",
+        "read_mcp_resource",
+        GET_MCP_TASK_RESULT_TOOL,
+        CANCEL_MCP_TASK_TOOL,
+      ],
     };
   }
 
@@ -95,6 +114,13 @@ export class McpScopePlugin implements ScopePlugin {
     }
     if (allow.has("read_mcp_resource") && m) {
       result.push(createReadMcpResourceTool(m, scope.env, mcps));
+    }
+    // 两条任务工具与 call_mcp_tool 同一档位：有配置（`m` 在）且这个 Scope 允许它们
+    if (allow.has(GET_MCP_TASK_RESULT_TOOL) && m) {
+      result.push(createGetMcpTaskResultTool(m, scope.env, mcps));
+    }
+    if (allow.has(CANCEL_MCP_TASK_TOOL) && m) {
+      result.push(createCancelMcpTaskTool(m, mcps));
     }
     return result;
   }

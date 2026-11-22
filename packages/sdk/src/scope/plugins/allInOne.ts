@@ -4,6 +4,7 @@ import { BuiltinToolsScopePlugin } from "./builtin/BuiltinToolsScopePlugin.js";
 import { UserToolsScopePlugin } from "./usertools/UserToolsScopePlugin.js";
 import { SkillsScopePlugin } from "./skills/SkillsScopePlugin.js";
 import { McpScopePlugin } from "./mcp/McpScopePlugin.js";
+import type { McpTaskNoticePort } from "./mcp/mcpTaskNotice.js";
 import { SubAgentsScopePlugin } from "./subagents/SubAgentsScopePlugin.js";
 
 /** allInOne 的装配选项：各类能力来源的路径（绝对或相对 scope.cwd） */
@@ -17,6 +18,11 @@ export interface AllInOneOptions {
    * 「这个文件读不出来」报到这里；不传则一律不记（库缺省沉默）。
    */
   logger?: LogSink;
+  /**
+   * MCP 任务通知的投递口（可选）：由宿主实现。不给时任务状态只当没收到，
+   * `call_mcp_tool` 的任务参数照旧可用。
+   */
+  mcpTaskNotice?: McpTaskNoticePort;
 }
 
 /**
@@ -33,7 +39,11 @@ export function allInOne(options?: AllInOneOptions): ScopePlugin[] {
     new BuiltinToolsScopePlugin(),
     new UserToolsScopePlugin({ paths: options?.toolsPaths, logger: options?.logger }),
     new SkillsScopePlugin({ paths: options?.skillsPaths, logger: options?.logger }),
-    new McpScopePlugin({ paths: options?.mcpPaths, logger: options?.logger }),
+    new McpScopePlugin({
+      paths: options?.mcpPaths,
+      logger: options?.logger,
+      taskNotice: options?.mcpTaskNotice,
+    }),
     new SubAgentsScopePlugin({ paths: options?.subAgentsPaths, logger: options?.logger }),
   ];
 }

@@ -109,6 +109,9 @@ function mockManager(overrides?: Record<string, any>): McpConnectionManager {
     getManifest: vi.fn(),
     getClient: vi.fn(),
     touch: vi.fn(),
+    // 缺省：没声明任务档位（= `forbidden`），同步调
+    taskSupportOf: () => "forbidden",
+    rememberTask: vi.fn(),
     ...overrides,
   } as unknown as McpConnectionManager;
 }

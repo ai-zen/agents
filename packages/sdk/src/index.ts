@@ -240,7 +240,20 @@ export {
   createLoadMcpTool,
   createCallMcpTool,
   createReadMcpResourceTool,
+  createGetMcpTaskResultTool,
+  createCancelMcpTaskTool,
 } from "./scope/plugins/mcp/mcpTools.js";
+// MCP 任务：两条工具的名字、终态判定与通知投递口（口由宿主实现）
+export {
+  GET_MCP_TASK_RESULT_TOOL,
+  CANCEL_MCP_TASK_TOOL,
+  isTerminalTaskStatus,
+} from "./scope/plugins/mcp/mcpTaskNotice.js";
+export type {
+  McpTaskNotice,
+  McpTaskNoticePort,
+  McpTaskTerminalStatus,
+} from "./scope/plugins/mcp/mcpTaskNotice.js";
 export { createSubAgentTool } from "./scope/plugins/subagents/subAgentTools.js";
 
 // 共享

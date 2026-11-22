@@ -19,6 +19,8 @@ const mockClient = {
   listResources: vi.fn().mockResolvedValue({ resources: [] }),
   listPrompts: vi.fn().mockResolvedValue({ prompts: [] }),
   callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
+  // 建连之后要接任务状态通知（`notifications/tasks/status`）
+  setNotificationHandler: vi.fn(),
 };
 
 const mockTransport = {
