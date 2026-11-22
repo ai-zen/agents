@@ -10,8 +10,6 @@ import { defineConfig } from "vitest/config";
  *
  * 只收不依赖构建产物 / 子进程 / 端口的那些：`*.e2e.test.ts` 起真端口、写真实磁盘、连真
  * WebSocket，它们在 `vitest.e2e.config.ts`（`npm run test:e2e`），这里排除掉。
- * `src-bad/` 那两条旧用例（`serve.process.test.ts` / `host.integration.test.ts`）不在 `src/`
- * 下，本来就不进这个 glob。
  */
 export default defineConfig({
   test: {
