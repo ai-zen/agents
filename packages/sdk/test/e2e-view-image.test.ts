@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { promises as fs } from "node:fs";
 import { deflateSync } from "node:zlib";
 import OpenAI from "openai";
+import { DEFAULT_HANDOFF_THRESHOLD } from "../src/config/normalize.js";
 import { Scope } from "../src/scope/Scope.js";
 import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { createModel } from "../src/runtime/createModel.js";
@@ -140,7 +141,11 @@ const config = {
       name: "DeepSeek V4.1 Flash",
       endpointId: "deepseek",
       modelName: VISION_MODEL_ID,
-      tokenThresholds: { handoff: 128_000, guard: 192000 },
+      // 用量线取出厂值：交接软线用出厂 handoff，阻断硬线取其 1.5 倍
+      tokenThresholds: {
+        handoff: DEFAULT_HANDOFF_THRESHOLD,
+        guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+      },
       defaultParams: {},
       vision: true,
     },
@@ -149,7 +154,11 @@ const config = {
       name: "DeepSeek V4 Pro",
       endpointId: "deepseek",
       modelName: "deepseek-v4-pro",
-      tokenThresholds: { handoff: 128_000, guard: 192000 },
+      // 用量线取出厂值：交接软线用出厂 handoff，阻断硬线取其 1.5 倍
+      tokenThresholds: {
+        handoff: DEFAULT_HANDOFF_THRESHOLD,
+        guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+      },
       defaultParams: {},
     },
   ],

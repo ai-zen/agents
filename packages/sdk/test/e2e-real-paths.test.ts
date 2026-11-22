@@ -3,6 +3,7 @@ import { Scope } from "../src/scope/Scope.js";
 import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { createAgent } from "../src/runtime/createAgent.js";
 import { ConfigManager } from "../src/config/ConfigManager.js";
+import { DEFAULT_HANDOFF_THRESHOLD } from "../src/config/normalize.js";
 import { AgentRepository } from "../src/crud/AgentRepository.js";
 import { readSkill, discoverSkills } from "../src/scope/plugins/skills/discover.js";
 import { discoverSubAgents } from "../src/scope/plugins/subagents/discover.js";
@@ -95,7 +96,12 @@ describe("端到端：真实文件系统路径", () => {
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
       expect(config.imageModels).toHaveLength(1);
-      expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds.handoff).toBe(500000);
+      // 夹具里的模型只写了旧字段 maxContextTokens，没有 tokenThresholds：读出来的
+      // 是补位后的形状，两条线都取出厂值（软线取出厂 handoff，硬线取其 1.5 倍）
+      expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds).toEqual({
+        handoff: DEFAULT_HANDOFF_THRESHOLD,
+        guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+      });
     });
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generate_image", async () => {

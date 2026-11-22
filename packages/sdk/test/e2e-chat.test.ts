@@ -14,6 +14,7 @@ import { describe, it, expect } from "vitest";
 import { Message } from "@ai-zen/agents-core";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DEFAULT_HANDOFF_THRESHOLD } from "../src/config/normalize.js";
 import { Scope } from "../src/scope/Scope.js";
 import { createModel } from "../src/runtime/createModel.js";
 import { SdkAgent } from "../src/runtime/SdkAgent.js";
@@ -43,7 +44,11 @@ const config = {
       name: "DeepSeek V4.1 Flash",
       endpointId: "deepseek",
       modelName: "deepseek-flash",
-      tokenThresholds: { handoff: 128_000, guard: 192000 },
+      // 用量线取出厂值：交接软线用出厂 handoff，阻断硬线取其 1.5 倍
+      tokenThresholds: {
+        handoff: DEFAULT_HANDOFF_THRESHOLD,
+        guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+      },
       defaultParams: {},
     },
   ],
