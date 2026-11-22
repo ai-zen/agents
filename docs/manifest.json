@@ -2,10 +2,10 @@
   "name": "agents",
   "npm": "@ai-zen/agents-workspace",
   "description": {
-    "zh": "AI-Zen Agents — 模块化 LLM Agent 框架 monorepo（core + sdk + host + client）：插件驱动的 Agent 运行时、能力管线、常驻宿主与 MCP 支持。",
-    "en": "AI-Zen Agents — a modular LLM Agent framework monorepo (core + sdk + host + client): plugin-driven Agent runtime, capability pipeline, a resident host, and MCP support."
+    "zh": "AI-Zen Agents — 一套自己部署的 agent 运行时（core + sdk + host + client）：内核、能力面与运行时、常驻宿主与连接层。",
+    "en": "AI-Zen Agents — a self-hosted runtime for LLM agents (core + sdk + host + client): the kernel, the capability face and runtime, a resident host, and a connection layer."
   },
-  "version": "2.0.0",
+  "version": "3.0.0",
   "docsRoot": "docs",
   "locales": ["zh", "en"],
   "defaultLocale": "zh",
@@ -17,21 +17,17 @@
     "zh": [
       { "title": "快速开始", "path": "zh/getting-started.md" },
       { "title": "架构", "path": "zh/architecture.md" },
-      { "title": "线上协议", "path": "zh/protocol.md" },
-      { "title": "部署与远程访问", "path": "zh/deploy.md" },
+      { "title": "部署", "path": "zh/deploy.md" },
       { "title": "Core API", "path": "zh/core.md" },
       { "title": "SDK", "path": "zh/sdk.md" },
-      { "title": "检索与 RAG", "path": "zh/rag.md" },
       { "title": "MCP", "path": "zh/mcp.md" }
     ],
     "en": [
-      { "title": "Quick Start", "path": "en/getting-started.md" },
+      { "title": "Getting Started", "path": "en/getting-started.md" },
       { "title": "Architecture", "path": "en/architecture.md" },
-      { "title": "Wire Protocol", "path": "en/protocol.md" },
-      { "title": "Deployment & Remote Access", "path": "en/deploy.md" },
+      { "title": "Deployment", "path": "en/deploy.md" },
       { "title": "Core API", "path": "en/core.md" },
       { "title": "SDK", "path": "en/sdk.md" },
-      { "title": "Retrieval & RAG", "path": "en/rag.md" },
       { "title": "MCP", "path": "en/mcp.md" }
     ]
   }
