@@ -229,7 +229,15 @@ export {
   EditTool,
   SpawnTool,
   SleepTool,
+  AsyncExecTool,
+  AsyncTimeoutTool,
 } from "./scope/plugins/builtin/index.js";
+// 两个后台工具的名字：一次性执行体手上没有它们（装配期按这份名单剔除）
+export {
+  ASYNC_TASK_TOOL_NAMES,
+  ASYNC_EXEC_TOOL,
+  ASYNC_TIMEOUT_TOOL,
+} from "./scope/plugins/builtin/asyncTasks.js";
 export { GenerateImageTool } from "./scope/plugins/builtin/GenerateImageTool.js";
 export { ViewImageTool } from "./scope/plugins/builtin/ViewImageTool.js";
 export {

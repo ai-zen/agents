@@ -4,6 +4,7 @@ import type {
   AbortedToolRoundStrategy,
 } from "@ai-zen/agents-core";
 import type { AutoRefreshWhen } from "../agent-plugins/AutoRefreshToolsPlugin.js";
+import type { LogSink } from "../shared/logger.js";
 
 /** 工具刷新的三个档位（`off` = 不装插件，由装配方判） */
 export type AutoRefreshToolsWhen = AutoRefreshWhen | "off";
@@ -380,6 +381,13 @@ export interface ToolEnv {
   config: AppConfig;
   /** 外部依赖注入点（默认全部走真实 OpenAI SDK） */
   deps?: ToolEnvDeps;
+  /**
+   * 日志口（可选）。后台任务的结果投不回去时，那一行从这里记；不注入就什么都不写。
+   *
+   * 这类失败没有别的去处：发起任务的工具调用当场就返回了，等结果回来时也没有任何一个
+   * 调用点可以接住它。
+   */
+  log?: LogSink;
 }
 
 // ---- MCP ----

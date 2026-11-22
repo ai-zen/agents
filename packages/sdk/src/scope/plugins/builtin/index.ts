@@ -19,11 +19,13 @@ import { BatchEditTool } from "./BatchEditTool.js";
 import { EditTool } from "./EditTool.js";
 import { SpawnTool } from "./SpawnTool.js";
 import { SleepTool } from "./SleepTool.js";
+import { AsyncExecTool } from "./AsyncExecTool.js";
+import { AsyncTimeoutTool } from "./AsyncTimeoutTool.js";
 import { ViewImageTool } from "./ViewImageTool.js";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 
 /**
- * 全部内置工具类（20 个）。
+ * 全部内置工具类（22 个）。
  * 由 BuiltinToolsScopePlugin 用 ToolEnv 实例化（每个 Scope 一套实例，注入其 cwd）。
  */
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
@@ -45,6 +47,8 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
   EditTool,
   SpawnTool,
   SleepTool,
+  AsyncExecTool,
+  AsyncTimeoutTool,
   ViewImageTool,
   GenerateImageTool,
 ];
@@ -68,6 +72,8 @@ export {
   EditTool,
   SpawnTool,
   SleepTool,
+  AsyncExecTool,
+  AsyncTimeoutTool,
   ViewImageTool,
   GenerateImageTool,
 };
