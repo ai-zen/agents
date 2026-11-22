@@ -1,5 +1,8 @@
 /**
- * 假端点自己的测试 —— 钉住它的**外部行为**，不是实现。
+ * 假端点在测试件这一侧的验收：转出去的这几个名字照旧能用，外部行为一条没变。
+ *
+ * 端点自己的实现搬去了 `@ai-zen/fake-llm`，那份用例跟着搬；这里留下来的是「调用点的
+ * 契约没变」—— 引 `@ai-zen/agents-testing` 的用例不该因为搬家改一个字。
  *
  * 为什么值得写：它是测试件。假件坏掉时最糟的结果不是红灯，而是下游那些用例**照样绿**
  * （比如少发一片正文，「流式」就退化成一片，断言 `>1` 才看得出来；比如忘了 `[DONE]`，
@@ -7,7 +10,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { splitReply, startFakeLlm, type FakeLlm } from "./fake-llm.js";
+import { splitReply, startFakeLlm, type FakeLlm } from "./index.js";
 
 let llm: FakeLlm | null = null;
 
