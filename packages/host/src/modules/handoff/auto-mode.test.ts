@@ -25,6 +25,7 @@ import { openDatabase } from "../../infra/db.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { QuestionRegistry } from "../question/registry.js";
+import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
 import type { NewSession, Session } from "../session/types.js";
@@ -54,6 +55,7 @@ function newHost() {
   const handoff = new HandoffService({
     db,
     sessions,
+    messages: messageTable(db),
     // 下面几格这几条用例一条都走不到（只问「问不问、回什么」），给不碰的替身
     workspaces: {} as unknown as WorkspaceService,
     runtime: {} as AgentRuntime,

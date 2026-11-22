@@ -20,8 +20,11 @@ export interface HostObserverDeps {
   readonly assets: AssetService;
   readonly events: Bus<HostEvent>;
   readonly onError: (error: unknown, what: string) => void;
-  /** 这一段此刻是否在交接。传函数不传值：交接态会在一个执行体的寿命里变两次以上 */
-  readonly isHandingOff: (sessionId: string) => boolean;
+  /**
+   * 这段会话此刻的消息落不落库：换手那一档在交接期间不落库。传函数不传值：交接态会在一个执行体
+   * 的寿命里变两次以上
+   */
+  readonly suppressesPersist: (sessionId: string) => boolean;
   /** 这段会话此刻是否在重装（`ReloadWindow`）。同样传函数：窗口由重装那条路开关 */
   readonly isReloading: (sessionId: string) => boolean;
 }
@@ -146,7 +149,7 @@ export class HostObserver {
        * `append` 之后，而 `settle` 每条消息只报一次）。那几条是运行时归一之后补报一条
        * `messageChanged` 送过来的，也就是下面那一格。
        *
-       * 走 `writeMessage` 而不是直接写库：交接期间不落库这条判断只有一处。
+       * 走 `writeMessage` 而不是直接写库：换手那一档交接期间不落库这条判断只有一处。
        */
       case "messageFinished":
         this.writeMessage(fact.sessionId, fact.message);
@@ -361,15 +364,16 @@ export class HostObserver {
   }
 
   /**
-   * 交接期间不落库：这一任写下的东西属于即将被换掉的那份记忆，落进去就跟着新记忆一起活着，
-   * 而用户看到的历史里会多出一段「上一代在想什么」。推给客户端照旧 —— 用户要看得见它在写。
+   * 换手那一档在交接期间不落库：这一任写下的东西属于即将被换掉的那份记忆，落进去就跟着新记忆
+   * 一起活着，而用户看到的历史里会多出一段「上一代在想什么」。推给客户端照旧 —— 用户要看得见它
+   * 在写。只写文档那一档不过这一格：它那几条是这段会话真实发生过的，与库里一致。
    *
    * 判在写之前、而推送在写之后：两半共用一个入口，拆开写就会有人只给其中一半加这道判断。
    *
    * `linkAssets` 只有 `delta` 给 `false`（那一处正文还在长，见 `delta` 分支的注释）。
    */
   private writeMessage(sessionId: string, message: AgentNS.Message, linkAssets = true): void {
-    if (this.deps.isHandingOff(sessionId)) return;
+    if (this.deps.suppressesPersist(sessionId)) return;
     try {
       this.deps.messages.upsert(sessionId, message);
     } catch (error) {

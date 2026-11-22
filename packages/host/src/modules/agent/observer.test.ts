@@ -90,7 +90,7 @@ function setup() {
     assets,
     events,
     onError: (error, what) => errors.push({ error, what }),
-    isHandingOff: () => false,
+    suppressesPersist: () => false,
     isReloading: () => reloading,
   });
   observer.attach({

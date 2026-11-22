@@ -450,6 +450,7 @@ export class HostApp {
     const handoff = new HandoffService({
       db: this.db,
       sessions,
+      messages,
       workspaces,
       runtime: this.runtime,
       notices,
@@ -478,8 +479,8 @@ export class HostApp {
       assets,
       events,
       onError,
-      // 交接态会在一个执行体的寿命里变好几次，所以传函数不传值
-      isHandingOff: (sessionId) => handoff.isHandingOff(sessionId),
+      // 消息落不落库：换手那一档在交接期间不落；交接态会在一个执行体的寿命里变几次，所以传函数不传值
+      suppressesPersist: (sessionId) => handoff.suppressesPersist(sessionId),
       isReloading: (sessionId) => reloads.covers(sessionId),
     });
     this.detachObserver = this.observer.attach(this.runtime);

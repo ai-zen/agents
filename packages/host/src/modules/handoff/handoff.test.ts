@@ -1,8 +1,11 @@
 /**
  * 五条验收：交接态只落在进入的那一段上，输出闸按 SDK 那一侧的分工走（`start` 不碰、收口开、
- * 取消显式关）；后台那一趟失败也开闸并留下一条通知（成则一句话不说）；交接期间这
- * 段会话的消息照样推给客户端，但不落库 —— 收口之后恢复；换记忆之后库里与执行体里是同一份新的，
- * 且换的是数组的内容而不是数组本身。
+ * 取消显式关）；后台那一趟失败也开闸并留下一条通知（成则一句话不说）；换手那一档交接期间这段会话
+ * 的消息照样推给客户端，但不落库 —— 收口之后恢复；换记忆之后库里与执行体里是同一份新的，且换的是
+ * 数组的内容而不是数组本身。
+ *
+ * 只写文档那一档另有三件：交接回合照常落库（内存与库逐条一致，重启读回来也是同一份）、取消之后
+ * 两边仍一致、记忆与存档会话都不动。
  *
  * 自动交接那一条路另有两件：它不经 `start`，所以交接态与闸得由插件那两拍自己接上；开关关着时
  * 它一格都不碰。
@@ -188,16 +191,6 @@ function fakeHandoffs() {
           signal,
           method: "handoff",
           succeed: () => {
-            // 照真的 `self` 那一趟来：交接指令与回执会追加进 `agent.messages`（宿主收尾要把它们
-            // 截回去 —— 那一格是这条用例要验的东西之一）
-            agent.messages.push(
-              new Message({
-                id: "handoff-round",
-                role: AgentNS.Role.User,
-                status: AgentNS.MessageStatus.Completed,
-                content: "写一份交接文档",
-              }),
-            );
             // 真的把文档写出来："落在项目的 handoffs 下"与"通知里的路径"必须是同一个文件
             mkdirSync(options.handoffDir, { recursive: true });
             const handoffPath = join(options.handoffDir, FILE);
@@ -209,8 +202,8 @@ function fakeHandoffs() {
               requestedMode: mode ?? "self",
               handoffPath,
               model: "fake-model",
-              // 交接回合开始之前的条数：宿主据它把回合截掉
-              messageCountBefore: agent.messages.length - 1,
+              // 交接回合开始之前的条数：照 SDK 那个形状填，宿主不拿它动记忆（交接回合照常落库）
+              messageCountBefore: agent.messages.length,
               historyText: "",
             });
           },
@@ -263,8 +256,8 @@ afterEach(() => {
   tempDirs = [];
 });
 
-function setup() {
-  const db = openDatabase(":memory:");
+function setup(dbFile = ":memory:") {
+  const db = openDatabase(dbFile);
   const workspaceRows = workspaceTable(db);
   // 项目目录是真的：交接文档要真的写到它下面，路径也得从它算
   const cwd = mkdtempSync(join(tmpdir(), "handoff-ws-"));
@@ -293,6 +286,7 @@ function setup() {
   const handoff = new HandoffService({
     db,
     sessions,
+    messages,
     workspaces,
     runtime: fake.runtime,
     notices,
@@ -319,7 +313,7 @@ function setup() {
     }),
     events,
     onError: (error) => errors.push(error),
-    isHandingOff: (id) => handoff.isHandingOff(id),
+    suppressesPersist: (id) => handoff.suppressesPersist(id),
     // 交接这条路不重装：窗口永远是关的
     isReloading: () => false,
   }).attach(fake.runtime);
@@ -335,11 +329,10 @@ function setup() {
    * 报一条「这段会话多了一条消息」。观察者听的是运行时交出来的那一條事实流（一条消息的内核事件
    * 只是其中一格），所以用例直接造那一条事实递给它 —— 与运行时转发时造的那一条同形。
    */
-  function messageAdded(
+  function reportMessage(
     sessionId: string,
     agent: ReturnType<typeof fakeAgent>,
-    id: string,
-    text: string,
+    added: AgentNS.Message,
   ): void {
     fake.emit({
       type: "messageAdded",
@@ -347,8 +340,17 @@ function setup() {
       agent: agent as unknown as Agent,
       seq: 1,
       at: new Date().toISOString(),
-      message: message(id, text),
+      message: added,
     });
+  }
+
+  function messageAdded(
+    sessionId: string,
+    agent: ReturnType<typeof fakeAgent>,
+    id: string,
+    text: string,
+  ): void {
+    reportMessage(sessionId, agent, message(id, text));
   }
 
   return {
@@ -363,6 +365,7 @@ function setup() {
     seen,
     errors,
     wake,
+    reportMessage,
     messageAdded,
     /** 这一段会话所属项目的目录（交接文档就落在它下面） */
     cwd,
@@ -516,13 +519,15 @@ describe("后台那一趟失败", () => {
 /**
  * 两档：只写文档 / 写文档并换手。
  *
- * 这两条验的是「同一条交接态、同一个取消口，最后一步分成两件事」：只写文档那一档跑完之后，会话
- * 里该一个字节都没变（记忆、存档会话、执行体身份都不动），多出来的只有一份文档与一条带路径的通
- * 知；换手那一档的记忆与存档会话才是它该有的样子。两档的取消都回到交接前。
+ * 这两条验的是「同一条交接态、同一个取消口，最后一步分成两件事」：只写文档那一档跑完之后，会话里
+ * 的记忆没被换、没多出存档会话、执行体的身份也没换（多出来的只有一份文档与一条带路径的通知），
+ * 而它写下的那几条消息与库里逐条相等；换手那一档的记忆与存档会话才是它该有的样子。两档的取消都
+ * 回到交接前，回去之后内存与库仍是同一份。
  */
 describe("两档", () => {
-  it("只写文档那一档：记忆、存档会话、执行体身份都不动，文档落在项目的 handoffs 下，通知里带路径", async () => {
-    const { handoff, handoffs, sessions, messages, notices, runtime, wake, cwd } = setup();
+  it("只写文档那一档：交接回合照常落库，记忆与库逐条一致；不建存档会话、不换执行体", async () => {
+    const { handoff, handoffs, sessions, messages, notices, runtime, wake, cwd, reportMessage } =
+      setup();
     const session = sessions.create(input);
     const agent = wake(session.id);
     // 交接前的那一份记忆：库里一条、执行体手里也是那一条
@@ -539,13 +544,23 @@ describe("两档", () => {
     // 交接态照常置上：两档共用这一格
     expect(handoff.isHandingOff(session.id)).toBe(true);
 
+    // 交接回合：指令与回执那几条，照运行时那一侧每条都报一条事实
+    const round = [message("round-1", "写一份交接文档"), message("round-2", "回执：写好了")];
+    for (const item of round) {
+      agent.messages.push(item);
+      reportMessage(session.id, agent, item);
+    }
+    // 交接期间就落了库：这一档不在落库抑制那一格
+    expect(messages.get("round-1")).toBeDefined();
+
     handoffs.runs[0].succeed();
     await settle();
 
-    // 记忆：库里那一份与执行体手里那一份都没变（交接回合那几条被截回去了，库里本来就没落）
-    expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([old.id]);
-    expect(agent.messages.map((item) => item.id)).toEqual([old.id]);
-    // 没有多出一段「已存档_」会话，会话行一个字都没动（更新时间也没动：这一档不落库）
+    // 记忆：库里那一份与执行体手里那一份逐条相等（条数、id、顺序），交接回合那几条也在
+    const inDb = messages.listBySession(session.id).map((item) => item.id);
+    expect(inDb).toEqual([old.id, "round-1", "round-2"]);
+    expect(agent.messages.map((item) => item.id)).toEqual(inDb);
+    // 没有多出一段「已存档_」会话，会话行一个字都没动
     expect(sessions.list(input.workspaceId).map((item) => item.name)).toEqual([session.name]);
     expect(sessions.get(session.id)).toEqual(before);
     // 执行体的身份没换：还是原来那一个对象
@@ -563,6 +578,37 @@ describe("两档", () => {
     // 收口与换手那一档同一份：交接态退掉、闸开回来
     expect(handoff.isHandingOff(session.id)).toBe(false);
     expect(agent.isOutputPaused).toBe(false);
+  });
+
+  /**
+   * 重启读回来的是同一份：库里那一份就是内存那一份，不是「内存里有、库里没有」。
+   */
+  it("只写文档那一档跑完之后，另开一个读口读回来的是同一份", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "handoff-db-"));
+    tempDirs.push(dir);
+    const file = join(dir, "host.db");
+    const { handoff, handoffs, sessions, wake, reportMessage } = setup(file);
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+    // 交接前的那一条：内存与库里都在
+    const old = message("m-1", "旧记忆里的那句");
+    agent.messages.push(old);
+    reportMessage(session.id, agent, old);
+
+    handoff.start(session.id, { kind: "document" });
+    const round = [message("round-1", "写一份交接文档"), message("round-2", "回执：写好了")];
+    for (const item of round) {
+      agent.messages.push(item);
+      reportMessage(session.id, agent, item);
+    }
+    handoffs.runs[0].succeed();
+    await settle();
+
+    // 另一个读口读同一个库文件：这是重启之后能读到的那一份
+    const reread = messageTable(openDatabase(file));
+    expect(reread.listBySession(session.id).map((item) => item.id)).toEqual(
+      agent.messages.map((item) => item.id),
+    );
   });
 
   it("只写文档那一档写不出来：走失败那条路，不降级、不换手", async () => {
@@ -643,6 +689,50 @@ describe("两档", () => {
       // 下一档接着用同一段：取消留下的暂停要先开回来，不然第二条起不来
       agent.resumeOutput();
     }
+  });
+
+  /**
+   * 取消之后内存与库仍是同一份。SDK 取消时把交接回合从记忆里截回交接前的条数，于是只写文档那一档
+   * 已经落过库的那几条要跟着撤 —— 留在库里就是重启之后复活几条记忆里从来没有的消息。换手那一档
+   * 本来一条都没进库，不用动。
+   */
+  it("取消之后内存与库仍然逐条一致", async () => {
+    const { handoff, sessions, messages, wake, reportMessage } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+    const old = message("m-1", "旧记忆里的那句");
+    messages.upsertMany(session.id, [old]);
+    agent.messages.push(old);
+
+    // 只写文档那一档：交接回合落过库
+    handoff.start(session.id, { kind: "document" });
+    const documentRound = message("round-1", "写一份交接文档");
+    agent.messages.push(documentRound);
+    reportMessage(session.id, agent, documentRound);
+    expect(messages.get("round-1")).toBeDefined();
+
+    // 照 SDK 取消那一手：交接回合从记忆里截掉（它的收尾排在宿主的收尾之前）
+    agent.messages.splice(1);
+    handoff.cancel(session.id);
+    await settle();
+
+    expect(agent.messages.map((item) => item.id)).toEqual([old.id]);
+    expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([old.id]);
+    agent.resumeOutput();
+
+    // 换手那一档：交接回合一条都没进库，取消之后两边也是同一份
+    handoff.start(session.id, { kind: "swap" });
+    const swapRound = message("round-2", "写一份交接文档");
+    agent.messages.push(swapRound);
+    reportMessage(session.id, agent, swapRound);
+    expect(messages.get("round-2")).toBeUndefined();
+
+    agent.messages.splice(1);
+    handoff.cancel(session.id);
+    await settle();
+
+    expect(agent.messages.map((item) => item.id)).toEqual([old.id]);
+    expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([old.id]);
   });
 });
 
@@ -748,12 +838,12 @@ describe("换记忆", () => {
 });
 
 describe("交接期间不落库", () => {
-  it("消息照样推给客户端，一行都不进库；收口之后恢复", async () => {
+  it("换手那一档：消息照样推给客户端，一行都不进库；收口之后恢复", async () => {
     const { handoff, handoffs, sessions, messages, seen, errors, wake, messageAdded } = setup();
     const session = sessions.create(input);
     const agent = wake(session.id);
 
-    handoff.start(session.id);
+    handoff.start(session.id, { kind: "swap" });
     messageAdded(session.id, agent, "m-1", "这一任最后说的");
 
     expect(messages.get("m-1")).toBeUndefined();

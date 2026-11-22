@@ -19,6 +19,7 @@ import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
 import type { QuestionRegistry } from "../question/registry.js";
 import { replaceMemory } from "../session/memory.js";
+import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { Session } from "../session/types.js";
 import type { WorkspaceService } from "../workspace/service.js";
@@ -98,6 +99,9 @@ export function createSdkHandoff(options: SdkHandoffOptions): SdkHandoff {
  * - `swap`：写完文档之后把这段记忆换成新的一份，旧记忆成为另一段存档会话。
  *
  * 两档共用交接态与取消口：取消都要回到交接前（半截文档删掉、这一段退出交接态）。
+ *
+ * 消息落库只有换手那一档在交接期间跳过（那份记忆马上要换成新的一份），只写文档那一档照常落库
+ * —— 交接回合是这段会话真实发生过的事。
  */
 export type HandoffKind = "document" | "swap";
 
@@ -117,6 +121,11 @@ export interface HandoffDeps {
   /** 换记忆要一批跨两张表的写，`replaceMemory` 拿的就是它 */
   readonly db: DatabaseSync;
   readonly sessions: SessionService;
+  /**
+   * 消息表：取消那一侧要用它撤掉库里那几条。只写文档这一档在交接期间照常落库，而取消会把交接
+   * 回合从记忆里截掉，库里留着就是「内存里没有、库里有」。
+   */
+  readonly messages: ReturnType<typeof messageTable>;
   /** 文档落在项目里，得按会话所属项目的 `cwd` 现算 */
   readonly workspaces: WorkspaceService;
   /**
@@ -145,7 +154,17 @@ export interface HandoffDeps {
  * 会话行上也没有「待交接」这么一格 —— 会话行就那十一格，交接不往上多占一格。
  */
 export class HandoffService {
+  /**
+   * 这段会话此刻在交接。两档都进这一格：界面上的「正在交接」、只留中断、输入闸都读它。
+   */
   private readonly handingOff = new Set<string>();
+  /**
+   * 这段会话此刻在换手：交接期间它的消息不落库。
+   *
+   * 只有换手那一档进这一格 —— 那份记忆马上要换成新的一份，落进去没有意义。只写文档那一档不进：
+   * 它的交接回合是真实发生过的，照常落库，内存与库因此是同一份。
+   */
+  private readonly swapping = new Set<string>();
   /**
    * 这一趟的取消口，按会话。`cancel` 掐它 —— 手动与自动两条路共用这一格，界面上按停掐断的
    * 因此也包括插件自己发起的那一趟。一趟结束在 `finally` 里摘掉。
@@ -239,14 +258,15 @@ export class HandoffService {
     }
 
     const handoffDir = this.handoffDir(session);
-    const signal = this.enter(sessionId);
+    const kind = options.kind ?? "swap";
+    const signal = this.enter(sessionId, kind);
     void this.run({
       sessionId,
       agent,
       handoffDir,
       signal,
       mode: options.mode,
-      kind: options.kind ?? "swap",
+      kind,
     });
   }
 
@@ -265,7 +285,9 @@ export class HandoffService {
    * 不在交接态时是空操作：第二次到这里事实没有变化，不再推事件也不再推通知。
    */
   finish(sessionId: string, outcome?: { readonly error: unknown }): void {
-    if (!this.handingOff.delete(sessionId)) return;
+    const wasHandingOff = this.handingOff.delete(sessionId);
+    this.swapping.delete(sessionId);
+    if (!wasHandingOff) return;
     this.deps.runtime.get(sessionId)?.resumeOutput();
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: false });
 
@@ -330,6 +352,7 @@ export class HandoffService {
     if (!this.handingOff.has(sessionId)) return;
     this.deps.runtime.get(sessionId)?.pauseOutput();
     this.handingOff.delete(sessionId);
+    this.swapping.delete(sessionId);
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: false });
   }
 
@@ -391,9 +414,19 @@ export class HandoffService {
     this.deps.sessions.update(sessionId, {});
   }
 
-  /** 写库那条路动手之前问这一格：交接期间这段会话的消息照样推事件，但不落库 */
+  /** 这段会话此刻在不在交接：界面上的「正在交接」、只留中断、输入闸都读它（两档都有交接态） */
   isHandingOff(sessionId: string): boolean {
     return this.handingOff.has(sessionId);
+  }
+
+  /**
+   * 写库那条路动手之前问这一格：这段会话此刻在换手。
+   *
+   * 交接期间不落库只对换手那一档成立 —— 那份记忆马上要换成新的一份。只写文档那一档的消息照常
+   * 落库，推给客户端的那几条与库里那几条因此是同一份。
+   */
+  suppressesPersist(sessionId: string): boolean {
+    return this.swapping.has(sessionId);
   }
 
   /**
@@ -513,11 +546,14 @@ export class HandoffService {
    *
    * 手动与自动两条路共用它，四条判据不在这里 —— 那四条判的是「人现在能不能点交接」，而自动
    * 那一趟是插件自己发的，它只在执行体闲着时才会到这里。
+   *
+   * `kind` 只决定这一趟进不进落库抑制那一格（见 {@link suppressesPersist}）。
    */
-  private enter(sessionId: string): AbortSignal {
+  private enter(sessionId: string, kind: HandoffKind): AbortSignal {
     const abort = new AbortController();
     this.aborters.set(sessionId, abort);
     this.handingOff.add(sessionId);
+    if (kind === "swap") this.swapping.add(sessionId);
     this.deps.events.emit({ type: "session.handoff", sessionId, handingOff: true });
     return abort.signal;
   }
@@ -539,12 +575,13 @@ export class HandoffService {
    * 后台那一趟：造一个只为这一趟服务的 SDK 实例，按这一档调 `handoff` 或 `migrate`，成败都在收口
    * 里落地。
    *
-   * 失败与成功各走一条，两条都必须退出交接态：留在交接态的那一段既不再落库，也不再取件。
-   * 失败还要把闸开回来（只有取消不开）—— `start` 早就返回了，{@link finish} 推的那条通知是
-   * 用户唯一能拿到「为什么没换」的地方。
+   * 失败与成功各走一条，两条都必须退出交接态：留在交接态的会话不再取件（换手那一档连消息也
+   * 不落库）。失败还要把闸开回来（只有取消不开）—— `start` 早就返回了，{@link finish} 推的那条
+   * 通知是用户唯一能拿到「为什么没换」的地方。
    *
    * 两档只在最后一步分岔：只写文档那一档不调 `commitMemory`（SDK 的 `handoff` 根本不会叫它），
-   * 于是记忆、存档会话、执行体的身份一格都不动，这一趟要告知的只有文档落在哪。
+   * 于是记忆、存档会话、执行体的身份一格都不动，这一趟要告知的只有文档落在哪。它写下的那几条
+   * 消息照常落库，收口之后也不截 —— 这一段会话真的说了那几句。
    *
    * 取消不是失败：`cancel` 已经摘了牌、也把闸留在关着的那一边。这里还认一种它不经手
    * 的取消 —— 用户在界面上按停打的是这段会话的中断（`agent.abort()`，它不碰这里的 `signal`），
@@ -574,11 +611,6 @@ export class HandoffService {
       if (kind === "document") {
         // 只写文档：回来的路径是这一趟唯一要告知的事，记忆那一侧 SDK 一个字节都不动
         const ctx = await sdk.handoff({ agent, mode, signal });
-        // 交接回合（指令、工具调用、回执）不进记忆：这一档要的是「写一份文档，别的一个字不变」。
-        // 库里那几条本来就没落（观察者按交接态跳过），内存里不截回来，两边就是两份不一样的记忆
-        // —— 下一次请求还会把几 KB 的指令当成历史再发一遍，重启之后它们又凭空消失。
-        // 截到交接前的条数，与 SDK 在取消那条路上做的是同一件事。
-        agent.messages.splice(ctx.messageCountBefore);
         this.finish(sessionId);
         this.announceDocument(sessionId, ctx.handoffPath);
         return;
@@ -589,6 +621,9 @@ export class HandoffService {
       this.finish(sessionId);
     } catch (error) {
       if (signal.aborted || error instanceof HandoffAbortedError) {
+        // 只写文档这一档在交接期间照常落库，而取消会把交接回合从记忆里截掉（SDK 收尾时做的）：
+        // 库里那几条一起撤，两处停在同一份上
+        if (kind === "document") this.dropMessagesOutsideMemory(sessionId);
         this.cancel(sessionId);
         return;
       }
@@ -596,6 +631,25 @@ export class HandoffService {
       this.finish(sessionId, { error });
     } finally {
       this.aborters.delete(sessionId);
+    }
+  }
+
+  /**
+   * 把库里那几条内存里已经没有的消息删掉，并告诉客户端它们没了。
+   *
+   * 取消时 SDK 把交接回合从记忆里截回交接前的条数，而只写文档这一档那几条已经落过库：留着它们，
+   * 重启之后它们又回来，而这段记忆里从来没有过它们。判据是「内存里没有的那几条」——照记忆那份
+   * 真相删，不另记一份这一趟写过什么。
+   */
+  private dropMessagesOutsideMemory(sessionId: string): void {
+    const agent = this.deps.runtime.get(sessionId);
+    if (agent === undefined) return;
+
+    const kept = new Set(agent.messages.map((message) => message.id));
+    for (const message of this.deps.messages.listBySession(sessionId)) {
+      if (kept.has(message.id)) continue;
+      this.deps.messages.delete(message.id);
+      this.deps.events.emit({ type: "message.removed", sessionId, messageId: message.id });
     }
   }
 
@@ -614,7 +668,7 @@ export class HandoffService {
     handoffDir: string,
     params: MigrateParams,
   ): Promise<Pick<HandoffContext, "mode">> {
-    const signal = this.enter(sessionId);
+    const signal = this.enter(sessionId, "swap");
 
     try {
       const sdk = this.deps.createSdk({

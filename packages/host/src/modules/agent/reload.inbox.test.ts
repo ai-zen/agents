@@ -165,7 +165,7 @@ function newHost() {
     }),
     events,
     onError: () => {},
-    isHandingOff: () => false,
+    suppressesPersist: () => false,
     isReloading: (sessionId) => reloads.covers(sessionId),
   });
   observer.attach(runtime as never);

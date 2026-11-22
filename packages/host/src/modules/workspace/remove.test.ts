@@ -88,6 +88,7 @@ function newHost() {
   const handoff = new HandoffService({
     db,
     sessions,
+    messages,
     workspaces,
     runtime,
     notices: {} as never,
