@@ -9,6 +9,7 @@ import { hostRouter } from "./host.js";
 import { mcpRouter } from "./mcp.js";
 import { noticeRouter } from "./notice.js";
 import { questionRouter } from "./question.js";
+import { scopeRouter } from "./scope.js";
 import { searchRouter } from "./search.js";
 import { sessionRouter } from "./session.js";
 import { createTrpc } from "./trpc.js";
@@ -32,6 +33,7 @@ export function createAppRouter(deps: HostApiDeps) {
     question: questionRouter(deps, api),
     handoff: handoffRouter(deps, api),
     search: searchRouter(deps, api),
+    scope: scopeRouter(deps, api),
     config: configRouter(deps, api),
     mcp: mcpRouter(deps, api),
     host: hostRouter(deps, api),

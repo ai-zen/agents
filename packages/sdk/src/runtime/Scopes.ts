@@ -18,6 +18,32 @@ export type ScopeEvent =
   | { type: "gone"; cwd: string };
 
 /**
+ * 一份没刷成的容器：哪个目录、为什么。
+ *
+ * `reason` 是渲染好的一句话（错误对象就取 `message`）：调用方要能把它原样说给人听，而不是拿到
+ * 一个 `unknown` 之后自己再分一遍「这次是 Error 还是一个字符串」。
+ */
+export interface ScopeRefreshFailure {
+  readonly cwd: string;
+  readonly reason: string;
+}
+
+/**
+ * 一遍刷新的回执：刷了几份、哪几份没刷成。
+ *
+ * 只有数字，没有能力快照 —— 「现在能拿出什么」那一份走 {@link ScopeEvent}，两者用途不同：这条
+ * 回执答的是「这一手有没有生效」，能力那一份答的是「生效之后是什么」。
+ */
+export interface ScopeRefreshReport {
+  /** 过这一遍时已经造好的容器有几份（没人用过的目录不在其中） */
+  readonly total: number;
+  /** 真的按新配置重读了一遍的那几份 */
+  readonly refreshed: number;
+  /** 没刷成的那几份：它们留在原地用旧配置 */
+  readonly failed: readonly ScopeRefreshFailure[];
+}
+
+/**
  * 算候选时喂给插件的那一份「会话定义」：空的那一份。
  *
  * 候选那一侧要一格会话定义（内置工具的可用性靠它判，如 `view_image` 看的是那一段会话绑的模型
@@ -133,12 +159,21 @@ export class Scopes {
    *
    * 逐个收口：一个容器刷不动不该让其余容器也不动。刷不动的那个留在原地用旧配置，下一次它被
    * 真正用到之前还有机会再刷。
+   *
+   * 回执报的是这一遍真的发生了什么：没刷成的那些也数进去（{@link ScopeRefreshReport.failed}），
+   * 于是「一份都没刷动」与「全都刷好了」在调用方那里分得开 —— 只回一个 `void` 的话，两种处境
+   * 长得一模一样，而前者正是要让人知道的那一种。
    */
-  async refreshAll(): Promise<void> {
+  async refreshAll(): Promise<ScopeRefreshReport> {
     const resolved = await Promise.allSettled([...this.containers.values()]);
+    // 造失败的那一条不算容器：它没造出来，调用方在 `for` 那一次已经拿到同一个错误，这里不再
+    // 报一次（这一遍要回答的是「已造好的那几份刷没刷动」）
     const scopes = resolved
       .filter((entry): entry is PromiseFulfilledResult<Scope> => entry.status === "fulfilled")
       .map((entry) => entry.value);
+
+    let refreshed = 0;
+    const failed: ScopeRefreshFailure[] = [];
 
     for (const scope of scopes) {
       try {
@@ -146,9 +181,14 @@ export class Scopes {
       } catch (error) {
         this.log.warn("Cannot refresh a scope after a config change", { error });
         // 刷不动的那个没刷成功：不发「刷新完了」，它留在原地用旧配置
+        failed.push({
+          cwd: scope.cwd,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         continue;
       }
 
+      refreshed += 1;
       // 刷成功了才发：这一格说的是「现在按新配置能拿出什么」，不是「有人试过刷」
       this.deps.onChange({
         type: "refreshed",
@@ -156,6 +196,8 @@ export class Scopes {
         capabilities: this.capabilitiesOf(scope),
       });
     }
+
+    return { total: scopes.length, refreshed, failed };
   }
 
   /** 进程收尾用，不拒绝：那时已经没有「稍后再拆」这回事 */

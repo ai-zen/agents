@@ -649,8 +649,9 @@ describe("运行时的观察面：能力容器", () => {
       expect.arrayContaining([CREATE_SESSION_TOOL, READ_SESSION_STATUS_TOOL, POST_MESSAGE_TOOL]),
     );
 
-    // 刷新完：配置改了这一侧刷一遍，刷成功之后才报
-    await h.runtime.scopes.refreshAll();
+    // 刷新完：配置改了这一侧刷一遍，刷成功之后才报。回执与事实说的是同一件事的两面：份数对得上
+    const report = await h.runtime.scopes.refreshAll();
+    expect(report).toEqual({ total: 1, refreshed: 1, failed: [] });
 
     const refreshed = seen.filter(
       (fact): fact is ScopeRefreshed => fact.type === "scope:refreshed",
