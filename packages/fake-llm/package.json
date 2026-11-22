@@ -1,0 +1,35 @@
+{
+  "name": "@ai-zen/fake-llm",
+  "version": "0.1.0-alpha.0",
+  "description": "OpenAI-compatible fake LLM endpoint: hand it one target message and it streams back the delta sequence that message would have arrived as",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:all": "npm run pretest && vitest run && npm run build"
+  },
+  "author": "LZQCN",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "rimraf": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  }
+}
