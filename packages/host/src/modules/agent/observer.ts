@@ -22,6 +22,8 @@ export interface HostObserverDeps {
   readonly onError: (error: unknown, what: string) => void;
   /** 这一段此刻是否在交接。传函数不传值：交接态会在一个执行体的寿命里变两次以上 */
   readonly isHandingOff: (sessionId: string) => boolean;
+  /** 这段会话此刻是否在重装（`ReloadWindow`）。同样传函数：窗口由重装那条路开关 */
+  readonly isReloading: (sessionId: string) => boolean;
 }
 
 /**
@@ -301,8 +303,14 @@ export class HostObserver {
       // 关机时**不删**：这一条的意思是「这些条目作废」，而整个进程退出不是杀死那一段 —— 它们一条
       // 都没作废，下次打开还要接着等（需求：关掉再打开，记忆与排队区都在）。下面推客户端那一句
       // 一并不发，那时已经在关机，没有谁还看着这个界面。
+      //
+      // 重装期间也不删：同一个事实在这里说的是「旧执行体没了」，而那些条目一条都没作废 ——
+      // `materialsFor` 刚把它们交给重装，装回来时会被原样放回队列（`05-control.md` 的「换模型不是
+      // 杀死」）。删掉就再也回不来：放回队列那一步刻意不报 `inboxAdded`，库行没有第二个写点。
+      // 客户端那一句一并不发：它们排着的顺序没变，推一条空的就成了一句假话。
       case "inboxCleared":
         if (this.goingDown) return;
+        if (this.deps.isReloading(fact.sessionId)) return;
         try {
           this.deps.inbox.clearBySession(fact.sessionId);
         } catch (error) {

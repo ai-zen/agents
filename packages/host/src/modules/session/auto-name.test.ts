@@ -137,6 +137,8 @@ function setup(answer: () => Promise<string> = async () => "把宿主的交接�
       errors.push(error);
     },
     isHandingOff: () => false,
+    // 起名这条路上没有重装：窗口永远是关的
+    isReloading: () => false,
   });
 
   const listeners: Array<(fact: RuntimeFact) => void> = [];

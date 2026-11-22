@@ -2,6 +2,7 @@ import type { AgentRuntime, ToolEnvDeps } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import type { inboxTable } from "../agent/inbox.js";
+import type { ReloadWindow } from "../agent/reload-window.js";
 import type { AssetService } from "../asset/service.js";
 import type { AgentDefinitionService } from "../config/agents.js";
 import type { EndpointService } from "../config/endpoints.js";
@@ -52,6 +53,12 @@ export interface HostApiDeps {
   readonly mcp: McpConfig;
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
+  /**
+   * 正在重装的那几段会话。改完定义那条路开它、观察者读它：窗口里那一次清空不作废库里那几行
+   * （`dev-docs/prd/05-control.md` 的「换模型不是杀死」）—— 两处必须拿到同一个对象，否则谁也
+   * 看不见谁。
+   */
+  readonly reloads: ReloadWindow;
   readonly assets: AssetService;
   /**
    * 出网/素材端口（`readAsset` 在那里），与 `Scope` 拿到的是同一个对象：`materialsFor` 把它

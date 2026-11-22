@@ -113,6 +113,8 @@ function reload(deps: HostApiDeps, agentId: string): Promise<string[]> {
       workspaces: deps.workspaces,
       runtime: deps.runtime,
       materials: (session) => materialsFor(deps, session),
+      // 与观察者读的是同一份：重装期间那一次清空不作废库里那几行排队区
+      reloads: deps.reloads,
       onError: deps.onError,
     },
     agentId,

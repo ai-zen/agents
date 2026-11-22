@@ -6,6 +6,9 @@
  * 那几句就在这一次改动里丢了。另外两条是失败的范围与输出闸的归属：一段装不起来不该连累其余
  * 几段；暂停着的那一段会话装完仍是暂停 —— 闸是用户的决定，不随执行体换掉。
  *
+ * 还有一条是重装窗口的开关：杀与装都发生在窗口里（库里那几行排队区因此不作废），装完（或装
+ * 不起来）窗口一定关掉 —— 关不掉的话，这段会话此后每一次真的被杀死都不再作废库里那几行。
+ *
  * 会话与项目用真的内存库（要验的正是「挑出哪几段」），运行时的 `get` / `kill` / `wake` 与材料
  * 用替身：造一个真运行时得先有一个能出网的模型，而这条路上要验的是调用次序，不是运行时自己的
  * 行为。
@@ -25,6 +28,7 @@ import { WorkspaceService } from "../workspace/service.js";
 import { workspaceTable } from "../workspace/table.js";
 import { reloadDefinition } from "./reload.js";
 import type { ReloadDefinitionDeps } from "./reload.js";
+import { ReloadWindow } from "./reload-window.js";
 
 /**
  * 一个真库加一个项目，加四份替身：谁活着（`live`）、谁的输出闸关着（`paused`）、做过什么
@@ -46,6 +50,12 @@ function newHost() {
 
   /** 按发生顺序记一笔：次序本身就是这条路上要验的那个结论 */
   const log: string[] = [];
+  /**
+   * `kill` / `wake` 落地那一刻，重装窗口在不在（观察者问的就是这一格：窗口里那一次清空不作废
+   * 库里那几行排队区）
+   */
+  const windowAt: Array<{ phase: "kill" | "wake"; covered: boolean }> = [];
+  const reloads = new ReloadWindow();
   /** 此刻有执行体的那几段会话 */
   const live = new Set<string>();
   /** 输出闸关着的那几段会话（只对活着的那些有意义） */
@@ -68,12 +78,14 @@ function newHost() {
     get: (sessionId: string) => (live.has(sessionId) ? agentOf(sessionId) : undefined),
     kill: (sessionId: string) => {
       log.push(`kill ${sessionId}`);
+      windowAt.push({ phase: "kill", covered: reloads.covers(sessionId) });
       live.delete(sessionId);
       // 闸长在执行体身上，杀完就一并没了
       paused.delete(sessionId);
     },
     wake: async (sessionId: string) => {
       log.push(`wake ${sessionId}`);
+      windowAt.push({ phase: "wake", covered: reloads.covers(sessionId) });
       if (broken.has(sessionId)) throw new Error(`装不起来：${sessionId}`);
       live.add(sessionId);
       // 新装起来的执行体是默认状态：闸开着
@@ -100,10 +112,11 @@ function newHost() {
     workspaces,
     runtime,
     materials,
+    reloads,
     onError: (error, what) => errors.push({ error, what }),
   };
 
-  return { deps, sessions, workspace, log, live, paused, broken, errors };
+  return { deps, sessions, workspace, log, live, paused, broken, errors, reloads, windowAt };
 }
 
 type Host = ReturnType<typeof newHost>;
@@ -144,6 +157,16 @@ describe("改完定义之后重装", () => {
     // 装完的那两段又是活着的
     expect([...host.live].sort()).toEqual([first.id, second.id, other.id].sort());
     expect(host.errors).toEqual([]);
+    // 杀与装都发生在窗口里：库里那几行排队区因此不作废
+    expect(host.windowAt).toEqual([
+      { phase: "kill", covered: true },
+      { phase: "wake", covered: true },
+      { phase: "kill", covered: true },
+      { phase: "wake", covered: true },
+    ]);
+    // 装完窗口一定关：不关的话，这段会话此后每一次真的被杀死都不再作废库里那几行
+    expect(host.reloads.covers(first.id)).toBe(false);
+    expect(host.reloads.covers(second.id)).toBe(false);
   });
 
   it("暂停着的那一段会话装完仍是暂停，没暂停的装完还是开着", async () => {
@@ -191,6 +214,9 @@ describe("改完定义之后重装", () => {
     expect(host.live.has(fine.id)).toBe(true);
     // 装不起来的那一段已经被杀掉了：它现在是「行在、执行体不在」，下一次唤醒会重新读定义
     expect(host.live.has(doomed.id)).toBe(false);
+    // 窗口也退出来了：装不起来不是把窗口留着的理由
+    expect(host.reloads.covers(doomed.id)).toBe(false);
+    expect(host.reloads.covers(fine.id)).toBe(false);
   });
 
   it("装不起来的那一段会话不欠一次关闸：只记一句，其余几段的暂停照旧", async () => {

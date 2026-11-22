@@ -583,6 +583,158 @@ describe("宿主跑起来", () => {
     const opened = await client.query<Opened>("session.open", { sessionId });
     expect(opened.inbox.map(entryText)).toEqual([pendingText]);
   }, 60_000);
+
+  /**
+   * 改一次助手定义会把用着它的那几段会话重装一遍（`agentDefinition.update` → `reloadDefinition`：
+   * 取材料 → 杀 → 装回来）。这条走的是真的运行时，钉的是「换模型不是杀死」那一句在端到端上的
+   * 样子：重装之前排着的那两句，重装之后一句不丢 —— 它们要么已经落地成消息（新执行体取走了），
+   * 要么还排着队且库里那几行也在。
+   *
+   * 两种去处都写进断言，因为真运行时走哪一种不归这条用例定：装回来之后取件那道闸是开着
+   * 的（输出闸是重装快结束时才关回去的），于是还排着的条目通常当场就被取走了。而「重装之后
+   * 它们还排着、库里那几行也还在」那一个分支是缺陷的原地：库里那几行被那一次清空删掉之后就再也
+   * 回不来（放回队列不报 `inboxAdded`）。一条不丢这条判据在两边都钉得住，精确到「库行与内存
+   * 队列逐条对上」的那一半由 `modules/agent/reload.inbox.test.ts` 把队列按在原处验。
+   *
+   * 最后那条断言是另一半：真正杀死之后库里那几行照旧没了 —— 杀死就是作废，这一条没有因为重装而松掉。
+   */
+  it("改一次助手定义重装之后，排着的那两句一句不丢；真杀死之后库里那几行没了", async () => {
+    const events: HostEvent[] = [];
+    await client.subscribe("events", (payload) => events.push(payload as HostEvent));
+
+    // 先起一段会话、等它把那一句答完：之后才谈得上排队区
+    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+      workspaceId,
+      agentId: "default",
+      content: SAID,
+      messageId: randomUUID(),
+    });
+    const sessionId = sent.sessionId;
+    const idled = () =>
+      events.some(
+        (event) =>
+          event.type === "agent.status" &&
+          event.sessionId === sessionId &&
+          event.status === "idle",
+      );
+    await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
+
+    // 中断之后输出闸关着：此后投进去的条目只可能躺在排队区（与上一条用例同一个手法）
+    await client.mutation("agent.abort", { sessionId });
+    const pending = ["第一条还在等", "第二条还在等"];
+    for (const content of pending) {
+      await client.mutation("agent.send", {
+        workspaceId,
+        agentId: "default",
+        sessionId,
+        content,
+        messageId: randomUUID(),
+      });
+    }
+
+    // 改一次这段会话用着的助手定义：重装这条路上那一次清空不许把还要接着等的条目作废
+    await client.mutation("agentDefinition.update", {
+      agentId: "default",
+      change: { name: `改过名字的助手 ${randomUUID()}` },
+    });
+
+    const db = openDatabase(join(dataRoot, "ai-zen.db"));
+    try {
+      const inboxRows = () => inboxTable(db).listBySession(sessionId).map(entryText);
+      const messageRows = () => messageTable(db).listBySession(sessionId).map(textOf);
+
+      // 每一句都得有个去处：已经落地成消息，或者还在排队区（那库里那几行也得在，而且顺序不变）
+      await vi.waitFor(
+        async () => {
+          const opened = await client.query<Opened>("session.open", { sessionId });
+          const texts = opened.messages.map(textOf);
+          for (const text of pending) {
+            const landed = texts.includes(text);
+            const stillQueued = opened.inbox.map(entryText).includes(text);
+            expect(landed || stillQueued).toBe(true);
+            if (!landed) {
+              expect(opened.inbox.map(entryText)).toEqual(pending);
+              expect(inboxRows()).toEqual(pending);
+            }
+          }
+        },
+        { timeout: 30_000, interval: 50 },
+      );
+
+      // 落地那一路也要在库里看得到，库里没有留下的残行（已经不在排队区的条目不该还占着那几行）
+      const queued = inboxRows();
+      for (const text of pending) {
+        if (queued.includes(text)) continue;
+        expect(messageRows()).toContain(text);
+        expect(queued).not.toContain(text);
+      }
+
+      // 真被杀死那一条不许回归：杀死就是作废，库里那几行也没了
+      await client.mutation("agent.kill", { sessionId });
+      await vi.waitFor(() => expect(inboxRows()).toEqual([]), { timeout: 10_000, interval: 20 });
+
+      const killed = await client.query<Opened>("session.open", { sessionId });
+      expect(killed.live).toBeNull();
+      expect(killed.inbox).toEqual([]);
+    } finally {
+      db.close();
+    }
+  }, 120_000);
+
+  /**
+   * 另一半：没有重装，直接杀死 —— 排队区照旧作废，库里那几行也没了
+   * （`prd/04-session.md` 的「中断不是杀死」那张表：kill 那一栏是「作废，库里也删」）。
+   *
+   * 这条留在端到端上，是因为「重装不作废」那一格就长在同一个内核事实（`inboxCleared`）上 ——
+   * 改写它的人最容易顺手把「杀死就作废」一起弄没了。
+   */
+  it("真被杀死：排队区作废，库里那几行也没了", async () => {
+    const events: HostEvent[] = [];
+    await client.subscribe("events", (payload) => events.push(payload as HostEvent));
+
+    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+      workspaceId,
+      agentId: "default",
+      content: SAID,
+      messageId: randomUUID(),
+    });
+    const sessionId = sent.sessionId;
+    const idled = () =>
+      events.some(
+        (event) =>
+          event.type === "agent.status" &&
+          event.sessionId === sessionId &&
+          event.status === "idle",
+      );
+    await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
+
+    await client.mutation("agent.abort", { sessionId });
+    const pendingText = "这句还在等，然后被杀死作废";
+    await client.mutation("agent.send", {
+      workspaceId,
+      agentId: "default",
+      sessionId,
+      content: pendingText,
+      messageId: randomUUID(),
+    });
+
+    const db = openDatabase(join(dataRoot, "ai-zen.db"));
+    try {
+      const rows = () => inboxTable(db).listBySession(sessionId);
+      // 杀之前那一行确实在：下面那句「没了」才有意义
+      expect(rows().map(entryText)).toEqual([pendingText]);
+
+      await client.mutation("agent.kill", { sessionId });
+
+      await vi.waitFor(() => expect(rows()).toEqual([]), { timeout: 10_000, interval: 20 });
+    } finally {
+      db.close();
+    }
+
+    const killed = await client.query<Opened>("session.open", { sessionId });
+    expect(killed.live).toBeNull();
+    expect(killed.inbox).toEqual([]);
+  }, 120_000);
 });
 
 /**

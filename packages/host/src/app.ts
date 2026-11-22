@@ -29,6 +29,7 @@ import { inboxTable } from "./modules/agent/inbox.js";
 import { createMcpTaskNoticePort } from "./modules/agent/mcp-task-notice.js";
 import { materialsFor } from "./modules/agent/materials.js";
 import { HostObserver } from "./modules/agent/observer.js";
+import { ReloadWindow } from "./modules/agent/reload-window.js";
 import type { HostApiDeps } from "./modules/api/deps.js";
 import { createAppRouter } from "./modules/api/router.js";
 import { connectionParams } from "./modules/api/trpc.js";
@@ -459,6 +460,12 @@ export class HostApp {
     });
 
     /**
+     * 重装窗口：改完定义之后那次重装写这一份，观察者读这一份。两边必须是同一个对象 —— 一边开的
+     * 窗口，另一边看不见，库里那几行排队区就照旧被那一次清空删掉。
+     */
+    const reloads = new ReloadWindow();
+
+    /**
      * 观察者：全进程一份，**挂在第一次 `wake` 之前**。
      *
      * 它是这个进程里所有会话「消息与状态落库、再推给客户端」的唯一出口。`wake` 一返回，那段会话
@@ -473,6 +480,7 @@ export class HostApp {
       onError,
       // 交接态会在一个执行体的寿命里变好几次，所以传函数不传值
       isHandingOff: (sessionId) => handoff.isHandingOff(sessionId),
+      isReloading: (sessionId) => reloads.covers(sessionId),
     });
     this.detachObserver = this.observer.attach(this.runtime);
 
@@ -528,6 +536,7 @@ export class HostApp {
       mcp,
       messages,
       inbox,
+      reloads,
       assets,
       assetPort,
       notices,

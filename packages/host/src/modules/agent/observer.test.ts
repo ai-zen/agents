@@ -1,5 +1,5 @@
 /**
- * 两条验收。
+ * 三条验收。
  *
  * 其一：一条带两个 `__asset_id` 的消息经观察者落库之后，`session_assets` 里恰两行；同一条
  * 消息再报一次 `messageChanged` 之后仍然是两行。
@@ -12,6 +12,10 @@
  *
  * 其二：关机时 `inboxCleared` 不删库，没关机时照删。两者是同一个内核事实（`kill` 清空队列），
  * 后果却相反 —— 关机不是杀死那一段，还没被处理的那几句话一条都没作废，下次打开还要接着等。
+ *
+ * 其三：重装期间也不删库（`ReloadWindow`）。同一个事实在那一刻说的是「旧执行体没了」，而那些条目
+ * 正等着被装回来的执行体原样取走（`prd/05-control.md` 的「换模型不是杀死」）；窗口一关，同一个
+ * 事实照旧是作废 —— 杀死就是杀死。
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -71,8 +75,13 @@ function setup() {
   const sessionAssets = sessionAssetTable(db);
   const assets = new AssetService({ assets: assetRows, sessionAssets, dataRoot, t });
   const events = createBus<HostEvent>();
+  /** 客户端那一侧收到的东西 */
+  const seen: HostEvent[] = [];
+  events.subscribe((event) => seen.push(event));
   /** 观察者交给 `onError` 的每一条：错误本身与它贴的那个标签 */
   const errors: Array<{ error: unknown; what: string }> = [];
+  /** 这段会话此刻在不在重装窗口里：用例改它，观察者每次现读 */
+  let reloading = false;
 
   const listeners: Array<(fact: RuntimeFact) => void> = [];
   const observer = new HostObserver({
@@ -82,6 +91,7 @@ function setup() {
     events,
     onError: (error, what) => errors.push({ error, what }),
     isHandingOff: () => false,
+    isReloading: () => reloading,
   });
   observer.attach({
     observe: (listener: (fact: RuntimeFact) => void) => {
@@ -100,8 +110,13 @@ function setup() {
     observer,
     sessionAssets,
     errors,
+    seen,
     first,
     second,
+    /** 把这段会话放进 / 拿出重装窗口（`ReloadWindow` 那两格的替身） */
+    setReloading: (value: boolean) => {
+      reloading = value;
+    },
     emit: (fact: RuntimeFact) => {
       for (const listener of listeners) listener(fact);
     },
@@ -211,6 +226,35 @@ describe("关机时排队区不作废", () => {
       "m-pending-1",
       "m-pending-2",
     ]);
+  });
+});
+
+/**
+ * 重装期间那一次清空。`kill()` 报的是同一个事实，但重装这条路上那些条目一条都没作废：装回来
+ * 的时候它们会被原样放回队列（`restore` 刻意不报 `inboxAdded`），所以库行删了就再也回不来。
+ * 窗口一关，同一个事实照旧是作废 —— 「杀死就作废」并没有因为这一格松掉。
+ */
+describe("重装期间排队区不作废", () => {
+  it("窗口开着：`inboxCleared` 不删库、不推空队列；窗口一关，同一个事实照旧作废", () => {
+    const { emit, inbox, setReloading, seen } = setup();
+    presetInbox(inbox);
+
+    setReloading(true);
+    emit(inboxClearedFact());
+
+    // 两行原样还在，顺序也没动
+    expect(inbox.listBySession("s-1").map((entry) => entry.messageId)).toEqual([
+      "m-pending-1",
+      "m-pending-2",
+    ]);
+    // 客户端那一句也不发：它们排着的顺序没变，推一条空的就成了一句假话
+    expect(seen).toEqual([]);
+
+    setReloading(false);
+    emit(inboxClearedFact());
+
+    expect(inbox.listBySession("s-1")).toEqual([]);
+    expect(seen).toEqual([{ type: "agent.inbox", sessionId: "s-1", inbox: [] }]);
   });
 });
 
