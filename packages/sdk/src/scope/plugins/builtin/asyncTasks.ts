@@ -78,8 +78,8 @@ function supervise(agent: Agent, log: LogSink): AgentTasks {
 /**
  * 下一个任务 id。
  *
- * 序号按执行体递增：结果推回来时，模型与人都能按它对上「这是第几次」。前缀是工具名，
- * 两个工具各数各的。
+ * 序号按执行体递增，两个工具共用一个序号、靠前缀区分是谁，于是同一个执行体上开过的任务
+ * id 不会撞；结果推回来时，模型与人都能按它对上「这是哪一次」。
  */
 export function nextTaskId(agent: Agent, kind: string): string {
   const tasks = tasksOf(agent);
