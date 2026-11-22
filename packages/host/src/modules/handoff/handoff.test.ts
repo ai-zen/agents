@@ -20,9 +20,11 @@
  * 「成了」与「失败」两种收口，没有第三种。
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentNS, Message, type Agent, type OuterLoopContext } from "@ai-zen/agents-core";
 import {
@@ -74,6 +76,8 @@ function fakeAgent() {
   const agent = {
     state: "idle" as AgentNS.AgentState,
     messages: [] as AgentNS.Message[],
+    /** 换记忆那一路要数「开头有几条是助手定义带来的系统提示」，假件也得有这一格 */
+    definition: { messages: [] as AgentNS.Message[] },
     isInputPaused: false,
     isOutputPaused: false,
     inboxPending: [],
@@ -144,43 +148,117 @@ function fakeRuntime() {
  * `succeed` 没有任何参数：宿主不再读回「这一趟实际是谁写的」（没有降级可报了），成功就是
  * 「没抛、回来了」。
  */
+/** 一趟交接的替身记下来的那几格 */
+interface FakeHandoffRun {
+  readonly options: SdkHandoffOptions;
+  readonly agent: SdkAgent;
+  /**
+   * 这一趟申请的执行者：宿主从 `start` 那一格原样递下来的。`undefined` 的意思是「调用方没挑」，
+   * 由 SDK 的默认值定（`createSdkHandoff` 没建 `mode` 时是 `self`）。
+   */
+  readonly mode: HandoffMode | undefined;
+  readonly signal: AbortSignal;
+  /**
+   * 宿主调的是 SDK 的哪个方法：只写文档那一档调 `handoff`，换手那一档调 `migrate`。
+   *
+   * 两档在宿主这一侧的差别全在这一点上，所以它得是一条可断言的事实，而不是靠"文档写没写"推。
+   */
+  readonly method: "handoff" | "migrate";
+  /** 写出来的文档路径（只有 `handoff` 那一档有，`undefined` 说明还没跑完） */
+  written?: string;
+  succeed(): void;
+  /** 照真的 `migrate` 来：算好的记忆交给宿主那个接缝，然后才返回 */
+  succeedWithMemory(memory: readonly AgentNS.Message[]): void;
+  fail(error: unknown): void;
+}
+
 function fakeHandoffs() {
-  const runs: {
-    readonly options: SdkHandoffOptions;
-    readonly agent: SdkAgent;
-    /**
-     * 这一趟申请的执行者：宿主从 `start` 那一格原样递下来的。`undefined` 的意思是「调用方没挑」，
-     * 由 SDK 的默认值定（`createSdkHandoff` 没建 `mode` 时是 `self`）。
-     */
-    readonly mode: HandoffMode | undefined;
-    readonly signal: AbortSignal;
-    succeed(): void;
-    fail(error: unknown): void;
-  }[] = [];
+  const runs: FakeHandoffRun[] = [];
+
+  /** 这一档写出来的文件名：固定一个值，断言时不必去猜时间戳 */
+  const FILE = "20260101-000000.md";
 
   const create: CreateSdkHandoff = (options) => ({
-    migrate: ({ agent, mode, signal }) =>
-      // 形状照真的来（`migrate` 回的就是那份 ctx 里的 `mode`），但宿主一次都不读它
-      new Promise<Pick<HandoffContext, "mode">>((resolve, reject) => {
-        runs.push({
+    handoff: ({ agent, mode, signal }) =>
+      new Promise<HandoffContext>((resolve, reject) => {
+        const run: FakeHandoffRun = {
           options,
           agent,
           mode,
           signal,
-          succeed: () => resolve({ mode: "self" }),
+          method: "handoff",
+          succeed: () => {
+            // 真的把文档写出来："落在项目的 handoffs 下"与"通知里的路径"必须是同一个文件
+            mkdirSync(options.handoffDir, { recursive: true });
+            const handoffPath = join(options.handoffDir, FILE);
+            writeFileSync(handoffPath, "# 交接文档\n\n正文。\n", "utf8");
+            run.written = handoffPath;
+            resolve({
+              agent,
+              mode: mode ?? "self",
+              requestedMode: mode ?? "self",
+              handoffPath,
+              model: "fake-model",
+              messageCountBefore: agent.messages.length,
+              historyText: "",
+            });
+          },
+          succeedWithMemory: () => {
+            throw new Error("只写文档那一档不换记忆");
+          },
           fail: reject,
-        });
+        };
+        runs.push(run);
+        signal.addEventListener("abort", () => reject(new HandoffAbortedError()), { once: true });
+      }),
+
+    migrate: ({ agent, mode, signal }) =>
+      // 形状照真的来（`migrate` 回的就是那份 ctx 里的 `mode`），但宿主一次都不读它
+      new Promise<Pick<HandoffContext, "mode">>((resolve, reject) => {
+        const run: FakeHandoffRun = {
+          options,
+          agent,
+          mode,
+          signal,
+          method: "migrate",
+          succeed: () => resolve({ mode: "self" }),
+          succeedWithMemory: (memory: readonly AgentNS.Message[]) => {
+            // 接缝是真的那一份：真的 `migrate` 先把它交出去，再返回。`commit` 是同步的，
+            // 所以先调再接回就是真的那个次序
+            options.commitMemory?.({
+              memory: [...memory],
+              handoffPath: join(options.handoffDir, FILE),
+              mode: mode ?? "self",
+            });
+            resolve({ mode: "self" });
+          },
+          fail: reject,
+        };
+        runs.push(run);
         signal.addEventListener("abort", () => reject(new HandoffAbortedError()), { once: true });
       }),
   });
 
-  return { create, runs };
+  return { create, runs, FILE };
 }
+
+/**
+ * 每个用例自己收拾临时项目目录：断言失败时也不留（`rmSync` 带 `force`，目录没造出来也不报）。
+ */
+let tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs = [];
+});
 
 function setup() {
   const db = openDatabase(":memory:");
   const workspaceRows = workspaceTable(db);
-  workspaceRows.put({ id: "ws-1", name: "项目一", cwd: "/tmp/ws-1", createdAt: 1 });
+  // 项目目录是真的：交接文档要真的写到它下面，路径也得从它算
+  const cwd = mkdtempSync(join(tmpdir(), "handoff-ws-"));
+  tempDirs.push(cwd);
+  workspaceRows.put({ id: "ws-1", name: "项目一", cwd, createdAt: 1 });
 
   const t = createTranslator(() => "zh");
   const events = createBus<HostEvent>();
@@ -266,6 +344,7 @@ function setup() {
     handoff,
     handoffs,
     sessions,
+    workspaces,
     questions,
     runtime: fake.runtime,
     messages,
@@ -274,6 +353,8 @@ function setup() {
     errors,
     wake,
     messageAdded,
+    /** 这一段会话所属项目的目录（交接文档就落在它下面） */
+    cwd,
   };
 }
 
@@ -297,7 +378,7 @@ function message(id: string, text: string): AgentNS.Message {
 
 describe("交接态", () => {
   it("只落在进入的那一段上；`start` 不碰闸、收口开、取消关；事件一进一出", async () => {
-    const { handoff, handoffs, sessions, runtime, seen, wake } = setup();
+    const { handoff, handoffs, sessions, runtime, seen, wake, cwd } = setup();
     const first = sessions.create(input);
     const second = sessions.create(input);
     wake(first.id);
@@ -312,12 +393,14 @@ describe("交接态", () => {
     expect(runtime.get(first.id)?.isOutputPaused).toBe(false);
     expect(runtime.get(second.id)?.isOutputPaused).toBe(false);
     // 交接文档落在这一段所属项目里，不是宿主的 cwd：多项目共用一个目录，文档就跟代码分家了
-    expect(handoffs.runs[0].options.handoffDir).toBe("/tmp/ws-1/.ai-zen/handoffs");
+    expect(handoffs.runs[0].options.handoffDir).toBe(join(cwd, ".ai-zen", "handoffs"));
     expect(handoffs.runs[0].options.strategy).toBe("prune");
     expect(handoffs.runs[0].agent).toBe(runtime.get(first.id));
     // 不给 `mode`：这一格不往下递，执行者由 SDK 的默认值定（`self`）—— 与这一格加进来之前的
     // 每一趟一致。要给「独立摘要」得调用方自己开口（下一条）
     expect(handoffs.runs[0].mode).toBeUndefined();
+    // 不给 `kind` 就是换手那一档：这一格加进来之前，`start` 跑的就是 `migrate`
+    expect(handoffs.runs[0].method).toBe("migrate");
 
     // 后台那一趟跑完：闸开回来、退出交接态
     handoffs.runs[0].succeed();
@@ -358,7 +441,7 @@ describe("交接的执行者", () => {
     const session = sessions.create(input);
     const agent = wake(session.id);
 
-    handoff.start(session.id, "summary");
+    handoff.start(session.id, { mode: "summary" });
 
     expect(handoffs.runs[0].mode).toBe("summary");
     expect(handoffs.runs[0].agent).toBe(agent);
@@ -416,6 +499,139 @@ describe("后台那一趟失败", () => {
     expect(runtime.get(session.id)?.isOutputPaused).toBe(true);
     expect(notices.listBySession(session.id)).toEqual([]);
     expect(handoffs.runs[0].signal.aborted).toBe(true);
+  });
+});
+
+/**
+ * 两档：只写文档 / 写文档并换手。
+ *
+ * 这两条验的是「同一条交接态、同一个取消口，最后一步分成两件事」：只写文档那一档跑完之后，会话
+ * 里该一个字节都没变（记忆、存档会话、执行体身份都不动），多出来的只有一份文档与一条带路径的通
+ * 知；换手那一档的记忆与存档会话才是它该有的样子。两档的取消都回到交接前。
+ */
+describe("两档", () => {
+  it("只写文档那一档：记忆、存档会话、执行体身份都不动，文档落在项目的 handoffs 下，通知里带路径", async () => {
+    const { handoff, handoffs, sessions, messages, notices, runtime, wake, cwd } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+    // 交接前的那一份记忆：库里一条、执行体手里也是那一条
+    const old = message("m-1", "旧记忆里的那句");
+    messages.upsertMany(session.id, [old]);
+    agent.messages.push(old);
+    const before = sessions.get(session.id);
+
+    handoff.start(session.id, { kind: "document" });
+    // 走的是 SDK 那个「只产出文档」的方法，不是换记忆那个
+    expect(handoffs.runs[0].method).toBe("handoff");
+    // 交接文档照样落在这一段所属项目里（两档共用一处落点）
+    expect(handoffs.runs[0].options.handoffDir).toBe(join(cwd, ".ai-zen", "handoffs"));
+    // 交接态照常置上：两档共用这一格
+    expect(handoff.isHandingOff(session.id)).toBe(true);
+
+    handoffs.runs[0].succeed();
+    await settle();
+
+    // 记忆：库里那一份与执行体手里那一份都没变
+    expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([old.id]);
+    expect(agent.messages.map((item) => item.id)).toEqual([old.id]);
+    // 没有多出一段「已存档_」会话，会话行一个字都没动（更新时间也没动：这一档不落库）
+    expect(sessions.list(input.workspaceId).map((item) => item.name)).toEqual([session.name]);
+    expect(sessions.get(session.id)).toEqual(before);
+    // 执行体的身份没换：还是原来那一个对象
+    expect(runtime.get(session.id)).toBe(agent);
+
+    // 文档真的写在了项目的 handoffs 下，通知说的就是那一个路径
+    const written = handoffs.runs[0].written ?? "";
+    expect(written.startsWith(join(cwd, ".ai-zen", "handoffs"))).toBe(true);
+    const pushed = notices.listBySession(session.id);
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].level).toBe("success");
+    expect(pushed[0].code).toBe("handoff_document");
+    expect(pushed[0].message).toContain(written);
+
+    // 收口与换手那一档同一份：交接态退掉、闸开回来
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+    expect(agent.isOutputPaused).toBe(false);
+  });
+
+  it("只写文档那一档写不出来：走失败那条路，不降级、不换手", async () => {
+    const { handoff, handoffs, sessions, messages, notices, wake } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+    messages.upsertMany(session.id, [message("m-1", "旧记忆里的那句")]);
+
+    handoff.start(session.id, { kind: "document" });
+    handoffs.runs[0].fail(new Error("Cannot write the handoff document with this session"));
+
+    await settle();
+
+    // 失败那条路与换手那一档同一份：一条带原因的通知、闸开回来、交接态退掉
+    const pushed = notices.listBySession(session.id);
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].level).toBe("error");
+    expect(pushed[0].code).toBe("handoff_failed");
+    expect(pushed[0].message).toContain("Cannot write the handoff document");
+    expect(agent.isOutputPaused).toBe(false);
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+    // 记忆一个字节都没动，也没有多出一段存档会话
+    expect(messages.listBySession(session.id).map((item) => item.id)).toEqual(["m-1"]);
+    expect(sessions.list(input.workspaceId)).toHaveLength(1);
+  });
+
+  it("换手那一档：记忆换成新的一份，旧的那一份成为一段已存档会话", async () => {
+    const { handoff, handoffs, sessions, messages, notices, wake } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+    const prompt = Message.System("You are a test assistant.");
+    agent.definition.messages.push(prompt);
+    const old = message("m-1", "旧记忆里的那句");
+    messages.upsertMany(session.id, [old]);
+    agent.messages.push(prompt, old);
+
+    handoff.start(session.id, { kind: "swap" });
+    expect(handoffs.runs[0].method).toBe("migrate");
+
+    // 照真的 `migrate` 来：模板那几条留着，末尾一条只带路径的断点
+    const breakpoint = new Message({
+      role: AgentNS.Role.System,
+      status: AgentNS.MessageStatus.Completed,
+      content: join(handoffs.runs[0].options.handoffDir, handoffs.FILE),
+      hidden: true,
+    });
+    handoffs.runs[0].succeedWithMemory([prompt, breakpoint]);
+    await settle();
+
+    // 原会话换成新记忆，旧的那一份成了另一段会话
+    expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([breakpoint.id]);
+    expect(sessions.list(input.workspaceId).map((item) => item.name)).toContain(
+      `已存档_${session.name}`,
+    );
+    // 换手那一档不推「文档写到哪」那一句：它要说的是记忆换了，而窗口里看得见
+    expect(notices.listBySession(session.id)).toEqual([]);
+  });
+
+  it("两档的取消都回到交接前：交接态退掉，文档那一侧不留半截", async () => {
+    const { handoff, handoffs, sessions, notices, wake } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+
+    for (const kind of ["document", "swap"] as const) {
+      handoff.start(session.id, { kind });
+      expect(handoff.isHandingOff(session.id)).toBe(true);
+
+      handoff.cancel(session.id);
+      await settle();
+
+      // 交接态退掉、闸留在关着的那一边（回滚之后就该停在那一段），也没有任何通知
+      expect(handoff.isHandingOff(session.id)).toBe(false);
+      expect(agent.isOutputPaused).toBe(true);
+      expect(notices.listBySession(session.id)).toEqual([]);
+      // 取消口就是那一格 `signal`：它响了，SDK 的那一趟才会把半截文档删掉
+      expect(handoffs.runs.at(-1)?.signal.aborted).toBe(true);
+
+      // 下一档接着用同一段：取消留下的暂停要先开回来，不然第二条起不来
+      agent.resumeOutput();
+    }
   });
 });
 

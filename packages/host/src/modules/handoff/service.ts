@@ -50,12 +50,23 @@ export interface SdkHandoffOptions {
 }
 
 /**
- * 宿主用到的那一面：返回值一格都不读 —— 记忆走 `commitMemory`，成败从事件与通知里看。
+ * 宿主用到的那一面。
  *
- * 从前这里得读回 `mode`，因为「申请自交接、拿回来摘要」要报一声降级。现在没有降级：申请哪个
- * 就跑哪个，做不成就抛，走失败那条路（{@link HandoffService.finish} 的 `error` 那一支）。
+ * `handoff` 与 `migrate` 是 SDK 那两个方法的两档：前者只产出文档、一个字节都不改记忆；后者写完
+ * 文档再把记忆交给宿主落库。收口那一侧只读 `handoff` 回来的 `handoffPath`（通知里要说文档落在
+ * 哪），其余几格一格都不读 —— 成与不成看抛不抛。
  */
 export interface SdkHandoff {
+  /**
+   * 只写文档那一档：交接回合留在记忆里（可以接着让它改同一份文档），脱敏与阈值校验都在 SDK
+   * 那一侧，这里只收它回来的那份上下文。
+   */
+  handoff(params: {
+    agent: SdkAgent;
+    signal: AbortSignal;
+    mode?: HandoffMode;
+  }): Promise<HandoffContext>;
+
   /**
    * `mode` 是这一趟**申请**的执行者；不给就走 SDK 的默认那一个。
    *
@@ -78,6 +89,28 @@ export type CreateSdkHandoff = (options: SdkHandoffOptions) => SdkHandoff;
  */
 export function createSdkHandoff(options: SdkHandoffOptions): SdkHandoff {
   return new SdkHandoffService(options);
+}
+
+/**
+ * 一次交接是哪一档。
+ *
+ * - `document`：只写交接文档，记忆一个字节都不动、不建存档会话、不换执行体的身份；
+ * - `swap`：写完文档之后把这段记忆换成新的一份，旧记忆成为另一段存档会话。
+ *
+ * 两档共用交接态与取消口：取消都要回到交接前（半截文档删掉、这一段退出交接态）。
+ */
+export type HandoffKind = "document" | "swap";
+
+/** `start` 的那两格：谁去写、写不写换手 */
+export interface HandoffStartOptions {
+  /** 执行者。不给时这一格不往下传，由 SDK 的默认值定（见 `start`） */
+  readonly mode?: HandoffMode;
+  /**
+   * 这一档。不给就是 `swap`：「交接」这个动作本来指的就是「写文档 + 换手」，只写文档是分出来的
+   * 另一档，得由调用方自己开口 —— 不开口的调用方（还没更新的客户端、自动那一趟）拿到的仍是原来
+   * 那一趟。
+   */
+  readonly kind?: HandoffKind;
 }
 
 export interface HandoffDeps {
@@ -158,8 +191,11 @@ export class HandoffService {
    * `mode` 是调用方显式挑的执行者（自交接 / 独立摘要）：给了就用它跑这一趟。不给时这一格不往下
    * 传，执行者由 SDK 那一侧的默认值定（`createSdkHandoff` 没建 `mode` 时为 `self`）—— 与这一格
    * 加进来之前的每一趟一致。
+   *
+   * `kind` 是这一档走哪两个 SDK 方法（见 {@link HandoffKind}）。两档的四条判据、交接态、取消口
+   * 完全一样，分岔只在后台那一趟的最后一步。
    */
-  start(sessionId: string, mode?: HandoffMode): void {
+  start(sessionId: string, options: HandoffStartOptions = {}): void {
     const session = this.deps.sessions.get(sessionId);
     if (session === undefined) {
       throw new HostError(
@@ -204,7 +240,14 @@ export class HandoffService {
 
     const handoffDir = this.handoffDir(session);
     const signal = this.enter(sessionId);
-    void this.run({ sessionId, agent, handoffDir, signal, mode });
+    void this.run({
+      sessionId,
+      agent,
+      handoffDir,
+      signal,
+      mode: options.mode,
+      kind: options.kind ?? "swap",
+    });
   }
 
   /**
@@ -244,6 +287,27 @@ export class HandoffService {
       message: this.deps.t("交接失败：{reason}", {
         reason: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
       }),
+    });
+  }
+
+  /**
+   * 只写文档那一档的收尾：交接态已经退掉，这里把文档落在哪说给用户。
+   *
+   * 换手那一档没有这一句 —— 那一档的收尾是「记忆换了」，用户要看的不是路径，而是下一句话。
+   *
+   * 永久留到用户自己清：路径是这条通知的全部内容，一闪而过就等于没说（文档是给人去读、去改、
+   * 去提交的，读完那一眼很可能不是此刻）。
+   */
+  private announceDocument(sessionId: string, handoffPath: string): void {
+    // 会话可能在这一趟里被删掉：那条通知挂在它名下会撞外键，而那段会话已经不在了
+    if (this.deps.sessions.get(sessionId) === undefined) return;
+
+    this.deps.notices.push({
+      level: "success",
+      code: "handoff_document",
+      sessionId,
+      durationMs: null,
+      message: this.deps.t("交接文档已写到 {path}", { path: handoffPath }),
     });
   }
 
@@ -472,11 +536,15 @@ export class HandoffService {
   }
 
   /**
-   * 后台那一趟：造一个只为这一趟服务的 SDK 实例，跑 `migrate`，成败都在收口里落地。
+   * 后台那一趟：造一个只为这一趟服务的 SDK 实例，按这一档调 `handoff` 或 `migrate`，成败都在收口
+   * 里落地。
    *
    * 失败与成功各走一条，两条都必须退出交接态：留在交接态的那一段既不再落库，也不再取件。
    * 失败还要把闸开回来（只有取消不开）—— `start` 早就返回了，{@link finish} 推的那条通知是
    * 用户唯一能拿到「为什么没换」的地方。
+   *
+   * 两档只在最后一步分岔：只写文档那一档不调 `commitMemory`（SDK 的 `handoff` 根本不会叫它），
+   * 于是记忆、存档会话、执行体的身份一格都不动，这一趟要告知的只有文档落在哪。
    *
    * 取消不是失败：`cancel` 已经摘了牌、也把闸留在关着的那一边。这里还认一种它不经手
    * 的取消 —— 用户在界面上按停打的是这段会话的中断（`agent.abort()`，它不碰这里的 `signal`），
@@ -489,8 +557,10 @@ export class HandoffService {
     readonly signal: AbortSignal;
     /** 调用方挑的执行者；不给就交给 SDK 的默认值（见 {@link start}） */
     readonly mode?: HandoffMode;
+    /** 这一档（见 {@link HandoffKind}） */
+    readonly kind: HandoffKind;
   }): Promise<void> {
-    const { sessionId, agent, handoffDir, signal, mode } = run;
+    const { sessionId, agent, handoffDir, signal, mode, kind } = run;
 
     try {
       const sdk = this.deps.createSdk({
@@ -499,9 +569,17 @@ export class HandoffService {
         commitMemory: (commit) =>
           this.commit(sessionId, commit.memory, agent.definition.messages?.length ?? 0),
       });
-      // 返回值一格都不读：记忆走 `commitMemory`，成败看这里抛不抛。成了就收口，没别的话要说。
       // `mode` 原样递给 SDK：摘要那一档它自己起一个一次性执行体去写，这段会话的 agent 只被读
       // 历史（`summary` 不往它的队列里投指令）
+      if (kind === "document") {
+        // 只写文档：回来的路径是这一趟唯一要告知的事，记忆那一侧 SDK 一个字节都不动
+        const ctx = await sdk.handoff({ agent, mode, signal });
+        this.finish(sessionId);
+        this.announceDocument(sessionId, ctx.handoffPath);
+        return;
+      }
+
+      // 换手：返回值一格都不读，记忆走 `commitMemory`，成败看这里抛不抛
       await sdk.migrate({ agent, mode, signal });
       this.finish(sessionId);
     } catch (error) {

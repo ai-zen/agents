@@ -64,6 +64,7 @@ export const en: Record<string, string> = {
   "会话 {sessionId} 的输出已暂停，先恢复再交接":
     'Output for session "{sessionId}" is paused; resume it before handing off',
   "交接失败：{reason}": "Handoff failed: {reason}",
+  "交接文档已写到 {path}": "The handoff document is at {path}",
   "这一段会话自动起名失败，名字还是创建时的那一个":
     "Automatic naming failed for this session; the name is still the one from creation time",
   "这一次请求没有发出去：上一次请求的输入用了 {used} tokens，超过了防护阈值 {guard}。换模型、调高防护阈值或者新开一段会话之后可以接着试。":
