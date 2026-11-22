@@ -362,6 +362,16 @@ export class HostApp {
           // 平级会话的三个工具：能力不在这里，它们只认这一个端口
           new PeerSessionsScopePlugin(peers),
         );
+        // 工具环境的日志口就挂装配根这一份 `FileLogger`。
+        //
+        // 容器没有「日志往哪写」这一档构造参数：那一格长在 `ToolEnv` 上，装配完挂在同一个 env
+        // 对象上即可 —— 容器里所有内置工具拿到的都是它，与 `allInOne` 的 `logger` 是同一个实例。
+        //
+        // 为什么非挂不可：`async_exec` / `async_timeout` 的结果要投回发起它的那段会话，而那时
+        // 那段会话可能已经没有执行体了，投递被队列挡回来。这件事没有第二个去处 —— 发起它的那次
+        // 工具调用当场就返回了，结果回来的那一刻没有任何调用点接得住。不挂这一格，那一行就落到
+        // 库的缺省沉默实现上，等于没有写。
+        scope.env.log = this.log;
         await scope.init();
         return scope;
       },
