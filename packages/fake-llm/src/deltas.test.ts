@@ -178,7 +178,7 @@ describe("切分工具", () => {
     expect(cutText("ab", { chunkSize: 10 })).toEqual(["ab"]);
   });
 
-  it("目标消息的正文能交给 buildDeltas 直接产出一段流", () => {
+  it("目标消息的正文能交给 buildDeltas 直接产出 delta 流", () => {
     const message: FakeLlmMessage = { role: "assistant", content: "收到" };
     expect(buildDeltas(message, { chunks: 1 })).toEqual([{ content: "收到" }]);
   });

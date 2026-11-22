@@ -65,7 +65,7 @@ export type FakeLlmContentSection =
 export type FakeLlmStreamPart = "reasoning" | "tool_call" | "content";
 
 /**
- * 一条目标消息：端点要把它倒推成一段 delta 流。
+ * 一条目标消息：端点要把它倒推成 delta 流里的那些增量。
  *
  * 缺的格一律按「这条消息没有它」处理：没有 `finish_reason` 时，带工具调用的算
  * `tool_calls`，其余算 `stop`。
@@ -82,7 +82,7 @@ export interface FakeLlmMessage {
    * 片与片的先后。
    *
    * 缺省按「思考、工具调用、正文」三块依次吐完 —— 这是本仓对一条回答内部顺序的口径。
-   * 给了这一格就按它循环取：每次轮到哪一块就吐它还没吐的下一片，那一块吐完了就跳过。
+   * 给了这一格就按它循环取：每一片取哪一块、那一块吐完了就跳过。
    * 思考与正文交错只有这一条路能表达出来。
    */
   stream_order?: FakeLlmStreamPart[];

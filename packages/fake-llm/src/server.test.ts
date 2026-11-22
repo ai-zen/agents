@@ -18,7 +18,7 @@ afterEach(async () => {
   llm = null;
 });
 
-/** 轮询到条件成立（不固定 sleep；超时就抛，不让用例挂死） */
+/** 等到条件成立（不固定 sleep；超时就抛，不让用例挂死） */
 async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = performance.now() + timeoutMs;
   while (!condition()) {
@@ -128,7 +128,7 @@ describe("流式分支", () => {
     expect(done).toBe(true);
   });
 
-  it("chunkDelayMs：片与片之间真的隔开（用例靠这段窗口卡中间态）", async () => {
+  it("chunkDelayMs：片与片之间真的隔开（用例靠这个窗口卡中间态）", async () => {
     const delayMs = 60;
     llm = await startFakeLlm({ reply: "一二三", chunks: 3, chunkDelayMs: delayMs });
 
@@ -143,7 +143,7 @@ describe("非流式分支", () => {
   it("一次回整条消息，形状与 chat.completion 一致", async () => {
     const message: FakeLlmMessage = {
       reasoning_content: "先想一想",
-      content: "整段答复",
+      content: "整条答复",
       tool_calls: [{ id: "call_9", function: { name: "now", arguments: "{}" } }],
       finish_reason: "tool_calls",
       usage: { prompt_tokens: 3, completion_tokens: 5 },
@@ -161,7 +161,7 @@ describe("非流式分支", () => {
     expect(json.choices[0].finish_reason).toBe("tool_calls");
     expect(json.choices[0].message).toEqual({
       role: "assistant",
-      content: "整段答复",
+      content: "整条答复",
       reasoning_content: "先想一想",
       tool_calls: [
         {

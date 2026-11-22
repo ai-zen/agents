@@ -1,5 +1,5 @@
 /**
- * 目标消息 → 一段 delta 流。这个包存在的理由就在这一个文件里。
+ * 目标消息 → delta 流里的那些增量。这个包存在的理由就在这一个文件里。
  *
  * 调用方给的是「模型最后说了什么」：正文、思考、工具调用。真实提供方发出来的是这条消息
  * 抵达的过程：先报 `role`，再把上面三样各切几片吐出来，最后报结束原因与用量。反转这个过程
@@ -86,7 +86,7 @@ function contentDeltas(
       deltas.push({ content: [{ ...section, index }] });
       continue;
     }
-    // 内容块数组本身就是「一段一片」的粒度：只有显式给了 `chunkSize` 才在块内再切
+    // 内容块数组本身就是「一块一片」的粒度：只有显式给了 `chunkSize` 才在块内再切
     const pieces = chunking.chunkSize ? cutText(section.text, chunking) : [section.text];
     for (const piece of pieces) {
       const textSection: FakeLlmContentSection = { index, type: "text", text: piece };
@@ -147,7 +147,7 @@ function arrange(
   const arranged: FakeLlmDelta[] = [];
   let at = 0;
   let skipped = 0;
-  // 轮到的那一块空了只是这一次没有内容可发，继续轮下去；连续跳过一整轮说明剩下的块
+  // 该取的那一块空了只是这次没有内容可发，接着往下取；三类块连着都取不到，说明剩下的块
   // 都不在顺序里，收尾补齐即可（否则这个循环永远等不到总数下降）
   while (total() > 0 && skipped < order.length) {
     const piece = left[order[at % order.length]!].shift();
