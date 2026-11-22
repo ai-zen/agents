@@ -574,6 +574,11 @@ export class HandoffService {
       if (kind === "document") {
         // 只写文档：回来的路径是这一趟唯一要告知的事，记忆那一侧 SDK 一个字节都不动
         const ctx = await sdk.handoff({ agent, mode, signal });
+        // 交接回合（指令、工具调用、回执）不进记忆：这一档要的是「写一份文档，别的一个字不变」。
+        // 库里那几条本来就没落（观察者按交接态跳过），内存里不截回来，两边就是两份不一样的记忆
+        // —— 下一次请求还会把几 KB 的指令当成历史再发一遍，重启之后它们又凭空消失。
+        // 截到交接前的条数，与 SDK 在取消那条路上做的是同一件事。
+        agent.messages.splice(ctx.messageCountBefore);
         this.finish(sessionId);
         this.announceDocument(sessionId, ctx.handoffPath);
         return;

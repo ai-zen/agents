@@ -188,6 +188,16 @@ function fakeHandoffs() {
           signal,
           method: "handoff",
           succeed: () => {
+            // 照真的 `self` 那一趟来：交接指令与回执会追加进 `agent.messages`（宿主收尾要把它们
+            // 截回去 —— 那一格是这条用例要验的东西之一）
+            agent.messages.push(
+              new Message({
+                id: "handoff-round",
+                role: AgentNS.Role.User,
+                status: AgentNS.MessageStatus.Completed,
+                content: "写一份交接文档",
+              }),
+            );
             // 真的把文档写出来："落在项目的 handoffs 下"与"通知里的路径"必须是同一个文件
             mkdirSync(options.handoffDir, { recursive: true });
             const handoffPath = join(options.handoffDir, FILE);
@@ -199,7 +209,8 @@ function fakeHandoffs() {
               requestedMode: mode ?? "self",
               handoffPath,
               model: "fake-model",
-              messageCountBefore: agent.messages.length,
+              // 交接回合开始之前的条数：宿主据它把回合截掉
+              messageCountBefore: agent.messages.length - 1,
               historyText: "",
             });
           },
@@ -531,7 +542,7 @@ describe("两档", () => {
     handoffs.runs[0].succeed();
     await settle();
 
-    // 记忆：库里那一份与执行体手里那一份都没变
+    // 记忆：库里那一份与执行体手里那一份都没变（交接回合那几条被截回去了，库里本来就没落）
     expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([old.id]);
     expect(agent.messages.map((item) => item.id)).toEqual([old.id]);
     // 没有多出一段「已存档_」会话，会话行一个字都没动（更新时间也没动：这一档不落库）
