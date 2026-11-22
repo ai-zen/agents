@@ -1,171 +1,174 @@
 ---
-title: Deployment & Remote Access
-description: The host binds loopback by default (--public starts a public instance) while wss:// is a client capability, the three access shapes (local / tunnel / reverse proxy) with the entry point and the knobs each one needs, a complete nginx reverse-proxy sample with its three default-value traps (no Upgrade headers means a 400 handshake, client_max_body_size defaults to 1m and turns content.upload into a 413, proxy_read_timeout defaults to 60s and cuts idle connections), why AI_ZEN_ALLOWED_ORIGINS must carry the origin a browser arrives with, the client's address and credential precedence (--host / AI_ZEN_HOST_URL / the discovery file, AI_ZEN_HOST_TOKEN / run/token) and why there is no --token, the known behaviour that a tunnel still forwards the local working directory, what the credential separates and what it does not, and a troubleshooting table.
+title: Deployment
+description: The shape of a deployment — local and public instances, the listening address and the three port levels, single instance and the discovery file, credentials (who mints them, where they live, what revocation affects), the data root and the three files under run/, the three stages of an upgrade, and the exit codes.
 outline: deep
 ---
 
-# Deployment & Remote Access
+# Deployment
 
-This page answers "where the host runs and how a client gets to it". What the wire says is in [Wire Protocol](protocol.md) — that page only states what is allowed; this one states how it is actually set up, and which defaults break it.
+This page is about how the host process exists: where it listens, who is the one host serving on a
+machine, where credentials come from, where data lives, and who does what when the version changes.
 
-## Premise: loopback by default
+## Two kinds of instance
 
-`agents-host serve` is **a local instance by default**: it listens on loopback only (`127.0.0.1:8790` by default) and generates the credential into `<data root>/run/token` (`parseArgs` in `packages/host/src/cli.ts` initialises `local` to `true`; `runServe` prints that credential path for local instances only).
+The default is a local instance: it listens on the loopback address only, and writes one usable
+credential into `<data root>/run/token`, so a client on the same machine is not handed a token by
+hand.
 
-A public instance is an **explicit act**, and several invocations land on the same address:
+A public instance is an explicit act: `--public` makes it listen on all interfaces and stops it from
+writing `run/token` — on that machine credentials are minted by hand and handed to the devices that
+connect.
 
-| Invocation | Result |
-|---|---|
-| `agents-host serve` (or `--local`) | `127.0.0.1:<port>` (`LOOPBACK_HOST`) |
-| `agents-host serve --public` | `0.0.0.0:<port>` (`PUBLIC_HOST`) |
-| `agents-host serve --host <non-loopback>` | Same — the address makes `local` false |
-| `--local --host <non-loopback>` | **Refuses to start** (contradiction: `UsageError`, exit code 2) |
+| Invocation | Listens on | `run/token` |
+|---|---|---|
+| `agents-host serve` | `127.0.0.1:<port>` | written |
+| `agents-host serve --public` | `0.0.0.0:<port>` | not written |
+| `agents-host serve --public --host 10.0.0.7` | `10.0.0.7:<port>` | not written |
+| `agents-host serve --host 10.0.0.7` | `10.0.0.7:<port>` | written |
 
-There is exactly one judgement call: `resolveListenTarget` (`packages/host/src/config.ts`) — `local ? LOOPBACK_HOST : PUBLIC_HOST`. `--public` starts a **public instance**: no local credential file is written (`if (this.local) await createLocalCredential(...)` in `app.ts`), so you mint credentials yourself with `agents-host token create --note <note>` and hand them to the devices that connect (`runServe` prints exactly that line).
+The last row is the line between `--host` and `--public`: `--host` only replaces the listening
+address, overriding the one `--public` implies, and does not itself change whether the instance counts
+as local; `--public` does. In `packages/host/src/app.ts` the address is
+`host ?? (local ? "127.0.0.1" : "0.0.0.0")`, and only `--public` touches `local`.
 
-The host still **does not implement TLS**: the `ws://` leg is always plaintext, and `wss://` is a client-side capability (a tunnel or a reverse proxy terminates TLS). So `--public` is an explicit road — what you put in front of it (or knowing it sits naked on the network) is the price of that decision; the default does not change: with nothing configured the host only listens on this machine's loopback, and a service whose capability set includes `exec` does not walk out onto the network by itself.
+The host serves `ws://` only; there is no TLS switch. `wss://` is put in front of it by a tunnel or a
+reverse proxy that terminates TLS — that belongs to the deployment, not to the host.
 
-That boundary sits at "the same machine", not at "is there authentication" — the credential exists (see "Authentication" in [Wire Protocol](protocol.md)), but putting a service whose capability set includes `exec` straight onto a network-facing port is still not the default this project wants.
+## Three port levels
 
-| Thing | Who does it |
-|---|---|
-| plaintext WS (`ws://127.0.0.1:<port>`) | the host |
-| tunnel / TLS termination | SSH, tailscale, nginx |
-| `ws://` or `wss://` | the **client** (`--host` / `AI_ZEN_HOST_URL`) |
+The precedence is: the flag, then `<data root>/host.json`, then 8790
+(`packages/host/src/modules/config/hostSettings.ts`).
 
-`wss://` is a client capability, not a host mode — there is no "turn on TLS" switch to configure on the host side.
+- `--port 0` lets the system assign a port, and is only accepted at the flag level; the port that was
+  actually bound is something only the discovery file can report.
+- A port given explicitly that is not an integer between 0 and 65535 is rejected on the spot with the
+  usage text and exit code 2; no service starts.
+- A port already in use makes startup fail and exit; it does not move to another one. Moving would
+  turn "the host a client connects to" and "the host actually serving" into two different processes.
 
-## The three access shapes
+## Single instance and the discovery file
 
-| Shape | What the client connects to | What the host needs | What the client needs |
-|---|---|---|---|
-| local (default) | the `ws://127.0.0.1:<port>` in the discovery file | nothing | nothing |
-| tunnel | `ws://127.0.0.1:<the tunnel's local port>` | nothing | an explicit address + `AI_ZEN_HOST_TOKEN` |
-| reverse proxy | `wss://your.domain[/path]` | `AI_ZEN_ALLOWED_ORIGINS` (when a browser connects) | an explicit address + `AI_ZEN_HOST_TOKEN` |
+`<data root>/run/host.json` is the only answer to "who is serving on this machine": pid, host, port,
+version, local, startedAt.
 
-The three differ only in the middle segment; not one word between host and client changes.
+It is read first at startup:
 
-## Local (default)
+- if that pid is alive (liveness is `kill(pid, 0)` and nothing else), this process binds nothing, writes
+  no discovery file, does not rewrite `run/token`, and only reports the address already in use;
+- if the pid is gone, or the file is unreadable (an unreadable file is deleted — a broken discovery
+  file must not be able to block a start), this process starts its own server and writes the file once
+  its port is bound.
 
-Nothing to configure. The client finds the host through `<aiZenDir>/run/host.json` (spawning one if there is none) and reads the credential from `<aiZenDir>/run/token` in the same directory. Address and credential are two halves of one question (where to connect + what gets you in), so they live under the same `run/` — in the local case nobody has to carry either one by hand.
+Starting `serve` a second time on the same data root is therefore safe: it either attaches to the host
+already running, or confirms that one is gone and takes over.
 
-## Tunnel
+## Credentials
 
-The entry point is still a loopback address — that port just lives on the other end:
+Who mints them: `agents-host token create`. It opens the database, does its work and closes it; it
+starts no service and binds no port. A local instance additionally makes sure `run/token` holds a
+usable token at startup — the file missing, the content empty, or the token revoked all end the same
+way: a new one is minted and written back, because otherwise that machine could never connect to
+itself.
 
-```bash
-# pull the remote machine's 127.0.0.1:8790 onto this machine's 9999
-ssh -N -L 9999:127.0.0.1:8790 you@remote
+Where they live: the database keeps only the SHA-256 digest of the token, and the plaintext is printed
+once, at creation. A local instance writes it into `<data root>/run/token`, which is the local
+delivery file: the content carries one trailing newline, the permissions are set to `0600` on a best
+effort basis and are not a security guarantee.
 
-export AI_ZEN_HOST_TOKEN="$(ssh you@remote cat '~/.ai-zen/run/token')"
-ai --host ws://127.0.0.1:9999
+How they are used: every connection presents a token in its handshake (`connectionParams` as
+`{ token }`); the token never travels in a query string, which would end up in access logs and browser
+history. A connection that fails the check reaches no procedure: it gets an `unauthorized` and is
+closed.
+
+What revocation affects: only whether a later connection can be made. A connection that already shook
+hands is not reached back into. The string in `run/token` stops working, and the next startup replaces
+it. Several valid credentials can exist at the same time, which is what makes revoking one of them
+useful.
+
+Credentials are not part of the contract surface: a client only remembers a password and manages its
+connection; creating, listing and revoking are administrative actions on the host's command line.
+
+## The data root
+
+The data root is the `AI_ZEN_DIR` environment variable, default `~/.ai-zen`. `--ai-zen-dir <dir>`
+writes that value into the variable before anything reads it, so the data root has exactly one way of
+being resolved.
+
+```
+<data root>/
+├── ai-zen.db              the whole machine's database
+├── assets/                uploaded bytes
+├── config.json            user config
+├── host.json              the host's own settings (the port)
+├── reasoning-presets.json thinking-level presets
+├── mcp.json               user-level MCP entries
+├── agents/  sub-agents/  skills/  tools/  mcp-oauth/
+├── logs/host.log
+└── run/
+    ├── host.json          discovery file: who is serving on this machine
+    ├── token              local credential delivery file
+    └── next-version.json  upgrade pin: which version to launch next
 ```
 
-The same holds for tailscale and `kubectl port-forward`: all of them open a loopback port on this machine and connect it to a loopback port on the other end.
+The three files under `run/` are three different delivery points, saying three different things:
+`host.json` says where to connect right now, `token` gives a client on this machine one usable
+credential in plaintext, and `next-version.json` says which version should run next. All three are run
+files this process writes for itself: `token` once it is settled that no other host is serving on the
+machine, `host.json` and the pin after the port is bound, and the last two are cleared during shutdown.
 
-**The credential has to be given explicitly.** "The file is right here" does not hold in this shape — this machine's `<aiZenDir>/run/token` has nothing to do with the lock on the remote machine. The client tries the local file first, and the message it produces when refused is exactly that sentence (see "How the client connects" below).
+## Upgrading in three stages
 
-### A known behaviour: the working directory is still sent as if local
+The host installs no packages and does not re-exec itself. An upgrade is split into three stages, and
+a local host and a remote one take the same road:
 
-Over a `ws://127.0.0.1:PORT` tunnel the client **cannot tell** from the address that the peer is not this machine — the entry point is a loopback address. So it does what it does locally and sends **this machine's working directory** up as the workspace; the remote machine usually does not have that path, and the host answers `workspace-path-missing`.
+| Stage | Who | What |
+|---|---|---|
+| ① pick a version | the client | take the highest semver across the dist-tags, and tell the host that number |
+| ② verify, record, ask for a relaunch | the host | two criteria decide that this version is obtainable → write the pin → exit with `reason: "upgrade"` |
+| ③ launch | however the host is started | read the pin, run `npx -y @ai-zen/agents-host@<pin> serve` |
 
-This is the current behaviour, not a bug: the client decides "who owns the workspace" purely by whether the address's host is loopback (`local-host.ts`), and the address really cannot separate "a local daemon" from "the far end of a tunnel".
+The host only does stage ② (`packages/host/src/modules/update/service.ts`): it accepts one concrete
+version number and recognises neither ranges nor tags. The two criteria are:
 
-Two ways out: create that path on the remote machine first, or switch to the reverse-proxy shape — `wss://your.domain/ai-zen` is not a loopback address, so the client sends no local directory and the workspace comes from the host's default (`--workspace`, or the directory it was started from).
+- the copy on disk is already the target version — the three shapes that get replaced in place (the
+  desktop app, docker, `npm i -g`) are settled by this one, with no network call;
+- otherwise, ask the registry whether that number exists — a host started by `npx` never changes its
+  own copy.
 
-## Reverse proxy (nginx terminating TLS)
+When neither holds it answers `not_available` and does not exit, so "that version does not exist"
+stops short of killing a working service.
 
-The premise is that nginx and the host run on the **same machine**: nginx speaks `wss://` outward and connects to `ws://127.0.0.1:8790` inward — which lands exactly on the host's loopback assertion.
+The pin and the exit signal are two different things and stay separate. With only a pin, a normal
+shutdown would leave the launcher reading the old pin and pulling the service back up; with only an
+exit code, the launcher would not know which version to run next. A normal shutdown clears the pin, the
+upgrade path keeps it, and the two exit with different codes.
 
-### The nginx config
+## Exit codes
 
-```nginx
-# /etc/nginx/conf.d/ai-zen.conf
-host {
-    listen 443 ssl;
-    host_name your.domain;
-
-    ssl_certificate     /etc/letsencrypt/live/your.domain/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your.domain/privkey.pem;
-
-    # sub-path mount: location matches the prefix only and proxy_pass carries no URI,
-    # so upstream receives the path unchanged (/ai-zen)
-    location /ai-zen {
-        proxy_pass http://127.0.0.1:8790;
-
-        # 1. the WebSocket handshake (the three traps are below)
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # 2. payload ceiling: 1m by default, so content.upload turns into a 413
-        client_max_body_size 64m;
-
-        # 3. idle ceiling: 60s by default, which cuts a conversation in half
-        proxy_read_timeout 3600s;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-```
-
-To mount on the root path, replace `location /ai-zen` with `location /` — the client then connects to `wss://your.domain`.
-
-### The three default-value traps
-
-| Directive | Default | What happens without it | What to write | Why that value |
-|---|---|---|---|---|
-| `proxy_http_version` + `Upgrade` / `Connection` | upstream is spoken to over HTTP/1.0, and `Upgrade` is **not forwarded** | upstream receives an ordinary HTTP request rather than an upgrade → the handshake is a **400**; and that request looks like every other one in the log | `proxy_http_version 1.1` + the two `proxy_set_header` lines | a WS handshake *is* an `Upgrade` request; HTTP/1.0 has no such notion, and not forwarding those two headers says nothing at all |
-| `client_max_body_size` | **1m** | the bytes of `content.upload` travel as binary frames; over the ceiling nginx answers **413**, while the client is waiting for a WS message — it cannot read an HTTP response, so all it shows is an unexplained connection error | **64m** | it lines up with the WS layer's "one message ≤ 64 MiB" ceiling (see "Size ceilings" in [Wire Protocol](protocol.md)). Smaller shuts out something the protocol allows; larger means nothing |
-| `proxy_read_timeout` | **60s** | after 60 idle seconds nginx cuts the upstream WS. The user sees "it dropped halfway through the conversation", while neither end reports an error | **3600s** | within one turn both "the model is thinking" and "the human went for tea" can be quiet for a long time, and the wire has **no** heartbeat requirement (the host initiates no requests and sends no ping) |
-
-All three are the "it works with the config empty, it just works wrong" kind — none of them fails at startup.
-
-### After the config is in place
-
-The host side has to carry the **origin a browser will arrive with** in `AI_ZEN_ALLOWED_ORIGINS`, or your own web UI gets refused by your own host (403):
-
-```bash
-AI_ZEN_ALLOWED_ORIGINS=https://your.domain agents-host serve
-# under systemd that is one line: Environment=AI_ZEN_ALLOWED_ORIGINS=https://your.domain
-```
-
-A value is `scheme://host[:port]` (several separated by commas, each entry trimmed, empty entries dropped); the criteria — including "no `Origin` at all is admitted" — are in "Origin check" in [Wire Protocol](protocol.md). Clients that send no `Origin` (the CLI, the desktop app, scripts) are unaffected by this setting.
-
-## How the client connects
-
-| What | Precedence (highest first) |
+| Code | When |
 |---|---|
-| address | `--host <url>` > `AI_ZEN_HOST_URL` > `<aiZenDir>/run/host.json` |
-| credential | `AI_ZEN_HOST_TOKEN` > `<aiZenDir>/run/token` > none |
+| 0 | after a normal shutdown: `host.shutdown`, the `SIGTERM` that `stop` sends, or `SIGINT` |
+| 75 | an upgrade: the pin is already written, and the launcher is asked to pull that version |
+| 1 | startup failed, shutdown failed, or `stop` could not stop the host |
+| 2 | the command line does not add up (unknown subcommand, missing value, a port outside 0 to 65535) |
 
-```bash
-# the credential only comes from the environment (here: fetched from the remote machine)
-export AI_ZEN_HOST_TOKEN="$(ssh you@remote cat '~/.ai-zen/run/token')"
-ai --host wss://your.domain/ai-zen
-```
+75 is the "try again later" value from `sysexits.h`: it collides with none of the common error codes,
+and none of the 126 / 127 / 128+n values the shell keeps for itself.
 
-Four hard properties:
+## The command line
 
-- **The URL accepts `ws:` / `wss:` / `http:` / `https:`**, the last two mapped as `http → ws` and `https → wss` — the address a user has in hand is usually `https://your.domain` (the string in the browser's address bar). **Paths are supported** (nginx sub-path mounts): `wss://your.domain/ai-zen` means the `/ai-zen` in the URL.
-- **There is no `--token`, deliberately**: an address is not a secret and may live in argv; a credential is, and anything in argv stays in `ps` output and in shell history. So a credential has exactly two sources: the environment and a file.
-- **An explicit address never spawns a local host**: a process started by local `npx` is definitely not at that address, so spawning would just wait out a timeout and then report something pointing the wrong way.
-- **Address and credential must come from the same resolution**: once the address can point at a remote machine, the credential can no longer be read from the local file only. "It connects but the handshake is refused" is the hardest half-remote state to debug, so the client resolves both at one point, and the `unauthorized` message is phrased by "who gave the address × where the credential came from" — one of those sentences is exactly "this address may not be a local daemon; if it is an SSH forward / nginx / tailscale tunnel, set `AI_ZEN_HOST_TOKEN`".
-
-## Security boundary
-
-The credential separates you from **other users and other networks**: without it, anything that can reach this port (or that domain on nginx) has `exec`.
-
-It does **not** separate you from **other processes of the same user**: the credential file is mode 0600, and the same user naturally can read their own 0600 file — any script that user runs can take this key. That is not a hole, it is where the boundary is drawn: the boundary of a single-user tool is "this user", not "this process".
-
-## Troubleshooting
-
-| Symptom | Most likely cause |
+| Command | Does |
 |---|---|
-| a browser gets 403 as soon as it connects | `AI_ZEN_ALLOWED_ORIGINS` does not carry that `https://your.domain` |
-| the WS handshake is a 400 and the nginx log says nothing useful | `proxy_http_version 1.1` and the `Upgrade` / `Connection` headers are missing |
-| a large upload drops and the client reports only a connection error | `client_max_body_size` is still the default **1m** (over it: 413) |
-| the connection drops after about a minute of idling | `proxy_read_timeout` is still the default **60s** |
-| `unauthorized` | `AI_ZEN_HOST_TOKEN` does not match `<aiZenDir>/run/token` on that machine; when unset, the client fell back to this machine's copy |
-| `workspace-path-missing` | in the tunnel shape the client sent its local working directory (see the known behaviour under "Tunnel") |
+| `agents-host serve` | start serving; this is also what runs when no subcommand is given |
+| `agents-host stop [--yes]` | stop the host recorded in the discovery file, by pid, after one confirmation; without `--yes` in a non-interactive shell it refuses |
+| `agents-host token create [--note <note>]` | mint a credential, print the plaintext once |
+| `agents-host token list` | list credentials with their state |
+| `agents-host token revoke <id>` | revoke one credential |
+| `agents-host version` | print the package version |
+| `agents-host help` | print usage |
+
+The four options of `serve` (`--port`, `--host`, `--public`, `--ai-zen-dir`) are in
+[Getting Started](getting-started.md). `--ai-zen-dir` is accepted by every subcommand except `version`
+and `help`. The three `token` subcommands open the database and start no service; `stop` does not open
+the database at all — it reads the discovery file, sends that one `SIGTERM`, and waits for the process
+to really exit.

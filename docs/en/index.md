@@ -1,110 +1,77 @@
 ---
 title: AI-Zen Agents
-description: AI-Zen Agents — a modular LLM Agent framework (core + sdk + host + client monorepo) with a plugin-driven runtime, capability pipeline, a resident host, and MCP support.
+description: The front page of AI-Zen Agents — the four layers (kernel, capability face and runtime, host, clients), the criterion the split is judged by, the packages in this repository, and where to read next.
 outline: deep
 ---
 
 # AI-Zen Agents
 
-AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via pnpm workspace. It provides layered capabilities from "conversation runtime" to "resident host", consumed by the CLI / desktop app through `@ai-zen/agents-client`.
+A self-hosted runtime for LLM agents. An agent here is a process-local object with an inbox and two
+loops; everything else in this repository either gives that object abilities, keeps it alive and
+reachable, or writes down what it did.
 
-- **License**: MIT
-- **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core`, `@ai-zen/agents-sdk` and `@ai-zen/agents-host`. `@ai-zen/agents-client` and `@ai-zen/agents-testing` are **private** and never published — the former is inlined by CLI / Desktop at build time, the latter only serves this repo's tests
-- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.6.0-alpha.0`; `@ai-zen/agents-sdk` `1.2.0-alpha.2`; `@ai-zen/agents-host` `0.1.0-alpha.7`; `@ai-zen/agents-client` `0.1.0-alpha.0` (private)
-
-## What this is
-
-The framework has four layers with a one-way dependency direction:
-
-1. **`@ai-zen/agents-core`** — A plugin-driven Agent runtime. It runs directly on the official `openai` SDK and does not maintain its own request layer. It is responsible for conversation lifecycle, streaming output, tool calls, multi-turn recursive dialogs, events, and plugin extension.
-2. **`@ai-zen/agents-sdk`** — The **engine / capability layer** built on top of core. It is responsible for the business capability pipeline (discover → permission-filter → instantiate), the global Scope context, MCP connection management, task migration, and the built-in file/command toolset.
-3. **`@ai-zen/agents-host`** — The **resident host** (`agents-host serve`). Session orchestration, capability assembly, archives, workspaces and migration all live here; the CLI and the desktop app only render and read input.
-4. **`@ai-zen/agents-client`** — The **connection layer** to the host: service discovery and spawning, one WebSocket connection, session and config facades. The CLI and the desktop main process share this one implementation.
-
-## Project structure
-
-```bash
-agents/
-├── packages/
-│   ├── core/    # @ai-zen/agents-core — Agent / Message / Tool / plugin mechanism
-│   ├── sdk/     # @ai-zen/agents-sdk — Scope / capability pipeline / MCP / built-in tools
-│   ├── host/  # @ai-zen/agents-host — Daemon / session orchestration / archives / workspaces + protocol
-│   ├── client/  # @ai-zen/agents-client — discovery & spawning / connection / session & config facades
-│   └── testing/ # @ai-zen/agents-testing — private, test doubles
-├── package.json # workspace root (private)
-└── pnpm-workspace.yaml
-```
-
-## Core capabilities
-
-| Capability | Description | See |
-|------|------|------|
-| Plugin-driven runtime | `AgentPlugin` + `HookResult` short-circuit semantics + `dispatchHook` unified event/plugin entry | [Core API](core.md) |
-| Modular tools | `Tool` / `CallbackTool` / `AgentTool` / `AgentToolLazy` / `IndexedSearchTool` | [Core API](core.md) |
-| Capability pipeline | Discover → permission-filter → instantiate (built-in / user / Skill / MCP / SubAgent) | [SDK](sdk.md) |
-| Permission model | Four dimensions (tools / skills / mcps / subagents); permissions are disclosure | [SDK](sdk.md) |
-| MCP support | `McpConnectionManager` + lazy-loaded tools (`load_mcp`, etc.) | [MCP](mcp.md) |
-| Retrieval / RAG | RAG has been removed; retrieval is handled by search tools | [Retrieval & RAG](rag.md) |
-
-## Architecture layers
+## The four layers
 
 ```
-CLI / desktop main
-        │
+terminal client · desktop app                    separate repositories, each inlines
+        │                                        @ai-zen/agents-client
+        │  one WebSocket; tRPC over it, one event stream back
         ▼
-@ai-zen/agents-client ──(runtime)──►  @ai-zen/agents-core ──►  official openai SDK
-  (connection layer)   │
-                       └──(types only)──►  @ai-zen/agents-host/protocol
-                                           (wire contract: method/event names, payloads,
-                                            error codes, frames, discovery file)
-
-@ai-zen/agents-host  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core
- (session orchestration / archives / workspaces / the contract + its runtime pieces)
+@ai-zen/agents-host      session rows and messages, workspaces, connections and credentials,
+        │                notices, assets, questions, search, user-visible text
+        │  procedures in, events out
+        ▼
+@ai-zen/agents-sdk       capability surface: scope, built-in tools, skills, subagents, MCP,
+        │                peer sessions. Runtime: wake an agent, keep the register of what is
+        │                alive, post between sessions, dispose a scope
+        ▼
+@ai-zen/agents-core      one agent: inbox, outer loop, inner loop, an input gate and an output
+                         gate, event names, plugin hooks
 ```
 
-The dependency direction is one-way, never reversed: `core ← sdk ← host`, and
-`client ← CLI / desktop main`. `client` has exactly one runtime edge (`core`); towards the host it
-does `import type` only (the types of `@ai-zen/agents-host/protocol`), and both
-`@ai-zen/agents-sdk` and `@ai-zen/agents-host` are its **peers** (the host must provide them).
-See [Architecture](architecture.md).
+Each layer can be replaced as a whole from the top down: a client can be replaced by a script, the
+host can be replaced by an empty implementation, and the layers below keep behaving the same. The
+clients are not in this repository — the terminal client and the desktop app live in their own
+repositories and embed `@ai-zen/agents-client`, which is the only piece of them that lives here.
 
-## Quick start
+Only the host has a contract surface, and it has two halves. The first half is procedures grouped by
+domain: `session.*` for the rows, `agent.*` for what the live object does, `workspace.*`, `asset.*`,
+`notice.*`, `question.*`, `handoff.*`, `search.*`, `scope.*`, `config.*`, `mcp.*`,
+`agentDefinition.*`, `host.*`. The second half is one subscription that carries every fact the host
+publishes, so a client never polls for a change it was not told about.
 
-```bash
-git clone <your-repo-url>
-cd agents
-pnpm install
-pnpm build-core
-```
+## The criterion the layering is judged by
 
-A minimal runnable example:
+Without the host, `@ai-zen/agents-core` plus `@ai-zen/agents-sdk` alone can assemble agents that are
+event-driven, resident, and able to talk to each other: one is woken from materials handed to it, then
+takes entries from its inbox and runs with nobody waiting on the call, goes back to idle, and another
+session can post to it. This is the one test the split has to pass.
 
-```ts
-import OpenAI from "openai";
-import { Agent, Message } from "@ai-zen/agents-core";
+When a piece of code only exists because the host happens to be there — who is alive, when a
+capability container is torn down, what a session is called — the fix is to move it down into the
+runtime, not to add a second path in the host.
 
-const client = new OpenAI({ apiKey: "sk-xxx", baseURL: "https://api.openai.com/v1" });
-const agent = new Agent({ client, model: "gpt-4o", modelConfig: { temperature: 0.7 } });
-agent.append(Message.System("You are an AI assistant."));
-await agent.send("Hello, please introduce yourself.");
-console.log(agent.messages.at(-1)?.content);
-```
+## Packages
 
-For complete installation and usage, see [Quick Start](getting-started.md).
+| Package | Does | Does not |
+|---|---|---|
+| `@ai-zen/agents-core` | Runs one agent: the inbox, the outer loop that takes entries in batches, the inner loop that sends a request and runs tools, the input and output gates with their switches and readers, the event names, the plugin hooks | Know about sessions, workspaces, storage, network, credentials, language, config files, or capability discovery |
+| `@ai-zen/agents-sdk` | Two halves. Capability surface: a scope per directory holding tools, skills, subagents, MCP servers and the three peer-session tools; three-level model resolution; handoff. Runtime: wake an agent from stored materials, keep the register of who is alive, post a message to another session, dispose a scope when its last session ends | Touch a database, a connection, a credential, a session row, or a user-visible string; it knows a session only as an opaque identity |
+| `@ai-zen/agents-host` | Rows and tables in one SQLite file, connections and credentials, client odds and ends (notices, assets, questions, search), user-visible text and language, the single-instance discovery file, the command line | Install an agent, keep the register of who is alive, decide when a scope is disposed, judge whether a config is valid, merge MCP configuration, or manage connecting and reconnecting |
+| `@ai-zen/agents-client` | The connection to a host: launching one, reading the discovery and credential files, credentials, reconnect | Be published (`private: true`, inlined into the terminal and desktop builds); be imported by `core` or `sdk` |
+| `@ai-zen/agents-logger` | One process, one log file, zero dependencies; `info` / `warn` / `error` behind one port | Be constructed anywhere except the assembly root |
+| `@ai-zen/agents-testing` | Test doubles shared by the packages, re-exporting `@ai-zen/fake-llm` so call sites keep one import | Enter a production dependency graph |
+| `@ai-zen/fake-llm` | An OpenAI-compatible fake endpoint: hand it one target message and it streams back the delta sequence that message would have arrived as | Reach a real provider, or hold any opinion about what a model should answer |
 
-## Documentation index
+## Reading from here
 
-- [Quick Start](getting-started.md) — environment requirements, installation, build, first Agent
-- [Architecture](architecture.md) — the five packages, their dependency direction, the host process model and protocol surface, build order and on-disk layout
-- [Core API](core.md) — core runtime public API (Agent / Message / Tool / plugins)
-- [SDK](sdk.md) — capability layer (Scope / permissions / built-in tools / migration)
-- [Retrieval & RAG](rag.md) — retrieval capability status, RAG removal note
-- [MCP](mcp.md) — Model Context Protocol support
-
-## Related repositories
-
-`@ai-zen/cli` (interactive AI Agent terminal) and the desktop app (`@ai-zen/desktop-main`) live in their own repositories and connect to this repository's `@ai-zen/agents-host` through `@ai-zen/agents-client`.
+| Page | Holds |
+|---|---|
+| [Getting Started](getting-started.md) | From zero: install, test, start a host, mint a credential, connect a client, and a minimal agent that never touches the host |
+| [Architecture](architecture.md) | Why the split is where it is: the criteria for the four layers, the four questions and five criteria for live objects, which direction facts and materials travel, and where events and persistence land |
+| [Core API](core.md) | The kernel: one agent's inbox, its two loops, its two gates, the event names, the plugin hooks |
+| [SDK](sdk.md) | The capability face and the runtime: scopes, model resolution, handoff, waking an agent, posting to another session |
 
 ## License
 
-MIT. See [LICENSE](../../LICENSE).
+MIT.

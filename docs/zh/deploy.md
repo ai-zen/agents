@@ -1,170 +1,123 @@
 ---
-title: 部署与远程访问
-description: 宿主缺省只绑 loopback（--public 起对外实例）而 wss:// 是客户端的能力、三种访问形态（本机 / 隧道 / 反向代理）各自的入口与要配的东西、nginx 反代完整样例与三个默认值陷阱（未转发 Upgrade 头就是握手 400、client_max_body_size 默认 1m 让 content.upload 撞 413、proxy_read_timeout 默认 60s 让空闲连接被掐）、AI_ZEN_ALLOWED_ORIGINS 必须填浏览器带来的那个来源、客户端地址与凭证的优先级（--host / AI_ZEN_HOST_URL / 发现文件，AI_ZEN_HOST_TOKEN / run/token）与「为什么没有 --token」、隧道下工作目录仍按本机递上去的已知行为、凭证能隔开谁和隔不开谁、排错对照表。
+title: 部署
+description: 部署形状：本机实例与对外实例、监听地址与端口三档优先级、单实例与发现文件、凭证（谁造、放哪、吊销影响什么）、数据根与 run/ 下三份运行期文件、升级三段、退出码。
 outline: deep
 ---
 
-# 部署与远程访问
+# 部署
 
-这一页回答「宿主跑在哪儿、客户端怎么连过去」。线上说什么在[线上协议](protocol.md) —— 那里只写允不允许；这里写实际怎么搭、哪几个默认值会把事情弄坏。
+这一页讲宿主这台进程怎么存在：它监听哪儿、谁是那台机器上唯一在服务的那一个、凭证从哪来、数据放在哪、换版本时谁做什么。
 
-## 前提：缺省只绑 loopback
+## 两种实例
 
-`agents-host serve` **缺省**是本地实例：只监听回环（缺省 `127.0.0.1:8790`），凭证自动生成并写在 `<数据根>/run/token`（`packages/host/src/cli.ts` 的 `parseArgs` 把 `local` 初始成 `true`，`runServe` 只在本机实例上打那一行凭证路径）。
+缺省是本机实例：只监听回环地址，并把一串能用的凭证写进 `<数据根>/run/token`，同一台机器上的客户端因此不必手抄令牌。
 
-对外实例是**显式动作**，两条路都通向同一个地址：
+对外实例是一次显式动作：`--public` 让它监听所有网卡，并且不写 `run/token` —— 那台机器上的凭证只能由人当场造出来，再分发给要连的设备。
 
-| 写法 | 结果 |
-|---|---|
-| `agents-host serve`（或 `--local`） | `127.0.0.1:<port>`（`LOOPBACK_HOST`） |
-| `agents-host serve --public` | `0.0.0.0:<port>`（`PUBLIC_HOST`） |
-| `agents-host serve --host <非回环地址>` | 同上，`local` 被这次地址推断成 `false` |
-| `--local --host <非回环地址>` | **拒绝启动**（自相矛盾：`UsageError`，退出码 2） |
+| 启动方式 | 监听 | `run/token` |
+|---|---|---|
+| `agents-host serve` | `127.0.0.1:<端口>` | 写 |
+| `agents-host serve --public` | `0.0.0.0:<端口>` | 不写 |
+| `agents-host serve --public --host 10.0.0.7` | `10.0.0.7:<端口>` | 不写 |
+| `agents-host serve --host 10.0.0.7` | `10.0.0.7:<端口>` | 写 |
 
-判据只有一处：`resolveListenTarget`（`packages/host/src/config.ts`）—— `local ? LOOPBACK_HOST : PUBLIC_HOST`。`--public` 起的是**对外实例**：它不写本地凭证交付文件，凭证要自己 `agents-host token create --note <备注>` 建出来再分发给要连的设备（`runServe` 里那一行打印的就是这句话）。
+最后一行是 `--host` 与 `--public` 的分界：`--host` 只换监听地址，压过 `--public` 推出的那一个，它本身不改变这台实例算不算本机实例；改变的是 `--public`（`packages/host/src/app.ts` 里地址取 `host ?? (local ? "127.0.0.1" : "0.0.0.0")`，而 `local` 只由 `--public` 改）。
 
-宿主**仍然不实现 TLS**：`ws://` 那一程永远是明文，`wss://` 是客户端的能力（隧道或反向代理终结 TLS）。所以 `--public` 是一条**显式**的路 —— 你把它摆在什么前面（或者明知道它裸在网络上），是这个决定的代价；缺省状态不变：什么都不配就只在本机回环上，一个能力里有 `exec` 的服务不会自己跑到网络上去。
+宿主只起 `ws://`，没有开 TLS 的那一档。要 `wss://` 就在前面放隧道或反向代理，让它终结 TLS —— 那是部署侧的事，宿主这一侧没有开关可配。
 
-这条边界横在「同一台机器」上，不是「有没有鉴权」—— 凭证已经在（见[线上协议](protocol.md)的「鉴权」），但把一个能力里有 `exec` 的服务直接摆到网络上的端口上，仍然不是这个项目要的默认状态。
+## 端口三档
 
-| 事情 | 谁做 |
-|---|---|
-| 明文 WS（`ws://127.0.0.1:<port>`） | 宿主 |
-| 隧道 / TLS 终结 | SSH、tailscale、nginx |
-| 连 `ws://` 还是 `wss://` | **客户端**（`--host` / `AI_ZEN_HOST_URL`） |
+优先级是：启动参数 > `<数据根>/host.json` > 默认 8790（`packages/host/src/modules/config/hostSettings.ts`）。
 
-`wss://` 是客户端的一个能力，不是宿主的一个模式 —— 宿主那侧没有任何「开 TLS」的开关可配。
+- `--port 0` 表示由系统分配，只有启动参数这一档放行；真正绑上的是哪一个，只有发现文件说得出来。
+- 显式给出但不是 0 到 65535 的整数：命令行当场拒绝并打印用法，退出码 2，不起服务。
+- 端口被占用：启动失败并退出，不换一个端口重试 —— 换端口会让客户端连的那一台和实际在服务的那一台成为两个进程。
 
-## 三种访问形态
+## 单实例与发现文件
 
-| 形态 | 客户端连什么 | 宿主要配什么 | 客户端要配什么 |
-|---|---|---|---|
-| 本机（默认） | 发现文件里那个 `ws://127.0.0.1:<port>` | 什么都不用 | 什么都不用 |
-| 隧道 | `ws://127.0.0.1:<隧道的本地端口>` | 什么都不用 | 显式地址 + `AI_ZEN_HOST_TOKEN` |
-| 反向代理 | `wss://your.domain[/path]` | `AI_ZEN_ALLOWED_ORIGINS`（浏览器来连的时候） | 显式地址 + `AI_ZEN_HOST_TOKEN` |
+`<数据根>/run/host.json` 是「这台机器上谁在服务」的唯一真相，内容是 pid、host、port、version、local、startedAt。
 
-三种形态的差别只在中间那一段；宿主与客户端说的话一个字都不变。
+启动时先读它：
 
-## 本机（默认）
+- 那个 pid 还活着（探活只有 `kill(pid, 0)`），本进程不绑端口、不写发现文件、也不重写 `run/token`，只报出已有的地址；
+- pid 已经不在了，或者文件读不出来（读不出来就直接删掉，坏文件拦不住启动），本进程起自己的服务，端口绑上之后再写这一份。
 
-什么都不用配。客户端按 `<aiZenDir>/run/host.json` 找到宿主（没有就拉起一个），凭证读同一个目录下的 `<aiZenDir>/run/token`。地址与凭证是同一个问题的两半（连哪儿 + 拿什么进门），所以放在同一个 `run/` 下：本机场景不需要任何人手动搬运任何一个。
+所以同一份数据根上再起一次 `serve` 是安全的：它要么连上已有的那台，要么确认上一台已经死了再接手。
 
-## 隧道
+## 凭证
 
-入口仍是回环地址 —— 只是那个端口在另一端：
+谁造：`agents-host token create`。它直接开库、做完就关，不起服务，也不绑端口。本机实例另外在启动时保证 `run/token` 里放着一串能用的令牌 —— 文件不在、内容为空、或者那一串已经吊销，都新造一串写回去；否则那台机器就再也连不上自己。
 
-```bash
-# 把远端那台机器的 127.0.0.1:8790 拉到本机的 9999
-ssh -N -L 9999:127.0.0.1:8790 you@remote
+放哪：库里只存这串令牌的 SHA-256 摘要，明文只在创建那一次打印出来。本机实例把它写进 `<数据根>/run/token`，这是本地交付口：内容带一个末尾换行，权限尽力设成 0600，但不作为安全保证。
 
-export AI_ZEN_HOST_TOKEN="$(ssh you@remote cat '~/.ai-zen/run/token')"
-ai --host ws://127.0.0.1:9999
+怎么用：每一条连接握手时都要带上令牌（`connectionParams` 里的 `{ token }`），令牌不放 URL 查询串 —— 那会进访问日志与浏览器历史。验不过的连接一个 procedure 都调不到：回一个 `unauthorized`，然后关掉。
+
+吊销影响什么：只影响以后能不能连上，不回头断开已经握过手的连接。吊销之后 `run/token` 里那一串就失效了，下一次启动会换一串新的写回去。可以同时有多串有效令牌，就是为了单独吊销其中一串。
+
+凭证不进契约面：客户端只有「记住密码」与连接管理，创建、列出、吊销都是宿主命令行的管理动作。
+
+## 数据根
+
+数据根是环境变量 `AI_ZEN_DIR`，缺省 `~/.ai-zen`；`--ai-zen-dir <dir>` 会把值先写进这个环境变量，再让别的模块去读，数据根因此只有一个读法。
+
+```
+<数据根>/
+├── ai-zen.db              全机一个库
+├── assets/                上传的字节
+├── config.json            用户配置
+├── host.json              宿主自己的设置（端口那一档）
+├── reasoning-presets.json 思考策略表
+├── mcp.json               用户级 MCP 配置
+├── agents/  sub-agents/  skills/  tools/  mcp-oauth/
+├── logs/host.log
+└── run/
+    ├── host.json          发现文件：这台机器上谁在服务
+    ├── token              本地凭证交付文件
+    └── next-version.json  升级 pin：下次该跑哪一版
 ```
 
-tailscale / `kubectl port-forward` 同理：它们做的事都是「在本机开一个回环端口，把它接到另一端的回环端口」。
+`run/` 下三份各是一个交付口，三句话各不相同：`host.json` 说此刻连哪儿，`token` 给本机客户端一串能用的凭证明文，`next-version.json` 说下一拍该跑哪一版。它们都是这个进程为自己写的运行期文件：`token` 在确认这台机器上没有别的宿主在服务时写，`host.json` 与 pin 在端口绑上之后写、在收尾时清。
 
-**凭证必须显式给。** 「本机就有那个文件」在这里不成立 —— 本机的 `<aiZenDir>/run/token` 与远端那把锁毫无关系。客户端会先按本机文件试一遍，被拒时给出的提示正是这句话（见下文「客户端怎么连」）。
+## 升级三段
 
-### 一个已知行为：工作目录仍按本机递上去
+宿主不自装包，也不 re-exec 自己。一次升级分成三段，本机与远端走同一条路：
 
-走 `ws://127.0.0.1:PORT` 的隧道时，客户端从地址上**看不出**对端不是本机 —— 入口恰恰是回环地址。于是它照本机场景的做法，把**本机的工作目录**当作工作区递上去；而远端那台机器上通常没有这个路径，宿主回 `workspace-path-missing`。
+| 段 | 谁 | 干什么 |
+|---|---|---|
+| ① 挑版本 | 客户端 | 各 dist-tag 里取 semver 最高，把那个号告诉宿主 |
+| ② 验、记、请重拉 | 宿主 | 两条判据验「这一版拿得到」→ 写 pin → 以 `reason: "upgrade"` 退出 |
+| ③ 拉起 | 启动方式 | 读 pin，`npx -y @ai-zen/agents-host@<pin> serve` |
 
-这是当前行为，不是 bug：客户端那边判「工作区归谁」只看地址的 host 是不是回环（`local-host.ts`），而从地址确实分不出「本机 daemon」与「隧道另一端」。
+宿主只做第 ② 段（`packages/host/src/modules/update/service.ts`）：它只收一个具体的版本号，范围与 tag 都不认。两条判据是：
 
-两条出路：在远端先建出这个路径；或者改用反向代理形态 —— `wss://your.domain/ai-zen` 不是回环地址，客户端就不会递本机目录，工作区由宿主的缺省值（`--workspace` 或它启动时所在目录）决定。
+- 磁盘上那一份已经是目标版本 —— 就地换过的三种形状（桌面端、docker、`npm i -g`）用这一条，不必出网；
+- 否则问 registry 有没有这个号 —— `npx` 拉起来的宿主，它自己那一份永不变化。
 
-## 反向代理（nginx 终结 TLS）
+两条都不成立就报 `not_available` 并且不退出：把「这一版不存在」挡在弄死服务之前。
 
-前提是 nginx 与宿主在**同一台机器**上：nginx 对外 `wss://`，对内连 `ws://127.0.0.1:8790`（正好落在宿主那条 loopback 断言里）。
+pin 与退出信号必须分开。只有 pin 的话，一次正常关闭之后，启动方式会照着老 pin 把服务又拉起来；只有退出码的话，启动方式不知道下一拍该跑哪一版。所以正常关闭会清掉 pin，升级那一路会留下 pin，而两者的退出码不同。
 
-### nginx 配置
+## 退出码
 
-```nginx
-# /etc/nginx/conf.d/ai-zen.conf
-host {
-    listen 443 ssl;
-    host_name your.domain;
-
-    ssl_certificate     /etc/letsencrypt/live/your.domain/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your.domain/privkey.pem;
-
-    # 子路径挂载：location 只匹配前缀、proxy_pass 不带 URI，于是上游收到的路径原样是 /ai-zen
-    location /ai-zen {
-        proxy_pass http://127.0.0.1:8790;
-
-        # ① WebSocket 握手（三个陷阱见下面的「三个默认值陷阱」）
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # ② 载荷上限：默认 1m，content.upload 超过就 413
-        client_max_body_size 64m;
-
-        # ③ 空闲上限：默认 60s，聊到一半会被掐
-        proxy_read_timeout 3600s;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-```
-
-挂到根路径就把 `location /ai-zen` 换成 `location /`，客户端相应连 `wss://your.domain`。
-
-### 三个默认值陷阱
-
-| 指令 | 默认 | 不写的后果 | 写什么 | 为什么是这个值 |
-|---|---|---|---|---|
-| `proxy_http_version` + `Upgrade` / `Connection` | 对上游用 HTTP/1.0，且**不转发** `Upgrade` | 上游收到的是一次普通 HTTP 请求，不是升级请求 → 握手 **400**；而这条请求在日志里和别的一模一样，什么都看不出来 | `proxy_http_version 1.1` + 两个 `proxy_set_header` | WS 握手本身就是一次 `Upgrade` 请求；HTTP/1.0 没有这个语义，那两个头不转发就等于什么都没说 |
-| `client_max_body_size` | **1m** | `content.upload` 的字节走二进制帧，超过上限时 nginx 直接回 **413**；客户端此刻正在等一条 WS 消息，它收到的是一条 HTTP 响应，读不懂，只表现为一条莫名其妙的连接错误 | **64m** | 与 WS 层「单条消息 64 MiB」的上限对齐（见[线上协议](protocol.md)的「大小上限」）。比它小，等于把协议允许的东西挡在门外；比它大，没有意义 |
-| `proxy_read_timeout` | **60s** | 空闲超过 60 秒，nginx 主动掐掉上游那条 WS。用户看到的是「聊到一半突然断了」，而两端都没有报错 | **3600s** | 一轮对话里「模型在想」与「人去泡茶」都可能安静很久，而线上协议**没有**心跳要求（宿主不主动发请求，也不发 ping） |
-
-三条都属于「配置是空的也会工作，只是工作得不对」那一类 —— 没有任何一条会在启动时报错。
-
-### 配完之后
-
-宿主那侧要把浏览器会带来的**来源**配进 `AI_ZEN_ALLOWED_ORIGINS`，否则自己的 webui 会被自己拒掉（403）：
-
-```bash
-AI_ZEN_ALLOWED_ORIGINS=https://your.domain agents-host serve
-# systemd 里就是一行 Environment=AI_ZEN_ALLOWED_ORIGINS=https://your.domain
-```
-
-值是 `scheme://host[:port]`（多个用逗号分隔，逐项去空白，空项丢弃），判据与「无 `Origin` 放行」那几条见[线上协议](protocol.md)的「来源校验（Origin）」。不带 `Origin` 的客户端（CLI、桌面端、脚本）不受这一项影响。
-
-## 客户端怎么连
-
-| 什么 | 优先级（左高右低） |
+| 码 | 什么时候 |
 |---|---|
-| 地址 | `--host <url>` > `AI_ZEN_HOST_URL` > `<aiZenDir>/run/host.json` |
-| 凭证 | `AI_ZEN_HOST_TOKEN` > `<aiZenDir>/run/token` > 无 |
+| 0 | 正常收尾之后：`host.shutdown`、`stop` 发的那一个 `SIGTERM`、`SIGINT` |
+| 75 | 升级：pin 已经写下，请启动方式照它重拉 |
+| 1 | 启动失败、收尾失败，或者 `stop` 没关成 |
+| 2 | 命令行参数不成立（未知子命令、缺值、端口不是 0 到 65535） |
 
-```bash
-# 凭证只走环境变量（下面这个写法是从远端那台机器上取）
-export AI_ZEN_HOST_TOKEN="$(ssh you@remote cat '~/.ai-zen/run/token')"
-ai --host wss://your.domain/ai-zen
-```
+75 取的是 `sysexits.h` 里「稍后再试」那一档，不与常见错误码撞，也不落在 shell 自己保留的 126 / 127 / 128+n 上。
 
-几条硬性质：
+## 命令行
 
-- **URL 接受 `ws:` / `wss:` / `http:` / `https:`**，后两个按 `http → ws`、`https → wss` 映射 —— 用户手上拿到的地址多半是 `https://your.domain`（浏览器地址栏里那一串）。**支持 path**（nginx 的子路径挂载），`wss://your.domain/ai-zen` 就是 URL 里的那个 `/ai-zen`。
-- **没有 `--token`，这是有意的**：地址不是秘密，可以进 argv；凭证是秘密，进了 argv 就会留在 `ps` 的输出与 shell 历史里。所以凭证只有环境变量与文件两个来源。
-- **给了显式地址就永不拉起本地宿主**：本地 `npx` 起的进程一定不在那个地址上，拉起只会白等一轮然后报一个指向错误方向的超时。
-- **地址与凭证必须同源**：地址可以指向远端，凭证就不能只从本地文件读。「连得上、握手被拒」是半远程状态里最难查的一种，所以两者在客户端只有一个解析点，`unauthorized` 的提示也按「地址是谁给的 × 凭证从哪来」分成几句对症的话 —— 其中一句正是「这个地址上可能不是本机 daemon；若是 SSH 转发 / nginx / tailscale 隧道，请设 `AI_ZEN_HOST_TOKEN`」。
-
-## 安全边界
-
-凭证隔的是**别的用户 / 别的网络**：没有它，任何能连到这个端口（或能连到 nginx 上那个域名）的东西都能用 `exec`。
-
-它**隔不了同一用户下的其它进程**：凭证文件权限是 0600，而同一个用户当然读得到自己的 0600 文件 —— 那个用户跑的任何脚本都能拿到这把钥匙。这不是漏洞，是边界画在哪儿的问题：单用户工具的边界就是「这个用户」，不是「这个进程」。
-
-## 排错对照表
-
-| 现象 | 多半是 |
+| 命令 | 做什么 |
 |---|---|
-| 浏览器一进门就 403 | `AI_ZEN_ALLOWED_ORIGINS` 里没有那个 `https://your.domain` |
-| WS 握手 400，nginx 日志里看不出为什么 | 少了 `proxy_http_version 1.1` 与 `Upgrade` / `Connection` 两个头 |
-| 大文件上传时突然断开、客户端只报一条连接错误 | `client_max_body_size` 还是默认 **1m**（超限回 413） |
-| 空闲一分钟左右突然断开 | `proxy_read_timeout` 还是默认 **60s** |
-| `unauthorized` | `AI_ZEN_HOST_TOKEN` 与那台机器 `<aiZenDir>/run/token` 不一致；没设时客户端退回的是本机那一份 |
-| `workspace-path-missing` | 隧道形态下客户端把本机工作目录递上去了（见「隧道」的已知行为） |
+| `agents-host serve` | 起服务；不带子命令时跑的就是它 |
+| `agents-host stop [--yes]` | 按发现文件里那个 pid 关掉这台机器上的宿主，问一次再动手；非终端里不给 `--yes` 就拒绝 |
+| `agents-host token create [--note <note>]` | 造一串凭证，明文打印一次 |
+| `agents-host token list` | 列出凭证与它们的状态 |
+| `agents-host token revoke <id>` | 吊销一串 |
+| `agents-host version` | 打印这个包的版本 |
+| `agents-host help` | 打印用法 |
+
+`serve` 的四个参数（`--port`、`--host`、`--public`、`--ai-zen-dir`）见[快速开始](getting-started.md)。`--ai-zen-dir` 除 `version` 与 `help` 之外都认。三个 `token` 子命令只开库、不起服务；`stop` 连库都不开，它读发现文件、发那一个 `SIGTERM`、再等进程真的退出。

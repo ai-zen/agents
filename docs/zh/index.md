@@ -1,105 +1,62 @@
 ---
 title: AI-Zen Agents
-description: AI-Zen Agents — 模块化 LLM Agent 框架（core + sdk + host + client monorepo），插件驱动运行时、能力管线、常驻宿主与 MCP 支持。
+description: AI-Zen Agents 的门面：四层（内核、能力面与运行时、宿主、客户端）、分层的判据、仓里的包，以及从这里往哪读。
 outline: deep
 ---
 
 # AI-Zen Agents
 
-AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace 形式组织为 monorepo。它提供从「对话运行时」到「常驻宿主」的分层能力，供 CLI / 桌面端经 `@ai-zen/agents-client` 使用。
+一套自己部署的 agent 运行时。这里的 agent 是进程内的一个对象，带一个 inbox 与两个循环；仓里其余的东西，要么给它能力，要么让它活着、能被连上，要么把它做过的事写下来。
 
-- **许可证**：MIT
-- **npm 包**：`@ai-zen/agents-workspace`（workspace 根，私有）；公开子包为 `@ai-zen/agents-core`、`@ai-zen/agents-sdk` 与 `@ai-zen/agents-host`。`@ai-zen/agents-client` 与 `@ai-zen/agents-testing` 是**私有**包，不发布 —— 前者被 CLI / 桌面端在构建时内联，后者只给本仓用例用
-- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.6.0-alpha.0`；`@ai-zen/agents-sdk` `1.2.0-alpha.2`；`@ai-zen/agents-host` `0.1.0-alpha.7`；`@ai-zen/agents-client` `0.1.0-alpha.0`（私有）
-
-## 这是什么
-
-框架分四层，依赖单向：
-
-1. **`@ai-zen/agents-core`** —— 插件驱动的 Agent 运行时。直接运行于官方 `openai` SDK 之上，不维护自己的请求层。负责对话生命周期、流式输出、工具调用、多轮递归对话、事件与插件扩展。
-2. **`@ai-zen/agents-sdk`** —— 建立在 core 之上的**引擎 / 能力层**。负责业务能力管线（发现 → 权限过滤 → 实例化）、Scope 全局上下文、MCP 连接管理、任务迁移，以及内置文件/命令工具集。
-3. **`@ai-zen/agents-host`** —— **常驻宿主**（`agents-host serve`）。会话编排、能力装配、存档、工作区、迁移都在这里；CLI 与桌面端只做渲染与输入。
-4. **`@ai-zen/agents-client`** —— 到宿主的**连接层**：服务发现与拉起、一条 WebSocket 连接、会话与配置门面。CLI 与桌面端 main 共用同一份实现。
-
-## 项目结构
-
-```bash
-agents/
-├── packages/
-│   ├── core/    # @ai-zen/agents-core — Agent / Message / Tool / 插件机制
-│   ├── sdk/     # @ai-zen/agents-sdk — Scope / 能力管线 / MCP / 内置工具
-│   ├── host/  # @ai-zen/agents-host — Daemon / 会话编排 / 存档 / 工作区 + protocol
-│   ├── client/  # @ai-zen/agents-client — 服务发现与拉起 / 连接 / 会话与配置门面
-│   └── testing/ # @ai-zen/agents-testing — 私有，测试替身
-├── package.json # workspace 根（私有）
-└── pnpm-workspace.yaml
-```
-
-## 核心能力
-
-| 能力 | 说明 | 详见 |
-|------|------|------|
-| 插件驱动运行时 | `AgentPlugin` + `HookResult` 短路语义 + `dispatchHook` 事件/插件统一入口 | [Core API](core.md) |
-| 模块化工具 | `Tool` / `CallbackTool` / `AgentTool` / `AgentToolLazy` / `IndexedSearchTool` | [Core API](core.md) |
-| 能力管线 | 发现 → 权限过滤 → 实例化（内置 / 用户 / Skill / MCP / SubAgent） | [SDK](sdk.md) |
-| 权限模型 | 四维度（tools / skills / mcps / subagents），权限即披露 | [SDK](sdk.md) |
-| MCP 支持 | `McpConnectionManager` + 惰性加载工具（`load_mcp` 等） | [MCP](mcp.md) |
-| 检索 / 检索增强 | RAG 已移除，检索由搜索工具承担 | [检索与 RAG](rag.md) |
-
-## 架构分层
+## 四层
 
 ```
-CLI / 桌面端 main
-        │
+终端客户端 · 桌面端                       各在自己的仓里，各自把
+        │                                @ai-zen/agents-client 捆进产物
+        │  一条 WebSocket；tRPC 跑在上面，往回一条事件流
         ▼
-@ai-zen/agents-client ──(运行期)──►  @ai-zen/agents-core ──►  openai 官方 SDK
-   （连接层）        │
-                    └──(仅类型)──►  @ai-zen/agents-host/protocol
-                                    （线上契约：方法/事件名、载荷、错误码、帧、发现文件）
-
-@ai-zen/agents-host  ──►  @ai-zen/agents-sdk
- （会话编排 / 存档 / 工作区 / 契约 + 它的运行期件）
+@ai-zen/agents-host      会话行与消息、项目、连接与凭证、
+        │                通知、素材、提问、搜索、用户可见文案
+        │  procedure 进来，事件出去
+        ▼
+@ai-zen/agents-sdk       能力面：能力容器、内置工具、技能、subagent、MCP、平级会话。
+        │                运行时：唤醒执行体、登记谁活着、给另一段会话发话、拆容器
+        ▼
+@ai-zen/agents-core      一个 agent：inbox、外循环、内循环、输入闸与输出闸、
+                         事件名、插件钩子
 ```
 
-依赖方向单向，永不反向：`core ← sdk ← host`，`client ← CLI / 桌面端 main`。`client` 的运行期只有 `core` 一条边，对宿主只做 `import type`（`@ai-zen/agents-host/protocol` 的类型），`@ai-zen/agents-sdk` 与 `@ai-zen/agents-host` 都是它的 **peer**（宿主必须提供）。详见 [架构](architecture.md)。
+四层从上往下都可以整块换掉：客户端可以换成一个脚本，宿主可以换成一个空实现，下面几层的行为一条不变。客户端不在本仓：终端客户端与桌面端在各自的仓里，本仓只提供它们内联进去的那一层 `@ai-zen/agents-client`。
 
-## 快速开始
+只有宿主有契约面，它分两半。一半是按域分的 procedure：`session.*` 管会话行，`agent.*` 管活着的那个对象做什么，另有 `workspace.*`、`asset.*`、`notice.*`、`question.*`、`handoff.*`、`search.*`、`scope.*`、`config.*`、`mcp.*`、`agentDefinition.*`、`host.*`。另一半是一条订阅，宿主发出来的每一条事实都从它走 —— 客户端因此不会去问「有没有变」。
 
-```bash
-git clone <your-repo-url>
-cd agents
-pnpm install
-pnpm build-core
-```
+## 分层的判据
 
-最小可运行示例：
+不经过宿主，只用 `@ai-zen/agents-core` 与 `@ai-zen/agents-sdk` 也能组装出事件驱动、常驻、能互相通信的 agent：一段会话被唤醒之后，取件、开跑、回到闲都不需要有人在调用栈上等它；另一段会话能给它发话。这是分层唯一要过的那一关。
 
-```ts
-import OpenAI from "openai";
-import { Agent, Message } from "@ai-zen/agents-core";
+有一块代码如果只是因为宿主恰好在才存在 —— 谁活着、能力容器什么时候拆、一段会话叫什么 —— 做法是把它搬进运行时，不是在宿主里再开一条路。
 
-const client = new OpenAI({ apiKey: "sk-xxx", baseURL: "https://api.openai.com/v1" });
-const agent = new Agent({ client, model: "gpt-4o", modelConfig: { temperature: 0.7 } });
-agent.append(Message.System("You are an AI assistant."));
-await agent.send("Hello, please introduce yourself.");
-console.log(agent.messages.at(-1)?.content);
-```
+## 仓库里的包
 
-完整安装与使用见 [快速开始](getting-started.md)。
+| 包 | 做什么 | 不做什么 |
+|---|---|---|
+| `@ai-zen/agents-core` | 跑一个 agent：inbox、按批取件的外循环、发请求与跑工具的内循环、两道闸连同它们的开关与现读、事件名、插件钩子 | 不知道会话与项目、不碰库与任何持久化、不碰网络与凭证、不碰语言与文案、不读配置文件、不做能力发现 |
+| `@ai-zen/agents-sdk` | 两半。能力面：按目录一份的能力容器，装工具、技能、subagent、MCP 服务器与平级会话那三个工具；模型的三级解析；交接。运行时：按交上来的材料唤醒执行体、留一份「谁活着」的登记、给另一段会话发话、最后一段会话没了就拆掉容器 | 不碰库、不碰连接与凭证、不碰会话行、不出用户可见文案；会话对它只是一个不透明的身份 |
+| `@ai-zen/agents-host` | 一个 SQLite 文件里的行与表、连接与凭证、客户端杂项（通知、素材、提问、搜索）、用户可见文案与语言、单实例的发现文件、命令行 | 不装 agent、不记谁活着、不决定能力容器什么时候拆、不判配置合不合法、不算 MCP 合并、不管连接与重连 |
+| `@ai-zen/agents-client` | 到宿主的连接：拉起一台、读发现文件与凭证交付文件、凭证来源、重连 | 不发版（`private: true`，被终端与桌面各捆进自己的产物）；不被 `core` 与 `sdk` import |
+| `@ai-zen/agents-logger` | 一个进程一个日志文件，零依赖；`info` / `warn` / `error` 只从一个口出 | 不在装配根之外的地方被创建 |
+| `@ai-zen/agents-testing` | 几个包共用的测试件，把 `@ai-zen/fake-llm` 转出去，调用点只认一个 import | 不进生产依赖图 |
+| `@ai-zen/fake-llm` | 一个 OpenAI 兼容的假端点：交给它一条目标消息，它把那条消息本该到达的那一串 delta 放回来 | 不连真实的服务方，也不对「模型该答什么」有意见 |
 
-## 文档索引
+## 从这里往哪读
 
-- [快速开始](getting-started.md) —— 环境要求、安装、构建、第一个 Agent
-- [架构](architecture.md) —— 五个包的分层与依赖方向、宿主进程模型与协议面、构建顺序与落盘布局
-- [Core API](core.md) —— 核心运行时公开 API（Agent / Message / Tool / 插件）
-- [SDK](sdk.md) —— 能力层（Scope / 权限 / 内置工具 / 迁移）
-- [检索与 RAG](rag.md) —— 检索能力现状、RAG 移除说明
-- [MCP](mcp.md) —— Model Context Protocol 支持
+| 页 | 装什么 |
+|---|---|
+| [快速开始](getting-started.md) | 从零开始：装依赖、跑测试、起一台宿主、拿凭证、把客户端连上去，以及不经过宿主的最小 agent |
+| [架构](architecture.md) | 为什么这么切：四层的判据、活物的四问与五条判据、事实与材料的方向、事件与持久化的落点 |
+| [Core API](core.md) | 内核：一个 agent 的 inbox、两个循环、两道闸、事件名、插件钩子 |
+| [SDK](sdk.md) | 能力面与运行时：能力容器、模型解析、交接、唤醒与发话 |
 
-## 相关仓库
+## 许可
 
-`@ai-zen/cli`（交互式 AI Agent 终端）与桌面端（`@ai-zen/desktop-main`）在各自仓库里，通过 `@ai-zen/agents-client` 连到本仓库的 `@ai-zen/agents-host`。
-
-## 许可证
-
-MIT。见 [LICENSE](../../LICENSE)。
+MIT。
