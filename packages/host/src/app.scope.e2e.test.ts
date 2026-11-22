@@ -221,18 +221,24 @@ describe("能力容器的刷新", () => {
   }, 60_000);
 
   it("叫醒一段会话之后容器就有一份；改配置再刷新，份数对得上、容器真的重读了磁盘", async () => {
-    // 建一段会话并把执行体叫起来：容器按目录造，造出来这一份就是后面要刷的那一份
-    const sent = await client.mutation<{ sessionId: string }>("agent.send", {
+    // 建一段会话并把执行体叫起来：容器按目录造，造出来这一份就是后面要刷的那一份。
+    // 建行与起来执行体是两条口，投话是第三条
+    const created = await client.mutation<{ session: { id: string } }>("session.create", {
       workspaceId,
       agentId: "default",
+    });
+    const sessionId = created.session.id;
+    await client.mutation("agent.wake", { sessionId });
+    await client.mutation("agent.send", {
+      workspaceId,
+      agentId: "default",
+      sessionId,
       content: "先在这儿说一句话。",
       messageId: randomUUID(),
     });
     await vi.waitFor(
       async () => {
-        const view = await client.query<{ messages: unknown[] }>("session.open", {
-          sessionId: sent.sessionId,
-        });
+        const view = await client.query<{ messages: unknown[] }>("session.open", { sessionId });
         expect(view.messages.length).toBeGreaterThan(1);
       },
       { timeout: 20_000, interval: 20 },

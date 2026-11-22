@@ -286,6 +286,25 @@ function entryText(entry: AgentNS.InboxEntry): string {
 }
 
 /**
+ * 建一段会话并把执行体叫起来：`session.create` 写一行、`agent.wake` 造执行体，投话是第三条口。
+ *
+ * 三条 procedure 里哪一条少了都会在后面的断言上显形（没有行就没有 id，没有执行体则投递报
+ * `not_found`），所以这里不再逐条检查回执。
+ */
+async function startSession(
+  client: HostClient,
+  workspaceId: string,
+  agentId = "default",
+): Promise<string> {
+  const created = await client.mutation<{ session: Session }>("session.create", {
+    workspaceId,
+    agentId,
+  });
+  await client.mutation("agent.wake", { sessionId: created.session.id });
+  return created.session.id;
+}
+
+/**
  * 在一段窗口里反复看一眼，窗口内**每一次**都必须成立。
  *
  * 「等一会儿，然后断言什么都没发生」不能写成 `sleep` 接着一句断言：那样只看见窗口末尾那一瞬。
@@ -314,7 +333,7 @@ describe("宿主跑起来", () => {
   const vacantWorkspaceId = randomUUID();
   let dataRoot: string;
   let previousHome: string | undefined;
-  let model: { origin: string; server: Server };
+  let model: { origin: string; server: Server; requests: ModelCall[] };
   let app: HostApp;
   let client: HostClient;
   let token: string;
@@ -412,20 +431,57 @@ describe("宿主跑起来", () => {
     rmSync(dataRoot, { recursive: true, force: true });
   }, 60_000);
 
-  it("调 session.list 拿到空列表，调 agent.send 递一句话，再从 events 收到流", async () => {
+  it("建行只写一行（没有执行体、也没打到模型），叫起来再递一句话，从 events 收到流", async () => {
     const events: HostEvent[] = [];
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
     const sessions = await client.query<Session[]>("session.list", { workspaceId });
     expect(sessions).toEqual([]);
 
+    // ── 第一步：建行。只写库 ──
+    const callsBefore = model.requests.length;
+    const created = await client.mutation<{ session: Session }>("session.create", {
+      workspaceId,
+      agentId: "default",
+    });
+    sessionId = created.session.id;
+
+    // 行在库里，模型那一格在创建这一刻就解析出来了，名字还是那一串时刻串
+    expect(created.session).toMatchObject({
+      workspaceId,
+      agentId: "default",
+      modelId: "local-model",
+      nameIsAuto: true,
+    });
+    expect(created.session.name).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    const listed = await client.query<Session[]>("session.list", { workspaceId });
+    expect(listed.map((row) => row.id)).toEqual([sessionId]);
+
+    // 没有执行体：与「重启之后所有会话都是死的」同一种状态，历史与排队区都是空的
+    const born = await client.query<Opened>("session.open", { sessionId });
+    expect(born.live).toBeNull();
+    expect(born.messages).toEqual([]);
+    expect(born.inbox).toEqual([]);
+
+    // 建行一个字都没发到模型端点：这一段还没有执行体，也就没有人去要模型的话
+    expect(model.requests.length).toBe(callsBefore);
+
+    // ── 第二步：起来执行体。这一条不投递任何东西（装进来的只有助手定义里的那条 system）──
+    await client.mutation("agent.wake", { sessionId });
+    const woken = await client.query<Opened>("session.open", { sessionId });
+    expect(woken.live?.state).toBe("idle");
+    expect(woken.inbox).toEqual([]);
+    expect(woken.messages.map(textOf)).not.toContain(SAID);
+
+    // ── 第三步：投一条话 ──
     const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
       workspaceId,
       agentId: "default",
+      sessionId,
       content: SAID,
       messageId: randomUUID(),
     });
-    sessionId = sent.sessionId;
+    expect(sent.sessionId).toBe(sessionId);
 
     const idled = () =>
       events.some((event) => event.type === "agent.status" && event.status === "idle");
@@ -459,6 +515,10 @@ describe("宿主跑起来", () => {
     expect(addedAt).toBeGreaterThanOrEqual(0);
     expect(changedAt).toBeGreaterThan(addedAt);
     expect(idledAt).toBeGreaterThan(changedAt);
+
+    // 这个计数器是活的：建行那一刻它没动，叫起来并投了一句之后它真的多了一条 —— 否则上面
+    // 那句「建行没打到模型」就是 0 与 0 比，什么都钉不住
+    expect(model.requests.length).toBeGreaterThan(callsBefore);
   }, 60_000);
 
   it("另开一条连接打开那段会话，状态与全部历史一次拿到；杀掉执行体之后历史照样在", async () => {
@@ -529,14 +589,15 @@ describe("宿主跑起来", () => {
     const events: HostEvent[] = [];
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
-    // 不给 `sessionId`：这一段会话就是这一次发送产生的，建行、唤醒、投递都在这一句里
-    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+    // 建行、叫起来、投一句：三件事各有一条口
+    const sessionId = await startSession(client, workspaceId);
+    await client.mutation("agent.send", {
       workspaceId,
       agentId: "default",
+      sessionId,
       content: SAID,
       messageId: randomUUID(),
     });
-    const sessionId = sent.sessionId;
 
     // 等这一段会话跑完一拍：投递那一路的两次写库都发生在这一拍之前
     const idled = () =>
@@ -603,13 +664,14 @@ describe("宿主跑起来", () => {
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
     // 先起一段会话、等它把那一句答完：之后才谈得上排队区
-    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+    const sessionId = await startSession(client, workspaceId);
+    await client.mutation("agent.send", {
       workspaceId,
       agentId: "default",
+      sessionId,
       content: SAID,
       messageId: randomUUID(),
     });
-    const sessionId = sent.sessionId;
     const idled = () =>
       events.some(
         (event) =>
@@ -692,13 +754,14 @@ describe("宿主跑起来", () => {
     const events: HostEvent[] = [];
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
-    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+    const sessionId = await startSession(client, workspaceId);
+    await client.mutation("agent.send", {
       workspaceId,
       agentId: "default",
+      sessionId,
       content: SAID,
       messageId: randomUUID(),
     });
-    const sessionId = sent.sessionId;
     const idled = () =>
       events.some(
         (event) =>
@@ -735,6 +798,46 @@ describe("宿主跑起来", () => {
     expect(killed.live).toBeNull();
     expect(killed.inbox).toEqual([]);
   }, 120_000);
+
+  /**
+   * 三条通道拆开之后的两条边界：`agent.send` 既不建行，也不复活。
+   *
+   * 缺 `sessionId` 的那一次在边界上就被拒（入参校验先于任何副作用），而不是落到某一条
+   * 「建行 + 唤醒 + 投递」的分支上；给一段建好但没叫起来的会话投递则仍是 `not_found` ——
+   * 投递不替客户端唤醒。
+   */
+  it("agent.send 缺 sessionId 在边界上被拒；给没有执行体的会话投递仍是 not_found", async () => {
+    await expect(
+      client.mutation("agent.send", {
+        workspaceId,
+        agentId: "default",
+        content: SAID,
+        messageId: randomUUID(),
+      }),
+    ).rejects.toThrow(/BAD_REQUEST/);
+
+    // 只建行、不叫起来：这一段没有执行体
+    const created = await client.mutation<{ session: Session }>("session.create", {
+      workspaceId,
+      agentId: "default",
+    });
+
+    await expect(
+      client.mutation("agent.send", {
+        workspaceId,
+        agentId: "default",
+        sessionId: created.session.id,
+        content: SAID,
+        messageId: randomUUID(),
+      }),
+    ).rejects.toThrow(/NOT_FOUND/);
+
+    // 那一句一个字都没进去，执行体也还是没有
+    const opened = await client.query<Opened>("session.open", { sessionId: created.session.id });
+    expect(opened.live).toBeNull();
+    expect(opened.messages).toEqual([]);
+    expect(opened.inbox).toEqual([]);
+  }, 60_000);
 });
 
 /**
@@ -876,17 +979,15 @@ describe("关掉再打开", () => {
     });
     const workspaceId = created.workspace.id;
 
-    // 不给 `sessionId`：这一段会话就是这次发送产生的（建行、叫醒、投递都是它的一个动作）
-    const sent = await firstClient.mutation<{ sessionId: string; messageId: string }>(
-      "agent.send",
-      {
-        workspaceId,
-        agentId: "default",
-        content: SAID,
-        messageId: randomUUID(),
-      },
-    );
-    const sessionId = sent.sessionId;
+    // 建行、叫起来、投一句话：三件事各有一条口
+    const sessionId = await startSession(firstClient, workspaceId);
+    await firstClient.mutation("agent.send", {
+      workspaceId,
+      agentId: "default",
+      sessionId,
+      content: SAID,
+      messageId: randomUUID(),
+    });
 
     // 与上面几条用例同一个等待手法：等那条 assistant 消息定稿（正文齐了、`completed`）
     const answered = () =>
@@ -1341,13 +1442,15 @@ describe("自动起名", () => {
     rmSync(dataRoot, { recursive: true, force: true });
   }, 60_000);
 
-  /** 建一段会话递一句话，等这一段转闲 —— 起名就挂在这一拍上 */
+  /** 建一段会话、叫起来、递一句话，等这一段转闲 —— 起名就挂在这一拍上 */
   async function say(content: string): Promise<string> {
     // 从递出去那一刻往后看：上一句话也会让这一段闲一次，那样等到的就是上一次的那一拍
     const before = events.length;
-    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+    const sessionId = await startSession(client, workspaceId);
+    await client.mutation("agent.send", {
       workspaceId,
       agentId: "default",
+      sessionId,
       content,
       messageId: randomUUID(),
     });
@@ -1358,12 +1461,12 @@ describe("自动起名", () => {
         .some(
           (event) =>
             event.type === "agent.status" &&
-            event.sessionId === sent.sessionId &&
+            event.sessionId === sessionId &&
             event.status === "idle",
         );
     await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
 
-    return sent.sessionId;
+    return sessionId;
   }
 
   function rowOf(rows: readonly Session[], sessionId: string): Session | undefined {

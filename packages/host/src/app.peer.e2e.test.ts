@@ -290,13 +290,20 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
   }, 60_000);
 
   it("先有一段真的会话：一行落库、执行体在跑、它手上有那三个工具", async () => {
-    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
+    // 建行、叫起来、投一句：三件事各有一条口
+    const created = await client.mutation<{ session: { id: string } }>("session.create", {
       workspaceId,
       agentId: "default",
+    });
+    leadId = created.session.id;
+    await client.mutation("agent.wake", { sessionId: leadId });
+    await client.mutation("agent.send", {
+      workspaceId,
+      agentId: "default",
+      sessionId: leadId,
       content: "先在这儿说一句话。",
       messageId: randomUUID(),
     });
-    leadId = sent.sessionId;
 
     // 等到模型真的答过一句：只看 `state` 的话，投递与取件之间那一拍也会报闲
     await until(async () => {

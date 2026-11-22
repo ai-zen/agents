@@ -244,13 +244,20 @@ describe("后台任务的结果投不回那段会话时，宿主日志里有那�
   }, 60_000);
 
   it("会话被杀之后结果才回来：那一行落进宿主日志文件", async () => {
-    const sent = await client.mutation<{ sessionId: string }>("agent.send", {
+    // 建行、叫起来、投一句：三件事各有一条口
+    const created = await client.mutation<{ session: { id: string } }>("session.create", {
       workspaceId,
       agentId: "default",
+    });
+    const sessionId = created.session.id;
+    await client.mutation("agent.wake", { sessionId });
+    await client.mutation("agent.send", {
+      workspaceId,
+      agentId: "default",
+      sessionId,
       content: "先在这儿说一句话。",
       messageId: randomUUID(),
     });
-    const sessionId = sent.sessionId;
 
     // 等到模型真的答过一句：那一刻执行体已经装好、跑过一趟、回到闲
     await until(() => {

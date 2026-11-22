@@ -7,6 +7,7 @@ import { createAgent } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import { hostPlugins, modelAndParamsFor } from "../agent/materials.js";
+import { createSession } from "../session/create.js";
 import { removeSessions } from "../session/remove.js";
 import { rewindTo } from "../session/rewind.js";
 import type { Session } from "../session/types.js";
@@ -74,6 +75,22 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       .input(z.object({ workspaceId: z.string() }))
       .output(z.array(sessionSchema))
       .query(({ input }) => deps.sessions.list(input.workspaceId)),
+
+    /**
+     * 建一行会话：写库，不做别的 —— 不唤醒执行体、不投递任何东西、不推任何「这一段活了」
+     * 的事实。新建出来的这一段就是一段没有执行体的会话，与「重启之后所有会话都是死的」是同一种
+     * 状态：`open` 读回来 `live` 是 `null`，消息与排队区都是空的。
+     *
+     * 起执行体是 `agent.wake`，投话是 `agent.send`：三件事各有一条口，客户端要哪一件就打哪
+     * 一条。建行顺带唤醒再顺带投一句（投的还是空正文）会让执行体白跑一次模型请求，历史里还会
+     * 多一条空的用户消息。
+     *
+     * 模型在这一刻解析出来写进会话行（见 `createSession`）：解析不出就当场失败，不落半条行。
+     */
+    create: api.procedure
+      .input(z.object({ workspaceId: z.string(), agentId: z.string() }))
+      .output(sessionResult)
+      .mutation(async ({ input }) => ({ session: await createSession(deps, input) })),
 
     /**
      * 打开一段会话：状态、消息、排队区一次取到。
@@ -308,9 +325,9 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * **不是一段会话的第一次运行**，也不是段/轮/圈里的一个：就是一次到头的会话，跑完就散。
      *
      * **一个字都不落库**，这正是这条路全部的意思：不建会话行、不建 inbox 行、不写消息表。
-     * 走 `agent.send`（建行 + 投递）的话，每敲一次命令行库里就多一段会话、项目里多一条工作区行
-     * —— 一次性会话跑完就散，那些行没有谁会去删（`session.remove` 是用户手上的动作，不是这条路
-     * 收尾的一部分），库只增不减。
+     * 走真会话（`session.create` + `agent.wake` + `agent.send`）的话，每敲一次命令行库里就多一段
+     * 会话、项目里多一条工作区行 —— 一次性会话跑完就散，那些行没有谁会去删（`session.remove`
+     * 是用户手上的动作，不是这条路收尾的一部分），库只增不减。
      *
      * 所以入参是 `cwd`，**不是 `workspaceId`**：认项目的话，项目行必须先在，于是每敲一次
      * `ai "…"` 就多出一条项目行 —— 会话行是没了，垃圾还在，而项目「只走显式添加」
