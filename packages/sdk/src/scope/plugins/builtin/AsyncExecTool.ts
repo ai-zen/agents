@@ -10,13 +10,14 @@ export class AsyncExecTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: ASYNC_EXEC_TOOL,
     description:
-      "Run a shell command in the background and return immediately: this call does not wait for the " +
-      "command to finish. When the command ends (it exits, its timeout fires, or it fails to start) its " +
-      "output and exit status are pushed back into this session as a new message, and that message is " +
-      "the only way the result arrives. Do not wait for the result and do not poll for it: there is no " +
-      "tool that checks a background task, and nothing comes back while the command is still running. " +
-      "Use exec when the result must be in hand before the next step; use async_exec for long commands " +
-      "(builds, test suites, scripts) whose result is worth coming back to.",
+      "Run a shell command in the background and return immediately. Do not wait for it: this call is " +
+      "over the moment it returns. The system will notify you when the command ends (it exits, its " +
+      "timeout fires, or it fails to start) by pushing that command's output and exit status back into " +
+      "this session as a new message; that notification is the only way the result arrives. So do not " +
+      "wait and do not poll: nothing comes back while the command is still running, and there is no " +
+      "tool that checks a background task. Use exec when the result must be in hand before the next " +
+      "step; use async_exec for long commands (builds, test suites, scripts) whose result is worth " +
+      "coming back to.",
     parameters: {
       type: "object",
       properties: {
@@ -99,7 +100,7 @@ export class AsyncExecTool extends SdkCallbackTool {
       taskId,
       command,
       ...(timeout !== undefined ? { timeout } : {}),
-      note: `The command runs in the background as task "${taskId}". Its result is pushed back into this session when the command ends; do not wait for it and do not poll for it.`,
+      note: `The command runs in the background as task "${taskId}". Do not wait for it: the system will notify you by pushing its result into this session when the command ends. Nothing checks a background task, so do not poll.`,
     });
   }
 }

@@ -11,12 +11,13 @@ export class AsyncTimeoutTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: ASYNC_TIMEOUT_TOOL,
     description:
-      "Set a timer and return immediately: this call does not wait. When the time is up, a message is " +
-      "pushed back into this session saying so, together with the id of that timer; that message is the " +
-      "only way a timer reports. Use it when the wait itself is the point: give another process a head " +
-      "start, come back to a value later, or space out work. There is no upper limit on `ms`: this is a " +
-      "timer that delivers one message, not a limit on how long a run may take. Do not wait for it and " +
-      "do not poll for it: nothing comes back before the timer fires.",
+      "Set a timer and return immediately. Do not wait for it: this call is over the moment it returns. " +
+      "The system will notify you when the time is up by pushing a message back into this session, " +
+      "carrying that timer's id; that notification is the only way a timer reports, so do not wait and " +
+      "do not poll: nothing comes back before the timer fires. Use it when the wait itself is the " +
+      "point: give another process a head start, come back to a value later, or space out work. There " +
+      "is no upper limit on `ms`: this is a timer that delivers one message, not a limit on how long a " +
+      "run may take.",
     parameters: {
       type: "object",
       properties: {
@@ -72,7 +73,7 @@ export class AsyncTimeoutTool extends SdkCallbackTool {
       started: true,
       taskId,
       ms,
-      note: `The timer runs as task "${taskId}" and reports back in ${ms}ms; do not wait for it and do not poll for it.`,
+      note: `The timer runs as task "${taskId}". Do not wait for it: the system will notify you in ${ms}ms. Nothing checks a timer, so do not poll.`,
     });
   }
 }
