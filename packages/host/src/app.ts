@@ -26,6 +26,7 @@ import { hostPaths, resolveDataRoot, type HostPaths } from "./infra/paths.js";
 import { resolveHostVersion } from "./infra/version.js";
 import { clearVersionPin, readVersionPin } from "./infra/versionPin.js";
 import { inboxTable } from "./modules/agent/inbox.js";
+import { createMcpTaskNoticePort } from "./modules/agent/mcp-task-notice.js";
 import { materialsFor } from "./modules/agent/materials.js";
 import { HostObserver } from "./modules/agent/observer.js";
 import type { HostApiDeps } from "./modules/api/deps.js";
@@ -317,6 +318,18 @@ export class HostApp {
      */
     const onError = (error: unknown, what: string): void => this.log.error(what, { error });
 
+    /**
+     * MCP 任务通知的投递口（SDK 定形状、这里实现）。
+     *
+     * 两半都只有这里答得出来：谁活着问运行时（宿主不留存活表），投不出去那一行日志走宿主日志。
+     * 里面的两个函数到真的投的时候才调，那时 `this.runtime` 已经造好了。
+     */
+    const mcpTaskNotice = createMcpTaskNoticePort({
+      alive: (sessionId) => this.runtime.get(sessionId),
+      sessionOf: (agent) => this.runtime.sessionOf(agent),
+      log: this.log,
+    });
+
     // 运行时：装起来、登记、开跑、发话、拆容器全在它那一侧。宿主给它四格端口，每一格都是
     // 「只有宿主答得出」的事（怎么装配能力、怎么开一行会话、一段会话此刻叫什么、日志往哪写）。
     //
@@ -343,6 +356,8 @@ export class HostApp {
             // 也一个服务器都连不上，而且不报错。
             mcpPaths: mcp.paths(cwd),
             logger: this.log,
+            // 任务状态到了就投进发起那次调用的那段会话（丢不丢由这个口判）
+            mcpTaskNotice,
           }),
           // 平级会话的三个工具：能力不在这里，它们只认这一个端口
           new PeerSessionsScopePlugin(peers),
