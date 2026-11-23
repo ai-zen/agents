@@ -1,37 +1,27 @@
 ---
 title: MCP
-description: AI-Zen Agents SDK 对 Model Context Protocol 的支持 —— 连接生命周期、配置、动态加载工具与权限。
+description: 配置一个 MCP 服务器要知道的事：五层配置文件与合并次序、三种传输各自的字段、启用与停用之后发生什么、服务器描述怎么到模型手上、OAuth 字段留着但没实现、五个按需加载工具，以及任务那一套（推状态、按任务 id 拉结果）。
 outline: deep
 ---
 
 # MCP
 
-AI-Zen Agents 在 **SDK 层**（`@ai-zen/agents-sdk`）提供对 **Model Context Protocol（MCP）** 的完整支持，基于官方 `@modelcontextprotocol/sdk` 的 `Client` + `Transport`。
+MCP（Model Context Protocol）这一侧的实现全在 `@ai-zen/agents-sdk` 的 `scope/plugins/mcp/` 里，一共四样东西：把五层配置文件合并成一份清单的发现、管连接与断开的 `McpConnectionManager`、把服务器摊成五个工具的那一层，以及任务状态往哪投。
 
-## 能力总览
-
-| 能力 | 说明 |
-|------|------|
-| 服务器发现 | 扫描 MCP 配置文件中的 `mcpServers` |
-| 连接管理 | `McpConnectionManager` 全生命周期（连接 / 重连 / 空闲超时 / OAuth） |
-| 惰性加载 | 通过 `load_mcp` / `call_mcp_tool` / `read_mcp_resource` 按需触发 |
-| 权限 | **server 级信任**：连接后其工具 / 资源全可用（无 tool 级权限） |
-| 传输 | `stdio` → `StdioClientTransport`（子进程）；`http` → `StreamableHTTPClientTransport`（Streamable HTTP：POST 发送消息 + 可选 SSE 流）；`sse` → `SSEClientTransport`（旧版 HTTP+SSE：GET 建立 SSE 流、POST 发送消息） |
-
-## MCP 配置
-
-MCP 服务器配置格式（`mcp.json`）：
+这一页写给配置 MCP 服务器的人：配置在哪儿、怎么写、改完什么时候生效、模型手上那五个工具各要什么参数、任务是什么形状。
 
 ```json
 {
   "mcpServers": {
     "github": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": { "GITHUB_TOKEN": "..." },
       "description": "GitHub 仓库与 Issue 操作"
     },
     "postgres": {
+      "type": "http",
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer ..." },
       "description": "PostgreSQL 数据访问"
@@ -40,96 +30,126 @@ MCP 服务器配置格式（`mcp.json`）：
 }
 ```
 
-字段说明：
+## 五层配置文件
 
-| 字段 | 说明 |
-|------|------|
-| `command` / `args` / `env` | stdio（子进程）配置 |
-| `url` / `headers` | http / sse 配置 |
-| `description` | 服务器描述，经 `load_mcp` 透传呈现给 LLM 参考 |
-| `disabled` | 置 `true` 时跳过该服务器 |
+一份清单来自五个文件，近的在前，同名以更近的为准。
 
-**传输推断**：`type` / `transport` / `transportType` 字段优先；否则有 `command` → `stdio`，有 `url` → `http`。`disabled: true` 跳过，解析失败记日志并跳过。
+| 层 | 文件 | 谁能写 |
+|---|---|---|
+| 项目根 | `<项目>/.mcp.json` | 以文件为准 —— 这一份与别的工具共用 |
+| 项目 | `<项目>/.ai-zen/mcp.json` | 能由界面改 |
+| 项目 | `<项目>/.agents/mcp.json` | 以文件为准 |
+| 用户 | `<数据根>/mcp.json`（缺省 `~/.ai-zen/mcp.json`） | 能由界面改 |
+| 用户 | `~/.agents/mcp.json` | 以文件为准 |
 
-配置文件路径（由各端 / `ConfigManager` 决定）：
+这五层的次序在代码里就是这五个名字：`workspace`、`workspaceAiZen`、`workspaceAgents`、`user`、`userAgents`。
 
+只有项目那一份 `.ai-zen` 与用户数据根那一份由宿主写，另外三层要么在别人的仓库里、要么在别的工具的目录里：替人写那种文件，等于替人改他仓库里的内容。写回的时候改的是文件原样，只动被点名的那一条 —— 这一版不认识的键、别的工具写进去的键，一个都留着；删一条时这一层里没有它就报 `not_found`，因为它来自更远的一层，删这一层什么也删不掉。
+
+合并的规矩只有四条：
+
+- 同名以更近的那一层为准，更远的那一条连读都不读。
+- 近处的一条 `disabled: true` 也算对这一层发过言：它取消了远处同名的定义，而不是「这一层没提过它」。
+- 不是对象的那一条连名字都不占。
+- 读不出 JSON 的文件记一行日志，然后当它空着 —— 那几台服务器会安静地从清单里少掉，那一行日志是唯一能说原因的地方。
+
+## 三种传输
+
+| 传输 | 字段 | 是什么 |
+|---|---|---|
+| `stdio` | `command`、`args`、`env` | 起一个子进程，走 stdin / stdout |
+| `http` | `url`、`headers` | Streamable HTTP：POST 发消息，可选 SSE 流回来 |
+| `sse` | `url`、`headers` | 旧的 HTTP + SSE：GET 建一条 SSE 流，POST 发消息 |
+
+传输方式可以显式写 `type`，也认 `transport` 与 `transportType` 两个别名；三个都没写时按字段推断：有 `command` 就是 `stdio`，有 `url` 就是 `http`。写回文件时只写标准那一个键 `type` —— 一份文件里同时留着 `type` 与 `transport` 之后，人改哪一个都可能不生效。
+
+两件容易踩的事：
+
+- `args` 是一个字符串数组，每个元素就是一个参数，不经过 shell（子进程是 `shell: false` 起的）。所以 `args` 里写 `"--flag value"` 是把一个带空格的参数原样传下去，不是两个参数；要两个就写两个元素。要跑一段 shell 语法，就自己写成 `["-c", "..."]` 之类。
+- 子进程的环境变量默认只有一小批（`HOME`、`LOGNAME`、`PATH`、`SHELL`、`TERM`、`USER`，Windows 上是另一批），配置里的 `env` 叠在上面，同名覆盖。把令牌放在 `env` 里，别指望它在父进程的环境里就已经在了。
+
+## 启用与停用
+
+停用只有一个开关：那一条上的 `disabled: true`。没有第二个地方记「这台服务器现在关着」。
+
+停用之后发生什么，取决于能力容器有没有收到那次变更。宿主把配置的变动告诉运行时，运行时让每份已经造好的容器重读一遍配置，容器再让 MCP 插件重新发现一次并按定义对账：
+
+| 这次发现里 | 连接怎么办 |
+|---|---|
+| 消失了（删了，或被 `disabled: true` 取消） | 断开，缓存的状态与清单一起失效 |
+| 定义变了 | 断开；下一次调用按新定义懒连 |
+| 是新增的 | 不主动连 —— 没人调用就不起进程、不建链 |
+| 一个字节都没变 | 不碰，连接与清单原样留着 |
+
+「定义」算的是连接事实：传输方式与它的参数（`command` / `args` / `env` / `url` / `headers` / `oauth`）。`description` 不进这份指纹 —— 它只影响 `load_mcp` 给模型看的那段文字，改它不该把一条好连接断掉。
+
+所以「停用即断连」是容器收到变更之后的后果，不是界面上按一下就直接断；而「重新启用」也不等于立刻起进程：连接是懒的，下一次模型点这台服务器时才按新定义连上。
+
+连接自己的几条：建连超时缺省 60 秒，超时即断开并抛错，免得一个配错的地址让工具永久挂着；空闲超时 stdio 是 30 分钟，http 与 sse 是 5 分钟，每次调用都续一次；传输断掉时这台服务器被标成已断开并记一行日志，不会自己去重连 —— 重连发生在下一次要用它的时候，过期的清单不会被当作当前那份出示。状态是四格：`disconnected`、`connecting`、`connected`、`error`。
+
+## 服务器描述给模型看
+
+`description` 不是注释。它进 `load_mcp` 的参数说明：每一台允许的服务器占一行，写成 `id: 描述`，没写描述的就是一句「没有描述」。模型据此知道这一台是干什么的、值不值得连 —— 没有这段文字，模型只能从名字猜。
+
+它也是唯一不影响连接的定义字段：改描述不会断开任何连接，下一次装配时新的描述就带上了。
+
+## OAuth：字段留着，还没有实现
+
+`oauth` 认得这个形状：`{ authorizationUrl, tokenUrl, clientId, clientSecret?, scope? }`，只对 http 有意义。发现那一层把它原样带进配置对象，连接那一层根本不看它。
+
+所以：字段留着，配了也连不上，别假装支持。需要一个带授权的服务器，今天只能自己把令牌放进 `headers`。
+
+## 五个按需加载工具
+
+MCP 的工具不预先注册 —— 一台服务器有几个工具，要连上才知道。模型手上因此是五个工具，按需加载：
+
+| 工具 | 参数 | 干什么 |
+|---|---|---|
+| `load_mcp` | `server`（枚举就是允许的那几台）、`include_manifest`（缺省 `true`） | 连上这台服务器，交回它的清单 `{ tools, resources }`；`include_manifest: false` 时只建连接并回一份摘要 `{ server, connected, tools: 数量, resources: 数量 }`，适用于清单已经在上下文里的情形；已经连着的就续一次期再交回同一份清单 |
+| `call_mcp_tool` | `server`、`tool`、`arguments`、可选 `task` | 调一台已连接服务器上的工具；没连上就回一句「先用 `load_mcp` 连」 |
+| `read_mcp_resource` | `server`、`uri` | 读一个资源；文本原样回来，图片与二进制按端点能力上传或内联，不丢块 |
+| `get_mcp_task_result` | `server`、`task_id` | 按任务 id 取回一个任务的结果（见下一节） |
+| `cancel_mcp_task` | `server`、`task_id` | 让服务器停掉一个已经发起的任务 |
+
+`load_skill` 与 `call_skill_sub_agent` 不是 MCP 的工具：它们来自技能那一侧，与服务器无关，别混进这张表。
+
+权限有两处要分开看。这五条工具名恒向 `tools` 维度报名，于是「不许调 MCP」可以是很干净的一刀；而哪几台服务器算数归 `mcps` 维度，按服务器名匹配。`call_mcp_tool`、`read_mcp_resource` 与两条任务工具还各自按本容器的白名单判一次服务器名：连接管理器是全局共享的，只按「连上没有」判，会让任一执行体连上的服务器对别的容器也敞开。
+
+文本有输出保护，媒体没有。一整个答复里的文本加起来超过 `maxToolOutput`（缺省 32768 字符）时，全部文本落盘为 `result.txt`，回给模型的是一段说明加头尾各 1000 字符的预览；判定用的是全部文本的字符总数，不是逐块判 —— 逐块判的话，几个各三万字的块合起来能把请求灌爆。图片、音频这些不在这道闸里：它们按端点能力上传成 `file_id` 或内联成 base64，位置保持原样。
+
+## 任务
+
+任务是 MCP 调用里那种耗时长的形状。它不是一个「结果自己回来」的东西，是两件事：状态由服务器推，结果按任务 id 去拉。
+
+工具在清单里声明自己怎么对待任务，`execution.taskSupport` 三档：
+
+| 档 | 走法 |
+|---|---|
+| `forbidden` | 照旧同步调，`task` 参数不起作用 |
+| `optional` | 调用方给 `task: true` 就走任务，否则同步调 |
+| `required` | 一定带任务参数发起（不带，服务器会拒） |
+
+没声明这一格的按 `forbidden` 算 —— 规范的缺省。
+
+走任务的那一次，`call_mcp_tool` 立刻交回一个句柄，不在这里等结果：
+
+```json
+{ "task": true, "taskId": "...", "status": "working", "hint": "..." }
 ```
-~/.ai-zen/mcp.json     ← 用户级 MCP（出厂默认含 socket-pty 终端、chrome-devtools 浏览器调试）
-项目根/.mcp.json       ← 项目共享 MCP（可提交 git）
-```
 
-## McpConnectionManager（连接生命周期）
+状态由服务器推过来（`notifications/tasks/status`）。只有终态才投递 —— `completed` / `failed` / `cancelled` 三格，中间态不是「有事要人动手」，每条都投就是刷屏。投递口是 `McpTaskNoticePort`，由宿主实现：`sessionOf(agent)` 说发起这次调用的执行体属于哪段会话，`deliver(sessionId, notice)` 把通知放进那段会话的 inbox。投递不创建、也不复活会话：那段已经没人了，这条通知就丢掉并记一行日志。
 
-```ts
-import { McpConnectionManager } from "@ai-zen/agents-sdk";
+结果本身用任务 id 拉：`get_mcp_task_result`。服务器存下来的就是一次工具调用的结果，所以它走与 `call_mcp_tool` 同一套媒体映射与输出保护。放弃就 `cancel_mcp_task`，回的是任务此刻那一格；取消也是终态，那条通知照旧会到。
 
-const mcpManager = new McpConnectionManager();
-await mcpManager.connect("github", serverConfig, { idleTimeoutMs: 30 * 60 * 1000 });
-```
+几件边界：
 
-| 方法 | 说明 |
-|------|------|
-| `getState(name)` | 返回 `disconnected` / `connecting` / `connected` / `error` |
-| `getManifest(name)` | 返回 `McpServerManifest`（tools / resources / prompts） |
-| `getClient(name)` | 返回底层 `Client` |
-| `connect(name, config, options?)` | 建立连接，返回清单 |
-| `disconnect(name)` | 断开指定服务器 |
-| `disconnectAll()` | 断开全部 |
-| `touch(name)` | 活跃心跳，重置空闲计时 |
+- 任务 id 只在它自己那台服务器上唯一，所以对应关系按「服务器 + 任务 id」记。
+- 这份对应关系只活在连接管理器里：进程没了就没了 —— 任务本身在服务器那边，谈不上恢复；重连之后服务器再推来的状态也没有会话可投，丢掉就是。连接一断，这台服务器上所有任务的对应关系一起丢掉。
+- 发起调用的若是被派出去的 subagent 或一次性执行体，`sessionOf` 回 `undefined`：句柄照旧拿得到、结果照旧拉得回来，只是没有那条「任务结束了」的通知 —— 没有一段会话可以回报。
+- 客户端在能力协商里声明 `tasks: { cancel: {} }`：只声明真的会用的那一项，服务器据此判断对面接不接得住任务。
 
-`McpConnectOptions`：
+## 往下读
 
-| 选项 | 说明 |
-|------|------|
-| `idleTimeoutMs` | 空闲超时（默认 stdio 30min，http/sse 5min） |
-| `autoReconnect` | 失败自动重连 |
-| `maxRetries` | 最大重试次数（默认 3） |
-| `isConfigError` | 判断哪些错误属于配置错误（不重试） |
-
-**关键行为**：
-
-- **按需调用**：连接后仅对 Server 声明的 capabilities 调用 `listTools` / `listResources` / `listPrompts`，避免 Method not found。
-- **重连**：指数退避 `1s→2s→4s→8s→16s→30s`（封顶）；配置类错误不重试。
-- **空闲超时**：每次操作 `touch()` 续期；计时器 `unref()` 不阻止进程退出。
-- **list_changed**：服务端推送变更 → 自动刷新本地注册表。
-- **测试注入**：构造函数可传自定义 transport / client 工厂。
-
-状态机：
-
-```
-                     ┌──────────┐
-          connect ──>│connecting│<────────┐
-                     └────┬─────┘         │
-                          │               │
-              ┌─────失败──┴──成功──────┐  │
-              ▼                       ▼  │
-         ┌────────┐             ┌─────────┐
-         │  error │────────────>│connected│
-         └────────┘  (重试)     └────┬────┘
-                                    │
-                          ┌─空闲超时┼─主动 disconnect
-                          ▼        ▼
-                    断开并清理   断开并清理
-```
-
-## 动态工具（惰性加载）
-
-MCP 的工具**不预先注册**，而是注册「加载器工具」，由 LLM 在运行时按需触发：
-
-| 工具 | 说明 |
-|------|------|
-| `load_mcp` | 参数 `server`（枚举 = 所有允许的 server，附描述）、可选 `include_manifest`（默认 `true`）；返回结构化 JSON `{ tools, resources }`；`include_manifest=false` 时仅建立连接并返回摘要 `{ server, connected, tools: 数量, resources: 数量 }`，不返回工具 / 资源定义（适用于上下文中已存在该清单的场景）；已连接则 `touch` 续期并返回清单，未连接则 `mcpManager.connect()` |
-| `call_mcp_tool` | 参数 `server` + `tool` + `arguments`；未连接时提示「请先使用 load_mcp 连接」；`isError` → 错误文本；**仅文本受输出保护**（超过 `maxToolOutput` 默认 32768 字符时完整文本落盘为 `result.txt`，只返回头尾预览），图片 / 音频 / 二进制资源转内容块时按**端点能力**传输：端点声明 `capabilities.filesApi` 时上传后以 `file_id` 引用，否则 base64 内联（详见 [SDK](sdk.md) 的「本地文件 → 内容块」）；转换失败退化为文本说明，不丢块 |
-| `read_mcp_resource` | 参数 `server` + `uri`；文本资源原样返回，二进制资源（图片 / PDF 等 `blob`）**不再被丢弃**——同样经统一入口按端点能力上传或内联；与 `call_mcp_tool` 共用同一套输出保护（文本超限落盘 `result.txt` + 头尾预览，媒体块原位保留） |
-
-这些工具是否注册由 `tools` 权限维度控制（如 `call_mcp_tool` 被禁用则切断整个 MCP 调用通道）。
-
-## 权限注意
-
-（见 [SDK](sdk.md) 的权限模型。）MCP 采用 **server 级信任**：一个 server 被允许后，其全部工具 / 资源对 Agent 可用。`mcps` 维度按 server 名匹配（如 `github` / `postgres`）。
-
-## 相关文档
-
-- [SDK](sdk.md) —— `Scope` 与 MCP 管理器集成
-- [Core API](core.md) —— 运行时底层
-- [架构](architecture.md) —— 分层与依赖方向
+- [SDK](sdk.md) —— 这五个工具挂在哪个容器上、四维权限怎么判、容器什么时候拆
+- [Core API](core.md) —— 工具在内核里怎么被调用、结果怎么回到模型
+- [部署](deploy.md) —— 数据根在哪儿，用户级那两份配置落在它的哪个位置
