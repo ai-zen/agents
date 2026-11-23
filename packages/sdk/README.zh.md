@@ -1,26 +1,86 @@
 # @ai-zen/agents-sdk
 
-一个包名后面是两半。
+## 它是什么
 
-- 能力面把内核装成一个能办事的执行体：能力从磁盘上发现，模型从配置里解析，还有权限与交接。
-- 运行时让这些执行体活着，并让它们互相发话：一段会话一个常驻执行体，事实往外转发，`post` 从一段会话寄到另一段。
+`@ai-zen/agents-sdk` 把一个执行体装出来，并让它活着。它从磁盘上读配置与助手定义，决定由哪个模型来答，决定这个执行体能用哪些工具、技能、MCP 服务器与 subagent，最后几行之内交给你一个已经在跑的执行体。
 
-## 安装
+它还让这些执行体互相发话：开一段新的、往它的队列里放一句话、看它发生了什么。
+
+存储、连接与用户可见文案都不归它。消息写在哪、谁能连上来、人看见的那句话长什么样，都归宿主 —— 这个包只向调用方要它自己不可能知道的几样东西。
+
+## 怎么用
 
 ```bash
 pnpm add @ai-zen/agents-sdk
 ```
 
-## 哪一半里有什么
+下面是到一个能跑的执行体的最短路径。除了端点与 key，其余都是出厂配置，`bootstrap()` 替你写好：
+
+```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ConfigManager, DEFAULT_AGENT_ID, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
+
+const base = mkdtempSync(join(tmpdir(), "my-agent-"));
+
+const config = new ConfigManager(join(base, "config.json"));
+await config.bootstrap();  // config.json、一个默认助手、一个默认 subagent、出厂技能
+
+const current = await config.read();
+await config.write({
+  ...current,
+  // 唯一必须自己填的：模型住在哪、用哪个 key
+  endpoints: current.endpoints.map((endpoint) => ({
+    ...endpoint,
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: "sk-…",
+  })),
+});
+
+const scope = new Scope({
+  getConfig: () => config.read(),
+  agentsDir: join(base, "agents"),
+  cwd: base,
+}).use(...allInOne({}));
+await scope.init();
+
+const agent = await createAgent(scope, DEFAULT_AGENT_ID, { lifetime: "one-shot" });
+const messages = await agent.runOnce({
+  content: "这个包是干什么的？",
+  priority: "low",
+  source: { kind: "user" },
+});
+console.log(messages.at(-1)?.content);
+
+await scope.dispose();
+```
+
+三处最容易踩，上一段代码里都躲开了：
+
+- `config.read()` 是**异步**的。少一个 `await`，拿到的是一个 promise，下游一路静默地看到一份空配置。
+- `createAgent()` 默认造的是**常驻**执行体，而 `runOnce()` 只接受 `lifetime: "one-shot"`。要一问一答就走，就带上这一格。
+- 出厂配置里有三个端点、八个模型，默认助手绑在其中一个上。只改一个端点的 `baseUrl`，其余模型还指着原来那家，解析就会失败并报 `Endpoint "x" is not configured` —— 所以要像上面那样整批换。
+
+想让执行体长住、随时能再接一句话，路径一样，只是不要 `lifetime: "one-shot"`：`push()` 一句、听 `state:idle`、完事 `stop()`。常驻执行体上没有「投一条然后等」这种东西 —— 任何触发方随时都能推它，那个等待没有落脚点。为什么见内核那一册。
+
+两段会话互相发话：看本文末尾那个示例。
+
+## 它是怎么拼出来的
+
+一个包名后面是两半。
+
+- 能力面把内核装成一个能办事的执行体：能力从磁盘上发现，模型从配置里解析，还有权限与交接。
+- 运行时让这些执行体活着，并让它们互相发话：一段会话一个常驻执行体，事实往外转发，`post` 从一段会话寄到另一段。
+
+内核本身（`@ai-zen/agents-core`）垫在两者下面：一个 `Agent`、它的循环、它的两道闸、它的事件与钩子。这个包加的是某一个产品在它周围需要的东西 —— 不加任何属于宿主的东西。
 
 | 一半 | 成员 |
 |---|---|
 | 能力面 | `createAgent`、`SdkAgent`、`Scope` 与它的五个能力来源（`allInOne`）、`PermissionEvaluator`、`ConfigManager`、`AgentRepository`、`HandoffService` + `HandoffGuardPlugin`、`completeOnce` |
 | 运行时 | `AgentRuntime`（`wake` / `post` / `status` / `openPeer` / `kill` / `observe`）、`Scopes`、`RuntimePeerSessions` |
 
-内核本身（`@ai-zen/agents-core`）垫在两者下面：一个 `Agent`、它的循环、它的两道闸、它的事件与钩子。这个包加的是某一个产品在它周围需要的东西 —— 不加任何属于宿主的东西。
-
-## 分层：这个包不做什么
+### 这个包有意不做什么
 
 | 不在这里 | 在哪里 |
 |---|---|
@@ -33,7 +93,7 @@ pnpm add @ai-zen/agents-sdk
 
 反过来，一个 `as unknown as` 强转、造出一个假实例来满足这个包里的某个东西，意味着缺一个端口：端口该在这里声明，由调用方实现。
 
-### 运行时借的四个端口
+#### 运行时借的四个端口
 
 `AgentRuntime` 这四件事一件都不自己做，但每一件必须有地方做：
 
@@ -45,8 +105,6 @@ pnpm add @ai-zen/agents-sdk
 | `log` | 一个 `LogSink`；不给就不记日志 |
 
 `WakeMaterials` 是装配一个执行体所需要的全部材料，从上面给下来：`cwd`、`agentId`、`modelId` / `modelParams`、`lineage`、`history`，以及上一次没被取走的 `waiting` 条目。
-
-## 能力面
 
 ### Scope：一个目录一个容器
 
@@ -125,7 +183,7 @@ await scope.init();
 
 挂在执行体上，不挂在容器上：`AutoMigratePlugin`（用量越过软线就交接）、`AutoRefreshToolsPlugin`、`ContextGuardPlugin`（会越过硬线的请求直接拒）、`SubAgentGuardInstallerPlugin`（把守卫也装到 subagent 上）、`HandoffGuardPlugin`、`UnknownToolHintPlugin`、`AssetTransportPlugin`。
 
-## 运行时
+### 运行时
 
 `AgentRuntime` 一段会话一个常驻执行体，并把内核的事实转发出去。
 
@@ -145,7 +203,7 @@ await scope.init();
 
 运行时上没有「等到它做完」这种东西：常驻会话没有做完的一刻，它从在干回到闲，随时可以被再推一条。运行时里没有任何东西替调用方等；叫醒一段会话的是一次递话。
 
-### Scopes：容器按目录活着
+#### Scopes：容器按目录活着
 
 `Scopes` 持有容器登记表：一个 `cwd` 一个容器，那个目录上的每段会话共用它。
 
@@ -158,7 +216,7 @@ await scope.init();
 
 没有空闲计时器，没有引用计数，也没有自动回收：容器活着是因为有人拿着它，有人拆它才拆。「没人用了」不是一个可判定的状态。拆的时候拒绝，而不是连带拆掉别的东西 —— 连带会悄悄杀掉正办到一半的会话。
 
-## 平级会话
+### 平级会话
 
 平级会话是执行体给自己开的另一段会话，有自己的执行体、自己的上下文、自己的用量，而且之后留在会话列表里。
 
@@ -181,7 +239,7 @@ await scope.init();
 
 平级会话历史的摘要与消息条数一概不返回：模型只拿到一份摘要，于是它不会把另一段会话的记录当成自己的上下文。
 
-## 后台工具
+### 后台工具
 
 两个内置工具立刻返回、事后才报：
 
@@ -194,7 +252,7 @@ await scope.init();
 
 一次性执行体两个都拿不到（`ASYNC_TASK_TOOL_NAMES` 在装配时被摘掉）：结果回来时它的调用栈已经退回去了，没有人可以递。这和内核就「常驻与一次性」说的那条是同一条规矩，落在「挑工具」这一步上。
 
-## MCP
+### MCP
 
 四样东西在 `scope/plugins/mcp/` 里。
 
@@ -206,77 +264,9 @@ await scope.init();
 
 任务是 MCP 调用里那种长时间运行的形式。工具声明自己支持还是不支持任务（`forbidden` / `optional` / `required`）；一次调用产出任务时，`call_mcp_tool` 立刻交回任务 id，服务器推送状态通知，管理器记住是哪段会话起的这个任务。终态（`completed` / `failed` / `cancelled`，见 `isTerminalTaskStatus`）交给 `McpTaskNoticePort`，由宿主实现：`sessionOf(agent)` 说调用方属于哪段会话，`deliver(sessionId, notice)` 把通知放进它的 inbox。结果本身用任务 id 通过 `get_mcp_task_result` 取。
 
-## 示例一：从能力面造出一个执行体
+## 细节
 
-```ts
-import { Message } from "@ai-zen/agents-core";
-import { AgentRepository, ConfigManager, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
-
-const base = "/path/to/data"; // config.json and agents/ live here
-
-const config = new ConfigManager(`${base}/config.json`);
-await config.write({
-  endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." }],
-  models: [
-    {
-      id: "gpt-4o",
-      name: "GPT-4o",
-      endpointId: "openai",
-      tokenThresholds: { handoff: 500_000, guard: 750_000 },
-    },
-  ],
-  defaultModel: "gpt-4o",
-});
-
-const agents = new AgentRepository(`${base}/agents`);
-await agents.write({
-  id: "demo",
-  name: "Demo",
-  messages: [Message.System("Answer in one sentence.")],
-  modelId: "gpt-4o",
-  permissions: {
-    tools: { allow: ["*"] },
-    skills: { allow: ["*"] },
-    mcps: { allow: ["*"] },
-    subagents: { allow: ["*"] },
-  },
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-});
-
-const scope = new Scope({
-  getConfig: () => config.read(),
-  agentsDir: `${base}/agents`,
-  cwd: base,
-}).use(
-  ...allInOne({
-    toolsPaths: [`${base}/tools`],
-    skillsPaths: [`${base}/skills`],
-    subAgentsPaths: [`${base}/sub-agents`],
-    mcpPaths: [`${base}/mcp.json`],
-  }),
-);
-await scope.init();
-
-const agent = await createAgent(scope, "demo");
-
-const idle = new Promise<void>((resolve) => {
-  const offIdle = agent.on("state:idle", () => {
-    offIdle();
-    resolve();
-  });
-});
-
-agent.push({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
-void agent.start();
-await idle;
-
-console.log(agent.messages.at(-1)?.content);
-agent.stop();
-await scope.dispose();
-```
-
-## 示例二：两段会话，一条消息
+### 示例：两段会话，一条消息
 
 ```ts
 import {
@@ -289,7 +279,7 @@ import {
   type WakeMaterials,
 } from "@ai-zen/agents-sdk";
 
-// config.json and the two definitions "lead" and "helper" already exist under `base`
+// config.json 与 "lead" / "helper" 两份定义已经在 base 下面了
 const base = "/path/to/data";
 const config = new ConfigManager(`${base}/config.json`);
 const names = new Map<string, string>();
@@ -298,12 +288,12 @@ const runtime = new AgentRuntime({
   openScope: async (cwd, peers) => {
     const scope = new Scope({ getConfig: () => config.read(), agentsDir: `${base}/agents`, cwd })
       .use(...allInOne({ mcpPaths: [`${base}/mcp.json`] }))
-      .use(new PeerSessionsScopePlugin(peers)); // the peer tools need the port from the runtime
+      .use(new PeerSessionsScopePlugin(peers)); // 平级会话那三个工具要运行时给的端口
     await scope.init();
     return scope;
   },
   open: async (input) => {
-    // a real host writes a session row here and decides the identity
+    // 真的宿主在这里写会话行、定身份
     const sessionId = `session-${names.size + 1}`;
     names.set(sessionId, input.label ?? input.prompt);
     const materials: WakeMaterials = {
@@ -328,8 +318,8 @@ names.set("helper", "helper");
 await runtime.wake("lead", { cwd: base, agentId: "lead", lineage: null, history: [], waiting: [] });
 await runtime.wake("helper", { cwd: base, agentId: "helper", lineage: null, history: [], waiting: [] });
 
-// the helper is woken up by this delivery, runs on its own, and comes back to idle
-console.log(await runtime.post({ from: "lead", to: "helper", content: "Say hi in one line." }));
+// helper 被这次递话叫起来、自己跑完、回到闲
+console.log(await runtime.post({ from: "lead", to: "helper", content: "用一句话打个招呼。" }));
 console.log(await runtime.status("helper"));
 
 await runtime.close();
@@ -337,11 +327,51 @@ await runtime.close();
 
 运行时上的 `peerSessions` 就是那三个工具最终对接的端口；`Scopes` 是运行时自己持有的容器登记表，所以示例不用自己造它。
 
-## 测试
+### 自己写配置
+
+`bootstrap()` 会写一份能用的配置。如果你想自己写 —— 比如你要随程序带一份默认值 —— 下面是完整的形状：
+
+```ts
+const config = new ConfigManager(`${base}/config.json`);
+await config.write({
+  endpoints: [
+    { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-…" },
+  ],
+  models: [
+    {
+      id: "gpt-4o",
+      name: "GPT-4o",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 500_000, guard: 750_000 },
+    },
+  ],
+  defaultModel: "gpt-4o",
+});
+
+const agents = new AgentRepository(`${base}/agents`);
+await agents.write({
+  id: "demo",
+  name: "Demo",
+  messages: [Message.System("用一句话回答。")],
+  modelId: "gpt-4o",
+  permissions: {
+    tools: { allow: ["*"] },
+    skills: { allow: ["*"] },
+    mcps: { allow: ["*"] },
+    subagents: { allow: ["*"] },
+  },
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
+```
+
+`tokenThresholds` 是绝对的输入 token 数，不是上下文窗口的百分比：越过软线开始交接，越过硬线在请求发出之前就拒。
+
+### 测试
 
 ```bash
 npm run pretest      # tsc --noEmit over src and the tests
-npx vitest run       # the suite that depends on nothing outside this repository
+npx vitest run       # 不依赖本仓之外任何东西的那套用例
 ```
 
 两条命令都在 `packages/sdk` 下跑。`npm run test:e2e` 跑需要 API key 或真的 MCP 服务器的那些用例；`npm test` 绝不能需要这两样。用例所用的假端点在 `@ai-zen/agents-testing` 里（它转发 `@ai-zen/fake-llm`）。

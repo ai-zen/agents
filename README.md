@@ -1,12 +1,73 @@
 # AI-Zen Agents
 
+## What it is
+
 A self-hosted runtime for LLM agents. An agent here is a process-local object with an inbox and two
 loops; everything else in this repository either gives that object abilities, keeps it alive and
-reachable, or writes down what it did. The four layers are split so each one can be deleted from the
-top down: a client can be replaced by a script, the host can be replaced by an empty implementation,
-and the layers below keep behaving the same.
+reachable, or writes down what it did.
 
-## The four layers
+Four layers, and each one can be deleted from the top down: a client can be replaced by a script, the
+host can be replaced by an empty implementation, and the layers below keep behaving the same.
+
+## How to use
+
+Build it and run the suite:
+
+```bash
+pnpm install
+pnpm test
+```
+
+`pnpm test` builds `testing`, `logger`, `host` and `client` first, then runs each package's suite in
+turn. A single package is tested from its own directory, where `npm test` runs the type check and then
+the suite. The end-to-end suite stays out of `npm test` and is run by hand:
+
+```bash
+cd packages/host
+npm run pretest                                 # tsc --noEmit -p tsconfig.test.json
+npx vitest run                                  # domain tests: no ports, no real disk
+npx vitest run --config vitest.e2e.config.ts    # a real host: real port, real disk, real WebSocket
+```
+
+Run a host:
+
+```bash
+pnpm build-host
+node packages/host/dist/cli.js serve            # 127.0.0.1:8790 by default
+node packages/host/dist/cli.js token create     # a credential for a client on another machine
+```
+
+Installed, the same entry point is the `agents-host` bin, so the commands read `agents-host serve`,
+`agents-host stop`, `agents-host token create`, `agents-host token list`, `agents-host token revoke`.
+A host keeps its database, config, assets and run files under one data root — `AI_ZEN_DIR`, default
+`~/.ai-zen` — and writes `run/host.json`, `run/token` and `run/next-version.json` there. The listening
+address rules, the credential file and the contract surface are in
+[`packages/host/README.md`](packages/host/README.md).
+
+Build an agent without any of that:
+
+```ts
+import { ConfigManager, DEFAULT_AGENT_ID, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
+
+const config = new ConfigManager(`${base}/config.json`);
+await config.bootstrap();          // config.json, a default agent, factory skills
+// …fill in the endpoint and the key, then:
+const scope = new Scope({ getConfig: () => config.read(), agentsDir: `${base}/agents`, cwd: base })
+  .use(...allInOne({}));
+await scope.init();
+const agent = await createAgent(scope, DEFAULT_AGENT_ID, { lifetime: "one-shot" });
+console.log((await agent.runOnce({ content: "hi", priority: "low", source: { kind: "user" } })).at(-1)?.content);
+```
+
+That is the criterion below, exercised: no host in sight. The full version, with the three traps that
+catch people, is in [`packages/sdk/README.md`](packages/sdk/README.md).
+
+No user interface ships here. The terminal client and the desktop app live in their own repositories
+and embed `@ai-zen/agents-client`, which owns the connection: find a host or launch one, read the
+credential, keep the WebSocket alive across a restart of either side. Their own state — screens, key
+bindings, what to do when a session has no live agent — stays on their side of the wire.
+
+## How it is put together
 
 ```
 terminal client · desktop app                    separate repositories, each inlines
@@ -31,7 +92,7 @@ domain: `session.*` for the rows, `agent.*` for what the live object does, `work
 `agentDefinition.*`, `host.*`. The second half is one subscription that carries every fact the host
 publishes, so a client never polls for a change it was not told about.
 
-## The criterion the layering is judged by
+### The criterion the layering is judged by
 
 Without the host, `@ai-zen/agents-core` plus `@ai-zen/agents-sdk` alone can assemble agents that are
 event-driven, resident, and able to talk to each other: one is woken from materials handed to it,
@@ -41,7 +102,7 @@ exists because the host happens to be there — who is alive, when an ability co
 what a session is called — the fix is to move it down into the runtime, not to add a second path in
 the host.
 
-## Packages
+### Packages
 
 | Package | Does | Does not |
 |---|---|---|
@@ -53,63 +114,14 @@ the host.
 | `@ai-zen/agents-testing` | Test doubles shared by the packages, re-exporting `@ai-zen/fake-llm` so call sites keep one import | Enter a production dependency graph |
 | `@ai-zen/fake-llm` | An OpenAI-compatible fake endpoint: hand it one target message and it streams back the delta sequence that message would have arrived as | Reach a real provider, or hold any opinion about what a model should answer |
 
-## Getting started
+## Details
 
-```bash
-pnpm install
-pnpm test
-```
+### Package builds
 
-`pnpm test` builds `testing`, `logger`, `host` and `client` first, then runs each package's suite
-in turn. A single package is tested from its own directory, where `npm test` runs the type check and
-then the suite. The same steps by hand, plus the end-to-end suite that stays out of `npm test`:
+Wired at the root: `pnpm build-core`, `pnpm build-sdk`, `pnpm build-host`, `pnpm build-client`,
+`pnpm build-logger`, `pnpm build-testing`.
 
-```bash
-cd packages/host
-npm run pretest                                 # tsc --noEmit -p tsconfig.test.json
-npx vitest run                                  # domain tests: no ports, no real disk
-npx vitest run --config vitest.e2e.config.ts    # a real host: real port, real disk, real WebSocket
-```
-
-Package builds are wired at the root: `pnpm build-core`, `pnpm build-sdk`, `pnpm build-host`,
-`pnpm build-client`, `pnpm build-logger`, `pnpm build-testing`.
-
-## Running a host
-
-```bash
-pnpm build-host
-node packages/host/dist/cli.js serve            # 127.0.0.1:8790 by default
-node packages/host/dist/cli.js token create     # a credential for a client on another machine
-```
-
-Installed, the same entry point is the `agents-host` bin, so the commands read `agents-host serve`,
-`agents-host stop`, `agents-host token create`, `agents-host token list`, `agents-host token revoke`.
-A host keeps its database, config, assets and run files under one data root — `AI_ZEN_DIR`, default
-`~/.ai-zen` — and writes `run/host.json`, `run/token` and `run/next-version.json` there. Details,
-including the listening address rules and the credential file: [`packages/host/README.md`](packages/host/README.md).
-
-## Clients
-
-This repository ships no user interface. The terminal client and the desktop app live in their own
-repositories and embed `@ai-zen/agents-client`, which owns the connection: find a host or launch one,
-read the credential, keep the WebSocket alive across a restart of either side. Their own state —
-drafts, screens, key bindings, what to do when a session has no live agent — stays on their side of
-the wire.
-
-## Reading further
-
-| File | Holds |
-|---|---|
-| [`dev-docs/PRD.md`](dev-docs/PRD.md) | What the user has to see, in fourteen volumes: where the requirements come from and the eight hard rules, the user decisions that cannot be overturned, nine volumes by object (session, control, peers, handoff, client, attachments, observation, text, non-goals), and an FAQ |
-| [`dev-docs/TRD.md`](dev-docs/TRD.md) | The shape the implementation takes: the four layers and their criteria, the engine, live objects, host infrastructure |
-| [`dev-docs/PLAN.md`](dev-docs/PLAN.md) | What is done, what is left, and what counts as done; also the decisions already taken that should not be reopened |
-| [`dev-docs/GLOSSARY.md`](dev-docs/GLOSSARY.md) | One name per concept, with the names that are not allowed |
-
-[`dev-docs/ARCHITECTURE.md`](dev-docs/ARCHITECTURE.md) and [`dev-docs/STYLE.md`](dev-docs/STYLE.md)
-sit in the same directory: the first is the structure of the host and its criteria, the second is how
-code and prose are written across the whole repository.
-
-## Repository layout
+### Repository layout
 
 ```
 agents/
@@ -127,6 +139,19 @@ agents/
 ├── docs/              the documentation site's pages, Chinese and English
 └── scripts/           repository scripts
 ```
+
+### Reading further
+
+| File | Holds |
+|---|---|
+| [`dev-docs/PRD.md`](dev-docs/PRD.md) | What the user has to see, in fourteen volumes: where the requirements come from and the eight hard rules, the user decisions that cannot be overturned, nine volumes by object (session, control, peers, handoff, client, attachments, observation, text, non-goals), and an FAQ |
+| [`dev-docs/TRD.md`](dev-docs/TRD.md) | The shape the implementation takes: the four layers and their criteria, the engine, live objects, host infrastructure |
+| [`dev-docs/PLAN.md`](dev-docs/PLAN.md) | What is done, what is left, and what counts as done; also the decisions already taken that should not be reopened |
+| [`dev-docs/GLOSSARY.md`](dev-docs/GLOSSARY.md) | One name per concept, with the names that are not allowed |
+
+[`dev-docs/ARCHITECTURE.md`](dev-docs/ARCHITECTURE.md) and [`dev-docs/STYLE.md`](dev-docs/STYLE.md)
+sit in the same directory: the first is the structure of the host and its criteria, the second is how
+code and prose are written across the whole repository.
 
 ## License
 

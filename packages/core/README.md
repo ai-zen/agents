@@ -1,27 +1,104 @@
 # @ai-zen/agents-core
 
-An agent runtime. A session's messages — the single live array — and the facts that happen while it
-runs, as events. Those two are the whole output: no storage, no UI, no copy, no permissions, no
-configuration.
+## What it is
 
-It runs on the official `openai` package: an `OpenAI` client, a model name and an array of messages
-are everything needed to construct one.
+`@ai-zen/agents-core` is the layer that talks to the model and refuses to know about anything
+else. Hand it an `OpenAI` client, a model name and an array of messages, and it sends the requests,
+runs the tools the model asks for, and keeps that array as the only copy of the conversation. What
+happens along the way — a message appearing, a stream fragment, a tool call, an interruption, a
+failure — is reported as an event a caller can subscribe to.
 
-## Installation
+It has no storage, no interface, no copy, no permissions and no configuration: where messages are
+written, what a user sees and which model to pick are decided above it. It does not retry, does not
+classify errors and does not tidy up after a crash. A failure stays a fact on the message it
+happened to.
+
+## How to use
 
 ```bash
 pnpm add @ai-zen/agents-core
 ```
 
-## What it knows and does not know
+```ts
+import OpenAI from "openai";
+import { Agent, Message } from "@ai-zen/agents-core";
 
-| Must know | Must not know |
-|---|---|
-| messages, tools, model requests, streams, usage, interruption, queueing, delegation | storage, multiple clients, i18n, permissions, UI, who is listening, how a `Scope` is assembled, how a model is resolved, how assets are materialised |
+const client = new OpenAI({ apiKey: "sk-…", baseURL: "https://api.deepseek.com/v1" });
+const agent = new Agent({
+  client, model: "deepseek-chat",
+  messages: [Message.System("Answer in one sentence.")],
+  lifetime: "one-shot",
+});
 
-This table is the ruler for any "should core know X" question: look at the left column.
+const messages = await agent.runOnce({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
 
-## The six lifecycle actions
+console.log(messages.at(-1)?.content);
+```
+
+Replace `baseURL`, `apiKey` and `model` with your own endpoint and the code runs unchanged.
+
+Two lines carry the weight. `lifetime: "one-shot"` says this agent does its work once and is then
+gone; `runOnce()` exists only on such an agent, and it closes the agent and hands back the messages
+when the work is done. Inside the call, `priority: "low"` means "take it when the loop is ready for
+a new batch" (`"high"` may jump into one already running), and `source` says who is speaking —
+`{ kind: "user" }` is the person, `{ kind: "agent", label }` and `{ kind: "system", label }` are
+another agent or a host, a timer, an outside system.
+
+An agent that should stay alive and take one more message at any time is not built this way; that
+shape is what the next section is about.
+
+## How it is put together
+
+Everything below follows from one decision: the messages array is the state, and the rest is events
+about it. There is no shadow model of the conversation, no snapshot, no diff to reconcile. A caller
+that renders or stores messages has all of it already, and core never has to guess what a display
+needs.
+
+### The queue is both the inbox and the wake-up
+
+A separate notify channel — a condition variable, a timer, a polling thread — would have to be kept
+in step with the queue, and the two drift apart at the first bug. So there is only one structure:
+the queue notifies on push, and while it is empty the loop is parked on that notification. Nothing
+else is ever signalled.
+
+```ts
+for await (const batch of inbox.asTakeAll()) {
+  // a batch is in hand
+}
+```
+
+```text
+start() → outer loop
+ └─ wait on the output gate                     ← once, before taking anything
+    for await (batch of inbox.asTakeAll())
+        state = "working"
+        repair history                          ← the only place that looks back
+        land this batch (one user message per entry with content, nothing for a key)
+        report inboxTaken
+        onOuterLoopStart → inner loop → onOuterLoopEnd
+        queue empty → state = "idle"
+        wait on the output gate                 ← once per batch, at the tail
+```
+
+The wait on the output gate exists twice — once before entering and once at the tail of every batch.
+That is what "nothing is taken between batches" means in practice: entries that arrive while the
+gate is on stay in the queue, are visible as a count, can be persisted, and can be restored later.
+
+The inner loop repeats while the last response asked for tools. It is a `while`, not recursion: each
+level of recursion adds a stack frame and a private copy of local state, and "which iteration is it
+in" becomes unanswerable. Inside one batch the tools of a response run in parallel and their result
+messages land in call order, not in completion order.
+
+A batch that has already been taken counts as started. `pauseOutput()` takes effect from the next
+batch and does not put the current one back: it may already have landed messages and be halfway
+through its tools.
+
+### Living and working are two different questions
+
+Someone who says "stop" almost always means one of four things: finish and be gone, be gone now,
+hold everything for later, or cut what is running but stay alive. One verb would hide that, so the
+actions are built from two orthogonal answers — does the agent still have a life afterwards, and is
+in-flight work cut right now.
 
 | Action | What it does |
 |---|---|
@@ -31,9 +108,6 @@ This table is the ruler for any "should core know X" question: look at the left 
 | `abort()` | Cuts the in-flight request and tools, then turns the output gate on, then reports `aborted` |
 | `resumeOutput()` | Turns the output gate off. Only that flag is flipped; `state` is not touched |
 | `kill()` | Hard landing: dead immediately, everything queued is discarded |
-
-"Stop" is the combination of two orthogonal questions: whether the agent still has a life
-afterwards, and whether in-flight work is cut right now.
 
 | | Let it finish by itself | Cut in-flight work now |
 |---|---|---|
@@ -55,85 +129,12 @@ The output gate is released from both sides: `resumeOutput()` flips it, and `sto
 release whatever waits on it. Otherwise a loop parked while paused would wait for a `resumeOutput()`
 that never comes, and the promise from `start()` would never resolve.
 
-## One-shot versus resident
+### Three answers, three places
 
-The lifetime is decided at construction (`lifetime: "resident" | "one-shot"`, resident by default).
-It is not only a difference in how long the object lives, it is a difference in what it can do.
-
-| | Resident | One-shot |
-|---|---|---|
-| How it is started | `start()`, then it waits for entries | `runOnce()`, its life sits inside the call stack |
-| Who feeds it | anyone, any number of times (`push()`) | the one caller that started it, once |
-| How it closes | `stop()` when nobody pushes any more | closed on its own: a second `push()` throws `closed` |
-| Tools whose result arrives later | supported | not supported |
-
-The last row is the hard one: a result that arrives at some future moment needs a receiver at that
-moment. A one-shot agent's stack has returned by then, so such tools can only be mounted on a
-resident agent, and the assembly step has to refuse them up front.
-
-A resident session has no "deliver and wait". `send()` and `runOnce()` throw on it: a resident
-session can be pushed from any trigger at any time, so "I wait until it is idle" has nothing to
-attach to. Only a one-shot agent has one causal chain — the caller's own call.
-
-| Entry | What it does | Waits? |
-|---|---|---|
-| `push(input?)` | Puts one entry in the inbox and returns; throws `closed` on a closed agent; no `input` = turn the key only | no |
-| `send(input?, { signal })` | Starts if needed, pushes, waits until idle, returns `messages` (does not close) | yes |
-| `runOnce(input?, { signal })` | Starts, `send`, closes, waits until dead, returns `messages` | yes |
-
-`send()` and `runOnce()` refuse anything whose `lifetime` is not `"one-shot"`. `runOnce()` also
-refuses an agent that has already been started, and refuses an empty `messages` array with no input
-content — a key with no fuel would send an empty request. Those are mistakes in the calling code,
-so they throw a plain `Error` rather than an `AgentError`: the error codes exist for failures that
-end up on `message.error` and are read back from storage.
-
-## The loop
-
-```ts
-for await (const batch of inbox.asTakeAll()) {
-  // a batch is in hand
-}
-```
-
-The queue is both the inbox and the wake-up signal: while it is empty the loop is parked on the
-queue's own push notification, so nothing else has to be signalled. That one `for await` is the
-outer loop; the queue itself is internal to `Agent`, the point is that no second wake-up mechanism
-exists besides it.
-
-```text
-start() → outer loop
- └─ wait on the output gate                     ← once, before taking anything
-    for await (batch of inbox.asTakeAll())
-        state = "working"
-        repair history                          ← the only place that looks back
-        land this batch (one user message per entry with content, nothing for a key)
-        report inboxTaken
-        onOuterLoopStart → inner loop → onOuterLoopEnd
-        queue empty → state = "idle"
-        wait on the output gate                 ← once per batch, at the tail
-```
-
-The wait on the output gate exists twice — once before entering and once at the tail of every batch.
-That is what "nothing is taken between batches" means in practice: entries that arrive while the
-gate is on stay in the queue, are visible as a count, can be persisted, and can be restored later.
-
-`state` is decided by the position of the loop and by nothing else: a batch is taken → `working`;
-the batch is done and the queue is really empty → `idle`. The output gate does not take part in that
-decision, so "the batch that arrived while output was paused has finished" and "output is still
-paused" are two facts that can both be reported.
-
-A batch that has already been taken counts as started. `pauseOutput()` takes effect from the next
-batch and does not put the current one back: it may already have landed messages and be halfway
-through its tools. Use `abort()` to stop right now.
-
-The inner loop repeats while the last response asked for tools. It is a `while`, not recursion: each
-level of recursion adds a stack frame and a private copy of local state, and "which iteration is it
-in" becomes unanswerable. Inside one batch the tools of a response run in parallel and their result
-messages land in call order, not in completion order.
-
-## State and the two gates
-
-Three separate places, three separate answers. None of them speaks for another.
+Whether there is work in hand, whether an entry may still be delivered, and whether anything may
+still be taken are three independent facts, and callers ask about them separately. Folded into one
+enum, "paused" would mean five different things and every reader would have to guess which. So each
+fact lives in its own place, and none of them speaks for another.
 
 | Place | Member | Says | Changed by | Events |
 |---|---|---|---|---|
@@ -144,7 +145,11 @@ Three separate places, three separate answers. None of them speaks for another.
 One sentence separates the gates: the input gate blocks delivery, the output gate blocks taking.
 With the input gate closed, `push()` throws `closed` while the queue and the batch in hand stay
 untouched. With the output gate on, nothing is taken while delivery still works and entries stay
-queued. Neither gate takes part in `state`.
+queued. Neither gate takes part in `state`, so "the batch that arrived while output was paused has
+finished" and "output is still paused" are two facts that can both be reported.
+
+`state` is decided by the position of the loop and by nothing else: a batch is taken → `working`;
+the batch is done and the queue is really empty → `idle`.
 
 `stop()` and `kill()` close the input gate themselves and it never opens again afterwards: once the
 queue has declared that no further entries will arrive, letting one in would hand it to a queue
@@ -158,10 +163,31 @@ nobody takes from.
 - There is no "errored" state: an error is a fact on a message, read from its `status` / `error`.
   There is no "dead" state either: dead means there is no agent object.
 
-## inbox
+### One-shot and resident are different capabilities
 
-An entry has one of two shapes. Both are plain data — no live references — because entries are
-stored and read back.
+A result that arrives at a future moment needs a receiver at that moment. On a one-shot agent the
+call stack has returned by then and nobody is there, so the difference between the two lifetimes is
+not how long the object lives — it is what it can do at all.
+
+| | Resident | One-shot |
+|---|---|---|
+| How it is started | `start()`, then it waits for entries | `runOnce()`, its life sits inside the call stack |
+| Who feeds it | anyone, any number of times (`push()`) | the one caller that started it, once |
+| How it closes | `stop()` when nobody pushes any more | closed on its own: a second `push()` throws `closed` |
+| Tools whose result arrives later | supported | not supported |
+
+The last row is the hard one, and the assembly step has to refuse such tools up front rather than
+discovering it at delivery time.
+
+A resident session also has no "deliver and wait": it can be pushed from any trigger at any time, so
+"I wait until it is idle" has nothing to attach to. Only a one-shot agent has one causal chain — the
+caller's own call.
+
+### Entries are data, not references
+
+Entries are stored and read back, so both of their shapes are plain data with no live references,
+and an agent reference is refused in `source` for the same reason: an agent carries a client and its
+own message array, neither of which survives a round trip through storage.
 
 ```ts
 // an entry with content: lands as one user message
@@ -184,8 +210,7 @@ interface InboxKey {
 `source` has three kinds, all of them text: `{ kind: "user" }`, `{ kind: "agent", label }` for
 another agent, `{ kind: "system", label }` for a host, a timer or an external system. Every
 `role: user` message carries one — including a host-injected hidden message — so "the user said
-this" has exactly one test: `source.kind === "user"`. A live `Agent` reference is not allowed in
-`source`: messages are stored, while an agent carries a client and its own message array.
+this" has exactly one test: `source.kind === "user"`.
 
 For every source other than `user`, core puts one comment line in front of the text when the entry
 lands — this is the literal line it writes:
@@ -201,6 +226,61 @@ other section stays where it was. The timestamp is the entry's own `createdAt`, 
 external notification may describe something that happened long ago, and the model needs to be able
 to tell.
 
+Three facts are reported, and every change of the inbox means one of them:
+
+| Event | Payload | When |
+|---|---|---|
+| `inboxAdded` | `entry` | an entry was pushed |
+| `inboxTaken` | `entries` | these entries left the queue and their messages are already landed |
+| `inboxCleared` | `entries` | the queue was voided (`clearInbox()`), not taken |
+
+`inboxTaken` is reported after the messages land, not before. If the process dies between the two,
+"message written, entry still queued" is a duplicate that can be deduplicated by `messageId`, while
+the other order is a message that disappears.
+
+### Repair at the head of the loop, not the tail
+
+Before the loop takes its next batch it repairs the history once. Repairing at the head rather than
+right after an interruption is what lets the interface show the truth: the half-sentence and the tool
+that never answered stay visible until the agent really starts again. It is the only place that looks
+back, and it does three things: it types leftover `writing` / `pending` messages, it deletes whatever
+the "drop" strategy does not keep, and it fills unpaired tool results according to the "fill"
+strategy.
+
+The judgement uses two things only — the message `status`, and the pairing between `tool_calls` and
+tool messages — so an interruption, a failure and a crash all look the same here. Both strategies
+are constructor options; the table is in the details.
+
+### Events are facts, hooks are positions
+
+An event says what happened and cannot be stopped; a hook names a position in the loop and, at four
+of those positions, may refuse. They are separate because they answer different questions: "show me
+what it is doing" and "decide whether this may happen". Merging them would make every subscriber a
+potential veto.
+
+There are four refusing hooks, and they fail closed — a gate that lets work through when its guard is
+broken is not a gate. Every other hook fails open and is treated as not having spoken. Both report
+`failed`; a thrown plugin must not leave an agent that looks alive and does nothing.
+
+`onOuterLoopStart` cannot refuse: the batch has already been taken out of the queue, and a refusal
+would leave it without an owner. A decision about a batch belongs before delivery.
+
+## Details
+
+### The three ways in
+
+| Entry | What it does | Waits? |
+|---|---|---|
+| `push(input?)` | Puts one entry in the inbox and returns; throws `closed` on a closed agent; no `input` = turn the key only | no |
+| `send(input?, { signal })` | Starts if needed, pushes, waits until idle, returns `messages` (does not close) | yes |
+| `runOnce(input?, { signal })` | Starts, `send`, closes, waits until dead, returns `messages` | yes |
+
+`send()` and `runOnce()` refuse anything whose `lifetime` is not `"one-shot"`. `runOnce()` also
+refuses an agent that has already been started, and refuses an empty `messages` array with no input
+content — a key with no fuel would send an empty request. Those are mistakes in the calling code, so
+they throw a plain `Error` rather than an `AgentError`: the error codes exist for failures that end
+up on `message.error` and are read back from storage.
+
 Reading the queue without taking anything:
 
 | Member | What it gives |
@@ -214,19 +294,17 @@ agent (its life is on the call stack, there is no "keep waiting after a restart"
 killed agent, and an entry whose shape is incomplete — a half entry is rejected on the spot rather
 than pushed into the queue.
 
-Three facts are reported, and every change of the inbox means one of them:
+### Repair strategies
 
-| Event | Payload | When |
-|---|---|---|
-| `inboxAdded` | `entry` | an entry was pushed |
-| `inboxTaken` | `entries` | these entries left the queue and their messages are already landed |
-| `inboxCleared` | `entries` | the queue was voided (`clearInbox()`), not taken |
+| Member | Values | Default | Decides |
+|---|---|---|---|
+| `abortedToolRoundStrategy` | `"fill"` / `"drop"` | `"fill"` | an interrupted tool round: keep it and fill the missing result (`abortedToolRoundReason`), or remove the whole group |
+| `abortedMessageStrategy` | `"drop"` / `"keep"` | `"drop"` | an interrupted assistant message: delete it, or keep the part that was already written |
 
-`inboxTaken` is reported after the messages land, not before. If the process dies between the two,
-"message written, entry still queued" is a duplicate that can be deduplicated by `messageId`, while
-the other order is a message that disappears.
+Both are constructor options. "Drop" really deletes — memory and storage both — and reports
+`messageRemoved`; `omit` means something else (a message that stays but is no longer sent).
 
-## Events
+### Events
 
 Every event carries `agent`, `seq` (this agent's own counter, from 1, only increasing) and `at`.
 Wherever an event carries a message, an entry or a stream fragment, it is the live object itself,
@@ -259,7 +337,7 @@ A subscriber is a bypass. `on(type, handler)` returns an unsubscribe function; a
 is caught on the spot, reported as `observerFailed`, and does not disturb the agent — a full disk
 should not kill the request that was being watched.
 
-## Hooks
+### Hooks
 
 `use(plugin)` mounts a plugin. A hook names a position in the loop, not a fact (facts are events).
 
@@ -278,14 +356,6 @@ should not kill the request that was being watched.
 | `onToolEnd` | no | the tool ran (only for tools that exist) |
 | `onSubAgentStart` / `onSubAgentEnd` | start only | the delegation boundary |
 
-`onOuterLoopStart` cannot refuse: the batch has already been taken out of the queue, and a refusal
-would leave it without an owner. A decision about a batch belongs before delivery.
-
-When a hook throws, the four hooks that can refuse fail closed — they are gates, and a broken guard
-that lets work through is no guard — while every other hook fails open and is treated as not having
-spoken. Both report `failed`; a thrown plugin must not leave an agent that looks alive and does
-nothing.
-
 A string returned by a refusing hook is the body of the tool message or the reason of the denial;
 core does not wrap it in its own wording. `onInnerLoopStart` runs before the assistant placeholder
 is created, so a refusal leaves no message stuck in `pending`.
@@ -294,26 +364,7 @@ Hooks run before events at the same position, with one exception: the `state:*` 
 the state setter before `onIdle`, and `started` before `onStart`, because the setter is a synchronous
 boundary and the subscriber has to be able to see that value before the hook runs.
 
-## Repair at the head of the loop
-
-Before the loop takes its next batch it repairs the history once. That is the only place that looks
-back, and it does three things: it types leftover `writing` / `pending` messages, it deletes
-whatever the "drop" strategy does not keep, and it fills unpaired tool results according to the
-"fill" strategy. The judgement uses two things only — the message `status`, and the pairing between
-`tool_calls` and tool messages — so an interruption, a failure and a crash all look the same here.
-
-| Member | Values | Default | Decides |
-|---|---|---|---|
-| `abortedToolRoundStrategy` | `"fill"` / `"drop"` | `"fill"` | an interrupted tool round: keep it and fill the missing result (`abortedToolRoundReason`), or remove the whole group |
-| `abortedMessageStrategy` | `"drop"` / `"keep"` | `"drop"` | an interrupted assistant message: delete it, or keep the part that was already written |
-
-Both are constructor options. "Drop" really deletes — memory and storage both — and reports
-`messageRemoved`; `omit` means something else (a message that stays but is no longer sent).
-Repairing at the head rather than at the end is what lets the interface show the truth after an
-interruption — the half-sentence and the tool that never answered stay visible until the agent
-really starts again.
-
-## Errors
+### Errors
 
 One class, one instance in two places.
 
@@ -341,7 +392,7 @@ tool` message is the exception: its `content` is the result the model is meant t
 Core classifies only the dimension it knows (which part failed). It does not decide whether an error
 is retryable, does not translate a 401 into "wrong key", does not back off, does not retry.
 
-## Parts
+### Exports
 
 | Export | What it is |
 |---|---|
@@ -357,50 +408,7 @@ is retryable, does not translate a 401 into "wrong key", does not back off, does
 `Tool.exec` cannot stop the loop: whatever it returns is one tool message handed back to the model.
 The two ways to stop are a hook refusing and `abort()`.
 
-## Minimal example
-
-```ts
-import OpenAI from "openai";
-import { Agent, Message } from "@ai-zen/agents-core";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: "https://api.openai.com/v1",
-});
-
-const agent = new Agent({
-  client,
-  model: "gpt-4o",
-  messages: [Message.System("Answer in one sentence.")],
-});
-
-// on() returns the unsubscribe function; the handler receives the live message
-const offFinished = agent.on("messageFinished", ({ message }) => {
-  if (message.role === "assistant" && message.content) console.log(message.content);
-});
-
-// resolve when one batch is done and the queue is empty
-const idle = new Promise<void>((resolve) => {
-  const offIdle = agent.on("state:idle", () => {
-    offIdle();
-    resolve();
-  });
-});
-
-agent.push({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
-
-void agent.start();  // resolves only when the agent is dead
-await idle;          // the batch in hand finished
-agent.stop();        // drain what is queued, then die
-offFinished();
-console.log(agent.messages.at(-1)?.content);
-```
-
-`start()` returns a promise that resolves at death, so it cannot be awaited before `stop()`. Waiting
-for one batch means waiting for `state:idle`: the payload of that event only says which value it
-reached, the current value is read from `agent.state`.
-
-## What it does not do
+### What it does not do
 
 | Not done | Why |
 |---|---|

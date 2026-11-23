@@ -1,5 +1,86 @@
 # @ai-zen/agents-sdk
 
+## What it is
+
+`@ai-zen/agents-sdk` puts an agent together and keeps it running. It reads the configuration and the
+agent definitions from disk, decides which model answers, which tools, skills, MCP servers and
+sub-agents that agent may use, and hands you a started agent in a few lines.
+
+It also lets those agents talk to each other: open another one, put a sentence in its queue, watch
+what happens.
+
+It owns no storage, no connections and no user-visible text. Where messages are written, who may
+connect and what a person reads on screen belong to the host — this package only asks the caller for
+the few things it cannot know itself.
+
+## How to use
+
+```bash
+pnpm add @ai-zen/agents-sdk
+```
+
+The shortest path to a working agent. Everything except the endpoint and the key is factory
+configuration, written for you by `bootstrap()`:
+
+```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ConfigManager, DEFAULT_AGENT_ID, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
+
+const base = mkdtempSync(join(tmpdir(), "my-agent-"));
+
+const config = new ConfigManager(join(base, "config.json"));
+await config.bootstrap();  // config.json, a default agent, a default sub-agent, factory skills
+
+const current = await config.read();
+await config.write({
+  ...current,
+  // the only thing you have to fill in: where the model lives and the key for it
+  endpoints: current.endpoints.map((endpoint) => ({
+    ...endpoint,
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: "sk-…",
+  })),
+});
+
+const scope = new Scope({
+  getConfig: () => config.read(),
+  agentsDir: join(base, "agents"),
+  cwd: base,
+}).use(...allInOne({}));
+await scope.init();
+
+const agent = await createAgent(scope, DEFAULT_AGENT_ID, { lifetime: "one-shot" });
+const messages = await agent.runOnce({
+  content: "What does this package do?",
+  priority: "low",
+  source: { kind: "user" },
+});
+console.log(messages.at(-1)?.content);
+
+await scope.dispose();
+```
+
+Three things trip people up, and all three are in the code above:
+
+- `config.read()` is **asynchronous**. A missing `await` hands you a promise, and everything
+  downstream quietly sees an empty configuration.
+- `createAgent()` builds a **resident** agent by default, and `runOnce()` refuses anything that is not
+  `lifetime: "one-shot"`. Pass that option when you want one answer and you are done.
+- the factory configuration has three endpoints and eight models, and the default agent is bound to
+  one of them. Patching a single endpoint's `baseUrl` leaves the other models pointing at theirs, and
+  model resolution fails with `Endpoint "x" is not configured` — patch them as a batch, as above.
+
+An agent that should stay alive and take one more message at any time is built the same way minus
+`lifetime: "one-shot"`: `push()` a message, listen for `state:idle`, and `stop()` when done. There is
+no "deliver and wait" on a resident agent — it can be pushed by anyone at any time, so there is
+nothing for a wait to attach to. The kernel page explains why.
+
+Two agents talking to each other: see the example at the end of this file.
+
+## How it is put together
+
 Two halves behind one package name.
 
 - The capability face turns the kernel into an agent that can do something: capabilities discovered
@@ -7,24 +88,16 @@ Two halves behind one package name.
 - The runtime keeps those agents alive and lets them talk to each other: one resident agent per
   session, facts forwarded outward, `post` from one session to another.
 
-## Installation
-
-```bash
-pnpm add @ai-zen/agents-sdk
-```
-
-## What is in which half
+The kernel itself (`@ai-zen/agents-core`) is underneath both: an `Agent`, its loop, its two gates,
+its events and hooks. This package adds what one particular product needs around it — and nothing
+that belongs to a host.
 
 | Half | Members |
 |---|---|
 | Capability face | `createAgent`, `SdkAgent`, `Scope` + its five capability sources (`allInOne`), `PermissionEvaluator`, `ConfigManager`, `AgentRepository`, `HandoffService` + `HandoffGuardPlugin`, `completeOnce` |
 | Runtime | `AgentRuntime` (`wake` / `post` / `status` / `openPeer` / `kill` / `observe`), `Scopes`, `RuntimePeerSessions` |
 
-The kernel itself (`@ai-zen/agents-core`) is underneath both: an `Agent`, its loop, its two gates, its
-events and hooks. This package adds what one particular product needs around it — and nothing that
-belongs to a host.
-
-## Layering: what this package does not do
+### What it deliberately does not do
 
 | Not here | Where it lives |
 |---|---|
@@ -42,7 +115,7 @@ validates credentials or renders copy, it belongs to the host.
 Conversely, an `as unknown as` cast that fakes an instance of something in this package means a port
 is missing: the port should be declared here and implemented by the caller.
 
-### The four ports the runtime borrows
+#### The four ports the runtime borrows
 
 `AgentRuntime` does none of these itself, but each of them has to happen somewhere:
 
@@ -55,8 +128,6 @@ is missing: the port should be declared here and implemented by the caller.
 
 `WakeMaterials` is everything needed to assemble one agent, given from above: `cwd`, `agentId`,
 `modelId` / `modelParams`, `lineage`, `history` and the `waiting` entries not taken last time.
-
-## The capability face
 
 ### Scope: one container per directory
 
@@ -162,7 +233,7 @@ line), `AutoRefreshToolsPlugin`, `ContextGuardPlugin` (refuse a request that wou
 line), `SubAgentGuardInstallerPlugin` (install the guard on sub-agents too), `HandoffGuardPlugin`,
 `UnknownToolHintPlugin`, `AssetTransportPlugin`.
 
-## The runtime
+### The runtime
 
 `AgentRuntime` keeps one resident agent per session and forwards the kernel's facts.
 
@@ -186,7 +257,7 @@ There is no "wait until it is done" on the runtime: a resident session is never 
 working to idle and can be pushed again at any moment. Nothing in the runtime waits for a caller; a
 delivery is what wakes a session up.
 
-### Scopes: containers live by directory
+#### Scopes: containers live by directory
 
 `Scopes` owns the container registry: one container per `cwd`, shared by every session working in
 that directory.
@@ -203,7 +274,7 @@ someone holds it, and it is torn down when someone tears it down. "Nobody is usi
 decidable state. Tearing down refuses rather than cascading, because a cascade would silently kill
 sessions that are in the middle of work.
 
-## Peer sessions
+### Peer sessions
 
 A peer session is another session an agent opens for itself, with its own agent, its own context and
 its own usage, and it stays in the session list afterwards.
@@ -240,7 +311,7 @@ enforces a limit.
 Neither an excerpt of a peer's history nor a message count is ever returned: an excerpt is all the
 model gets, so it does not start treating another session's transcript as its own context.
 
-## Background tools
+### Background tools
 
 Two built-in tools return immediately and report later:
 
@@ -258,7 +329,7 @@ A one-shot agent gets neither of them (`ASYNC_TASK_TOOL_NAMES` is stripped at as
 arrives after its call stack has returned, so there would be nobody to deliver it to. This is the same
 rule the kernel states for resident versus one-shot, enforced where the tools are chosen.
 
-## MCP
+### MCP
 
 Four things live in `scope/plugins/mcp/`.
 
@@ -286,77 +357,9 @@ handed to `McpTaskNoticePort`, which the host implements: `sessionOf(agent)` say
 caller belongs to, `deliver(sessionId, notice)` puts the notice in its inbox. The result itself is
 fetched by task id with `get_mcp_task_result`.
 
-## Example 1: one agent from the capability face
+## Details
 
-```ts
-import { Message } from "@ai-zen/agents-core";
-import { AgentRepository, ConfigManager, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
-
-const base = "/path/to/data"; // config.json and agents/ live here
-
-const config = new ConfigManager(`${base}/config.json`);
-await config.write({
-  endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-..." }],
-  models: [
-    {
-      id: "gpt-4o",
-      name: "GPT-4o",
-      endpointId: "openai",
-      tokenThresholds: { handoff: 500_000, guard: 750_000 },
-    },
-  ],
-  defaultModel: "gpt-4o",
-});
-
-const agents = new AgentRepository(`${base}/agents`);
-await agents.write({
-  id: "demo",
-  name: "Demo",
-  messages: [Message.System("Answer in one sentence.")],
-  modelId: "gpt-4o",
-  permissions: {
-    tools: { allow: ["*"] },
-    skills: { allow: ["*"] },
-    mcps: { allow: ["*"] },
-    subagents: { allow: ["*"] },
-  },
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-});
-
-const scope = new Scope({
-  getConfig: () => config.read(),
-  agentsDir: `${base}/agents`,
-  cwd: base,
-}).use(
-  ...allInOne({
-    toolsPaths: [`${base}/tools`],
-    skillsPaths: [`${base}/skills`],
-    subAgentsPaths: [`${base}/sub-agents`],
-    mcpPaths: [`${base}/mcp.json`],
-  }),
-);
-await scope.init();
-
-const agent = await createAgent(scope, "demo");
-
-const idle = new Promise<void>((resolve) => {
-  const offIdle = agent.on("state:idle", () => {
-    offIdle();
-    resolve();
-  });
-});
-
-agent.push({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
-void agent.start();
-await idle;
-
-console.log(agent.messages.at(-1)?.content);
-agent.stop();
-await scope.dispose();
-```
-
-## Example 2: two sessions, one message between them
+### Example: two sessions, one message between them
 
 ```ts
 import {
@@ -418,7 +421,49 @@ await runtime.close();
 `peerSessions` on the runtime is the port those three tools end up talking to; `Scopes` is the
 container registry the runtime owns, so the example does not construct it.
 
-## Testing
+### Writing the configuration by hand
+
+`bootstrap()` writes a usable configuration for you. If you would rather spell it out — for instance
+because you ship your own defaults — this is the whole shape:
+
+```ts
+const config = new ConfigManager(`${base}/config.json`);
+await config.write({
+  endpoints: [
+    { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-…" },
+  ],
+  models: [
+    {
+      id: "gpt-4o",
+      name: "GPT-4o",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 500_000, guard: 750_000 },
+    },
+  ],
+  defaultModel: "gpt-4o",
+});
+
+const agents = new AgentRepository(`${base}/agents`);
+await agents.write({
+  id: "demo",
+  name: "Demo",
+  messages: [Message.System("Answer in one sentence.")],
+  modelId: "gpt-4o",
+  permissions: {
+    tools: { allow: ["*"] },
+    skills: { allow: ["*"] },
+    mcps: { allow: ["*"] },
+    subagents: { allow: ["*"] },
+  },
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
+```
+
+`tokenThresholds` are absolute input-token counts, not a percentage of the context window: crossing
+the soft line starts a handoff, crossing the hard line refuses the request before it is sent.
+
+### Testing
 
 ```bash
 npm run pretest      # tsc --noEmit over src and the tests

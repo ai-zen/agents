@@ -1,82 +1,64 @@
 # @ai-zen/agents-core
 
-一个执行体运行时。一段会话的消息 —— 那个活的、唯一的数组 —— 以及它跑着的时候发生的事实，都以事件的形式交出去。产物只有这两样：没有存储，没有界面，没有文案，没有权限，没有配置。
+## 它是什么
 
-它跑在官方 `openai` 包上：一个 `OpenAI` 客户端、一个模型名、一个消息数组，构造一个执行体所需要的就这三样。
+`@ai-zen/agents-core` 是执行体里唯一跟模型直接打交道的那一层，别的一概不想知道。给它一个
+`OpenAI` 客户端、一个模型名、一个消息数组，它就把请求发出去、把模型点名的工具跑掉，并把那个数组
+当成唯一的真相。沿途发生的事 —— 一条消息出现、一片流增量、一次工具调用、被人打断、失败 ——
+都以事件的形式交出来，谁想接就接。
 
-## 安装
+它没有存储、没有界面、没有文案、没有权限、没有配置：消息写到哪、用户看见什么、用哪个模型，都是
+上一层的事。它也不重试、不给错误分类、不替崩溃收拾残局。失败就是挂在出事那条消息上的一个事实。
+
+## 怎么用
 
 ```bash
 pnpm add @ai-zen/agents-core
 ```
 
-## 知道什么、不知道什么
+```ts
+import OpenAI from "openai";
+import { Agent, Message } from "@ai-zen/agents-core";
 
-| 必须知道 | 不许知道 |
-|---|---|
-| 消息、工具、模型请求、流、用量、中断、排队、委派 | 存储、多端、i18n、权限、界面、谁在听、`Scope` 怎么装配、模型怎么解析、素材怎么变成真东西 |
+const client = new OpenAI({ apiKey: "sk-…", baseURL: "https://api.deepseek.com/v1" });
+const agent = new Agent({
+  client, model: "deepseek-chat",
+  messages: [Message.System("Answer in one sentence.")],
+  lifetime: "one-shot",
+});
 
-这张表是任何「core 该不该知道 X」的问题的尺子：先看左栏。
+const messages = await agent.runOnce({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
 
-## 六个寿命动作
+console.log(messages.at(-1)?.content);
+```
 
-| 动作 | 干什么 |
-|---|---|
-| `start()` | 起来等条目。返回一个只在执行体死掉时才 resolve 的 promise，永不 reject |
-| `stop()` | 关上输入闸，让已经排队的条目走完，然后死 |
-| `pauseOutput()` | 翻上输出闸：从下一批起不再取件。在途的活一概不碰 |
-| `abort()` | 中止在途的请求与工具，然后翻上输出闸，然后报 `aborted` |
-| `resumeOutput()` | 翻回输出闸。只动这一个开关，`state` 不碰 |
-| `kill()` | 立刻死，排着的一切作废，不做任何收尾 |
+把 `baseURL`、`apiKey` 与 `model` 换成你自己的端点、密钥与模型名，其余一个字都不用动。
 
-「停」是两个正交问题的组合：停完之后还有没有命，以及现在要不要中止在途。
+分量在两处。`lifetime: "one-shot"` 说这个执行体办完这一件事就没了；`runOnce()` 只有这种执行体
+才有，它负责把执行体关掉，再把消息交回来。调用里的 `priority: "low"` 意思是「等循环准备取新的
+一批时再取」（写 `"high"` 才能插进正在跑的那一批），`source` 说的是这话是谁说的：`{ kind:
+"user" }` 是人说的，`{ kind: "agent", label }` 与 `{ kind: "system", label }` 分别是另一个执行体
+与宿主、定时器、外部系统。
 
-| | 让它自己收手 | 现在中止在途 |
-|---|---|---|
-| 以后不再跑（排队清空或作废） | `stop()` | `kill()` |
-| 先不跑（排队留着） | `pauseOutput()` | `abort()` |
+想要一个一直活着、随时能再塞一句进去的执行体，不是这么写；那种形状是下一部分的事。
 
-- `stop()` 与 `kill()` 动的是整条命；`pauseOutput()` 与 `abort()` 动的是下一批。
-- `abort()` 必然含着「不再取件」（中止之后没法往下走）；反过来不成立：`pauseOutput()` 不中止任何东西。
-- `kill()` 不是更快一点的 `stop()`，它是不处理残余的 `stop()`。
-- 六个动作重复调用都是空动作。只有递话会抛（已关门的执行体上 `push()`，已关门或形状不全的执行体上 `restore()`）。
-- `stop()` 与 `kill()` 都不可撤销：死了就死透，复活就是新建一个。
-- `start()` 返回的 promise 永不 reject。一次请求失败就是一次请求失败 —— 它落在那条消息的 `error` 上和 `failed` 事件上，循环接着等下一个条目。
+## 它是怎么拼出来的
 
-输出闸两边都会放行：`resumeOutput()` 翻它，`stop()` / `kill()` 也放掉所有等在它上面的东西。否则停在暂停上的循环会等一个永远不来的 `resumeOutput()`，`start()` 那个 promise 就永远不 resolve。
+下面这些全部出自一个决定：消息数组就是状态，别的东西都只是关于它的事件。没有一份影子副本，没有
+快照，没有要对账的 diff。要渲染、要落库的那个调用方手里本来就有全部消息，core 不必猜一个界面想
+要什么。
 
-## 一次性与常驻
+### 队列既是收件箱也是唤醒信号
 
-寿命在构造时定下（`lifetime: "resident" | "one-shot"`，默认常驻）。它不只是活多久的差别，还是能干什么的差别。
-
-| | 常驻 | 一次性 |
-|---|---|---|
-| 怎么起 | `start()`，起来之后等条目 | `runOnce()`，寿命塞在调用栈里 |
-| 谁给它递话 | 谁都行，多少次都行（`push()`） | 只有发起它的那一个调用方，而且只一次 |
-| 怎么收尾 | 没人再递的时候 `stop()` | 自己收尾：第二次 `push()` 抛 `closed` |
-| 结果将来才回来的工具 | 支持 | 不支持 |
-
-最后一行是硬的：将来某个时刻才回来的结果，到那一刻必须还有人在收。一次性执行体的调用栈那时已经退回去了，所以这类工具只能挂在常驻执行体上，而且要在装配那一步就拒掉。
-
-常驻会话没有「递一条进去再等它闲」这个动作。`send()` 与 `runOnce()` 在它上面一律抛：常驻会话随时可能被任何触发方推一条进来，「我等到它闲」没有可以挂靠的东西。只有一次性执行体有一条因果链 —— 调用方自己那一次调用。
-
-| 入口 | 干什么 | 等不等 |
-|---|---|---|
-| `push(input?)` | 往 inbox 放一个条目就返回；已关门的执行体上抛 `closed`；不给 `input` = 只拧钥匙 | 不等 |
-| `send(input?, { signal })` | 需要就先起，递进去，等到闲，交回 `messages`（不关门） | 等 |
-| `runOnce(input?, { signal })` | 起、`send`、关门、等到死透，交回 `messages` | 等 |
-
-`send()` 与 `runOnce()` 拒掉一切 `lifetime` 不是 `"one-shot"` 的执行体。`runOnce()` 还拒已经开始的执行体，也拒 `messages` 为空且没有正文的调用 —— 没燃料的钥匙发出去是一个空请求。这些都是调用方代码写错了，所以抛裸 `Error` 而不是 `AgentError`：那几个错误码是给会落到 `message.error`、会被从存储里读回来的失败用的。
-
-## 循环
+另造一条通知线 —— 条件变量、定时器、另开一条线程去查 —— 就得让它跟队列保持同步，而这两样总在第一个
+bug 上分家。所以只有一个结构：队列在被推入时通知，空着的时候循环就挂在这条通知上。除此之外没有
+任何东西被 signal。
 
 ```ts
 for await (const batch of inbox.asTakeAll()) {
   // a batch is in hand
 }
 ```
-
-队列既是 inbox 也是唤醒信号：空着的时候循环挂在队列自己的推送通知上，不必另造一个信号。那一条 `for await` 就是外循环；队列本身属于 `Agent` 内部，要点在于除了它没有第二套唤醒机制。
 
 ```text
 start() → outer loop
@@ -91,17 +73,53 @@ start() → outer loop
         wait on the output gate                 ← once per batch, at the tail
 ```
 
-在输出闸上等待有两处 —— 进去之前一次，每批尾部一次。这就是「批与批之间不取件」的实际含义：输出闸翻上的时候到达的条目留在队列里，看得见条数，可以落库，之后可以恢复。
+在输出闸上等待有两处 —— 进去之前一次，每批尾部一次。这就是「批与批之间不取件」的实际含义：输出闸
+翻上的时候到达的条目留在队列里，看得见条数，可以落库，之后可以恢复。
 
-`state` 只由循环的位置决定，别的什么都不参与：取到一批 → `working`；这批跑完且队列真空 → `idle`。输出闸不参与这个判断，所以「不取件期间到的那批跑完了」与「输出仍然不取件」是两个事实，都报得出来。
+内循环在「刚才那次响应要了工具」时继续。它是 `while`，不是递归：每递归一层就多一个栈帧、多一份私有
+的局部状态，「现在走到第几层」就变得答不出来。一批之内，一次响应要的工具并行执行，结果消息按调用
+顺序落地，不是按完成顺序。
 
-已经取出来的那一批算已经开始。`pauseOutput()` 从下一批生效，不把它收回：它可能已经落了消息，工具也可能跑了一半。要立刻停就用 `abort()`。
+已经取出来的那一批算已经开始。`pauseOutput()` 从下一批生效，不把它收回：它可能已经落了消息，工具
+也可能跑了一半。
 
-内循环在「刚才那次响应要了工具」时继续。它是 `while`，不是递归：每递归一层就多一个栈帧、多一份私有的局部状态，「现在走到第几层」就变得答不出来。一批之内，一次响应要的工具并行执行，结果消息按调用顺序落地，不是按完成顺序。
+### 活着与在干活是两个问题
 
-## 状态与两道闸
+嘴里说「停」的人，实际想要的大多是四件事之一：干完就走、现在就没了、先搁着、把在跑的掐掉但人还在。
+一个动词会把这件事盖起来，所以这些动作由两个正交的答案拼成 —— 停完之后还有没有命，现在要不要掐掉
+在途的活。
 
-三处，三个答案，谁也不替谁说话。
+| 动作 | 干什么 |
+|---|---|
+| `start()` | 起来等条目。返回一个只在执行体死掉时才 resolve 的 promise，永不 reject |
+| `stop()` | 关上输入闸，让已经排队的条目走完，然后死 |
+| `pauseOutput()` | 翻上输出闸：从下一批起不再取件。在途的活一概不碰 |
+| `abort()` | 中止在途的请求与工具，然后翻上输出闸，然后报 `aborted` |
+| `resumeOutput()` | 翻回输出闸。只动这一个开关，`state` 不碰 |
+| `kill()` | 立刻死，排着的一切作废，不做任何收尾 |
+
+| | 让它自己收手 | 现在中止在途 |
+|---|---|---|
+| **以后不再跑**（排队清空或作废） | `stop()` | `kill()` |
+| **先不跑**（排队留着） | `pauseOutput()` | `abort()` |
+
+- `stop()` 与 `kill()` 动的是整条命；`pauseOutput()` 与 `abort()` 动的是下一批。
+- `abort()` 必然含着「不再取件」（中止之后没法往下走）；反过来不成立：`pauseOutput()` 不中止任何东西。
+- `kill()` 不是更快一点的 `stop()`，它是不处理残余的 `stop()`。
+- 六个动作重复调用都是空动作。只有递话会抛（已关门的执行体上 `push()`，已关门或形状不全的执行体上
+  `restore()`）。
+- `stop()` 与 `kill()` 都不可撤销：死了就死透，复活就是新建一个。
+- `start()` 返回的 promise 永不 reject。一次请求失败就是一次请求失败 —— 它落在那条消息的 `error`
+  上和 `failed` 事件上，循环接着等下一个条目。
+
+输出闸两边都会放行：`resumeOutput()` 翻它，`stop()` / `kill()` 也放掉所有等在它上面的东西。否则
+停在暂停上的循环会等一个永远不来的 `resumeOutput()`，`start()` 那个 promise 就永远不 resolve。
+
+### 三个答案，三个地方
+
+手上有没有活、还接不接递话、还取不取件，是三个各自独立的事实，调用方也是分开问的。把它们并成一个
+枚举，「暂停」就会同时意味着五件事，每个读代码的人都得猜是哪一件。所以每个事实各占一处，谁也不替
+谁说话。
 
 | 处 | 成员 | 说的是 | 谁改它 | 事件 |
 |---|---|---|---|---|
@@ -109,18 +127,44 @@ start() → outer loop
 | 输出闸 | `isOutputPaused` | 还取不取件（`true` = 从下一批起不取） | `pauseOutput()` / `resumeOutput()` | `output:paused` / `output:resumed` |
 | 输入闸 | `isInputPaused` | 还接不接递话（`true` = `push()` 被拒） | `pauseInput()` / `resumeInput()`；`stop()` / `kill()` 是它的生产者 | `input:paused` / `input:resumed` |
 
-一句话把两道闸分开：输入闸拦递话，输出闸拦取件。输入闸关着的时候 `push()` 抛 `closed`，而队列与手上那一批一件不动；输出闸翻上之后不取件，递话照收、条目留在队列里。两道闸都不参与 `state`。
+一句话把两道闸分开：输入闸拦递话，输出闸拦取件。输入闸关着的时候 `push()` 抛 `closed`，而队列与
+手上那一批一件不动；输出闸翻上之后不取件，递话照收、条目留在队列里。两道闸都不参与 `state`，所以
+「不取件期间到的那批跑完了」与「输出仍然不取件」是两个事实，都报得出来。
 
-`stop()` 与 `kill()` 自己把输入闸关上，此后它不再打开：队列已经宣告不会有新条目了，这时候放一条进去，等于把它交给一个没人取的队列。
+`state` 只由循环的位置决定，别的什么都不参与：取到一批 → `working`；这批跑完且队列真空 → `idle`。
+
+`stop()` 与 `kill()` 自己把输入闸关上，此后它不再打开：队列已经宣告不会有新条目了，这时候放一条
+进去，等于把它交给一个没人取的队列。
 
 - `pauseOutput()` 从下一批生效：手上那一批跑完。
-- `abort()` 中止在途的活（请求与工具）并报 `aborted`；执行体不死，只是输出闸翻上了。死是 `kill()` 的事。
-- 每道闸各有自己的一对事件，当前值从活对象上现读（`agent.isOutputPaused` / `agent.isInputPaused`），不放在事件载荷里。
-- 没有「出错」这一格：错误是消息上的一个事实，读它的 `status` / `error`。也没有「死」这一格：死就是没有执行体这个对象。
+- `abort()` 中止在途的活（请求与工具）并报 `aborted`；执行体不死，只是输出闸翻上了。死是 `kill()`
+  的事。
+- 每道闸各有自己的一对事件，当前值从活对象上现读（`agent.isOutputPaused` / `agent.isInputPaused`），
+  不放在事件载荷里。
+- 没有「出错」这一格：错误是消息上的一个事实，读它的 `status` / `error`。也没有「死」这一格：死就是
+  没有执行体这个对象。
 
-## inbox
+### 一次性与常驻是两种不同的本事
 
-条目有两种形状。两种都是纯数据 —— 不带任何活引用 —— 因为条目要存下来、再读回来。
+将来某个时刻才回来的结果，到那一刻必须还有人在收。一次性执行体的调用栈那时已经退回去了，那里没有
+人 —— 所以两种寿命的差别不在于活多久，而在于它到底能干什么。
+
+| | 常驻 | 一次性 |
+|---|---|---|
+| 怎么起 | `start()`，起来之后等条目 | `runOnce()`，寿命塞在调用栈里 |
+| 谁给它递话 | 谁都行，多少次都行（`push()`） | 只有发起它的那一个调用方，而且只一次 |
+| 怎么收尾 | 没人再递的时候 `stop()` | 自己收尾：第二次 `push()` 抛 `closed` |
+| 结果将来才回来的工具 | 支持 | 不支持 |
+
+最后一行是硬的，而且必须在装配那一步就拒掉，不能等到递结果的时候才发现。
+
+常驻会话也没有「递一条进去再等它闲」这个动作：它随时可能被任何触发方推一条进来，「我等到它闲」没有
+可以挂靠的东西。只有一次性执行体有一条因果链 —— 调用方自己那一次调用。
+
+### 条目是数据，不是引用
+
+条目要存下来、再读回来，所以两种形状都是纯数据、不带任何活引用；`source` 里同样不许放活的 `Agent`
+引用：执行体带着一个客户端和自己那份消息数组，这两样都过不了一次存储。
 
 ```ts
 // an entry with content: lands as one user message
@@ -140,7 +184,9 @@ interface InboxKey {
 }
 ```
 
-`source` 有三种，都是文字：`{ kind: "user" }`，`{ kind: "agent", label }` 指另一段会话，`{ kind: "system", label }` 指宿主、定时器或外部系统。每条 `role: user` 的消息都带一个 —— 宿主注入的隐藏消息也不例外 —— 于是「这是用户说的」只有一个判据：`source.kind === "user"`。`source` 里不许放活的 `Agent` 引用：消息要落库，而执行体带着客户端和自己那份消息数组。
+`source` 有三种，都是文字：`{ kind: "user" }`，`{ kind: "agent", label }` 指另一个执行体，
+`{ kind: "system", label }` 指宿主、定时器或外部系统。每条 `role: user` 的消息都带一个 —— 宿主注入
+的隐藏消息也不例外 —— 于是「这是用户说的」只有一个判据：`source.kind === "user"`。
 
 除 `user` 之外的每种来源，落地时 core 都在正文前面加一行注释 —— 它写出来的就是下面这一行：
 
@@ -150,7 +196,54 @@ interface InboxKey {
 <the content, unchanged>
 ```
 
-正文是内容块数组的时候，这行注释变成最前面一个 `text` 块，其余块的位置不动。时间用条目自己的 `createdAt`，不是「现在」：外部通知可能说的是很久以前发生的事，模型得能分辨。
+正文是内容块数组的时候，这行注释变成最前面一个 `text` 块，其余块的位置不动。时间用条目自己的
+`createdAt`，不是「现在」：外部通知可能说的是很久以前发生的事，模型得能分辨。
+
+三个事实会报出来，收件箱每变一次就是其中一个：
+
+| 事件 | 载荷 | 什么时候 |
+|---|---|---|
+| `inboxAdded` | `entry` | 放进了一个条目 |
+| `inboxTaken` | `entries` | 这些条目离开了队列，它们的消息已经落地 |
+| `inboxCleared` | `entries` | 队列被作废（`clearInbox()`），不是被取走 |
+
+`inboxTaken` 在消息落地之后报，不是之前。进程若在两者之间死掉，「消息写了、条目还在队列里」是可以
+用 `messageId` 去重的重复，反过来则是消息丢了。
+
+### 修历史修在开头，不修在结尾
+
+循环取下一批之前，把历史修一遍。修在开头而不是在被打断之后立刻修，界面才能显示真相：那半句话和没
+回话的工具留在原地，直到执行体真的重新开始。这是唯一回头看的地方，它做三件事：把遗留的 `writing` /
+`pending` 消息定型，按「丢」的策略删掉不该留的，按「填」的策略补上没配对的工具结果。
+
+判断只用两样东西 —— 消息的 `status`，以及 `tool_calls` 与工具消息的配对 —— 于是中断、失败、崩溃
+在这里长得一样。两个策略都是构造选项，表在细节里。
+
+### 事件是事实，钩子是位置
+
+事件说的是「发生了什么」，拦不住；钩子说的是「循环走到这里」，其中四个位置可以拒绝。分开是因为它们
+回答的是不同的问题：「让我看见它在干什么」与「决定这件事能不能发生」。把两者并成一个，等于让每个
+订阅者都握一张否决票。
+
+能拒的钩子有四个，它们 fail-closed —— 会把活放进来的坏闸不叫闸。其余钩子 fail-open，当作没说过话。
+两种都报 `failed`；抛错的插件不能留下一个看着还活着、其实什么都不干的执行体。
+
+`onOuterLoopStart` 不能拒：这批已经从队列里取出来了，拒了它就没主。关于一批的判决属于递话之前。
+
+## 细节
+
+### 三个入口
+
+| 入口 | 干什么 | 等不等 |
+|---|---|---|
+| `push(input?)` | 往 inbox 放一个条目就返回；已关门的执行体上抛 `closed`；不给 `input` = 只拧钥匙 | 不等 |
+| `send(input?, { signal })` | 需要就先起，递进去，等到闲，交回 `messages`（不关门） | 等 |
+| `runOnce(input?, { signal })` | 起、`send`、关门、等到死透，交回 `messages` | 等 |
+
+`send()` 与 `runOnce()` 拒掉一切 `lifetime` 不是 `"one-shot"` 的执行体。`runOnce()` 还拒已经开始
+的执行体，也拒 `messages` 为空且没有正文的调用 —— 没燃料的钥匙发出去是一个空请求。这些都是调用方
+代码写错了，所以抛裸 `Error` 而不是 `AgentError`：那几个错误码是给会落到 `message.error`、会被从
+存储里读回来的失败用的。
 
 不取件，只读队列：
 
@@ -159,21 +252,24 @@ interface InboxKey {
 | `inboxPending` | 还没被取走的条目，按到达顺序 —— 数组是拷贝，条目是同一批对象 |
 | `inboxSize` | 队列里有几条 |
 
-`restore(entries)` 把存下来的条目原样放回去：`createdAt` 不变，不补任何默认值，也不发 `inboxAdded`（行已经在存储里，恢复不是新变化）。它拒一次性执行体（寿命在调用栈里，没有「重启之后接着等」这回事）、已关门或已被杀的执行体，以及形状不全的条目 —— 半截条目当场拒掉，不装进队列。
+`restore(entries)` 把存下来的条目原样放回去：`createdAt` 不变，不补任何默认值，也不发 `inboxAdded`
+（行已经在存储里，恢复不是新变化）。它拒一次性执行体（寿命在调用栈里，没有「重启之后接着等」这回
+事）、已关门或已被杀的执行体，以及形状不全的条目 —— 半截条目当场拒掉，不装进队列。
 
-三个事实会报出来，inbox 每变一次就是其中一个：
+### 修历史的两个策略
 
-| 事件 | 载荷 | 什么时候 |
-|---|---|---|
-| `inboxAdded` | `entry` | 放进了一个条目 |
-| `inboxTaken` | `entries` | 这些条目离开了队列，它们的消息已经落地 |
-| `inboxCleared` | `entries` | 队列被作废（`clearInbox()`），不是被取走 |
+| 成员 | 取值 | 默认 | 决定什么 |
+|---|---|---|---|
+| `abortedToolRoundStrategy` | `"fill"` / `"drop"` | `"fill"` | 被中断的一组工具调用：留着并补上缺的那条结果（`abortedToolRoundReason`），还是整组删掉 |
+| `abortedMessageStrategy` | `"drop"` / `"keep"` | `"drop"` | 被中断的 assistant 消息：删掉，还是留下已经写出来的那部分 |
 
-`inboxTaken` 在消息落地之后报，不是之前。进程若在两者之间死掉，「消息写了、条目还在队列里」是可以用 `messageId` 去重的重复，反过来则是消息丢了。
+两个都是构造选项。「丢」是真的删 —— 内存和存储里都删 —— 并报 `messageRemoved`；`omit` 是另一件事
+（消息还在，只是不再发出去）。
 
-## 事件
+### 事件
 
-每条事件都带 `agent`、`seq`（这个执行体自己的计数器，从 1 起，只增）和 `at`。凡是带消息、条目或流增量的，带的就是那个活对象本身，不是拷贝。
+每条事件都带 `agent`、`seq`（这个执行体自己的计数器，从 1 起，只增）和 `at`。凡是带消息、条目或流
+增量的，带的就是那个活对象本身，不是拷贝。
 
 | 事件 | 发生了什么 | 载荷 |
 |---|---|---|
@@ -194,11 +290,13 @@ interface InboxKey {
 | `failed` | 跑了，失败了 | 一个 `AgentError`，有的话还有那条消息 |
 | `observerFailed` | 某个订阅者抛了 | 事件名与错误 |
 
-`seq` 让订阅者判出重复与缺口。`denied` 与 `failed` 是两个名字，因为之后的历史长得不一样：`denied` 一个字都不留，`failed` 留下一条半截的 assistant 消息，`status: "error"`。
+`seq` 让订阅者判出重复与缺口。`denied` 与 `failed` 是两个名字，因为之后的历史长得不一样：`denied`
+一个字都不留，`failed` 留下一条半截的 assistant 消息，`status: "error"`。
 
-订阅是旁路。`on(type, handler)` 返回退订函数；抛错的 handler 当场被接住，报成 `observerFailed`，不打扰执行体 —— 磁盘满不该打死正在被观察的那次请求。
+订阅是旁路。`on(type, handler)` 返回退订函数；抛错的 handler 当场被接住，报成 `observerFailed`，
+不打扰执行体 —— 磁盘满不该打死正在被观察的那次请求。
 
-## 钩子
+### 钩子
 
 `use(plugin)` 挂一个插件。钩子说的是循环里的一个位置，不是一个事实（事实是事件）。
 
@@ -217,26 +315,13 @@ interface InboxKey {
 | `onToolEnd` | 不能 | 工具跑完了（只对存在的工具） |
 | `onSubAgentStart` / `onSubAgentEnd` | 只有 start 能 | 委派的边界 |
 
-`onOuterLoopStart` 不能拒：这批已经从队列里取出来了，拒了它就没主。关于一批的判决属于递话之前。
+能拒的钩子返回字符串时，那个字符串就是工具消息的正文或拒绝的理由；core 不拿自己的措辞去包它。
+`onInnerLoopStart` 在 assistant 占位消息造出来之前跑，所以拒了不会留下一条卡在 `pending` 的消息。
 
-钩子抛错的时候，能拒的那四个 fail-closed —— 它们是闸，会放行的坏闸不叫闸 —— 其余钩子 fail-open，当作没说过话。两种都报 `failed`；抛错的插件不能留下一个看着还活着、其实什么都不干的执行体。
+同一个位置上钩子先于事件，只有一个例外：`state:*` 由状态 setter 在 `onIdle` 之前发出，`started` 在
+`onStart` 之前发出 —— setter 是同步的边界，订阅者得能在钩子跑之前看见那个值。
 
-能拒的钩子返回字符串时，那个字符串就是工具消息的正文或拒绝的理由；core 不拿自己的措辞去包它。`onInnerLoopStart` 在 assistant 占位消息造出来之前跑，所以拒了不会留下一条卡在 `pending` 的消息。
-
-同一个位置上钩子先于事件，只有一个例外：`state:*` 由状态 setter 在 `onIdle` 之前发出，`started` 在 `onStart` 之前发出 —— setter 是同步的边界，订阅者得能在钩子跑之前看见那个值。
-
-## 在循环开头修历史
-
-循环取下一批之前，把历史修一遍。这是唯一回头看的地方，它做三件事：把遗留的 `writing` / `pending` 消息定型，按「丢」的策略删掉不该留的，按「填」的策略补上没配对的工具结果。判断只用两样东西 —— 消息的 `status`，以及 `tool_calls` 与工具消息的配对 —— 于是中断、失败、崩溃在这里长得一样。
-
-| 成员 | 取值 | 默认 | 决定什么 |
-|---|---|---|---|
-| `abortedToolRoundStrategy` | `"fill"` / `"drop"` | `"fill"` | 被中断的一组工具调用：留着并补上缺的那条结果（`abortedToolRoundReason`），还是整组删掉 |
-| `abortedMessageStrategy` | `"drop"` / `"keep"` | `"drop"` | 被中断的 assistant 消息：删掉，还是留下已经写出来的那部分 |
-
-两个都是构造选项。「丢」是真的删 —— 内存和存储里都删 —— 并报 `messageRemoved`；`omit` 是另一件事（消息还在，只是不再发出去）。修在开头而不是结尾，界面才能在中途停下之后显示真相：那半句话和没回话的工具留在原地，直到执行体真的重新开始。
-
-## 错误
+### 错误
 
 一个类，同一个实例出现在两处。
 
@@ -253,13 +338,17 @@ export class AgentError extends Error {
 }
 ```
 
-同一个实例既是 `failed` 事件的载荷，也是它所归属那条消息的 `error`。`{ code, message }` 足够从存储里把它重建出来（`AgentError.fromJSON()`），`cause` 与 `stack` 留给写那行的人。
+同一个实例既是 `failed` 事件的载荷，也是它所归属那条消息的 `error`。`{ code, message }` 足够从存储
+里把它重建出来（`AgentError.fromJSON()`），`cause` 与 `stack` 留给写那行的人。
 
-错误的文字永远不进 `content`。`content` 是模型说过的话；配上「留」的策略，一条存下来的 `ECONNREFUSED` 会以模型自己说过的话的身份回到模型面前。`role: tool` 的消息是例外：它的 `content` 本来就是模型要读的结果。
+错误的文字永远不进 `content`。`content` 是模型说过的话；配上「留」的策略，一条存下来的
+`ECONNREFUSED` 会以模型自己说过的话的身份回到模型面前。`role: tool` 的消息是例外：它的 `content`
+本来就是模型要读的结果。
 
-core 只分类它知道的那一维（哪一部分失败）。错误可不可重试、401 是不是「密钥错了」、要不要退避、要不要重试，它一概不判。
+core 只分类它知道的那一维（哪一部分失败）。错误可不可重试、401 是不是「密钥错了」、要不要退避、
+要不要重试，它一概不判。
 
-## 零件
+### 导出
 
 | 导出 | 是什么 |
 |---|---|
@@ -272,50 +361,10 @@ core 只分类它知道的那一维（哪一部分失败）。错误可不可重
 | `formatContent` | 内容块收敛成模型认识的字段；`__` 开头的键与不认识的块丢掉 |
 | `sumUsage` / `addUsage` / `ZERO_USAGE` | 跨消息求和用量：消息自己的 `usage` 加上工具消息的 `subAgentUsage` |
 
-`Tool.exec` 停不下循环：它返回什么，就是一条交回模型的工具消息。能停的两种办法是钩子拒绝和 `abort()`。
+`Tool.exec` 停不下循环：它返回什么，就是一条交回模型的工具消息。能停的两种办法是钩子拒绝和
+`abort()`。
 
-## 最小示例
-
-```ts
-import OpenAI from "openai";
-import { Agent, Message } from "@ai-zen/agents-core";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: "https://api.openai.com/v1",
-});
-
-const agent = new Agent({
-  client,
-  model: "gpt-4o",
-  messages: [Message.System("Answer in one sentence.")],
-});
-
-// on() returns the unsubscribe function; the handler receives the live message
-const offFinished = agent.on("messageFinished", ({ message }) => {
-  if (message.role === "assistant" && message.content) console.log(message.content);
-});
-
-// resolve when one batch is done and the queue is empty
-const idle = new Promise<void>((resolve) => {
-  const offIdle = agent.on("state:idle", () => {
-    offIdle();
-    resolve();
-  });
-});
-
-agent.push({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
-
-void agent.start();  // resolves only when the agent is dead
-await idle;          // the batch in hand finished
-agent.stop();        // drain what is queued, then die
-offFinished();
-console.log(agent.messages.at(-1)?.content);
-```
-
-`start()` 返回的 promise 在死的时候才 resolve，所以它不能在 `stop()` 之前 await。等一批就是等 `state:idle`：那条事件的载荷只说是到了哪个值，当前值从 `agent.state` 读。
-
-## 不做什么
+### 不做什么
 
 | 不做 | 为什么 |
 |---|---|
@@ -336,7 +385,8 @@ npm run pretest      # tsc --noEmit over src and the tests
 npx vitest run       # the suite
 ```
 
-两条命令都在 `packages/core` 下跑。用例不需要网络，也不需要 API key：模型客户端是传进来的，用例自己给一个。
+两条命令都在 `packages/core` 下跑。用例不需要网络，也不需要 API key：模型客户端是传进来的，用例自己
+给一个。
 
 ## 许可
 
