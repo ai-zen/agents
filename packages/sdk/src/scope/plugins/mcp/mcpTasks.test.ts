@@ -11,7 +11,7 @@ import {
 } from "./mcpTools.js";
 import { CANCEL_MCP_TASK_TOOL, GET_MCP_TASK_RESULT_TOOL } from "./mcpTaskNotice.js";
 import type { McpTaskNotice, McpTaskNoticePort } from "./mcpTaskNotice.js";
-import type { AppConfig, McpServerConfig, ToolEnv } from "../../../types/index.js";
+import type { AppConfig, McpServerDefinition, ToolEnv } from "../../../types/index.js";
 
 /**
  * MCP 的任务（Tasks）：推状态 + 拉结果。
@@ -23,7 +23,7 @@ import type { AppConfig, McpServerConfig, ToolEnv } from "../../../types/index.j
  */
 
 const SERVER = "fake";
-const SERVER_CONFIG: McpServerConfig = { id: SERVER, transport: "stdio", command: "fake-mcp" };
+const SERVER_CONFIG: McpServerDefinition = { id: SERVER, transport: "stdio", command: "fake-mcp" };
 const SESSION_ID = "session-1";
 
 type TestTool = { function: any; callback: (args: any, ctx?: any) => Promise<any> };
@@ -99,7 +99,7 @@ interface DeliveredNotice {
 interface Harness {
   manager: McpConnectionManager;
   delivered: DeliveredNotice[];
-  /** 工具运行上下文：调用方是这一个执行体（`sessionOf` 认它） */
+  /** 工具运行上下文：调用方是这一个 Agent（`sessionOf` 认它） */
   ctx: { agent: unknown };
   call: TestTool;
   getResult: TestTool;
@@ -116,7 +116,7 @@ afterEach(async () => {
 async function start(options: {
   taskSupport?: "optional" | "required";
   outcome?: "completed" | "cancelled";
-  /** 发起调用的是不是一个属于某段会话的执行体 */
+  /** 发起调用的是不是一个属于某段会话的 Agent */
   inSession?: boolean;
 }): Promise<Harness> {
   const { server, store } = makeServer(options);

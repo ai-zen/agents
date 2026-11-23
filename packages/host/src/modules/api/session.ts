@@ -10,7 +10,7 @@ import { hostPlugins, modelAndParamsFor } from "../agent/materials.js";
 import { createSession } from "../session/create.js";
 import { removeSessions } from "../session/remove.js";
 import { rewindTo } from "../session/rewind.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
 
@@ -38,7 +38,7 @@ const sessionSchema = z.object({
 /**
  * 打开一段会话看到的那一份。
  *
- * `live` 为 `null` 表示这段会话现在没有执行体（重启之后所有会话都是这一种）—— 那时状态无从谈起，
+ * `live` 为 `null` 表示这段会话现在没有 Agent（重启之后所有会话都是这一种）—— 那时状态无从谈起，
  * 而消息与排队区照样给得出来，因为那时库就是它的全部。
  *
  * 消息与排队区用 `z.custom`：形状只有 core 那一处，在这里再抄一份就是第二份，抄漏一格不会报错，
@@ -77,12 +77,12 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       .query(({ input }) => deps.sessions.list(input.workspaceId)),
 
     /**
-     * 建一行会话：写库，不做别的 —— 不唤醒执行体、不投递任何东西、不推任何「这一段活了」
-     * 的事实。新建出来的这一段就是一段没有执行体的会话，与「重启之后所有会话都是死的」是同一种
+     * 建一行会话：写库，不做别的 —— 不唤醒 Agent、不投递任何东西、不推任何「这一段活了」
+     * 的事实。新建出来的这一段就是一段没有 Agent 的会话，与「重启之后所有会话都是死的」是同一种
      * 状态：`open` 读回来 `live` 是 `null`，消息与排队区都是空的。
      *
-     * 起执行体是 `agent.wake`，投话是 `agent.send`：三件事各有一条口，客户端要哪一件就打哪
-     * 一条。建行顺带唤醒再顺带投一句（投的还是空正文）会让执行体白跑一次模型请求，历史里还会
+     * 起 Agent 是 `runtime.agent.wake`，投话是 `runtime.agent.send`：三件事各有一条口，客户端要哪一件就打哪
+     * 一条。建行顺带唤醒再顺带投一句（投的还是空正文）会让 Agent 白跑一次模型请求，历史里还会
      * 多一条空的用户消息。
      *
      * 模型在这一刻解析出来写进会话行（见 `createSession`）：解析不出就当场失败，不落半条行。
@@ -95,7 +95,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
     /**
      * 打开一段会话：状态、消息、排队区一次取到。
      *
-     * 有执行体时五样全从它的内存里读；没有执行体时才读库。分成两次取会在两次请求之间夹进新消息，
+     * 有 Agent 时五样全从它的内存里读；没有 Agent 时才读库。分成两次取会在两次请求之间夹进新消息，
      * 而库里的正文在流式期间本来就落后于内存——两处各读一半，客户端拿到的是一份混着两个时刻的状态。
      */
     open: api.procedure
@@ -157,7 +157,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       })),
 
     /** 自动交接开关。越线那一刻由插件从会话行现读，所以改完下一次越线就按新的 */
-    setAutoHandoff: api.procedure
+    updateAutoHandoff: api.procedure
       .input(sessionIdInput.extend({ autoHandoff: z.boolean() }))
       .output(sessionResult)
       .mutation(({ input }) => ({
@@ -171,7 +171,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * 两个都写（而不是「传了哪个改哪个」）：`null` 是「跟随模型的配置」这个有意义的取值，
      * 「没传」与「传了 null」在入参上分不出来，分开处理就会把清空读成不改。
      */
-    setThresholds: api.procedure
+    updateThresholds: api.procedure
       .input(
         sessionIdInput.extend({
           handoffThreshold: z.number().nullable(),
@@ -187,8 +187,8 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       })),
 
     /**
-     * 换模型。**就地刷新，不杀执行体**：模型是执行体的构造参数，而「重建」不等于「杀」——
-     * 参数挂在执行体上，刷新就是给字段赋值（`SdkAgent.useModel`）。杀掉会把排队区作废、把正在
+     * 换模型。**就地刷新，不杀 Agent**：模型是 Agent 的构造参数，而「重建」不等于「杀」——
+     * 参数挂在 Agent 上，刷新就是给字段赋值（`SdkAgent.useModel`）。杀掉会把排队区作废、把正在
      * 写的那条掐成 aborted，而用户按的是「换模型」。
      *
      * `modelId` 是必填的 `string`（不可为 `null`）：会话指不到模型那条路是「配置里没这个模型」，
@@ -198,7 +198,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * `config_invalid`。反过来先校验模型的话，两者同时不成立时客户端听到的是「换个模型名试试」，
      * 而真正该做的是重新打开会话。
      */
-    setModel: api.procedure
+    updateModel: api.procedure
       .input(sessionIdInput.extend({ modelId: z.string() }))
       .output(sessionResult)
       .mutation(async ({ input }) => {
@@ -243,10 +243,10 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * 换思考档位。档位名是客户端的选择，请求参数是厂商的方言，两者之间只有档位表能翻译 ——
      * 表由**生效模型**的 `reasoningPreset` 指过来，所以校验要看生效模型，而不是会话行上那一格。
      *
-     * `null` 是「跟随助手定义」，任何模型都接受；非 `null` 时它必须是那张表里的一个键。
-     * 改完同样就地刷新（`useModel`），不杀执行体。
+     * `null` 是「跟随 AgentDefinition」，任何模型都接受；非 `null` 时它必须是那张表里的一个键。
+     * 改完同样就地刷新（`useModel`），不杀 Agent。
      */
-    setThinkingLevel: api.procedure
+    updateThinkingLevel: api.procedure
       .input(sessionIdInput.extend({ level: z.string().nullable() }))
       .output(sessionResult)
       .mutation(async ({ input }) => {
@@ -272,7 +272,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
 
     /**
      * 撤回到某条自己说过的话之前：那一条与它之后的全部硬删（库里的行、记忆里那一份、没人再
-     * 引用的素材字节），正文原样交回去让客户端回填输入框。
+     * 引用的 Asset 字节），正文原样交回去让客户端回填输入框。
      *
      * 规则全在 `rewindTo` 里：只认用户自己说的话、跑着的时候不许撤、删掉的每一条推一条
      * `message.removed`。这一层只把入参递下去 —— 多写一句判断就是两处各有一份规则。
@@ -285,16 +285,16 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
     /**
      * 删掉这一段会话：硬删，删完这一段的记忆与排队区都没了。
      *
-     * 代价不在这里算，也不为此另开一条读口：消息数与素材数都在 `open` 给的那一份里，客户端先
+     * 代价不在这里算，也不为此另开一条读口：消息数与 Asset 数都在 `open` 给的那一份里，客户端先
      * 数出代价、问过用户，再调这一条 —— 二次确认是客户端的两步，宿主只回答「删了之后少了什么」。
      *
-     * 出参就只有这两个数：删掉了几条消息，以及跟着一起删掉的那几份素材（引用归零才删，所以它
+     * 出参就只有这两个数：删掉了几条消息，以及跟着一起删掉的那几份 Asset（引用归零才删，所以它
      * 可能少于这一段引用过的份数）。会话本身没了，不必再回一行。
      *
-     * 收尾与删项目那一条共用一个实现：杀执行体、收题、忘掉交接那一侧的记忆、收素材引用、删行、
-     * 按引用归零扫素材。这里的范围只有这一段。
+     * 收尾与删项目那一条共用一个实现：杀 Agent、收题、忘掉交接那一侧的记忆、收 Asset 引用、删行、
+     * 按引用归零扫 Asset。这里的范围只有这一段。
      */
-    remove: api.procedure
+    delete: api.procedure
       .input(sessionIdInput)
       .output(z.object({ messages: z.number(), assets: z.number() }))
       .mutation(({ input }) => {
@@ -316,117 +316,6 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
 
         return { messages, assets: assets.length };
       }),
-
-    /**
-     * 跑一次**一次性会话**：一句投进去、等它跑到闲、把这一次跑出来的消息原样带回去。
-     *
-     * 这条路给的是 `dev-docs/prd/04-session.md` 「一次性会话：唯一的逃生窗」里那三种里的
-     * 宿主入口（今天头一个是 CLI 的纯 stdio 模式：一次调用、一个答案、一个退出码）。它们
-     * **不是一段会话的第一次运行**，也不是段/轮/圈里的一个：就是一次到头的会话，跑完就散。
-     *
-     * **一个字都不落库**，这正是这条路全部的意思：不建会话行、不建 inbox 行、不写消息表。
-     * 走真会话（`session.create` + `agent.wake` + `agent.send`）的话，每敲一次命令行库里就多一段
-     * 会话、项目里多一条工作区行 —— 一次性会话跑完就散，那些行没有谁会去删（`session.remove`
-     * 是用户手上的动作，不是这条路收尾的一部分），库只增不减。
-     *
-     * 所以入参是 `cwd`，**不是 `workspaceId`**：认项目的话，项目行必须先在，于是每敲一次
-     * `ai "…"` 就多出一条项目行 —— 会话行是没了，垃圾还在，而项目「只走显式添加」
-     * （`workspace.create`）。这条路不建任何行，项目行也不建；一次性会话要的只是一个目录去装配
-     * 能力容器，不需要那一行。
-     *
-     * 四步与次序：
-     * 1. `cwd` 归一化一次（`resolve(cwd)`，与 `WorkspaceService.create` 同一个口径）—— 容器按
-     *    目录一份，同一个目录两种写法就会装配出两份。**不校验目录存不存在**：不存在的目录照常在、
-     *    只报事实（PRD 4.1），真正用到它的那一步自然失败 —— 在这里先拦一道，等于把「这条路上
-     *    有什么」提前说死，而那正是宿主不该替别人作的决定；
-     * 2. 模型与参数：与装配一段会话同一份口径（`modelAndParamsFor`）—— 一次性会话没有会话行，
-     *    所以三级解析只可能落在助手定义或全局兜底上，思考档位那一格这一次不存在（它长在会话行上）；
-     * 3. 造**一次性执行体**：取能力容器（`runtime.scopes.for(归一化后的 cwd)`，同一个目录上的几段共用一个）、
-     *    `createAgent(..., { lifetime: "one-shot" })`，再装上这条路上该装的那几颗插件
-     *    （见 `hostPlugins`：硬线与 subagent 护栏、附件传输照装，自动交接不装）。
-     *    **不走 `runtime.wake`** —— 它造的是常驻执行体，要登记、要装一段会话，而这一段既没有
-     *    会话可装，也不该在登记表里留下一个跑完就该消失的项；
-     * 4. `runOnce`：起 → 投递 → 等闲 → 关门，跑出来的东西就是它的返回值。`ctx.signal` 直接交给
-     *    它：客户端断了就该掰掉这一次（一次性会话的寿命就在这条调用栈里）。
-     *
-     * 出参就是 `runOnce` 返回的那个数组（活对象原样，不拷贝、不重排），因为客户端要的就是
-     * 「这一次跑出来的那几条」。
-     */
-    transient: api.procedure
-      .input(
-        z.object({
-          /** 这次调用要在哪个目录上装配能力容器（归一化一次，不校验是否存在） */
-          cwd: z.string().min(1),
-          agentId: z.string().min(1),
-          /** 与 `agent.send` 同一个 union：一段字符串，或一组内容段（多模态） */
-          content: z.union([z.string(), z.array(z.custom<AgentNS.MessageContentSection>())]),
-          /** 客户端给这一句的 id（可选）：不给就由执行体自己生成一个 */
-          messageId: z.string().optional(),
-        }),
-      )
-      .output(z.object({ messages: z.array(z.custom<AgentNS.Message>()) }))
-      .mutation(async ({ input, signal }) => {
-        // 项目行一次都不查：这条路不建行，没有行可查，也不该因为「这个目录还没有项目」而拒绝
-        // 跑 —— 那种拒绝等于把项目行变成一次性会话的前置条件，正是这次补正要拆掉的那一条。
-        //
-        // 归一化只做一次，与 `WorkspaceService.create` 同一个口径：能力容器按目录一份，`/a/b` 与
-        // `/a/b/` 得落到同一个键上，否则同一个目录会装配出两份工具、两份 mcp 连接。
-        const cwd = resolve(input.cwd);
-
-        // 模型与参数：与装配一段会话同一个函数（「模型 + 档位补丁」只有这一处实现）。三格覆盖
-        // 全给 `null` —— 一次性会话没有行，没有更近的那一级可说。
-        const { resolved, model, params } = await modelAndParamsFor(deps, {
-          agentId: input.agentId,
-          modelId: null,
-          thinkingLevel: null,
-        });
-
-        if (resolved === null) {
-          throw new HostError(
-            "config_invalid",
-            deps.t("助手 {agentDefinitionId} 没有可用的模型", {
-              agentDefinitionId: input.agentId,
-            }),
-            { entity: "agentDefinition", agentDefinitionId: input.agentId },
-          );
-        }
-
-        // 解析出来的模型不在配置的模型表里：宿主自己那份配置前后不一致（上面那一步是从同一份
-        // 配置里解析出来的），这是运行事故，不是客户端能改的入参 —— 与 `materialsFor` 那一处同词
-        if (model === undefined) {
-          throw new Error(
-            `Cannot run a one-shot agent: model "${resolved.modelId}" is not in the config`,
-          );
-        }
-
-        const scope = await deps.runtime.scopes.for(cwd);
-
-        const agent = await createAgent(scope, input.agentId, {
-          lifetime: "one-shot",
-          // 同一次解析的结果显式递下去，与 `materialsFor` 那一处同一个口径：不在这一层再算一遍
-          modelId: resolved.modelId,
-          modelParams: params,
-        });
-
-        // 插件必须排在 `runOnce` 之前：装晚了的代价不是「晚一点生效」——第一批取件可能已经发生，
-        // 这一次就有一段活在「插件还没装」的状态里跑完了。
-        for (const plugin of hostPlugins(deps, null, model)) agent.use(plugin);
-
-        const messages = await agent.runOnce(
-          {
-            content: input.content,
-            // 低：没有第二个触发方在等它，「插进手上那一批中间」没有意义
-            priority: "low",
-            source: { kind: "user" },
-            messageId: input.messageId,
-          },
-          // 客户端断了（连接没了 / 调方取消了）：掰掉这一次。一次性会话没有「继续」可言，
-          // 但那条栈还挂着，掐掉它才不会有一个人人都不认的执行体在外面跑
-          { signal },
-        );
-
-        return { messages };
-      }),
   });
 }
 
@@ -434,22 +323,22 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
  * 这个档位名生效模型认不认。
  *
  * 判据是档位表：键集合就是那个模型能选的全部档位（表里没有 `off` 就不存在「关掉思考」这一档）。
- * 表由生效模型的 `reasoningPreset` 指过来 —— 用助手定义上那个模型去查会读错表，那段会话换过
+ * 表由生效模型的 `reasoningPreset` 指过来 —— 用 AgentDefinition 上那个模型去查会读错表，那段会话换过
  * 模型时两边不是同一个。
  */
 async function assertLevelAllowed(
   deps: HostApiDeps,
-  session: Session,
+  session: SessionRecord,
   level: string | null,
 ): Promise<void> {
-  // 「跟随助手定义」没有档位要翻译，也就没有表可查。
+  // 「跟随 AgentDefinition」没有档位要翻译，也就没有表可查。
   if (level === null) return;
 
   const { resolved, model } = await modelAndParamsFor(deps, session);
   if (resolved === null) {
     throw new HostError(
       "invalid_params",
-      deps.t("这段会话没有生效模型，思考档位只能跟随助手定义"),
+      deps.t("这段会话没有生效模型，思考档位只能跟随AgentDefinition"),
       { entity: "session", sessionId: session.id, level },
     );
   }
@@ -458,7 +347,7 @@ async function assertLevelAllowed(
   if (presetName === undefined) {
     throw new HostError(
       "invalid_params",
-      deps.t("模型 {modelId} 没有思考档位，只能跟随助手定义", { modelId: resolved.modelId }),
+      deps.t("模型 {modelId} 没有思考档位，只能跟随AgentDefinition", { modelId: resolved.modelId }),
       { entity: "session", sessionId: session.id, modelId: resolved.modelId, level },
     );
   }

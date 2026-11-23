@@ -1,5 +1,5 @@
 /**
- * 助手与 subagent 的写入口（`prd/PLAN.md` 第 9 行的「助手与 subagent」那一格）。
+ * AgentDefinition 与 subagent 的写入口（`prd/PLAN.md` 第 9 行的「AgentDefinition 与 subagent」那一格）。
  *
  * 这一份验的是那三条判据落到这一个域上的样子：
  *
@@ -7,7 +7,7 @@
  *    一段坏 JSON，三种都被拒在写盘之前 —— 磁盘那一份一个字都不动（改动留在编辑器里是客户端
  *    的事，宿主只保证不接受）；
  * 2. **多行内容原样存**：提示词与参数结构都是编辑器里的多行文本，换行与缩进读回来逐字相等；
- * 3. **删与恢复出厂的连带**：删默认助手要连带清默认，恢复出厂要整条换回出厂定义并重新归入
+ * 3. **删与恢复出厂的连带**：删默认 AgentDefinition 要连带清默认，恢复出厂要整条换回出厂定义并重新归入
  *    托管（`custom: false`）；
  * 4. **再建与再保存**：同 id 再建一次是 `conflict`（磁盘那一份不被覆盖），什么都没改就再保存
  *    一次则不写盘（断言的是文件的修改时间没变）。
@@ -24,7 +24,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { Message } from "@ai-zen/agents-core";
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { AgentDefinition, AppConfig, Model } from "@ai-zen/agents-sdk";
+import type { AgentDefinition, AppConfig, ModelDefinition } from "@ai-zen/agents-sdk";
 import {
   AgentRepository,
   ConfigManager,
@@ -54,7 +54,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function model(id: string): Model {
+function model(id: string): ModelDefinition {
   return { id, name: id, endpointId: "ep-a", tokenThresholds: { handoff: 100, guard: 150 } };
 }
 
@@ -85,7 +85,7 @@ async function newHost(config: AppConfig = CONFIG) {
 
   const definitions = new AgentDefinitionService({
     repository: new AgentRepository(agentsDir),
-    // 定义那一侧的事件这一份用例不验：它只是「这个助手变了」的广播，读的人不在这一层
+    // 定义那一侧的事件这一份用例不验：它只是「这个 AgentDefinition 变了」的广播，读的人不在这一层
     events: createBus<ConfigEvent>(),
     t,
     general,
@@ -101,7 +101,7 @@ function definition(
   return {
     id: "helper",
     name: "Helper",
-    messages: [Message.System("你是一个助手。")],
+    messages: [Message.System("你是一个AgentDefinition。")],
     ...overrides,
   };
 }
@@ -154,7 +154,7 @@ function withoutTimestamps(
   return rest;
 }
 
-describe("助手定义：写之前的校验", () => {
+describe("AgentDefinition：写之前的校验", () => {
   it("标识不是文件名安全的就拒：invalid_params，目录里一个文件都没多", async () => {
     const host = await newHost();
 
@@ -172,7 +172,7 @@ describe("助手定义：写之前的校验", () => {
     expect(await filesInAgentsDir()).toEqual([]);
   });
 
-  it("模板里没有系统提示就拒：这个助手没有身份", async () => {
+  it("模板里没有系统提示就拒：这个AgentDefinition没有身份", async () => {
     const host = await newHost();
 
     const refused = await errorOf(
@@ -234,10 +234,10 @@ describe("助手定义：写之前的校验", () => {
   });
 });
 
-describe("助手定义：删与恢复出厂", () => {
-  it("删默认助手连带清默认：内存与磁盘上那一格都没了", async () => {
+describe("AgentDefinition：删与恢复出厂", () => {
+  it("删默认AgentDefinition连带清默认：内存与磁盘上那一格都没了", async () => {
     const host = await newHost();
-    await host.definitions.add(definition({ id: DEFAULT_AGENT_ID, name: "默认助手" }));
+    await host.definitions.add(definition({ id: DEFAULT_AGENT_ID, name: "默认AgentDefinition" }));
     expect(host.general.read().defaultAgent).toBe(DEFAULT_AGENT_ID);
 
     await host.definitions.remove(DEFAULT_AGENT_ID);
@@ -270,15 +270,15 @@ describe("助手定义：删与恢复出厂", () => {
 
     const notFactory = await errorOf(host.definitions.reset("我自己建的"));
     expect(notFactory.code).toBe("not_found");
-    expect(notFactory.message).toContain("不是出厂的那两个助手之一");
+    expect(notFactory.message).toContain("不是出厂的那两个AgentDefinition之一");
   });
 });
 
-describe("助手定义：多行内容", () => {
+describe("AgentDefinition：多行内容", () => {
   it("多行提示词原样存：换行与缩进读回来逐字相等", async () => {
     const host = await newHost();
     const prompt = [
-      "你是一个严谨的助手。",
+      "你是一个严谨的AgentDefinition。",
       "",
       "## 工作方式",
       "  1. 先读文件再改文件",
@@ -296,7 +296,7 @@ describe("助手定义：多行内容", () => {
   });
 });
 
-describe("助手定义：再建与再保存", () => {
+describe("AgentDefinition：再建与再保存", () => {
   it("同一个 id 再建一次是 conflict，磁盘那一份没被覆盖", async () => {
     const host = await newHost();
     const first = await host.definitions.add(definition({ name: "第一次建的名字" }));

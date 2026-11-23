@@ -69,7 +69,7 @@ export class GuardNoticePlugin extends ContextGuardPlugin {
     const used = lastPromptTokens(agent);
     if (used === undefined) return;
 
-    // 阈值每次现读：改阈值不重建执行体，用户刚调到线下的那一次不该还说旧数字
+    // 阈值每次现读：改阈值不重建 Agent，用户刚调到线下的那一次不该还说旧数字
     const guard = this.guard.guardTokens;
 
     if (this.reported?.used === used && this.reported.guard === guard) return;
@@ -97,14 +97,14 @@ export class GuardNoticePlugin extends ContextGuardPlugin {
 }
 
 /**
- * 上一次请求带上去了多少输入 —— 只从消息上读。core 收流时把响应的 `usage` 钉在那条助手消息上，
+ * 上一次请求带上去了多少输入 —— 只从消息上读。core 收流时把响应的 `usage` 钉在那条 AgentDefinition 消息上，
  * 于「这一次请求会带多大的输入」这个读数只有这一个来源。
  *
- * 与护栏读的是同一份事实、同一个读法（最近一条带用量的助手消息，不是求和）：宿主不另存一份用量。
+ * 与护栏读的是同一份事实、同一个读法（最近一条带用量的 AgentDefinition 消息，不是求和）：宿主不另存一份用量。
  */
-function lastPromptTokens(agent: { readonly messages: readonly AgentNS.Message[] }):
-  | number
-  | undefined {
+function lastPromptTokens(agent: {
+  readonly messages: readonly AgentNS.Message[];
+}): number | undefined {
   for (let i = agent.messages.length - 1; i >= 0; i--) {
     const message = agent.messages[i];
     if (message === undefined || message.role !== AgentNS.Role.Assistant) continue;

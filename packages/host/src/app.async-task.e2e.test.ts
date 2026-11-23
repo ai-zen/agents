@@ -7,7 +7,7 @@
  * 拿一份录日志的替身，照样是绿的；而生产里那一行一个字都不会出现。判据必须是「日志文件里真有
  * 这一句」，不是「参数传下去了」。
  *
- * 这条路径只有真宿主造得出来：能力容器由 `HostApp` 的装配根造（日志口在那一处接上），执行体手上
+ * 这条路径只有真宿主造得出来：Scope 由 `HostApp` 的装配根造（日志口在那一处接上），Agent 手上
  * 的工具是那个容器装出来的，日志落到 `<数据根>/logs/host.log` 这一份文件里。文件路径本身就是
  * 断言的一部分：那一份只有装配根造的 `FileLogger` 在写，所以「这一行出现在这儿」同时说明工具拿到
  * 的正是装配根那一个对象，不是另造的第二份。
@@ -33,7 +33,7 @@ import { openDatabase } from "./infra/db.js";
 import { hostPaths } from "./infra/paths.js";
 import { workspaceTable } from "./modules/workspace/table.js";
 
-/** 本地端点回的这句话：会话要真的跑过一趟，执行体才算装配完了 */
+/** 本地端点回的这句话：会话要真的跑过一趟，Agent 才算装配完了 */
 const REPLY = "收到。";
 
 /** 后台命令的正文：判据不看它，只要求这条命令真的起得来、立刻结束 */
@@ -106,15 +106,15 @@ function textOf(message: AgentNS.Message): string {
   return content.map((section) => (section.type === "text" ? section.text : "")).join("");
 }
 
-/** 执行体手上那一个工具；不在就是装配错了，当场说清是哪一个 */
+/** Agent 手上那一个工具；不在就是装配错了，当场说清是哪一个 */
 function toolOf(agent: Agent, name: string): Tool {
   const tool = agent.tools.find((item) => item.function.name === name);
-  if (tool === undefined) throw new Error(`执行体手上没有 "${name}" 这个工具`);
+  if (tool === undefined) throw new Error(`Agent手上没有 "${name}" 这个工具`);
   return tool;
 }
 
 /**
- * 调一次工具：`ctx` 与 core 在模型发起工具调用时造的是同一个形状，`ctx.agent` 就是那个执行体。
+ * 调一次工具：`ctx` 与 core 在模型发起工具调用时造的是同一个形状，`ctx.agent` 就是那个 Agent。
  *
  * 注意它是**同步开到 `spawn` 的那一步**的（`AsyncExecTool.call` 在起进程之前没有 await），
  * 这是这条用例能在同一个 tick 里抢先杀掉会话的前提。
@@ -151,10 +151,10 @@ describe("后台任务的结果投不回那段会话时，宿主日志里有那�
     }
   };
 
-  /** 那一段执行体（宿主装配出来的，不是替身） */
+  /** 那一段 Agent（宿主装配出来的，不是替身） */
   const agentOf = (sessionId: string): Agent => {
     const agent = app.runtime.get(sessionId);
-    if (agent === undefined) throw new Error(`会话 "${sessionId}" 没有执行体`);
+    if (agent === undefined) throw new Error(`会话 "${sessionId}" 没有Agent`);
     return agent;
   };
 
@@ -250,8 +250,8 @@ describe("后台任务的结果投不回那段会话时，宿主日志里有那�
       agentId: "default",
     });
     const sessionId = created.session.id;
-    await client.mutation("agent.wake", { sessionId });
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.wake", { sessionId });
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -259,7 +259,7 @@ describe("后台任务的结果投不回那段会话时，宿主日志里有那�
       messageId: randomUUID(),
     });
 
-    // 等到模型真的答过一句：那一刻执行体已经装好、跑过一趟、回到闲
+    // 等到模型真的答过一句：那一刻 Agent 已经装好、跑过一趟、回到闲
     await until(() => {
       expect(agentOf(sessionId).messages.some((message) => textOf(message) === REPLY)).toBe(true);
     });
@@ -270,7 +270,7 @@ describe("后台任务的结果投不回那段会话时，宿主日志里有那�
     // 起一条会立刻结束的命令。`callTool` 不 await：起进程是同步走到的那一步，结果要等进程结束
     // 之后才投递
     const started = callTool(toolOf(agent, ASYNC_EXEC_TOOL), agent, { command: COMMAND });
-    // 同一个 tick 里杀掉这段会话，走的是客户端那条 `agent.kill` 最后调的那一句
+    // 同一个 tick 里杀掉这段会话，走的是客户端那条 `runtime.agent.kill` 最后调的那一句
     // （`deps.runtime.kill`）。绕开 ws 那一趟是有意的：这条命令立刻就结束，往返一次就可能让结果
     // 先投成功，那验到的就是「投递成功」而不是「投不回去」
     app.runtime.kill(sessionId);

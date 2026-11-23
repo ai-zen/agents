@@ -213,7 +213,7 @@ describe("discoverMcpServers", () => {
     expect(result[0].id).toBe("active");
   });
 
-  it("近层停用取消远层同名定义：停用的条目也占住名字", async () => {
+  it("近层停用取消远层同名定义：停用的InboxEntry也占住名字", async () => {
     writeMcpConfig("near.json", {
       files: { disabled: true },
       kept: { type: "stdio", command: "kept-mcp" },

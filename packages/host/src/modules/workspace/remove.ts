@@ -21,7 +21,7 @@ export interface RemoveWorkspaceDeps extends RemoveSessionsDeps {
  * 返回被连带删掉的那几段会话的 id：「删前说清代价」用的就是这一份，客户端在删之前先
  * `session.list` 拿到的也是同一批。
  *
- * 目录本身一个字都不碰：这里删的只有库里的行与它名下会话引用过的素材字节。
+ * 目录本身一个字都不碰：这里删的只有库里的行与它名下会话引用过的 Asset 字节。
  */
 export function removeWorkspace(
   deps: RemoveWorkspaceDeps,

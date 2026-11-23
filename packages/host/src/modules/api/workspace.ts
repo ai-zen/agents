@@ -67,7 +67,7 @@ export function workspaceRouter(deps: HostApiDeps, api: Trpc) {
      * 删项目，连带它名下的会话。回去的那几段会话 id 就是这一次的代价：客户端在删之前用
      * `session.list` 数出来的也是同一批。
      */
-    remove: api.procedure
+    delete: api.procedure
       .input(z.object({ workspaceId: z.string().min(1) }))
       .output(z.object({ sessions: z.array(z.string()) }))
       .mutation(({ input }) => removeWorkspace(deps, input.workspaceId)),

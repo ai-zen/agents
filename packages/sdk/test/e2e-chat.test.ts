@@ -71,14 +71,14 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       definition: {
         id: "test",
         name: "Test",
-        messages: [Message.System("你是一个简洁的助手，用一句话回复。")],
+        messages: [Message.System("你是一个简洁的AgentDefinition，用一句话回复。")],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
       client: model.client,
       model: model.model,
       modelConfig: model.modelConfig,
-      messages: [Message.System("你是一个简洁的助手，用一句话回复。")],
+      messages: [Message.System("你是一个简洁的AgentDefinition，用一句话回复。")],
     });
 
     const messages = await sendRound(agent, "请说'你好，世界'");
@@ -105,7 +105,7 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
         name: "Test Tool",
         messages: [
           Message.System(
-            `你是一个助手，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
+            `你是一个AgentDefinition，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
           ),
         ],
         createdAt: new Date().toISOString(),
@@ -116,7 +116,7 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       modelConfig: model.modelConfig,
       messages: [
         Message.System(
-          `你是一个助手，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
+          `你是一个AgentDefinition，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
         ),
       ],
       tools,
@@ -144,14 +144,14 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       definition: {
         id: "test-multi",
         name: "Test Multi",
-        messages: [Message.System("你是一个助手。记住用户说的信息。")],
+        messages: [Message.System("你是一个AgentDefinition。记住用户说的信息。")],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
       client: model.client,
       model: model.model,
       modelConfig: model.modelConfig,
-      messages: [Message.System("你是一个助手。记住用户说的信息。")],
+      messages: [Message.System("你是一个AgentDefinition。记住用户说的信息。")],
     });
 
     // 第一轮（常驻会话：`runRound` 不关门，可以接着跑下一轮）

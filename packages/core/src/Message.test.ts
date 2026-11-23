@@ -41,7 +41,7 @@ describe("Message", () => {
       const msg = new Message({
         role: AgentNS.Role.Assistant,
         content: "回复",
-        name: "助手",
+        name: "AgentDefinition",
         tool_calls: [{ id: "1", function: { name: "fn1", arguments: "{}" } }],
         reasoning_content: "思考中...",
         status: AgentNS.MessageStatus.Pending,
@@ -50,7 +50,7 @@ describe("Message", () => {
         hidden: true,
         omit: false,
       });
-      expect(msg.name).toBe("助手");
+      expect(msg.name).toBe("AgentDefinition");
       expect(msg.tool_calls).toHaveLength(1);
       expect(msg.reasoning_content).toBe("思考中...");
       expect(msg.status).toBe(AgentNS.MessageStatus.Pending);
@@ -77,9 +77,9 @@ describe("Message", () => {
 
   describe("Message.System", () => {
     it("应创建 system 角色消息", () => {
-      const msg = Message.System("你是助手");
+      const msg = Message.System("你是AgentDefinition");
       expect(msg.role).toBe(AgentNS.Role.System);
-      expect(msg.content).toBe("你是助手");
+      expect(msg.content).toBe("你是AgentDefinition");
       expect(msg.status).toBe(AgentNS.MessageStatus.Completed);
     });
 

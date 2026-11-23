@@ -19,7 +19,7 @@ const definitionResult = z.object({ definition: z.custom<AgentDefinition>() });
 const idInput = z.object({ agentId: z.string() });
 
 /**
- * 助手与 subagent 的定义面：列、取、建、改、删、恢复出厂。
+ * AgentDefinition 与 subagent 的定义面：列、取、建、改、删、恢复出厂。
  *
  * subagent 不另开一条 `list`：它是带 `function` 的那几条定义，客户端按这一格自己分栏。
  *
@@ -53,7 +53,7 @@ export function agentDefinitionRouter(deps: HostApiDeps, api: Trpc) {
 
     /**
      * `change` 是同一份定义去掉 `id` 的那一部分。给了 `messages` 就是整份替换模板 —— 用着这个
-     * 定义的执行体在下面那一次重装里按新模板重新装一遍。
+     * 定义的 Agent 在下面那一次重装里按新模板重新装一遍。
      *
      * **没有真的改动就不重装**：`AgentDefinitionService.update` 在「合出来与当前逐字一样」时原样
      * 返回当前那份（不写盘），所以这里拿返回的那一份与改动前的那一份逐字比一次 —— 一样就是没
@@ -77,12 +77,12 @@ export function agentDefinitionRouter(deps: HostApiDeps, api: Trpc) {
       }),
 
     /**
-     * 删一条定义。默认助手指着它时，那一格跟着清掉（在 service 里，与删定义是同一次写盘）。
+     * 删一条定义。默认 AgentDefinition 指着它时，那一格跟着清掉（在 service 里，与删定义是同一次写盘）。
      *
-     * **删完不重装**：那些还活着的会话下一次唤醒会失败。删助手不看还有几段会话在用它 ——
-     * 「删之前说清还有谁指它」是端点到模型那条路上的事，助手这一条需求里没有这道校验。
+     * **删完不重装**：那些还活着的会话下一次唤醒会失败。删 AgentDefinition 不看还有几段会话在用它 ——
+     * 「删之前说清还有谁指它」是端点到模型那条路上的事，AgentDefinition 这一条需求里没有这道校验。
      */
-    remove: api.procedure
+    delete: api.procedure
       .input(idInput)
       .output(z.object({ agentId: z.string() }))
       .mutation(async ({ input }) => {

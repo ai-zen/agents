@@ -24,7 +24,7 @@ export type HookResult = string | void | Promise<string | void>;
 /** 外循环（这一批事件）的上下文 */
 export interface OuterLoopContext {
   agent: Agent;
-  /** 这一批取到的条目（可能含只拧钥匙不带正文的） */
+  /** 这一批取到的 InboxEntry（可能含只拧钥匙不带正文的） */
   entries: AgentNS.InboxEntry[];
 }
 
@@ -79,7 +79,7 @@ export interface SubAgentEntry {
   /**
    * 这次委派用的工具名（= 模型调用的那个委派工具的名字）。
    *
-   * core 只认识这一个「名字」：subagent 的助手名在助手定义里，那是外部的财产（`buildAgent`
+   * core 只认识这一个「名字」：subagent 的 AgentDefinition 名在 AgentDefinition 里，那是外部的财产（`buildAgent`
    * 交出来的），core 不读定义文件。所以这里报的是「谁被调用来干的这活」，不是「它是谁」。
    */
   name: string;
@@ -96,7 +96,7 @@ export interface SubAgentEntry {
  * |---|---|---|
  * | `onInit` | 不能 | 注册后初始化（`init()`），与死活无关 |
  * | `onStart` / `onOutputPaused` / `onOutputResumed` / `onIdle` / `onStop` / `onKill` | 不能 | 死活与状态的边 |
- * | `onAbort` | 不能 | 有人按了停（闸本来关着也照发） |
+ * | `onAbort` | 不能 | 有人按了停（开关本来关着也照发） |
  * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 这一批的开始 / 结束 |
  * | `onInnerLoopStart` | **能拒** | 排在造 assistant 占位**之前**，拒了历史里一个字都不多 |
  * | `onInnerLoopEnd` | 不能 | 这一次请求结束 |
@@ -116,11 +116,11 @@ export interface SubAgentEntry {
 export interface AgentPlugin {
   onInit?(): HookResult;
   onStart?(ctx: LifecycleContext): HookResult;
-  /** 不取件开关翻上（从此不取件，手上那批照跑） */
+  /** 不取走开关翻上（从此不取走，手上那批照跑） */
   onOutputPaused?(ctx: LifecycleContext): HookResult;
-  /** 不取件开关翻回（又开始取件） */
+  /** 不取走开关翻回（又开始取走） */
   onOutputResumed?(ctx: LifecycleContext): HookResult;
-  /** 有人按了停（`abort()`）；闸本来关着也照发 */
+  /** 有人按了停（`abort()`）；开关本来关着也照发 */
   onAbort?(ctx: LifecycleContext): HookResult;
   onIdle?(ctx: LifecycleContext): HookResult;
   onStop?(ctx: LifecycleContext): HookResult;
@@ -143,11 +143,11 @@ export interface AgentPlugin {
 // ---------------------------------------------------------------------------
 
 /**
- * 每条事件都带的三格：谁发的、这个执行体的第几条、什么时候。
+ * 每条事件都带的三格：谁发的、这个 Agent 的第几条、什么时候。
  *
- * `seq` 是这个执行体自己的单调序号，从 1 开始，只增不减：订阅者靠它判重复与缺口，也靠它答
- * 「从哪接着写」。它是**这个执行体**的序号，不是全局的 —— 委派时转发上来的那些事件记的是父
- * 执行体自己的号（转发是一次新的发出）。
+ * `seq` 是这个 Agent 自己的单调序号，从 1 开始，只增不减：订阅者靠它判重复与缺口，也靠它答
+ * 「从哪接着写」。它是**这个 Agent**的序号，不是全局的 —— 委派时转发上来的那些事件记的是父
+ * Agent 自己的号（转发是一次新的发出）。
  *
  * `at` 是发出这一刻的 ISO 8601 串。
  */
@@ -163,26 +163,26 @@ export interface StateEvent extends EventBase {
 }
 
 /**
- * 输出闸动了：翻上（`output:paused`）/ 翻回（`output:resumed`）。
+ * 输出开关动了：翻上（`output:paused`）/ 翻回（`output:resumed`）。
  *
- * 载荷只带 agent 与每条的 `seq` / `at` —— 「此刻还取不取件」现读 `agent.isOutputPaused`，不在
+ * 载荷只带 agent 与每条的 `seq` / `at` —— 「此刻还取不取走」现读 `agent.isOutputPaused`，不在
  * 这里再报一份。
  * 它与「在干 / 闲」是两处状态，所以它的变化**不冒充**「到了哪一格」：它只说自己动了。
  */
 export interface OutputEvent extends EventBase {}
 
 /**
- * 输入闸动了：关上（`input:paused`）/ 打开（`input:resumed`）。
+ * 输入开关动了：关上（`input:paused`）/ 打开（`input:resumed`）。
  *
- * 载荷同样只带 agent 与每条的 `seq` / `at`（现读 `agent.isInputPaused`）。它与输出闸是两道
- * 闸，两条事件不互相冒充。
+ * 载荷同样只带 agent 与每条的 `seq` / `at`（现读 `agent.isInputPaused`）。它与输出开关是两道
+ * 开关，两条事件不互相冒充。
  */
 export interface InputEvent extends EventBase {}
 
 /**
  * 有人按了停（`abort()`）。
  *
- * 它是**意图**，不是闸的副作用：闸可能本来就是关着的（那样 `output:paused` 一条都不发），
+ * 它是**意图**，不是开关的副作用：开关可能本来就是关着的（那样 `output:paused` 一条都不发），
  * 但「这一下停」发生了。想读「掐没掐到东西」看那一条消息的 `status`（`aborted`）。
  */
 export interface AbortedEvent extends EventBase {}
@@ -200,15 +200,15 @@ export interface InboxAddedEvent extends EventBase {
   entry: AgentNS.InboxEntry;
 }
 
-/** 这些条目**已经离开队列**（被取走了），并且它们该落的消息已经落好了。
+/** 这些 InboxEntry**已经离开队列**（被取走了），并且它们该落的消息已经落好了。
  *
  * 为什么取走也要说一声：持久化要求「inbox 一有变化就入库」。只报进队不报取走的话，
  * 宿主只能靠快照覆盖，那就不再实时了；而靠增量又必然对不上（钥匙被取走完全无声 ——
  * 它不落消息，取走了就像没存在过）。
  *
- * 为什么排在落地**之后**（`CORE.md` §3、`PRD.md` 4.5）：崩溃点若落在两者之间，
- * - 「消息已落、条目还在」→ 恢复时按 `messageId` 去重就能收拾（可救）；
- * - 反过来「条目没了、消息没落」→ 那条话凭空消失（不可救）。
+ * 为什么排在写进 messages**之后**（`CORE.md` §3、`PRD.md` 4.5）：崩溃点若落在两者之间，
+ * - 「消息已落、InboxEntry 还在」→ 恢复时按 `messageId` 去重就能收拾（可救）；
+ * - 反过来「InboxEntry 没了、消息没落」→ 那条话凭空消失（不可救）。
  */
 export interface InboxTakenEvent extends EventBase {
   entries: AgentNS.InboxEntry[];
@@ -322,12 +322,12 @@ export interface FailedEvent extends EventBase {
  * 旁观的人自己炸了：{@link Agent.on} 的那一个订阅者抛了错。
  *
  * 它与 `failed` 的区别写清在这里，因为两条都在说「出错了」：
- * - `failed` 是**这次请求 / 这次工具失败了**，那是执行体自己的事，这条消息的 `status`、
+ * - `failed` 是**这次请求 / 这次工具失败了**，那是 Agent 自己的事，这条消息的 `status`、
  *   `error` 会跟着变；
- * - `observerFailed` 是**旁观的人自己炸了**：订阅者只是看，被观察的执行体照常跑，
+ * - `observerFailed` 是**旁观的人自己炸了**：订阅者只是看，被观察的 Agent 照常跑，
  *   消息、状态、队列一处都不因此改变。
  *
- * 为什么非要有这一条：观察是旁路，不是执行体的一部分。宿主写库、推送、运行时转发，任何一处
+ * 为什么非要有这一条：观察是旁路，不是 Agent 的一部分。宿主写库、推送、运行时转发，任何一处
  * 抛错都只该记在它自己头上，不该顺着 `emit` 走进外循环 / 内循环 —— 磁盘满了不能把推理一起
  * 打死。收成事件之后这条事实也仍然是「听得见」的：别的订阅者照样能收到它去记日志。
  */
@@ -340,7 +340,7 @@ export interface ObserverFailedEvent extends EventBase {
 
 /**
  * 事件表。**带出去的是活对象本身，不是拷贝** —— 收到事件的人手里攥着的就是那条消息、
- * 那条条目、那片原片。拷贝 = 第二份事实，交出去那一刻就开始过期。
+ * 那条 InboxEntry、那片原片。拷贝 = 第二份事实，交出去那一刻就开始过期。
  *
  * 事件只是通知，**不是唯一信息源**：晚到、重复、丢一条都不影响正确性，读活对象就自愈。
  */
@@ -373,7 +373,7 @@ export interface AgentEvents {
   subAgentFinished: SubAgentEvent;
   denied: DeniedEvent;
   failed: FailedEvent;
-  /** 订阅者自己抛的错（报的是「谁在看的那一条炸了」，不是执行体失败） */
+  /** 订阅者自己抛的错（报的是「谁在看的那一条炸了」，不是 Agent 失败） */
   observerFailed: ObserverFailedEvent;
 }
 
@@ -382,15 +382,15 @@ export interface AgentEvents {
 // ---------------------------------------------------------------------------
 
 /**
- * 条目的**唯一形状**：`push()`（新投递）与 `restore()`（把旧条目放回队列）都从这里过。
+ * InboxEntry 的**唯一形状**：`send()`（新投递）与 `restore()`（把旧 InboxEntry 放回队列）都从这里过。
  *
  * 一条概念一种形状 —— 两条路各写一套的话，迟早有一处少一格、或者多一格「反正也没人读」，
- * 而条目是要落库再读回来的东西：形状漂一次，库里存的和队列里的就不是同一件事了。
+ * 而 InboxEntry 是要落库再读回来的东西：形状漂一次，库里存的和队列里的就不是同一件事了。
  *
  * 它**只摆字段、不造值**：`createdAt` 与 `messageId` 都由调用方给 —— 新投递给「现在」与一个
  * 新 mint 的 id，恢复给存下来的那两个。于是同一个形状承担两套语义，而代码只有这一份。
  *
- * 没有正文就是**钥匙**（`AgentNS.InboxKey`）：它不落地成消息，所以没有 `messageId`、
+ * 没有正文就是**钥匙**（`AgentNS.InboxKey`）：它不写进 messages 成消息，所以没有 `messageId`、
  * 没有 `source`，`priority` 只能是 `low`。
  */
 function toInboxEntry(
@@ -449,7 +449,7 @@ export class Agent extends AgentContext {
   /**
    * 对外那一格：在干 / 闲，**只由循环的位置决定**（语义见 `AgentNS.AgentState`）。
    *
-   * 取不取件（{@link isOutputPaused}）不参与它的判断 —— 不取件中投进来的那批照跑，
+   * 取不取走（{@link isOutputPaused}）不参与它的判断 —— 不取走中投进来的那批照跑，
    * 跑完照样报闲。
    */
   get state(): AgentNS.AgentState {
@@ -470,11 +470,11 @@ export class Agent extends AgentContext {
    * 唯一的一条队列。钥匙也在里面，只是它没有正文。
    *
    * **它的三个开关就是 core 的那三处状态，core 不另存一份**（存两份就得在两处同时改，
-   * 迟早漂出一份「以为还在收件、其实闸早关了」）：
+   * 迟早漂出一份「以为还在收件、其实开关早关了」）：
    * - 收不收件 = `isInputPaused` —— `stop()` / `kill()` 各自 `pauseInput()`；
    * - 以后还有没有新货 = `isDone` —— `stop()` / `kill()` 各自 `done()`（关门就是「不再有货」，
    *   不是另一处状态）；
-   * - 此刻取不取件 = `isOutputPaused` —— {@link isOutputPaused} 直接读它。
+   * - 此刻取不取走 = `isOutputPaused` —— {@link isOutputPaused} 直接读它。
    */
   private inbox = new AsyncQueue<AgentNS.InboxEntry>();
 
@@ -497,7 +497,7 @@ export class Agent extends AgentContext {
    */
   private deathSaid = false;
   /**
-   * 死了就是死了：它为 `true` 之后，这个执行体不再发任何事件（`live-objects.md` 判据四）。
+   * 死了就是死了：它为 `true` 之后，这个 Agent 不再发任何事件（`live-objects.md` 判据四）。
    *
    * 立起来的地方只有 {@link markDead}，而且是在「我要没了」那一条之后 —— 顺序反过来的话，
    * 连那一条都发不出去。
@@ -524,7 +524,7 @@ export class Agent extends AgentContext {
    */
   private readonly settled = new WeakSet<AgentNS.Message>();
   /**
-   * 这个执行体发出的**第几条**事件：{@link emit} 每发一条加一，从 1 开始，只增不减。
+   * 这个 Agent 发出的**第几条**事件：{@link emit} 每发一条加一，从 1 开始，只增不减。
    *
    * 它是「一次发出」的属性，不是载荷的属性：载荷里没有它，只有事件出口填它（理由见 `emit`）。
    * 死之后不再往前走 —— 门先关、号后加，所以「号 = 收到的条数」（`live-objects.md` 判据四）。
@@ -547,7 +547,7 @@ export class Agent extends AgentContext {
   /**
    * 订阅一个事件，返回取消函数（订阅者自己管生命周期）。
    *
-   * **观察是旁路**：订阅者抛错就地接住，转成 `observerFailed` 报出去，不打断被观察的执行体。
+   * **观察是旁路**：订阅者抛错就地接住，转成 `observerFailed` 报出去，不打断被观察的 Agent。
    * 底下的 `EventBus.emit` 只是一路 `forEach` 过去，没有 try/catch（它是外部包，不在这里改），
    * 所以隔离只能落在这一侧：注册到 bus 上的是下面这层包装函数，而**退订仍按它解** ——
    * 谁订的那一个就是谁的那一个，一对一。
@@ -598,7 +598,7 @@ export class Agent extends AgentContext {
    * 序号与时刻**由这一个出口填**（`seq` / `at`，见 {@link EventBase}）：它们是「一次发出」的
    * 属性，不是载荷的属性 —— 调用点照旧只给「谁 + 载荷」。让每个调用点各填一次就是同一件事写
    * 五遍，而五个调用点里的号迟早重号；重号的订阅者只能靠猜来判缺口，那正是这一格要消掉的东西。
-   * 委派转发上来那一份带着子执行体的 `seq` / `at`，到这里被**父自己的**覆盖掉 —— 这正是要的：
+   * 委派转发上来那一份带着子 Agent 的 `seq` / `at`，到这里被**父自己的**覆盖掉 —— 这正是要的：
    * 转发是一次新的发出。
    */
   emit<K extends keyof AgentEvents>(type: K, payload: Omit<AgentEvents[K], "seq" | "at">): void {
@@ -662,7 +662,7 @@ export class Agent extends AgentContext {
         if (deniable && r !== undefined) return r;
       } catch (error) {
         // 插件抛错**不把 agent 打死**：异常会一路穿出 `start()`，循环就永久停在那儿，
-        // 而且 `killed` 还是 false、输入闸也还开着 —— 一个看起来活着、塞进去也不动的僵尸。
+        // 而且 `killed` 还是 false、输入开关也还开着 —— 一个看起来活着、塞进去也不动的僵尸。
         const wrapped = error instanceof Error ? error : new Error(String(error));
         this.emit("failed", { agent: this, error: wrapped });
 
@@ -732,7 +732,7 @@ export class Agent extends AgentContext {
   }
 
   // -------------------------------------------------------------------------
-  // 死活：关门与两道闸
+  // 死活：关门与两道开关
   // -------------------------------------------------------------------------
 
   /**
@@ -763,19 +763,19 @@ export class Agent extends AgentContext {
    * 关门：不再接输入，**存量走完**，排空才死（血流干的死）。
    *
    * 三件事全交给队列的三个口，core 自己不记状态：
-   * - `pauseInput()`：此后 `push()` 由队列抛 `QueueInputPausedError`，core 翻成
+   * - `pauseInput()`：此后 `send()` 由队列抛 `QueueInputPausedError`，core 翻成
    *   `AgentError("closed")`（这个 agent 已经终结）；
-   * - `resumeOutput()`：**不能省**。`done()` 只是「以后没有新货」这个信号，它**不突破输出闸** ——
-   *   不取件中调 stop 时消费者正挂在闸上，不翻回来它就永远挂在那儿：存量没人取，
+   * - `resumeOutput()`：**不能省**。`done()` 只是「以后没有新货」这个信号，它**不突破输出开关** ——
+   *   不取走中调 stop 时消费者正挂在开关上，不翻回来它就永远挂在那儿：存量没人取，
    *   `stopped` 也发不出来；
    * - `done()`：宣告没有新货，迭代器取空存量后自己收尾。
    *
-   * 不取件（{@link isOutputPaused}）中调它**不作废存量**：不取件说的是「现在别跑」，
+   * 不取走（{@link isOutputPaused}）中调它**不作废存量**：不取走说的是「现在别跑」，
    * stop 说的是「以后也别跑」，两句叠起来的正确读法是「把手上这些跑完为止」。
    *
-   * **次序定死：先翻闸与关门 → 再跑钩子 → 最后才说「死」**（{@link markDead}）。
-   * 「已经死了」这个事实最后落地：钩子那一刻还能读到一个「正在收尾」的 agent，而订阅方
-   * 听到 `stopped` 时，闸、队列、`state` 三样都已经是死后该有的样子。起来了的 agent 由
+   * **次序定死：先翻开关与关门 → 再跑钩子 → 最后才说「死」**（{@link markDead}）。
+   * 「已经死了」这个事实最后写进 messages：钩子那一刻还能读到一个「正在收尾」的 agent，而订阅方
+   * 听到 `stopped` 时，开关、队列、`state` 三样都已经是死后该有的样子。起来了的 agent 由
    * 外循环出口说（存量真跑完了才算死），没 `start()` 过的只能由这里当场说 —— 那时外循环
    * 永远不会跑到出口。
    *
@@ -796,13 +796,13 @@ export class Agent extends AgentContext {
    *
    * 与 `stop()` 只差两处：**存心作废存量**（`clearInbox()`）与**掐在途**（`abortTurn()`）。
    *
-   * 翻输出闸（`resumeOutput()`）与清空是两件事，都要，但理由不同：
-   * - 清空不走取件口（作废与取件是两个口，见 {@link clearInbox}）：闸关着也照样清得掉；
-   * - 翻闸是为**挂在闸上的循环**：不翻回来，迭代器永远停在闸上，收尾走不完、`killed` 发不出来。
+   * 翻输出开关（`resumeOutput()`）与清空是两件事，都要，但理由不同：
+   * - 清空不走取走口（作废与取走是两个口，见 {@link clearInbox}）：开关关着也照样清得掉；
+   * - 翻开关是为**挂在开关上的循环**：不翻回来，迭代器永远停在开关上，收尾走不完、`killed` 发不出来。
    *   清空是同步的，消费者在微任务里才被唤到，所以队里的货一定是先被清掉、
    *   再轮到它看见空队列 + `isDone` 而收尾。
    *
-   * **次序与 `stop()` 同一条**：翻闸与清空 → 钩子 → 事件。`kill()` 之后不会补发 `stopped`：
+   * **次序与 `stop()` 同一条**：翻开关与清空 → 钩子 → 事件。`kill()` 之后不会补发 `stopped`：
    * 死只有一条（{@link markDead}），而 `killed` 优先于 `stopped`。
    */
   kill(): void {
@@ -818,20 +818,20 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 此刻**还接不接投递** —— 输入闸的现读（`inbox.isInputPaused`）。
+   * 此刻**还接不接投递** —— 输入开关的现读（`inbox.isInputPaused`）。
    *
-   * `true` 说的是「这个门关了」：此后 `push()` 抛 `AgentError("closed")`。
-   * 与 {@link isOutputPaused} 是两道**互不相干**的闸：那道管「取不取」、这道管「收不收」。
-   * 关门（`stop` / `kill`）是这道闸唯一的生产者。
+   * `true` 说的是「这个门关了」：此后 `send()` 抛 `AgentError("closed")`。
+   * 与 {@link isOutputPaused} 是两道**互不相干**的开关：那道管「取不取」、这道管「收不收」。
+   * 关门（`stop` / `kill`）是这道开关唯一的生产者。
    */
   get isInputPaused(): boolean {
     return this.inbox.isInputPaused;
   }
 
   /**
-   * **关上输入闸**：此后投递进不来，手上的活与排队区一件不动。
+   * **关上输入开关**：此后投递进不来，手上的活与排队区一件不动。
    *
-   * 与 {@link pauseOutput} 的区别只有一句话：这道闸拦的是**投递**，那道闸拦的是**取件**。
+   * 与 {@link pauseOutput} 的区别只有一句话：这道开关拦的是**投递**，那道开关拦的是**取走**。
    * 事件 `input:paused` 由 agent 发（队列不认识事件），与 `output:paused` 对称。
    * 幂等；已经关了/死了就是空动作。
    */
@@ -842,10 +842,10 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * **打开输入闸**：又开始接投递。
+   * **打开输入开关**：又开始接投递。
    *
    * 关门之后（`stop` / `kill` 动过）它不再开（代码里就拦在那里）：那时队列已经宣告没有新货，
-   * 再放人进来等于把件投给一个永远不会再取件的队列。
+   * 再放人进来等于把件投给一个永远不会再取走的队列。
    */
   resumeInput(): void {
     if (this.inbox.isDone || !this.inbox.isInputPaused) return;
@@ -854,12 +854,12 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 此刻还取不取件 —— **另一处状态**，与「在干 / 闲」互不影响。
+   * 此刻还取不取走 —— **另一处状态**，与「在干 / 闲」互不影响。
    *
-   * `true` 说的是「从下一批起不再取件」：批与批之间不取，手上那批照跑。
+   * `true` 说的是「从下一批起不再取走」：批与批之间不取，手上那批照跑。
    * 想知道「它现在在不在干活」读 {@link state}，不要看这处开关。
    *
-   * 它是队列那个**输出闸的现读**（`inbox.isOutputPaused`），core 不另存一份 ——
+   * 它是队列那个**输出开关的现读**（`inbox.isOutputPaused`），core 不另存一份 ——
    * 本方法在 core 里没有对应的字段，权威在队列。
    */
   get isOutputPaused(): boolean {
@@ -867,16 +867,16 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * **翻上不取件开关**：只是从此不取件，不掐在途。
+   * **翻上不取走开关**：只是从此不取走，不掐在途。
    *
    * 手上这批算已经开始 —— 让它跑完，从下一批起不再取。要立刻停就用 `abort`。
-   * 它**只关队列的输出闸**：{@link state} 一个字节都不变（跑完该报闲就报闲，闸仍是关着）。
+   * 它**只关队列的输出开关**：{@link state} 一个字节都不变（跑完该报闲就报闲，开关仍是关着）。
    * 事件 `output:paused` 仍由 agent 发 —— 那是给**外面**的通知，队列不认识事件。
    * 幂等；已经关了/死了就是空动作。
    */
   pauseOutput(): void {
-    // `isDone` = 已经在收尾路上了（stop / kill 动过）。那时再关输出闸会把「把血放干」
-    // 挂在一个再没人翻回来的闸上（`done()` 不突破输出闸），所以门口就拦住。
+    // `isDone` = 已经在收尾路上了（stop / kill 动过）。那时再关输出开关会把「把血放干」
+    // 挂在一个再没人翻回来的开关上（`done()` 不突破输出开关），所以门口就拦住。
     if (this.inbox.isDone || this.inbox.isOutputPaused) return;
     this.inbox.pauseOutput();
     this.emit("output:paused", { agent: this });
@@ -886,13 +886,13 @@ export class Agent extends AgentContext {
   /**
    * **暴力中断**：掐掉在途的请求与工具。
    *
-   * 它就是「掐在途 + {@link pauseOutput}」：这一批掐完不能再往下走，所以**必然**把不取件
+   * 它就是「掐在途 + {@link pauseOutput}」：这一批掐完不能再往下走，所以**必然**把不取走
    * 开关一并翻上。反过来不成立 —— `pauseOutput()` 只翻开关、不碰在途的那批：
-   * 掐在途一定伴随不取件，不取件不必掐在途。
+   * 掐在途一定伴随不取走，不取走不必掐在途。
    */
   abort(): void {
     if (this.inbox.isDone) return;
-    // 先掐在途，再翻闸（翻闸那一步会发 `output:paused`），最后才报「有人按了停」——
+    // 先掐在途，再翻开关（翻开关那一步会发 `output:paused`），最后才报「有人按了停」——
     // 三件的顺序就是因果顺序：掐断 → 从此不取 → 这个事实
     this.abortTurn();
     this.pauseOutput();
@@ -901,12 +901,12 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * **翻回不取件开关**：又开始取件，**只翻开关、不碰 {@link state}**。
+   * **翻回不取走开关**：又开始取走，**只翻开关、不碰 {@link state}**。
    *
-   * 开的是队列的输出闸：挂在闸上的消费者被**一次性全部放行**，按原顺序接着取 ——
+   * 开的是队列的输出开关：挂在开关上的消费者被**一次性全部放行**，按原顺序接着取 ——
    * 队列里有货的话，外循环一被放行就自己取走、自己报 `working`，那件事归它报，这里不替它说。
-   * 也不在这里顺手取件：用户手快连点 `abort` / `resumeOutput` 时这一次请求还在收尸，
-   * 此刻去取件就变成两个东西同时写 `messages`。
+   * 也不在这里顺手取走：用户手快连点 `abort` / `resumeOutput` 时这一次请求还在收尸，
+   * 此刻去取走就变成两个东西同时写 `messages`。
    */
   resumeOutput(): void {
     if (!this.inbox.isOutputPaused) return;
@@ -926,14 +926,14 @@ export class Agent extends AgentContext {
    * 才能改投（宿主接住这个错，就去做「新装一个再投」）。而「投不进去」有两种，**调用方要能
    * 分开**（它们要做的事完全不同）：
    * - `closed`：这个 agent 已经终结（`stop()` / `kill()` 动过），再等也不会有人来取；
-   * - `input_paused`：只是输入闸暂时关着（有人 `pauseInput()`），`resumeInput()` 之后还能投。
+   * - `input_paused`：只是输入开关暂时关着（有人 `pauseInput()`），`resumeInput()` 之后还能投。
    *
    * 两个码都由 core 定，判断依据是队列自己的两格（`QueueInputPausedError` 只说「不收」，
    * `isDone` 才分得出是哪一种）。队列不认识 agent 的码，这边也不去猜队列的内部状态。
    *
-   * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把它叫起来，不落地任何消息。
+   * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把它叫起来，不写进 messages 任何消息。
    */
-  push(input?: AgentNS.InboxInput): void {
+  send(input?: AgentNS.InboxInput): void {
     // 一次性 agent 只有一条因果链：发起它的那一次投递。之后关收，
     // 别人塞进来的东西会让「等闲」重新变成瞎等（`CORE.md` §1）。
     if (this.lifetime === "one-shot") {
@@ -959,13 +959,13 @@ export class Agent extends AgentContext {
       this.inbox.push(entry);
     } catch (error) {
       // 不收是**队列判的**（`pauseInput()` 之后它一个都不收），但那一个错误码盖着两件事：
-      // 这个 agent 已经终结（`isDone`）还是只是输入闸暂时关着。别的异常原样往上抛 ——
+      // 这个 agent 已经终结（`isDone`）还是只是输入开关暂时关着。别的异常原样往上抛 ——
       // 那不是「不收」，不该冒充一个业务码。
       if (error instanceof QueueInputPausedError) {
         if (this.inbox.isDone) {
           throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
         }
-        throw new AgentError("input_paused", `agent(${this.id}) 的输入闸暂时关着`);
+        throw new AgentError("input_paused", `agent(${this.id}) 的输入开关暂时关着`);
       }
       throw error;
     }
@@ -975,20 +975,20 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 把**旧的条目原样放回队列**（PRD 4.12：关掉再打开，没被处理的那几句还在等）。
+   * 把**旧的 InboxEntry 原样放回队列**（PRD 4.12：关掉再打开，没被处理的那几句还在等）。
    *
-   * 与 {@link push} 只差一件事：这些条目**不是新的**。所以不走 `push()` —— 它会重盖
-   * `createdAt`（一重启，排着的条目全变成「刚刚」，而那个时刻存在的唯一理由就是让模型判断
+   * 与 {@link send} 只差一件事：这些 InboxEntry**不是新的**。所以不走 `send()` —— 它会重盖
+   * `createdAt`（一重启，排着的 InboxEntry 全变成「刚刚」，而那个时刻存在的唯一理由就是让模型判断
    * 时效），还会再发一条 `inboxAdded`（库里那一条就变成两条）。值全部由调用方给：形状由
-   * {@link toInboxEntry} 摆（与 `push()` 同一份），存下来是什么就是什么，这里不生成任何缺省值。
+   * {@link toInboxEntry} 摆（与 `send()` 同一份），存下来是什么就是什么，这里不生成任何缺省值。
    *
    * 该拒的三种（`CORE.md` §3）：
    * - **一次性 agent**：它只吃一次投递，寿命在调用栈里，恢复它没有任何去处（写错代码，抛裸
    *   `Error`，与「在活着的 agent 上调 `runOnce()`」同一类）；
-   * - **已经关门 / 已经死了**：队列不会再有取件人，放回去只是喂给一个没人取的队列
-   *   （`AgentError("closed")`，与 `push()` 同一个码）；
-   * - **形状不全的条目**：宁可当场炸，也不要把半截数据装进队列 —— 半截条目会一路走到落地，
-   *   到那时错的地方已经离这里很远了。全部条目先全部校验，一条不合格就一条都不放回去。
+   * - **已经关门 / 已经死了**：队列不会再有取走人，放回去只是喂给一个没人取的队列
+   *   （`AgentError("closed")`，与 `send()` 同一个码）；
+   * - **形状不全的 InboxEntry**：宁可当场炸，也不要把半截数据装进队列 —— 半截 InboxEntry 会一路走到写进 messages，
+   *   到那时错的地方已经离这里很远了。全部 InboxEntry 先全部校验，一条不合格就一条都不放回去。
    */
   restore(entries: readonly AgentNS.InboxEntry[]): void {
     if (this.lifetime === "one-shot") {
@@ -997,30 +997,30 @@ export class Agent extends AgentContext {
       );
     }
     if (this.inbox.isDone) {
-      throw new AgentError("closed", `往已经关了的 agent(${this.id}) 恢复条目`);
+      throw new AgentError("closed", `往已经关了的 agent(${this.id}) 恢复InboxEntry`);
     }
 
     for (const entry of entries) {
       if (typeof entry.createdAt !== "string" || entry.createdAt === "") {
-        throw new Error("restore() 收到形状不全的条目：createdAt 必须是被存下来的那个时刻串");
+        throw new Error("restore() 收到形状不全的InboxEntry：createdAt 必须是被存下来的那个时刻串");
       }
       if (entry.priority !== "high" && entry.priority !== "low") {
-        throw new Error("restore() 收到形状不全的条目：priority 只能是 high / low");
+        throw new Error("restore() 收到形状不全的InboxEntry：priority 只能是 high / low");
       }
       if (entry.content !== undefined && entry.source === undefined) {
-        throw new Error("restore() 收到形状不全的条目：带正文的条目必须带 source");
+        throw new Error("restore() 收到形状不全的InboxEntry：带正文的InboxEntry必须带 source");
       }
     }
     if (entries.length === 0) return;
 
-    // 形状走 `push()` 那一份（一条概念一种形状），值一个都不动
+    // 形状走 `send()` 那一份（一条概念一种形状），值一个都不动
     const restored = entries.map((entry) => toInboxEntry(entry));
     try {
       this.inbox.push(...restored);
     } catch (error) {
-      // 关门那一种上面已经拦过了，这里只剩「输入闸暂时关着」：与 `push()` 同一个码
+      // 关门那一种上面已经拦过了，这里只剩「输入开关暂时关着」：与 `send()` 同一个码
       if (error instanceof QueueInputPausedError) {
-        throw new AgentError("input_paused", `agent(${this.id}) 的输入闸暂时关着`);
+        throw new AgentError("input_paused", `agent(${this.id}) 的输入开关暂时关着`);
       }
       throw error;
     }
@@ -1031,10 +1031,10 @@ export class Agent extends AgentContext {
    *
    * 它是「能等」那个形状本身，只给**一次性会话**（走一条因果链、没有第二个触发方）：常驻会话
    * 随时可能被任意触发方从闲推到忙，「我等它跑完」在那个形状里根本不成立，所以那边只有
-   * {@link push}（`CORE.md` §1 / PRD 4.3）。
+   * {@link send}（`CORE.md` §1 / PRD 4.3）。
    *
    * 「等到空闲」= {@link waitForState} 那一格：`state` 到了 `idle` **且**队列真空 —— 只看
-   * `state` 的话，`push()` 之后、外循环取到那批之前它还是 `idle`，那等于没等。
+   * `state` 的话，`sendAndWait()` 之后、外循环取到那批之前它还是 `idle`，那等于没等。
    *
    * 没起来就先起来（一次性会话的寿命在调用栈里，没有人会替它 `start()`）。返回的 `messages`
    * 就是 `this.messages` 本身，不拷贝。
@@ -1042,29 +1042,29 @@ export class Agent extends AgentContext {
    * {@link runOnce} 就是它 + `stop()`：本方法不做任何收尾动作 —— 关不关门、什么时候关，是调用方
    * 那一层的事（`send` 交给下面，`runOnce` 自己关）。
    */
-  async send(
+  async sendAndWait(
     input?: AgentNS.InboxInput,
     options?: { signal?: AbortSignal },
   ): Promise<AgentNS.Message[]> {
     if (this.lifetime !== "one-shot") {
       throw new Error(
-        `send() 只能用在 lifetime 为 "one-shot" 的 agent 上：常驻会话没有「等到跑完」这回事，那边只有 push()`,
+        `sendAndWait() 只能用在 lifetime 为 "one-shot" 的 agent 上：常驻会话没有「等到跑完」这回事，那边只有 send()`,
       );
     }
     if (input?.content === undefined && this.messages.length === 0) {
-      throw new Error("send() 时 messages 是空的：没有燃料，拧钥匙只会发一个空请求");
+      throw new Error("sendAndWait() 时 messages 是空的：没有燃料，拧钥匙只会发一个空请求");
     }
 
     this.start();
-    this.push(input);
+    this.send(input);
     await this.waitForState("idle", options?.signal);
     return this.messages;
   }
 
   /**
-   * 跑一次到死：起 → **`send`** → 关门 → 死透 → 交回消息。
+   * 跑一次到死：起 → **`sendAndWait`** → 关门 → 死透 → 交回消息。
    *
-   * **不是又一个死活动作**：它就是 {@link send} 外面套一层收尾，而 `send` 自己又是
+   * **不是又一个死活动作**：它就是 {@link sendAndWait} 外面套一层收尾，而 `sendAndWait` 自己又是
    * `start` + `push` + 等闲 的复合。一次性会话那几步由它收成一句。跑完之后这个 agent 就没了
    * （死了就死透，复活 = 新建）。
    *
@@ -1095,7 +1095,7 @@ export class Agent extends AgentContext {
     try {
       // 一次性 agent 只有一条因果链（就是我自己），所以这里的「等闲」是有归属的 ——
       // 共享会话上做同一件事毫无意义，见 `CORE.md` §1。
-      await this.send(input, options);
+      await this.sendAndWait(input, options);
       this.stop();
       await death;
       return this.messages;
@@ -1109,11 +1109,11 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 清空 inbox（作废排队）并返回被丢掉的条目。core 自己从不主动调它 ——「作废排队」是调用方的
+   * 清空 inbox（作废排队）并返回被丢掉的 InboxEntry。core 自己从不主动调它 ——「作废排队」是调用方的
    * 显式决定，不该由「用户按了停」替它猜（唯一例外：`kill()` —— 硬着陆就是「这些永远不跑了」）。
    *
-   * 走的是队列的 `clear()`，**不是 `takeAll()`**：清空是「作废」，不是「取件」。
-   * 取件要看输出闸（不取件时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
+   * 走的是队列的 `clear()`，**不是 `takeAll()`**：清空是「作废」，不是「取走」。
+   * 取走要看输出开关（不取走时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
    * {@link pauseOutput} 期间调它照样清得掉，宿主那条 `/free` 才不会在暂停中失效。
    *
    * 清空也是变化，所以报 `inboxCleared`（持久化挂在它上面，`CORE.md` §3）。事件仍由 agent 发：
@@ -1141,7 +1141,7 @@ export class Agent extends AgentContext {
    * 三个时刻：派遣时加一项、结束时把 `endedAt` 填上（不移除）、外循环每一批的开头清空上一批。
    *
    * 三点：
-   * - **它不参与任何内部判断**：内循环、取件、续下一次请求、`state` 那一格、中断都不看它。清空点选在哪儿
+   * - **它不参与任何内部判断**：内循环、取走、续下一次请求、`state` 那一格、中断都不看它。清空点选在哪儿
    *   因此不影响正确性，只影响「外面什么时候读到空」；
    * - **它是名册，不是消息的唯一真相**：subagent 说过的话在 `entry.agent.messages` 里，
    *   这里只存指针；所以它跟着 agent 活在内存里，一死、一重启就一起没了（不入库）；
@@ -1168,12 +1168,12 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 看一眼排队区：按入队顺序给出此刻还没被取走的条目，**一个都不取走**。
+   * 看一眼排队区：按入队顺序给出此刻还没被取走的 InboxEntry，**一个都不取走**。
    *
    * 它是「重读的那一半」：事件丢一条、重复一条都不致命，宿主拿它与库里的那份对一遍
    *（`CORE.md` §3、§10）。
    *
-   * 返回的数组是拷贝，**条目本身还是那一个**（不会给出过期副本）。
+   * 返回的数组是拷贝，**InboxEntry 本身还是那一个**（不会给出过期副本）。
    */
   get inboxPending(): readonly AgentNS.InboxEntry[] {
     return this.inbox.snapshot();
@@ -1184,24 +1184,24 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 外循环：等一批事件 → 修历史 → 落地 → 内循环。
+   * 外循环：等一批事件 → 修历史 → 写进 messages → 内循环。
    *
    * 一句 `for await` 就够 —— **队列自己就是 inbox，也是那根唤醒信号**：空着时它挂在自己的
    * `pushRx` 上，不需要 core 再维护第二套唤醒器。
    *
-   * 不取件的等待有两处（进来之前一次、每批尾部一次）：于是批与批之间不取件，不取件期间
+   * 不取走的等待有两处（进来之前一次、每批尾部一次）：于是批与批之间不取走，不取走期间
    * 到达的货就躺在队列里 —— 界面看得见条数、能持久化、恢复能捞回来。
    *
-   * 这两处等待**不用 core 自己写**：不取件就是把队列的输出闸关上（`pauseOutput()`），
-   * `asTakeAll()` 自己会停在闸上 —— 一件不取、不退出，闸一开就按原顺序接着取。
-   * core 只负责翻闸（{@link pauseOutput} / {@link resumeOutput}），不养第二个唤醒器。
+   * 这两处等待**不用 core 自己写**：不取走就是把队列的输出开关关上（`pauseOutput()`），
+   * `asTakeAll()` 自己会停在开关上 —— 一件不取、不退出，开关一开就按原顺序接着取。
+   * core 只负责翻开关（{@link pauseOutput} / {@link resumeOutput}），不养第二个唤醒器。
    *
    * `state` 那一格**不由 `isOutputPaused` 决定**：取到一批就是 `working`，这批跑完且队列
-   * 真空就是 `idle` —— 哪怕那个开关还开着。两处状态各报各的，于是「不取件期间投进来的那批
-   * 跑完了」和「仍旧不取件」两件事都报得出来。
+   * 真空就是 `idle` —— 哪怕那个开关还开着。两处状态各报各的，于是「不取走期间投进来的那批
+   * 跑完了」和「仍旧不取走」两件事都报得出来。
    *
    * **手上已取出的那批算已经开始**：`pauseOutput()` 从下一批生效，不把它收回 —— 它可能已经落了
-   * 消息、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
+   * 消息、跑了一半工具，塞回队头只会造成重复写进 messages。要立刻停就用 `abort`。
    */
   private async outerLoop(): Promise<void> {
     for await (const entries of this.inbox.asTakeAll()) {
@@ -1215,12 +1215,12 @@ export class Agent extends AgentContext {
       // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在发请求之前
       this.repair();
 
-      // ② 落地：带正文的落一条 user 消息，钥匙什么都不落
+      // ② 写进 messages：带正文的落一条 user 消息，钥匙什么都不落
       for (const entry of entries) {
         const message = inboxEntryMessage(entry);
         if (message) this.append(message);
       }
-      // 落地完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`：宁可重，不可丢）
+      // 写进 messages 完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`：宁可重，不可丢）
       this.emit("inboxTaken", { agent: this, entries });
 
       // ③ 内循环
@@ -1230,7 +1230,7 @@ export class Agent extends AgentContext {
       await this.dispatchHook("onOuterLoopEnd", ctx);
 
       // 只有真的空了才叫「闲」—— 手上没活但队列还压着不算。
-      // isOutputPaused 不参与这一判：不取件中跑完这批就是闲，那个闸该关着还关着。
+      // isOutputPaused 不参与这一判：不取走中跑完这批就是闲，那个开关该关着还关着。
       // `isDone`（stop / kill 动过）也不报闲：这已经在收尾路上了，报闲等于告诉外面「还能接着投」。
       if (this.inbox.size === 0 && !this.inbox.isDone) {
         this.setState("idle");
@@ -1277,7 +1277,7 @@ export class Agent extends AgentContext {
    * 续行条件只有一条：**刚才有工具调用**。工具是模型要的，跑完必须把结果再喂回去问一次；
    * 没有工具调用就是这一次说完了。没有第二个判据。
    *
-   * **这一次请求不看那个闸**：不取件是队列输出闸的事（`inbox.isOutputPaused`），而闸只在**取件**
+   * **这一次请求不看那个开关**：不取走是队列输出开关的事（`inbox.isOutputPaused`），而开关只在**取走**
    * 那一刻起作用；手上已经取出来的那批算已经开始 —— 它要把这一批跑完，从下一批起才不再取
    * （`CORE.md` §2）。所以下面只判 `killed`：死了才不发请求。要立刻停用 `abort`。
    */
@@ -1314,7 +1314,7 @@ export class Agent extends AgentContext {
       await this.dispatchHook("onInnerLoopEnd", ctx);
 
       // `turnFinished` 排在 `onInnerLoopEnd` **之后**（与 `toolFinished` 排在 `onToolEnd` 之后
-      // 同一个口径：钩子在前、事件在后），并排在 `landHigh()` **之前** —— 下一次取件不属于
+      // 同一个口径：钩子在前、事件在后），并排在 `landHigh()` **之前** —— 下一次取走不属于
       // 这一趟。
       //
       // 中断与出错的那一趟照样走到这里：`runTurn` 自己接住一切（错误落到那条消息上再返回）、
@@ -1324,7 +1324,7 @@ export class Agent extends AgentContext {
       this.emit("turnFinished", { agent: this, message: assistant });
 
       if (!hadTools) return;
-      // 唯一的取件点：这一次请求刚收尾（工具结果已进 messages）、下一次还没开始。
+      // 唯一的取走点：这一次请求刚收尾（工具结果已进 messages）、下一次还没开始。
       // 内循环只看 high —— 低优先级与钥匙它连看都不看。
       this.landHigh();
     }
@@ -1472,7 +1472,7 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 并行跑同一次请求里的多个工具，**按调用顺序落地** tool 消息（不按完成顺序）。
+   * 并行跑同一次请求里的多个工具，**按调用顺序写进 messages** tool 消息（不按完成顺序）。
    *
    * 失败即「没给出有效结果」：参数烂、执行挂、工具不存在、钩子拒 —— 同一件事，
    * 一条 tool 消息回给模型，引擎不中断、不重试。
@@ -1483,7 +1483,7 @@ export class Agent extends AgentContext {
     );
     if (calls.length === 0) return false;
 
-    // 先按调用顺序把 tool 消息建好（Pending）：落地顺序由这里定死，与谁先跑完无关
+    // 先按调用顺序把 tool 消息建好（Pending）：写进 messages 顺序由这里定死，与谁先跑完无关
     const jobs = calls.map((call) => ({ call, result: this.append(Message.Tool(call)) }));
 
     await Promise.all(jobs.map(({ call, result }) => this.runOneTool(call, result, inflight)));
@@ -1585,7 +1585,7 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 换一格（只换 `state` 这一处；取不取件走 `output:paused` / `output:resumed`，
+   * 换一格（只换 `state` 这一处；取不取走走 `output:paused` / `output:resumed`，
    * 不从这里过）。
    *
    * **没有「重算状态」这一步**，置位只有三处：字段初值就是 `idle`、外循环头（取到一批）
@@ -1620,7 +1620,7 @@ export class Agent extends AgentContext {
    * `start()` 的那种情形（存量还要跑完）走到这里时，事件早发过了，但这一批的尾部仍要
    * 把状态拉回 `idle` —— 否则一个已经死透的 agent 会永远停在 `working` 上。
    *
-   * 这一条发完就把 {@link gone} 立起来：此后这个执行体一条事实都不再说
+   * 这一条发完就把 {@link gone} 立起来：此后这个 Agent 一条事实都不再说
    *（`live-objects.md` 判据四的「之后不再发出任何事件」）。
    */
   private markDead(): void {
@@ -1639,9 +1639,9 @@ export class Agent extends AgentContext {
   /**
    * 等到某一格，且（目标为 `idle` 时）**这一批真的跑完了**（`runOnce` 的「等闲」用它）。
    *
-   * 为什么「到了那一格」不够：`state` 是循环的位置，`push()` 之后、外循环取到那批之前它
+   * 为什么「到了那一格」不够：`state` 是循环的位置，`send()` 之后、外循环取到那批之前它
    * **还是 `idle`** —— 只看 `state === "idle"`，`runOnce` 的等待会在这一批还没开始时一步通过，
-   * 那就等于没等。所以判据是「`state` 到了目标 **且** 队列里没有压着的条目」：前者说循环停在
+   * 那就等于没等。所以判据是「`state` 到了目标 **且** 队列里没有压着的 InboxEntry」：前者说循环停在
    * 那一格，后者说没有还没被取走的货；两条同时成立才是「真的闲下来了」。
    *
    * 什么时候重新判：只有「换格」与「死」这几个时机 —— 批的边界恰好就在它们身上
@@ -1719,7 +1719,7 @@ export class Agent extends AgentContext {
     this.emit("messageChanged", { agent: this, message });
   }
 
-  /** 取走 inbox 里的 high 条目并落成 user 消息（内循环唯一的取件点） */
+  /** 取走 inbox 里的 high InboxEntry 并落成 user 消息（内循环唯一的取走点） */
   private landHigh(): void {
     const entries = this.inbox.takeAll((entry) => entry.priority === "high");
     if (entries.length === 0) return;
@@ -1727,7 +1727,7 @@ export class Agent extends AgentContext {
       const message = inboxEntryMessage(entry);
       if (message) this.append(message);
     }
-    // 与外循环那处同一口径：**落地之后**才报「这些被取走了」
+    // 与外循环那处同一口径：**写进 messages 之后**才报「这些被取走了」
     this.emit("inboxTaken", { agent: this, entries });
   }
 

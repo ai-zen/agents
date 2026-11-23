@@ -12,16 +12,16 @@ export interface HostObserverDeps {
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
   /**
-   * 素材域：消息落地那一刻把内容里的 `__asset_id` 登记成引用行。
+   * Asset 域：消息写进 messages 那一刻把内容里的 `__asset_id` 登记成引用行。
    *
-   * 观察者只揽这一件事：它把「这条消息引用了哪份素材」记下来；素材什么时候真的被删（引用归零）
+   * 观察者只揽这一件事：它把「这条消息引用了哪份 Asset」记下来；Asset 什么时候真的被删（引用归零）
    * 是 `AssetService.sweepUnreferenced` 的事，那时才有人读这张表。
    */
   readonly assets: AssetService;
   readonly events: Bus<HostEvent>;
   readonly onError: (error: unknown, what: string) => void;
   /**
-   * 这段会话此刻的消息落不落库：换手那一档在交接期间不落库。传函数不传值：交接态会在一个执行体
+   * 这段会话此刻的消息落不落库：换手那一档在交接期间不落库。传函数不传值：交接态会在一个 Agent
    * 的寿命里变两次以上
    */
   readonly suppressesPersist: (sessionId: string) => boolean;
@@ -36,12 +36,12 @@ export interface HostObserverDeps {
  * 这段会话的库与这条线上。它不记账：谁活着、忙不忙、容器还在不在都有运行时管，这里只把事实翻成
  * 「写库」与「推客户端」两个动作 —— 事实从下往上冒，材料从上往下给，中间没有第二处持有同样的东西。
  *
- * 与从前每个执行体挂一份订阅相比，只有两处不同，两处都是这件事本身要求的：
+ * 与从前每个 Agent 挂一份订阅相比，只有两处不同，两处都是这件事本身要求的：
  * - `sessionId` 从构造参数变成事实上的那一格：一份观察者要同时听所有会话；
  * - `messageFinished` 这一条从前没人接（那时装配不经过观察者）。它管的是流式收尾、中断与工具
  *   定型那几处，装载时的状态归一不走它。见下面那一格的注释。
  *
- * `scope:*` 那三格与其余不带「消息 / 状态 / 闸 / 队列 / 死活」意义的事实这一版不往客户端推：
+ * `scope:*` 那三格与其余不带「消息 / 状态 / 开关 / 队列 / 死活」意义的事实这一版不往客户端推：
  * 客户端要看能力表是另一件事，等有人要了再接。这一段只搬老行为，没人在用的不新接。
  */
 export class HostObserver {
@@ -49,7 +49,7 @@ export class HostObserver {
    * 进程正在往下走：`kill` 带来的「排队区作废」不再落库 —— 关掉宿主不是杀死那一段。
    *
    * 两条路（用户按杀死、整个进程退出）共用同一个内核事实（`inboxCleared`），后果却相反：前者那
-   * 些条目真的作废了，后者一条都没作废、下次打开还要接着等。区别只在宿主这一层，所以开关放在这
+   * 些 InboxEntry 真的作废了，后者一条都没作废、下次打开还要接着等。区别只在宿主这一层，所以开关放在这
    * 一层，内核那一格一个字都不改。
    */
   private goingDown = false;
@@ -60,7 +60,7 @@ export class HostObserver {
    * 调用方在 `runtime.close()` **之前**调它。
    *
    * `close()` 里逐段 `kill`，每一段都会清空队列并报 `inboxCleared`；那些事实从这一刻起说的不是
-   * 「这些条目作废」，是「这个进程要没了」。
+   * 「这些 InboxEntry 作废」，是「这个进程要没了」。
    */
   shutdown(): void {
     this.goingDown = true;
@@ -93,7 +93,7 @@ export class HostObserver {
         return;
 
       /**
-       * 能力容器的三格这一版不推。容器说什么（出现了、刷新完了、拆掉了）宿主照旧什么都不用做：
+       * Scope 的三格这一版不推。容器说什么（出现了、刷新完了、拆掉了）宿主照旧什么都不用做：
        * 容器活着是因为运行时持有它，拆不拆由它自己判。客户端要看能力表是另一件事，等有人要了再接。
        */
       case "scope:appeared":
@@ -102,7 +102,7 @@ export class HostObserver {
         return;
 
       // 一条消息的三条事件说的是同一种事（新增 / 变了 / 没了），差别只在属于谁：带 `subAgent`
-      // 的是被派出去那个执行体的消息 —— 那些从不入库（随它一起消失），也不属于这段会话的转录，
+      // 的是被派出去那个 Agent 的消息 —— 那些从不入库（随它一起消失），也不属于这段会话的转录，
       // 走 `subagent.message` 按那次工具调用分栏。
       case "messageAdded":
         if (fact.subAgent !== undefined) {
@@ -182,16 +182,16 @@ export class HostObserver {
        */
       case "delta":
         if ("message" in fact.source) {
-          // 不登记素材引用（第三格 `false`）：流式期间一片一次，而这时正文还在长 —— 引用等它落到
+          // 不登记 Asset 引用（第三格 `false`）：流式期间一片一次，而这时正文还在长 —— 引用等它落到
           // `messageChanged` / `responseFinished` / `messageFinished` 那几处再记（`link` 幂等，
           // 真在那里重记一次也只留一行）。
           this.changedMessage(fact.sessionId, fact.source.message, false);
           return;
         }
-        // subagent 的原始片只报「是哪个执行体」，消息本身不在载荷里（`DeltaSource` 的第二格
+        // subagent 的原始片只报「是哪个 Agent」，消息本身不在载荷里（`DeltaSource` 的第二格
         // 只有 `subAgent` 与那次工具调用）。正在被写的那条就是它最后一条，且此刻在写：收流
         // 期间没有别的东西往它的消息里追加。状态那一格要判 —— 嵌套委派时转发上来的来源被
-        // 改写成子执行体，它的最后一条是个已经定型的旧消息，拿它去套就是把旧正文推一遍。
+        // 改写成子 Agent，它的最后一条是个已经定型的旧消息，拿它去套就是把旧正文推一遍。
         {
           const message = fact.source.subAgent.messages.at(-1);
           if (message !== undefined && message.status === AgentNS.MessageStatus.Writing) {
@@ -234,7 +234,7 @@ export class HostObserver {
         this.emitEvent(this.statusEvent(fact.sessionId, fact.agent));
         return;
 
-      // 载荷只带 agent，两道闸各读各的现读值：一条事件名说明它动了，值不在这里另报一份
+      // 载荷只带 agent，两道开关各读各的现读值：一条事件名说明它动了，值不在这里另报一份
       case "output:paused":
         this.emitEvent(this.pausedEvent(fact.sessionId, fact.agent, "output"));
         return;
@@ -260,8 +260,8 @@ export class HostObserver {
         // 重启之后没有可恢复的东西。
         //
         // 带正文而没有 `messageId` 的也落不了库：这一行的身份就是那个 id（表拿它当主键），
-        // 而它可以是 core 在落地那一刻现生成的 —— 那种条目连「这是哪一条」都答不出。
-        // 宿主自己投递的条目一律带 id。
+        // 而它可以是 core 在写进 messages 那一刻现生成的 —— 那种 InboxEntry 连「这是哪一条」都答不出。
+        // 宿主自己投递的 InboxEntry 一律带 id。
         //
         // 宿主投递的那条路已经先写过同一行了（它要先落库再入队），所以这里会撞上那个 id：
         // 表那一侧的写是幂等的，第二次什么都不做，这不报错也不算漏写 —— 事实照旧是「这一条
@@ -278,11 +278,11 @@ export class HostObserver {
         return;
 
       /**
-       * `inboxTaken` 排在落地**之后**（core 的两处取件都是先 `append` 再报这一条），
+       * `inboxTaken` 排在写进 messages**之后**（core 的两处取走都是先 `append` 再报这一条），
        * 所以「删 inbox 行」永远不会早于「写消息行」，顺序上不丢东西。
        *
        * 仍然按「那条消息在库里吗」过一遍：写消息那次失败过（`onError` 报的是它）的话，
-       * 这条条目还没落到任何地方，删掉它就是那句话凭空消失 —— 留着，重启时放回队列再落一次。
+       * 这条 InboxEntry 还没落到任何地方，删掉它就是那句话凭空消失 —— 留着，重启时放回队列再落一次。
        * 钥匙没进过这张表（它没有 `messageId`），所以先按有没有正文分一次。
        */
       case "inboxTaken": {
@@ -300,14 +300,14 @@ export class HostObserver {
         return;
       }
 
-      // 作废不是取走：这些条目再也不会落地，它们那一行没有等下去的理由。
+      // 作废不是取走：这些 InboxEntry 再也不会写进 messages，它们那一行没有等下去的理由。
       // 整段清掉而不是删载荷里的那几个 id —— 队列此刻已经空了，这张表里这段会话也不该剩东西。
       //
-      // 关机时**不删**：这一条的意思是「这些条目作废」，而整个进程退出不是杀死那一段 —— 它们一条
+      // 关机时**不删**：这一条的意思是「这些 InboxEntry 作废」，而整个进程退出不是杀死那一段 —— 它们一条
       // 都没作废，下次打开还要接着等（需求：关掉再打开，记忆与排队区都在）。下面推客户端那一句
       // 一并不发，那时已经在关机，没有谁还看着这个界面。
       //
-      // 重装期间也不删：同一个事实在这里说的是「旧执行体没了」，而那些条目一条都没作废 ——
+      // 重装期间也不删：同一个事实在这里说的是「旧 Agent 没了」，而那些 InboxEntry 一条都没作废 ——
       // `materialsFor` 刚把它们交给重装，装回来时会被原样放回队列（`05-control.md` 的「换模型不是
       // 杀死」）。删掉就再也回不来：放回队列那一步刻意不报 `inboxAdded`，库行没有第二个写点。
       // 客户端那一句一并不发：它们排着的顺序没变，推一条空的就成了一句假话。
@@ -322,13 +322,13 @@ export class HostObserver {
         this.emitEvent(this.inboxEvent(fact.sessionId, fact.agent));
         return;
 
-      /** 这次请求 / 这次工具失败了：那是执行体自己的事，宿主只把它记进日志 */
+      /** 这次请求 / 这次工具失败了：那是 Agent 自己的事，宿主只把它记进日志 */
       case "failed":
         this.deps.onError(fact.error, "agent-failed");
         return;
 
       /**
-       * 旁观的人自己炸了 —— 这一条**就是**「让宿主记一句」：订阅者只是看，被观察的执行体照常跑。
+       * 旁观的人自己炸了 —— 这一条**就是**「让宿主记一句」：订阅者只是看，被观察的 Agent 照常跑。
        * 运行时那一侧已经在自己的记录里说过一次，宿主这一侧的出口是同一个 `onError`。
        */
       case "observerFailed":
@@ -338,7 +338,7 @@ export class HostObserver {
       /**
        * 其余带 `sessionId` 的事实这一版不推：`turnStarted` / `turnFinished` / `toolStarted` /
        * `toolFinished` / `subAgentStarted` / `subAgentFinished` / `requestSent` / `denied` /
-       * `started` / `stopped` / `killed` / `aborted`。老行为里它们不收（客户端看的是状态、闸、
+       * `started` / `stopped` / `killed` / `aborted`。老行为里它们不收（客户端看的是状态、开关、
        * 消息与队列那几格），这一段只搬老行为，没人在用的不新接。
        */
       default:
@@ -389,12 +389,12 @@ export class HostObserver {
   /**
    * 把这条消息内容里带 `__asset_id` 的段登记成引用行。
    *
-   * 为什么挂在落库那一处而不是投递那一处：引用是「这条消息引用了哪份素材」的事实，它与消息行
+   * 为什么挂在落库那一处而不是投递那一处：引用是「这条消息引用了哪份 Asset」的事实，它与消息行
    * 同生 —— 消息行的每一个落点（新增 / 变了 / 定稿）都走 {@link writeMessage}，挂在这里就漏不掉；
    * 挂到某一个具体分支上，另外两个分支的消息（比如装载时补报的那几条）就永远没有引用行，那些
-   * 素材会被 `sweepUnreferenced` 提前当成无主删掉。
+   * Asset 会被 `sweepUnreferenced` 提前当成无主删掉。
    *
-   * 失败只报一句、不让这一次写库失败：一条登记没写进去，最坏的代价是那份素材被多留一会儿
+   * 失败只报一句、不让这一次写库失败：一条登记没写进去，最坏的代价是那份 Asset 被多留一会儿
    *（或者被提前删掉，由下一次发送时「附件已不在」那一句推说），而消息本身不能因此丢。
    */
   private linkAssets(message: AgentNS.Message): void {
@@ -433,7 +433,7 @@ export class HostObserver {
   ): void {
     // 事件里带的是那次委派的工具调用本身（`message*` 走 `via`，`delta` 走 `source.toolCall`），
     // 它的 `id` 就是名册上那一项的 `toolCallId`。`ToolCall.id` 在类型上可选，缺了就按「哪个
-    // 执行体」去名册里查那一笔账 —— 那一格是必填的。
+    // Agent」去名册里查那一笔账 —— 那一格是必填的。
     const toolCallId =
       toolCall?.id ?? agent.subAgents.find((entry) => entry.agent === subAgent)?.toolCallId;
 
@@ -462,7 +462,7 @@ export class HostObserver {
 }
 
 /**
- * 内容里带 `__asset_id` 的段指回的那些素材 id（按出现顺序去重）。
+ * 内容里带 `__asset_id` 的段指回的那些 Asset id（按出现顺序去重）。
  *
  * 读的是「形状上有没有这个键」：`__asset_id` 不是 `AgentNS` 的已知字段，落库那一份原样带着它，
  * 出网那一份由 core 的白名单剥掉 —— 同一个段的两份内容只差这一个键。

@@ -11,7 +11,7 @@ export const DEFAULT_AGENT_ID = "default";
 /**
  * 出厂默认模型 id。
  *
- * 模型按三级解析（`会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`，
+ * 模型按三级解析（` 会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`，
  * 唯一实现在 `runtime/resolveModel.ts`）。出厂配置里**只有**默认 Agent 定义绑了模型，
  * `defaultModel` 刻意留空：兜底层是给用户声明「我清空 Agent 的 modelId 之后用哪个」的，
  * 出厂就填上等于替用户做了这个决定。这个常量只用于给出厂默认 Agent 填初始值。
@@ -126,7 +126,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   //
   // 更新策略：本清单为「出厂托管」清单。用户 config.json 中凡未标 `custom: true`
   // 的模型（含 imageModels）在初始化时一律被移除并替换为本清单中的最新定义；
-  // 标了 `custom: true` 的条目视为用户自有，原样保留。实现见
+  // 标了 `custom: true` 的 InboxEntry 视为用户自有，原样保留。实现见
   // ConfigManager.syncManagedModels。
   //
   // tokenThresholds 的两条线都与模型的真实上下文窗口无关：

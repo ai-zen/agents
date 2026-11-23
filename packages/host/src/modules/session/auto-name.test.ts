@@ -30,7 +30,7 @@ import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
 import { noticeTable } from "../notice/table.js";
-import type { Notice } from "../notice/types.js";
+import type { NoticeRecord } from "../notice/types.js";
 import { workspaceTable } from "../workspace/table.js";
 import { AutoNamer } from "./auto-name.js";
 import { messageTable } from "./messages.js";
@@ -68,7 +68,7 @@ const silent = { info: () => {}, warn: () => {}, error: () => {} };
 /**
  * 一段会话要用的那几样，加一个假运行时。
  *
- * 假运行时只做一件事：把用例发出来的事实交给订阅者（真的那一个还会把执行体的事件转发上来）。
+ * 假运行时只做一件事：把用例发出来的事实交给订阅者（真的那一个还会把 Agent 的事件转发上来）。
  * 观察者与自动起名按装配根那个次序挂在它上面 —— 观察者在前，起名读到的记忆才是刚写进去的那份。
  */
 function setup(answer: () => Promise<string> = async () => "把宿主的交接写出来") {
@@ -333,7 +333,7 @@ describe("起名：失败", () => {
       () => {
         const [first] = notices.listBySession(naming.id);
         expect(first).toBeDefined();
-        return first as Notice;
+        return first as NoticeRecord;
       },
       { interval: 5 },
     );

@@ -7,7 +7,7 @@
  * 生」这三件事只在重启那一刻同时发生，单进程里造不出这个处境。
  *
  * 模型不出网：用例里起一个本地的 OpenAI 兼容端点回一段 SSE，地址写进 `config.json` 的端点。
- * 这样验的是「一句话真的走到了执行体、模型说的话真的流回来了」，而不是把请求层整个打掉。
+ * 这样验的是「一句话真的走到了 Agent、模型说的话真的流回来了」，而不是把请求层整个打掉。
  */
 
 import {
@@ -37,9 +37,9 @@ import { readVersionPin, writeVersionPin } from "./infra/versionPin.js";
 import { inboxTable } from "./modules/agent/inbox.js";
 import { Discovery } from "./modules/config/discovery.js";
 import type { HostEvent } from "./modules/events.js";
-import type { Notice } from "./modules/notice/types.js";
+import type { NoticeRecord } from "./modules/notice/types.js";
 import { messageTable } from "./modules/session/messages.js";
-import type { Session } from "./modules/session/types.js";
+import type { SessionRecord } from "./modules/session/types.js";
 import { workspaceTable } from "./modules/workspace/table.js";
 
 /** 本地端点要说的话。分成几片，于是流式那一侧真的有多次 `message.changed` */
@@ -181,7 +181,7 @@ class HostClient {
 /**
  * 端点收到的一次请求。
  *
- * 记下来是为了「模型在这段时间里被叫过没有」这一格：重启之后没有任何执行体自己跑起来，唯一的
+ * 记下来是为了「模型在这段时间里被叫过没有」这一格：重启之后没有任何 Agent 自己跑起来，唯一的
  * 外部证据就是端点这边一个请求都没收到 —— 只看 `session.open` 的 `live` 不够，那只是宿主自己
  * 的说法，而且它可能是「醒了又立刻闲下来」的中途一拍。
  */
@@ -192,8 +192,8 @@ interface ModelCall {
 
 /**
  * 本地的 OpenAI 兼容端点，两条路：
- * - 流式：执行体那一次请求（`stream: true`），按 SSE 一片一片吐同一个回答 —— 这几组用例验的是
- *   「一句话真的走到了执行体、模型说的话真的流回来了」，不是把请求层整个打掉；
+ * - 流式：Agent 那一次请求（`stream: true`），按 SSE 一片一片吐同一个回答 —— 这几组用例验的是
+ *   「一句话真的走到了 Agent、模型说的话真的流回来了」，不是把请求层整个打掉；
  * - 不流式：起名那一次请求（`completeOnce` 不带 `stream`），回一份 JSON。正文里带
  *   {@link NAMING_FAILS_ON} 时回 500，于是「起名失败」也是一个能造出来的处境。
  */
@@ -280,15 +280,15 @@ function textOf(message: AgentNS.Message): string {
   return String(message.content ?? "");
 }
 
-/** 排队区条目的正文：与消息同一种形状，这条用例投的都是纯文本 */
+/** 排队区 InboxEntry 的正文：与消息同一种形状，这条用例投的都是纯文本 */
 function entryText(entry: AgentNS.InboxEntry): string {
   return typeof entry.content === "string" ? entry.content : String(entry.content ?? "");
 }
 
 /**
- * 建一段会话并把执行体叫起来：`session.create` 写一行、`agent.wake` 造执行体，投话是第三条口。
+ * 建一段会话并把 Agent 叫起来：`session.create` 写一行、`runtime.agent.wake` 造 Agent，投话是第三条口。
  *
- * 三条 procedure 里哪一条少了都会在后面的断言上显形（没有行就没有 id，没有执行体则投递报
+ * 三条 procedure 里哪一条少了都会在后面的断言上显形（没有行就没有 id，没有 Agent 则投递报
  * `not_found`），所以这里不再逐条检查回执。
  */
 async function startSession(
@@ -296,11 +296,11 @@ async function startSession(
   workspaceId: string,
   agentId = "default",
 ): Promise<string> {
-  const created = await client.mutation<{ session: Session }>("session.create", {
+  const created = await client.mutation<{ session: SessionRecord }>("session.create", {
     workspaceId,
     agentId,
   });
-  await client.mutation("agent.wake", { sessionId: created.session.id });
+  await client.mutation("runtime.agent.wake", { sessionId: created.session.id });
   return created.session.id;
 }
 
@@ -360,7 +360,7 @@ describe("宿主跑起来", () => {
           endpointId: "local",
           modelName: "local-model",
           tokenThresholds: { handoff: 250_000, guard: 375_000 },
-          // 出厂模型清单是托管清单，不标 custom 的条目会在启动时被替换掉
+          // 出厂模型清单是托管清单，不标 custom 的 InboxEntry 会在启动时被替换掉
           custom: true,
         },
       ],
@@ -431,16 +431,16 @@ describe("宿主跑起来", () => {
     rmSync(dataRoot, { recursive: true, force: true });
   }, 60_000);
 
-  it("建行只写一行（没有执行体、也没打到模型），叫起来再递一句话，从 events 收到流", async () => {
+  it("建行只写一行（没有Agent、也没打到模型），叫起来再递一句话，从 events 收到流", async () => {
     const events: HostEvent[] = [];
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
-    const sessions = await client.query<Session[]>("session.list", { workspaceId });
+    const sessions = await client.query<SessionRecord[]>("session.list", { workspaceId });
     expect(sessions).toEqual([]);
 
     // ── 第一步：建行。只写库 ──
     const callsBefore = model.requests.length;
-    const created = await client.mutation<{ session: Session }>("session.create", {
+    const created = await client.mutation<{ session: SessionRecord }>("session.create", {
       workspaceId,
       agentId: "default",
     });
@@ -454,33 +454,36 @@ describe("宿主跑起来", () => {
       nameIsAuto: true,
     });
     expect(created.session.name).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    const listed = await client.query<Session[]>("session.list", { workspaceId });
+    const listed = await client.query<SessionRecord[]>("session.list", { workspaceId });
     expect(listed.map((row) => row.id)).toEqual([sessionId]);
 
-    // 没有执行体：与「重启之后所有会话都是死的」同一种状态，历史与排队区都是空的
+    // 没有 Agent：与「重启之后所有会话都是死的」同一种状态，历史与排队区都是空的
     const born = await client.query<Opened>("session.open", { sessionId });
     expect(born.live).toBeNull();
     expect(born.messages).toEqual([]);
     expect(born.inbox).toEqual([]);
 
-    // 建行一个字都没发到模型端点：这一段还没有执行体，也就没有人去要模型的话
+    // 建行一个字都没发到模型端点：这一段还没有 Agent，也就没有人去要模型的话
     expect(model.requests.length).toBe(callsBefore);
 
-    // ── 第二步：起来执行体。这一条不投递任何东西（装进来的只有助手定义里的那条 system）──
-    await client.mutation("agent.wake", { sessionId });
+    // ── 第二步：起来 Agent。这一条不投递任何东西（装进来的只有 AgentDefinition 里的那条 system）──
+    await client.mutation("runtime.agent.wake", { sessionId });
     const woken = await client.query<Opened>("session.open", { sessionId });
     expect(woken.live?.state).toBe("idle");
     expect(woken.inbox).toEqual([]);
     expect(woken.messages.map(textOf)).not.toContain(SAID);
 
     // ── 第三步：投一条话 ──
-    const sent = await client.mutation<{ sessionId: string; messageId: string }>("agent.send", {
-      workspaceId,
-      agentId: "default",
-      sessionId,
-      content: SAID,
-      messageId: randomUUID(),
-    });
+    const sent = await client.mutation<{ sessionId: string; messageId: string }>(
+      "runtime.agent.send",
+      {
+        workspaceId,
+        agentId: "default",
+        sessionId,
+        content: SAID,
+        messageId: randomUUID(),
+      },
+    );
     expect(sent.sessionId).toBe(sessionId);
 
     const idled = () =>
@@ -521,7 +524,7 @@ describe("宿主跑起来", () => {
     expect(model.requests.length).toBeGreaterThan(callsBefore);
   }, 60_000);
 
-  it("另开一条连接打开那段会话，状态与全部历史一次拿到；杀掉执行体之后历史照样在", async () => {
+  it("另开一条连接打开那段会话，状态与全部历史一次拿到；杀掉Agent之后历史照样在", async () => {
     // 手里没有任何历史的一条新连接：它看到的一切都来自这一次调用
     const fresh = await HostClient.connect(app.address.port, token);
     try {
@@ -535,8 +538,8 @@ describe("宿主跑起来", () => {
       fresh.close();
     }
 
-    // 杀掉执行体：内存没了，这时库就是它的全部
-    await client.mutation("agent.kill", { sessionId });
+    // 杀掉 Agent：内存没了，这时库就是它的全部
+    await client.mutation("runtime.agent.kill", { sessionId });
     const reopened = await client.query<Opened>("session.open", { sessionId });
     expect(reopened.live).toBeNull();
     expect(reopened.messages.map(textOf)).toContain(SAID);
@@ -566,7 +569,7 @@ describe("宿主跑起来", () => {
     const admitted = await HostClient.connect(app.address.port, token);
     try {
       await expect(
-        admitted.query<Session[]>("session.list", { workspaceId: vacantWorkspaceId }),
+        admitted.query<SessionRecord[]>("session.list", { workspaceId: vacantWorkspaceId }),
       ).resolves.toEqual([]);
     } finally {
       admitted.close();
@@ -591,7 +594,7 @@ describe("宿主跑起来", () => {
 
     // 建行、叫起来、投一句：三件事各有一条口
     const sessionId = await startSession(client, workspaceId);
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -603,17 +606,15 @@ describe("宿主跑起来", () => {
     const idled = () =>
       events.some(
         (event) =>
-          event.type === "agent.status" &&
-          event.sessionId === sessionId &&
-          event.status === "idle",
+          event.type === "agent.status" && event.sessionId === sessionId && event.status === "idle",
       );
     await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
 
-    // 留一条没被取走的：abort 之后取件那道闸关着，这一条此后只可能躺在排队区
-    await client.mutation("agent.abort", { sessionId });
+    // 留一条没被取走的：abort 之后取走那道开关关着，这一条此后只可能躺在排队区
+    await client.mutation("runtime.agent.abort", { sessionId });
     const pendingText = "这句还排在队列里";
     const pendingId = randomUUID();
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -646,26 +647,26 @@ describe("宿主跑起来", () => {
   }, 60_000);
 
   /**
-   * 改一次助手定义会把用着它的那几段会话重装一遍（`agentDefinition.update` → `reloadDefinition`：
+   * 改一次 AgentDefinition 会把用着它的那几段会话重装一遍（`config.agents.update` → `reloadDefinition`：
    * 取材料 → 杀 → 装回来）。这条走的是真的运行时，钉的是「换模型不是杀死」那一句在端到端上的
-   * 样子：重装之前排着的那两句，重装之后一句不丢 —— 它们要么已经落地成消息（新执行体取走了），
+   * 样子：重装之前排着的那两句，重装之后一句不丢 —— 它们要么已经写进 messages 成消息（新 Agent 取走了），
    * 要么还排着队且库里那几行也在。
    *
-   * 两种去处都写进断言，因为真运行时走哪一种不归这条用例定：装回来之后取件那道闸是开着
-   * 的（输出闸是重装快结束时才关回去的），于是还排着的条目通常当场就被取走了。而「重装之后
+   * 两种去处都写进断言，因为真运行时走哪一种不归这条用例定：装回来之后取走那道开关是开着
+   * 的（输出开关是重装快结束时才关回去的），于是还排着的 InboxEntry 通常当场就被取走了。而「重装之后
    * 它们还排着、库里那几行也还在」那一个分支是缺陷的原地：库里那几行被那一次清空删掉之后就再也
    * 回不来（放回队列不报 `inboxAdded`）。一条不丢这条判据在两边都钉得住，精确到「库行与内存
    * 队列逐条对上」的那一半由 `modules/agent/reload.inbox.test.ts` 把队列按在原处验。
    *
    * 最后那条断言是另一半：真正杀死之后库里那几行照旧没了 —— 杀死就是作废，这一条没有因为重装而松掉。
    */
-  it("改一次助手定义重装之后，排着的那两句一句不丢；真杀死之后库里那几行没了", async () => {
+  it("改一次AgentDefinition重装之后，排着的那两句一句不丢；真杀死之后库里那几行没了", async () => {
     const events: HostEvent[] = [];
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
     // 先起一段会话、等它把那一句答完：之后才谈得上排队区
     const sessionId = await startSession(client, workspaceId);
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -675,17 +676,15 @@ describe("宿主跑起来", () => {
     const idled = () =>
       events.some(
         (event) =>
-          event.type === "agent.status" &&
-          event.sessionId === sessionId &&
-          event.status === "idle",
+          event.type === "agent.status" && event.sessionId === sessionId && event.status === "idle",
       );
     await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
 
-    // 中断之后输出闸关着：此后投进去的条目只可能躺在排队区（与上一条用例同一个手法）
-    await client.mutation("agent.abort", { sessionId });
+    // 中断之后输出开关关着：此后投进去的 InboxEntry 只可能躺在排队区（与上一条用例同一个手法）
+    await client.mutation("runtime.agent.abort", { sessionId });
     const pending = ["第一条还在等", "第二条还在等"];
     for (const content of pending) {
-      await client.mutation("agent.send", {
+      await client.mutation("runtime.agent.send", {
         workspaceId,
         agentId: "default",
         sessionId,
@@ -694,10 +693,10 @@ describe("宿主跑起来", () => {
       });
     }
 
-    // 改一次这段会话用着的助手定义：重装这条路上那一次清空不许把还要接着等的条目作废
-    await client.mutation("agentDefinition.update", {
+    // 改一次这段会话用着的 AgentDefinition：重装这条路上那一次清空不许把还要接着等的 InboxEntry 作废
+    await client.mutation("config.agents.update", {
       agentId: "default",
-      change: { name: `改过名字的助手 ${randomUUID()}` },
+      change: { name: `改过名字的AgentDefinition ${randomUUID()}` },
     });
 
     const db = openDatabase(join(dataRoot, "ai-zen.db"));
@@ -705,7 +704,7 @@ describe("宿主跑起来", () => {
       const inboxRows = () => inboxTable(db).listBySession(sessionId).map(entryText);
       const messageRows = () => messageTable(db).listBySession(sessionId).map(textOf);
 
-      // 每一句都得有个去处：已经落地成消息，或者还在排队区（那库里那几行也得在，而且顺序不变）
+      // 每一句都得有个去处：已经写进 messages 成消息，或者还在排队区（那库里那几行也得在，而且顺序不变）
       await vi.waitFor(
         async () => {
           const opened = await client.query<Opened>("session.open", { sessionId });
@@ -723,7 +722,7 @@ describe("宿主跑起来", () => {
         { timeout: 30_000, interval: 50 },
       );
 
-      // 落地那一路也要在库里看得到，库里没有留下的残行（已经不在排队区的条目不该还占着那几行）
+      // 写进 messages 那一路也要在库里看得到，库里没有留下的残行（已经不在排队区的 InboxEntry 不该还占着那几行）
       const queued = inboxRows();
       for (const text of pending) {
         if (queued.includes(text)) continue;
@@ -732,7 +731,7 @@ describe("宿主跑起来", () => {
       }
 
       // 真被杀死那一条不许回归：杀死就是作废，库里那几行也没了
-      await client.mutation("agent.kill", { sessionId });
+      await client.mutation("runtime.agent.kill", { sessionId });
       await vi.waitFor(() => expect(inboxRows()).toEqual([]), { timeout: 10_000, interval: 20 });
 
       const killed = await client.query<Opened>("session.open", { sessionId });
@@ -755,7 +754,7 @@ describe("宿主跑起来", () => {
     await client.subscribe("events", (payload) => events.push(payload as HostEvent));
 
     const sessionId = await startSession(client, workspaceId);
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -765,15 +764,13 @@ describe("宿主跑起来", () => {
     const idled = () =>
       events.some(
         (event) =>
-          event.type === "agent.status" &&
-          event.sessionId === sessionId &&
-          event.status === "idle",
+          event.type === "agent.status" && event.sessionId === sessionId && event.status === "idle",
       );
     await vi.waitFor(() => expect(idled()).toBe(true), { timeout: 30_000, interval: 20 });
 
-    await client.mutation("agent.abort", { sessionId });
+    await client.mutation("runtime.agent.abort", { sessionId });
     const pendingText = "这句还在等，然后被杀死作废";
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -787,7 +784,7 @@ describe("宿主跑起来", () => {
       // 杀之前那一行确实在：下面那句「没了」才有意义
       expect(rows().map(entryText)).toEqual([pendingText]);
 
-      await client.mutation("agent.kill", { sessionId });
+      await client.mutation("runtime.agent.kill", { sessionId });
 
       await vi.waitFor(() => expect(rows()).toEqual([]), { timeout: 10_000, interval: 20 });
     } finally {
@@ -800,15 +797,15 @@ describe("宿主跑起来", () => {
   }, 120_000);
 
   /**
-   * 三条通道拆开之后的两条边界：`agent.send` 既不建行，也不复活。
+   * 三条通道拆开之后的两条边界：`runtime.agent.send` 既不建行，也不复活。
    *
    * 缺 `sessionId` 的那一次在边界上就被拒（入参校验先于任何副作用），而不是落到某一条
    * 「建行 + 唤醒 + 投递」的分支上；给一段建好但没叫起来的会话投递则仍是 `not_found` ——
    * 投递不替客户端唤醒。
    */
-  it("agent.send 缺 sessionId 在边界上被拒；给没有执行体的会话投递仍是 not_found", async () => {
+  it("runtime.agent.send 缺 sessionId 在边界上被拒；给没有Agent的会话投递仍是 not_found", async () => {
     await expect(
-      client.mutation("agent.send", {
+      client.mutation("runtime.agent.send", {
         workspaceId,
         agentId: "default",
         content: SAID,
@@ -816,14 +813,14 @@ describe("宿主跑起来", () => {
       }),
     ).rejects.toThrow(/BAD_REQUEST/);
 
-    // 只建行、不叫起来：这一段没有执行体
-    const created = await client.mutation<{ session: Session }>("session.create", {
+    // 只建行、不叫起来：这一段没有 Agent
+    const created = await client.mutation<{ session: SessionRecord }>("session.create", {
       workspaceId,
       agentId: "default",
     });
 
     await expect(
-      client.mutation("agent.send", {
+      client.mutation("runtime.agent.send", {
         workspaceId,
         agentId: "default",
         sessionId: created.session.id,
@@ -832,7 +829,7 @@ describe("宿主跑起来", () => {
       }),
     ).rejects.toThrow(/NOT_FOUND/);
 
-    // 那一句一个字都没进去，执行体也还是没有
+    // 那一句一个字都没进去，Agent 也还是没有
     const opened = await client.query<Opened>("session.open", { sessionId: created.session.id });
     expect(opened.live).toBeNull();
     expect(opened.messages).toEqual([]);
@@ -875,7 +872,7 @@ describe("能力来源目录", () => {
  * 第 13 行的另一半：「关掉再打开，历史与没被处理的那几句话都在，没有一段会话自己跑起来」。
  *
  * 两个宿主**先后**起在同一个数据根上（第一个 `stop()` 完成之后才起第二个），端口都用 `0`。这条
- * 用例只走客户端的公开面：`agent.send` / `agent.abort` / `session.open` —— 宿主怎么把执行体装
+ * 用例只走客户端的公开面：`runtime.agent.send` / `runtime.agent.abort` / `session.open` —— 宿主怎么把 Agent 装
  * 起来、库里那张表长什么样，都不是断言的对象。
  */
 describe("关掉再打开", () => {
@@ -910,7 +907,7 @@ describe("关掉再打开", () => {
               endpointId: "local",
               modelName: "local-model",
               tokenThresholds: { handoff: 250_000, guard: 375_000 },
-              // 出厂模型清单是托管清单，不标 custom 的条目会在启动时被替换掉
+              // 出厂模型清单是托管清单，不标 custom 的 InboxEntry 会在启动时被替换掉
               custom: true,
             },
           ],
@@ -981,7 +978,7 @@ describe("关掉再打开", () => {
 
     // 建行、叫起来、投一句话：三件事各有一条口
     const sessionId = await startSession(firstClient, workspaceId);
-    await firstClient.mutation("agent.send", {
+    await firstClient.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -1001,13 +998,13 @@ describe("关掉再打开", () => {
 
     // ── 停机之前留一条**没被处理**的话 ──
     //
-    // 选「先 abort 关掉输出闸、再投一句」，不是「趁执行体忙的时候投」：忙的那段窗口只有几十毫秒
+    // 选「先 abort 关掉输出开关、再投一句」，不是「趁 Agent 忙的时候投」：忙的那段窗口只有几十毫秒
     // （假端点立刻回），早一步是「它还没开始跑」、晚一步是「它已经回完并把话取走了」，用例会随机
-    // 落进不同的处境。abort 之后管理取件的那道闸是关着的 —— 此后投进去的条目只可能躺在排队区
-    // （core 的取件挂在闸上），于是「停机那一刻 inbox 表里有行」是确定的，不靠时序碰运气。
-    await firstClient.mutation("agent.abort", { sessionId });
+    // 落进不同的处境。abort 之后管理取走的那道开关是关着的 —— 此后投进去的 InboxEntry 只可能躺在排队区
+    // （core 的取走挂在开关上），于是「停机那一刻 inbox 表里有行」是确定的，不靠时序碰运气。
+    await firstClient.mutation("runtime.agent.abort", { sessionId });
     const pendingText = "这句还没被处理";
-    await firstClient.mutation("agent.send", {
+    await firstClient.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -1015,7 +1012,7 @@ describe("关掉再打开", () => {
       messageId: randomUUID(),
     });
 
-    // 停机之前先从公开面确认一遍：它在排队区里，而且执行体没有在为它忙碌（闸关着 → 状态是闲）
+    // 停机之前先从公开面确认一遍：它在排队区里，而且 Agent 没有在为它忙碌（开关关着 → 状态是闲）
     const beforeStop = await firstClient.query<Opened>("session.open", { sessionId });
     expect(beforeStop.live?.state).toBe("idle");
     expect(beforeStop.inbox.map(entryText)).toEqual([pendingText]);
@@ -1057,7 +1054,7 @@ describe("关掉再打开", () => {
     try {
       const opened = await secondClient.query<Opened>("session.open", { sessionId });
 
-      // 1. 没有任何执行体自己跑起来
+      // 1. 没有任何 Agent 自己跑起来
       expect(opened.live).toBeNull();
       // 2. 历史在：第一次那段对话一问一答都在
       expect(opened.messages.map(textOf)).toContain(SAID);
@@ -1066,7 +1063,7 @@ describe("关掉再打开", () => {
       expect(opened.inbox.map(entryText)).toEqual([pendingText]);
 
       // 4. 不投任何东西，看一会儿：这期间每一次 `session.open` 都必须是同一个答案，而且假端点
-      //    一个请求都不该收到 —— 收到就说明有执行体自己醒了、自己发了请求，那正是这一格要钉的
+      //    一个请求都不该收到 —— 收到就说明有 Agent 自己醒了、自己发了请求，那正是这一格要钉的
       await quietFor(async () => {
         const again = await secondClient.query<Opened>("session.open", { sessionId });
         expect(again.live).toBeNull();
@@ -1332,7 +1329,7 @@ describe("关掉宿主", () => {
  * 自动起名这一段只在装配根上验得了：判据与那一次请求都在 `AutoNamer` 里，而「谁在什么时候叫它」
  * 是 `app.ts` 的一件事 —— 单测验得了前者，验不了「装配根到底接上没有」。
  *
- * 两句都用同一个假端点：流式那一支是执行体的请求，不流式那一支是起名。起手那份配置里没有
+ * 两句都用同一个假端点：流式那一支是 Agent 的请求，不流式那一支是起名。起手那份配置里没有
  * `namingModel`，于是起名用的模型落回 `defaultModel` —— 与 SDK 那条一次性补全走的是同一套解析。
  */
 describe("自动起名", () => {
@@ -1371,7 +1368,7 @@ describe("自动起名", () => {
               endpointId: "local",
               modelName: "local-model",
               tokenThresholds: { handoff: 250_000, guard: 375_000 },
-              // 出厂模型清单是托管清单，不标 custom 的条目会在启动时被替换掉
+              // 出厂模型清单是托管清单，不标 custom 的 InboxEntry 会在启动时被替换掉
               custom: true,
             },
           ],
@@ -1447,7 +1444,7 @@ describe("自动起名", () => {
     // 从递出去那一刻往后看：上一句话也会让这一段闲一次，那样等到的就是上一次的那一拍
     const before = events.length;
     const sessionId = await startSession(client, workspaceId);
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -1469,7 +1466,7 @@ describe("自动起名", () => {
     return sessionId;
   }
 
-  function rowOf(rows: readonly Session[], sessionId: string): Session | undefined {
+  function rowOf(rows: readonly SessionRecord[], sessionId: string): SessionRecord | undefined {
     return rows.find((row) => row.id === sessionId);
   }
 
@@ -1478,7 +1475,7 @@ describe("自动起名", () => {
 
     await vi.waitFor(
       async () => {
-        const rows = await client.query<Session[]>("session.list", { workspaceId });
+        const rows = await client.query<SessionRecord[]>("session.list", { workspaceId });
         // 名字换了，而那一格仍然归自动：下一个名字还能换掉它
         expect(rowOf(rows, sessionId)).toMatchObject({ name: TITLE, nameIsAuto: true });
       },
@@ -1491,7 +1488,7 @@ describe("自动起名", () => {
 
     await vi.waitFor(
       async () => {
-        const notices = await client.query<Notice[]>("notice.list", { sessionId });
+        const notices = await client.query<NoticeRecord[]>("notice.list", { sessionId });
         expect(notices).toContainEqual(
           expect.objectContaining({
             level: "warning",
@@ -1506,7 +1503,7 @@ describe("自动起名", () => {
     );
 
     // 名字仍是创建时那一串时刻：失败不是「换了个名字」
-    const rows = await client.query<Session[]>("session.list", { workspaceId });
+    const rows = await client.query<SessionRecord[]>("session.list", { workspaceId });
     expect(rowOf(rows, sessionId)?.name).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     // 照旧能说话：再递一句，模型的话照样流回来

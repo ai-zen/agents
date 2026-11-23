@@ -1,5 +1,5 @@
 /**
- * 平级会话插件（SDK 侧）的验收：**不给端口就不产出任何工具**，给了端口就三个工具，
+ * PeerSession 插件（SDK 侧）的验收：**不给端口就不产出任何工具**，给了端口就三个工具，
  * 而且三个工具只做三件事 —— 把参数送给端口、把结构化拒绝原样交回模型、把「别轮询（她会自己
  * post_message 回来）/ 不等结果 / 靠 label」这几句话写进 description 与返回文案。
  *
@@ -22,8 +22,8 @@ import type {
   PeerSessionCreateInput,
   PeerSessionCreated,
   PeerSessionPort,
-  PeerSessionSendInput,
-  PeerSessionSent,
+  PeerSessionPostInput,
+  PeerSessionPosted,
   PeerSessionStatus,
   PeerSessionActivity,
 } from "./peerSessionTools.js";
@@ -47,16 +47,16 @@ function filteredWith(tools: string[]): FilterOutput {
 function recordingPort(answers: {
   created?: PeerSessionCreated;
   status?: PeerSessionStatus;
-  sent?: PeerSessionSent;
+  sent?: PeerSessionPosted;
 }): {
   port: PeerSessionPort;
   creates: PeerSessionCreateInput[];
   statuses: Array<{ caller: Agent; sessionId: string }>;
-  sends: PeerSessionSendInput[];
+  sends: PeerSessionPostInput[];
 } {
   const creates: PeerSessionCreateInput[] = [];
   const statuses: Array<{ caller: Agent; sessionId: string }> = [];
-  const sends: PeerSessionSendInput[] = [];
+  const sends: PeerSessionPostInput[] = [];
   const port: PeerSessionPort = {
     async create(input) {
       creates.push(input);
@@ -76,7 +76,7 @@ function recordingPort(answers: {
         }
       );
     },
-    async send(input) {
+    async post(input) {
       sends.push(input);
       return answers.sent ?? { ok: true };
     },

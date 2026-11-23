@@ -2,21 +2,21 @@
  * 配置补位 —— 缺字段 / 非法值在启动时补成出厂值
  *
  * 依据 PRD 3.4：配置里少了字段、或值不合法，启动时补成出厂值。补完之后「配置即事实」——
- * 文件里写着的就是运行时用的，使用方不必各自 `?? 出厂值` 地兵分两路兜底。
+ * 文件里写着的就是运行时用的，使用方不必各自 `?? 出厂值 ` 地兵分两路兜底。
  *
  * 这里**不是**迁移：本仓没有发过旧版本（PRD 1.9「不做…迁移或识别旧数据」），所以文件里
  * 没有一行「读旧形状」的代码。补位只往**空位**里放出厂值，用户写下的值一个都不改：
  *
- * - `Model.tokenThresholds`：`handoff`（交接线，软）与 `guard`（阻断线，硬）两条整数阈值，
+ * - `ModelDefinition.tokenThresholds`：`handoff`（交接线，软）与 `guard`（阻断线，硬）两条整数阈值，
  *   缺哪条补哪条（见 `normalizeModelThresholds`）；
  * - `AppConfig.abortedMessageStrategy` / `abortedToolRoundStrategy`：缺失或非法 → 出厂默认
  *   （见 `normalizeAbortStrategies`）；
- * - `Endpoint.capabilities`：整块缺失 → 同 id 出厂端点的能力位
+ * - `EndpointDefinition.capabilities`：整块缺失 → 同 id 出厂端点的能力位
  *   （见 `normalizeEndpointCapabilities`）。
  *
  * ## `defaultModel` 在这里不出现，是有意的
  *
- * 模型解析是三级（`会话级覆盖 > Agent 定义 > 本字段`，唯一实现在 `runtime/resolveModel.ts`），
+ * 模型解析是三级（` 会话级覆盖 > Agent 定义 > 本字段 `，唯一实现在 `runtime/resolveModel.ts`），
  * `defaultModel` 就是**全局兜底层**。用户没配就没有兜底层，`createAgent` 会给出明确报错 ——
  * 那不是「缺省值缺位」，而是「用户没表态」。所以这里既不补也不清：清掉等于用户升级一次
  * 就静默丢一次自己配的兜底模型。
@@ -26,10 +26,10 @@
  * 一次，且不会在每次启动时无谓地改写文件。
  */
 
-import type { AppConfig, Model, TokenThresholds } from "../types/index.js";
+import type { AppConfig, ModelDefinition, TokenThresholds } from "../types/index.js";
 import { DEFAULT_APP_CONFIG } from "./constants.js";
 
-/** `Model` 上两条阈值的字段名（当前唯一的形状） */
+/** `ModelDefinition` 上两条阈值的字段名（当前唯一的形状） */
 const TOKEN_THRESHOLDS_KEY = "tokenThresholds";
 
 /**
@@ -68,7 +68,10 @@ function readThresholds(value: unknown): Partial<TokenThresholds> {
  *
  * `changed` 就是「要不要写盘」的判据；入参对象不被就地修改（调用方手里的旧对象保持原样）。
  */
-export function normalizeModelThresholds(model: Model): { model: Model; changed: boolean } {
+export function normalizeModelThresholds(model: ModelDefinition): {
+  model: ModelDefinition;
+  changed: boolean;
+} {
   const current = readThresholds(
     (model as unknown as Record<string, unknown>)[TOKEN_THRESHOLDS_KEY],
   );
@@ -137,7 +140,7 @@ export function normalizeAbortStrategies(config: AppConfig): boolean {
 }
 
 /**
- * 补齐端点**缺失**的能力位声明（`Endpoint.capabilities`）。
+ * 补齐端点**缺失**的能力位声明（`EndpointDefinition.capabilities`）。
  *
  * ## 为什么要补
  *

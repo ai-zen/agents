@@ -19,7 +19,7 @@ import type { SdkAgent } from "./SdkAgent.js";
  * - `summary`：一次独立的模型调用，把序列化后的历史摘要成交接文档（无工具、无原会话上下文）。
  *   便宜、确定，但保真度低 —— **只有调用方明确申请它才用它**。
  *
- * 两者之间**没有自动过渡**：申请哪个就跑哪个，做不成就是失败（开闸、退出交接状态、报失败）。
+ * 两者之间**没有自动过渡**：申请哪个就跑哪个，做不成就是失败（开开关、退出交接状态、报失败）。
  * 换一个执行者接着做，会让一次失败的交接看起来像成功。
  */
 export type HandoffMode = "self" | "summary";
@@ -139,7 +139,7 @@ export interface HandoffServiceOptions {
   /** 交接回合开始前触发（此时 `agent.messages` 仍是完整旧历史）。抛错就让这一次交接失败 */
   onBeforeHandoff?: (ctx: HandoffContext) => void | Promise<void>;
   /**
-   * 交接文档写好后触发（换记忆还没发生：记忆由 `migrate()` 算、由 {@link commitMemory} 落地）。
+   * 交接文档写好后触发（换记忆还没发生：记忆由 `migrate()` 算、由 {@link commitMemory} 写进 messages）。
    * 抛错就让这一次交接失败。
    */
   onHandoff?: (ctx: HandoffContext) => void | Promise<void>;
@@ -620,9 +620,9 @@ export class HandoffService {
    * 取消形态有两类，都要认：{@link HandoffAbortedError}（主动检查）与底层 abort 错误
    * （OpenAI 的 `APIUserAbortError`）。调用方只需要认前者。
    *
-   * **本方法不开输出闸**：开闸的时刻是「记忆换定了」，而换记忆在宿主那一侧（这一趟只产出
-   * 一份文档）；SDK 拿到写文档结果时换记忆还没发生，这时候开闸会让这期间落进来的话
-   * 落进即将被换掉的旧记忆。开闸由宿主在交接收口做。
+   * **本方法不开输出开关**：开开关的时刻是「记忆换定了」，而换记忆在宿主那一侧（这一趟只产出
+   * 一份文档）；SDK 拿到写文档结果时换记忆还没发生，这时候开开关会让这期间落进来的话
+   * 落进即将被换掉的旧记忆。开开关由宿主在交接收口做。
    */
   private async runHandoff(params: HandoffParams): Promise<HandoffContext> {
     const { agent, promptTokens, handoffTokens, signal } = params;
@@ -650,7 +650,7 @@ export class HandoffService {
 
       // ---- 执行者：申请哪个就跑哪个，做不成 = 失败 ----
       // 这里**不换执行者**：换一个接着做，会让一次失败的交接看起来像成功，而用户以为手里那份
-      // 文档是原会话自己写的。做不成就抛，由调用方开闸、退出交接状态、报失败。
+      // 文档是原会话自己写的。做不成就抛，由调用方开开关、退出交接状态、报失败。
       const mode = requestedMode;
       let handoffDoc: string | undefined;
       let historyText = "";
@@ -661,7 +661,7 @@ export class HandoffService {
       }
 
       if (mode === "summary") {
-        // 这一档没有「那一批」（不投指令、不进队列），所以没人替它关闸 —— 生成摘要之前自己关
+        // 这一档没有「那一批」（不投指令、不进队列），所以没人替它关开关 —— 生成摘要之前自己关
         if (!agent.isOutputPaused) agent.pauseOutput();
         historyText = HandoffService.serializeMessages(agent.messages.filter((m) => !m.omit));
         handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
@@ -691,7 +691,7 @@ export class HandoffService {
       if (!(err instanceof HandoffAbortedError) && !isAbortError(err, signal)) {
         throw err;
       }
-      // 取消：交接回合截掉、半成品文档删掉（闸不在这里开，见方法注释）
+      // 取消：交接回合截掉、半成品文档删掉（开关不在这里开，见方法注释）
       await this.restoreBeforeHandoff({ agent, messageCountBefore, handoffPath, existedBefore });
       throw new HandoffAbortedError();
     }
@@ -756,8 +756,8 @@ export class HandoffService {
    * `arm()` 之后守卫既当门、又把上面那两个事实报回来（细节见 {@link HandoffGuardPlugin}）：
    * 「只许写这份文档」与「写完了没有」看的是同一份输入 —— 工具参数里的路径。
    *
-   * **只投一次**：没写出来就是没写出来，不「再问一次」。第二次投递要能跑就得先把闸开开，
-   * 一开闸，这期间用户压着的件就跟着那一批一起被取走，而那一趟仍然要换记忆 —— 同一个误伤。
+   * **只投一次**：没写出来就是没写出来，不「再问一次」。第二次投递要能跑就得先把开关开开，
+   * 一开开关，这期间用户压着的件就跟着那一批一起被取走，而那一趟仍然要换记忆 —— 同一个误伤。
    *
    * ## 判据只有一条：文档写出来了没有
    *
@@ -791,7 +791,7 @@ export class HandoffService {
     signal?: AbortSignal,
   ): Promise<void> {
     // 已经不收件了（用户让它停）：此刻投进去只会排在队里，等放行之后突然自己跑起来 —— 这一趟没
-    // 跑成。报的是「会话不收件」而不是笼统的一句失败：那一种处置是「让用户放开闸再试」，而
+    // 跑成。报的是「会话不收件」而不是笼统的一句失败：那一种处置是「让用户放开开关再试」，而
     // 「会话已不存在」那一种是「这段会话得重开」
     if (agent.isOutputPaused) {
       throw new Error(
@@ -861,7 +861,7 @@ export class HandoffService {
       if (err instanceof AgentError && err.code === "closed") throw err;
       if (isAbortError(err, signal)) throw new HandoffAbortedError();
       // 其余一切都不是「模型没写出来」：原样抛给调用方，由它报失败（宿主 `onFailed`）
-      // 并把输出闸开回来。
+      // 并把输出开关开回来。
       throw err;
     } finally {
       stopWatchingFailures();
@@ -884,7 +884,7 @@ export class HandoffService {
   ): Promise<SelfHandoffOutcome> {
     // 叫起来（幂等；不 await —— 那句 promise 到死才 resolve）
     void agent.start();
-    agent.push({
+    agent.send({
       content,
       priority: "low",
       // 这条指令是**宿主侧**（`/handoff` 命令、自动迁移）注入的，不是用户说的话 ——

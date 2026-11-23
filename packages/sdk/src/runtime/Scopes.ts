@@ -11,7 +11,7 @@ export interface ScopeCapabilities {
   mcps: string[];
 }
 
-/** 能力容器的三格事实（运行时把它转成对外的事实流，见 `RuntimeFact`） */
+/** Scope 的三格事实（运行时把它转成对外的事实流，见 `RuntimeFact`） */
 export type ScopeEvent =
   | { type: "appeared"; cwd: string; capabilities: ScopeCapabilities }
   | { type: "refreshed"; cwd: string; capabilities: ScopeCapabilities }
@@ -62,14 +62,14 @@ export interface ScopesDeps {
   /**
    * 造一个容器。怎么装配能力不归这里管 —— 这里只负责「什么时候造、造几个、什么时候拆」。
    *
-   * 平级会话那三个工具是运行时的端口，随这次请求一起下去：容器在同一次装配里把它们装成工具。
+   * PeerSession 那三个工具是运行时的端口，随这次请求一起下去：容器在同一次装配里把它们装成工具。
    * 不另开一个「事后再装一个插件」的口 —— 那种口只对还没 `init()` 的容器有效，而 `init()`
    * 什么时候发生就成了两边各记一份的事。
    */
   readonly openScope: (cwd: string, peers: PeerSessionPort) => Promise<Scope>;
-  /** 这个目录上还活着哪几段会话：问的是执行体那一侧，本模块不自己记账 */
+  /** 这个目录上还活着哪几段会话：问的是 Agent 那一侧，本模块不自己记账 */
   readonly aliveSessions: (cwd: string) => readonly string[];
-  /** 平级会话的端口（见 {@link ScopesDeps.openScope}） */
+  /** PeerSession 的端口（见 {@link ScopesDeps.openScope}） */
   readonly peers: PeerSessionPort;
   /** 刷新失败的出口：一个容器刷不动不该让其余容器也不动，所以逐个收口 */
   readonly log?: LogSink;
@@ -83,12 +83,12 @@ export interface ScopesDeps {
 }
 
 /**
- * 能力容器按目录存活：同一个目录上的多段会话共用一个容器。
+ * Scope 按目录存活：同一个目录上的多段会话共用一个容器。
  *
  * 没有空闲计时、没有引用计数、没有自动回收：容器活着是因为有人显式持有它，直到有人显式拆掉。
  * 「没人用」不是一个可判定的状态，容器也不属于某一段会话。
  *
- * 拆的时候遇到还有活执行体的目录就拒绝，不级联 —— 级联会静默杀死正在进行的会话，让调用方
+ * 拆的时候遇到还有活 Agent 的目录就拒绝，不级联 —— 级联会静默杀死正在进行的会话，让调用方
  * 看不见自己拆掉了什么。
  */
 export class Scopes {
@@ -139,7 +139,7 @@ export class Scopes {
     return created;
   }
 
-  /** 拆一个目录的容器：上面还有活执行体就拒绝（要拆先杀） */
+  /** 拆一个目录的容器：上面还有活 Agent 就拒绝（要拆先杀） */
   async dispose(cwd: string): Promise<void> {
     const sessionIds = this.deps.aliveSessions(cwd);
     if (sessionIds.length > 0) {
@@ -211,7 +211,7 @@ export class Scopes {
    * 一个容器此刻能拿出什么：按插件候选聚合，四个维度各自去重、保序（先注册的插件在前）。
    *
    * 为什么用候选而不是 `filter(definition)` 的结果：候选是「这个容器能拿出什么」，权限是「这一段
-   * 助手准不准用」，两件事。混在一起，第三方说「现在能用什么能力」时说的会是一段会话的权限，
+   * AgentDefinition 准不准用」，两件事。混在一起，第三方说「现在能用什么能力」时说的会是一段会话的权限，
    * 而不是这个目录的能力。候选那一格会话定义用的是空的那一份（见 {@link NO_SESSION_DEFINITION}）。
    */
   private capabilitiesOf(scope: Scope): ScopeCapabilities {
@@ -239,7 +239,7 @@ export class Scopes {
       const pending = this.containers.get(cwd);
       if (pending === undefined) return;
 
-      // 造的那一步可能还没落地。不等它，容器会在这次拆返回之后才建出来，没有人再拆得掉。
+      // 造的那一步可能还没写进 messages。不等它，容器会在这次拆返回之后才建出来，没有人再拆得掉。
       // 造失败的那条路径上，要这个容器的调用方已经拿到同一个错误，这里没有容器要拆。
       const scope = await pending.catch(() => undefined);
       if (scope === undefined) return;

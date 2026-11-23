@@ -3,10 +3,10 @@
  *
  * 起一台 `HostApp`（`port: 0`、本机实例、临时数据根），用这个包交出去的 `connect` 连上去，
  * 然后把客户端要做的五件事按顺序走一遍：握手（对令牌 / 错令牌）、建项目与列会话、订阅事件、
- * 传一份素材再取回来、关掉之后调用当场失败。
+ * 传一份 Asset 再取回来、关掉之后调用当场失败。
  *
  * 模型不出网：`@ai-zen/agents-testing` 的假端点回一段流式答复，地址写进 `config.json` 的端点。
- * 这样验的是「一句话真的走到了执行体、它说的话真的从事件流里回来了」，而不是把请求层整个打掉。
+ * 这样验的是「一句话真的走到了 Agent、它说的话真的从事件流里回来了」，而不是把请求层整个打掉。
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -60,11 +60,11 @@ function stated(events: readonly unknown[], status: "working" | "idle"): boolean
 }
 
 /**
- * 建一段会话、把执行体叫起来、递一句进去：三件事各有一条口。
+ * 建一段会话、把 Agent 叫起来、递一句进去：三件事各有一条口。
  *
- * 宿主那一侧它们是正交的（`session.create` 只写一行、`agent.wake` 造执行体、`agent.send` 只投给
- * 活着的执行体），所以这里的准备动作也是三句。回执给的是后面断言要用的那两格：`sessionId` 是
- * 这段会话的 id，`messageId` 是递进去那一句的 id（由客户端给出，落地时用的就是它）。
+ * 宿主那一侧它们是正交的（`session.create` 只写一行、`runtime.agent.wake` 造 Agent、`runtime.agent.send` 只投给
+ * 活着的 Agent），所以这里的准备动作也是三句。回执给的是后面断言要用的那两格：`sessionId` 是
+ * 这段会话的 id，`messageId` 是递进去那一句的 id（由客户端给出，写进 messages 时用的就是它）。
  */
 async function startSession(
   client: HostClient,
@@ -76,10 +76,10 @@ async function startSession(
     workspaceId: input.workspaceId,
     agentId,
   });
-  await client.api.agent.wake.mutate({ sessionId: session.id });
+  await client.api.runtime.agent.wake.mutate({ sessionId: session.id });
 
   const messageId = randomUUID();
-  await client.api.agent.send.mutate({
+  await client.api.runtime.agent.send.mutate({
     workspaceId: input.workspaceId,
     agentId,
     content: input.content,
@@ -126,7 +126,7 @@ beforeAll(async () => {
             endpointId: "local",
             modelName: "fake-model",
             tokenThresholds: { handoff: 250_000, guard: 375_000 },
-            // 出厂模型清单是托管清单，不标 custom 的条目会在启动时被替换掉
+            // 出厂模型清单是托管清单，不标 custom 的 InboxEntry 会在启动时被替换掉
             custom: true,
           },
         ],
@@ -298,7 +298,7 @@ describe("事件流", () => {
   }, 60_000);
 });
 
-describe("素材：传上去再取回来", () => {
+describe("Asset：传上去再取回来", () => {
   it("几字节的 PNG 上去、按 id 下来，逐字节相同", async () => {
     const path = join(dataRoot, "dot.png");
     writeFileSync(path, PNG);
@@ -319,7 +319,7 @@ describe("素材：传上去再取回来", () => {
     expect(second.id).toBe(first.id);
   }, 30_000);
 
-  it("取一份不存在的素材：宿主的 not_found 原样出来", async () => {
+  it("取一份不存在的Asset：宿主的 not_found 原样出来", async () => {
     const error = (await getAsset(client, { assetId: randomUUID() }).catch(
       (caught: unknown) => caught,
     )) as ClientError;
@@ -390,7 +390,7 @@ describe("重连的口子", () => {
       const sessions = await client.api.session.list.query({ workspaceId });
       expect(sessions.length).toBeGreaterThan(0);
 
-      // 重启之后那段会话已经没有执行体了：建一段新的、把它叫起来、再递一句进去
+      // 重启之后那段会话已经没有 Agent 了：建一段新的、把它叫起来、再递一句进去
       await startSession(client, {
         workspaceId,
         agentId: "default",

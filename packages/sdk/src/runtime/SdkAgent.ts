@@ -60,7 +60,7 @@ export class SdkAgent extends Agent {
     /**
      * 寿命：常驻（缺省）还是一次性（`AgentNS.AgentLifetime`）。
      *
-     * 这一格原样透传给 core —— 它不只是「活多久」，是能力差：一次性执行体只吃一次投递、
+     * 这一格原样透传给 core —— 它不只是「活多久」，是能力差：一次性 Agent 只吃一次投递、
      * `send` / `runOnce` 才有意义。
      */
     lifetime?: AgentNS.AgentLifetime;
@@ -81,9 +81,9 @@ export class SdkAgent extends Agent {
   }
 
   /**
-   * 就地刷新生效模型：换模型与换思考档位都走它，**不杀执行体**。
+   * 就地刷新生效模型：换模型与换思考档位都走它，**不杀 Agent**。
    *
-   * 记忆、排队区、两道闸、正在跑的那一次请求一处都不动：下一次请求从头读 `client` /
+   * 记忆、排队区、两道开关、正在跑的那一次请求一处都不动：下一次请求从头读 `client` /
    * `model` / `modelConfig`，所以下一次就按新的走。定义上的 `modelId` 一并改成生效的那个
    * —— 运行期读 `definition.modelId` 的地方（状态栏、上下文阈值）看到的是同一个模型。
    */

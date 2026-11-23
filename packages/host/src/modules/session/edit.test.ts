@@ -1,14 +1,14 @@
 /**
  * 会话上可改的那六样：名字、置顶、自动交接开关、两条阈值、模型、思考档位。
  *
- * 这一份验的是**客户端调得动、落库落成了什么**：前四样直接写行（执行体根本不读它们，改完当场
- * 生效），后两样写行之外还要在活着的执行体上就地刷新（`SdkAgent.useModel`）。
+ * 这一份验的是**客户端调得动、落库落成了什么**：前四样直接写行（Agent 根本不读它们，改完当场
+ * 生效），后两样写行之外还要在活着的 Agent 上就地刷新（`SdkAgent.useModel`）。
  *
  * 每一条的错法都是「不报错也不工作」：名字改完 `nameIsAuto` 还是真（下一次自动起名会把它盖掉）、
  * 换模型没清档位（把一家的 thinking 参数带到另一家，端点直接 400）、阈值只有一个数进了库
- * （另一个还是旧值）、换模型只改了库没改执行体（界面写着 A、请求发给 B）。
+ * （另一个还是旧值）、换模型只改了库没改 Agent（界面写着 A、请求发给 B）。
  *
- * 后两样（模型、思考档位）的每一条还同时验着**参数不跨级混合**：模型来自会话行时，助手定义
+ * 后两样（模型、思考档位）的每一条还同时验着**参数不跨级混合**：模型来自会话行时，AgentDefinition
  * 那份参数（配给定义自己绑的那个模型的）不许跟过来；模型来自定义时它才是基础参数，档位补丁
  * 叠在它上面。
  */
@@ -35,7 +35,7 @@ import { workspaceTable } from "../workspace/table.js";
 import { messageTable } from "./messages.js";
 import { SessionService } from "./service.js";
 import { sessionTable } from "./table.js";
-import type { Session } from "./types.js";
+import type { SessionRecord } from "./types.js";
 
 /**
  * 配置用一个常量对象给：这两条路要读的只有模型表与档位表，落到磁盘上反而让用例去追究
@@ -71,10 +71,10 @@ const PRESETS = {
   reasoning: { levels: { low: { reasoning_effort: "low" }, high: { reasoning_effort: "high" } } },
 } as unknown as ReasoningPresets;
 
-/** 助手定义：`modelParams` 是「模型来自定义」那一级的基础参数，换过模型之后它就该整份消失 */
+/** AgentDefinition：`modelParams` 是「模型来自定义」那一级的基础参数，换过模型之后它就该整份消失 */
 const DEFINITION: AgentDefinition = {
   id: "agent-1",
-  name: "助手一",
+  name: "AgentDefinition一",
   messages: [],
   modelId: "model-plain",
   modelParams: { temperature: 0.5 },
@@ -83,7 +83,7 @@ const DEFINITION: AgentDefinition = {
 };
 
 /**
- * 同一个助手，绑的是挂着思考档位表的那个模型（`modelParams` 照旧）。
+ * 同一个 AgentDefinition，绑的是挂着思考档位表的那个模型（`modelParams` 照旧）。
  *
  * 只给「模型来自定义 **且** 有档位补丁」那一条用例用：`DEFINITION` 绑的 `model-plain` 没挂
  * 档位表，凑不出那个组合。
@@ -92,12 +92,12 @@ const THINKING_DEFINITION: AgentDefinition = { ...DEFINITION, modelId: "model-th
 
 /**
  * 一个真库加这一条路上的几个域。`runtime` 与 `definitions` 给替身：这些用例问的是「行上落了
- * 什么、执行体上被要求换成了什么」，造一个真的运行时只会让人以为它也在被验。
+ * 什么、Agent 上被要求换成了什么」，造一个真的运行时只会让人以为它也在被验。
  *
- * `deps` 上缺的那些（项目、排队区、素材、交接、通知……）这六条 procedure 一处都不碰，所以
+ * `deps` 上缺的那些（项目、排队区、Asset、交接、通知……）这六条 procedure 一处都不碰，所以
  * 直接转成 `HostApiDeps`：补齐它们得先编出六七个与本题无关的替身。
  *
- * 助手定义可以按用例换一份（默认 `DEFINITION`）：绑哪个模型决定了「模型来自定义」那一级是谁，
+ * AgentDefinition 可以按用例换一份（默认 `DEFINITION`）：绑哪个模型决定了「模型来自定义」那一级是谁，
  * 换掉它才能把「模型来自定义 + 有档位补丁」这个组合凑出来。
  */
 function newHost(definition: AgentDefinition = DEFINITION) {
@@ -112,7 +112,7 @@ function newHost(definition: AgentDefinition = DEFINITION) {
   });
   const messages = messageTable(db);
 
-  /** 活着的执行体：这两条路只碰 `useModel` 一格 */
+  /** 活着的 Agent：这两条路只碰 `useModel` 一格 */
   const agents = new Map<string, { useModel: ReturnType<typeof vi.fn> }>();
   const runtime = {
     get: (sessionId: string) => agents.get(sessionId),
@@ -137,7 +137,7 @@ function newHost(definition: AgentDefinition = DEFINITION) {
 
 type Host = ReturnType<typeof newHost>;
 
-function newSession(host: Host): Session {
+function newSession(host: Host): SessionRecord {
   return host.sessions.create({
     workspaceId: "ws-1",
     name: "1712345678000",
@@ -151,7 +151,7 @@ function newSession(host: Host): Session {
   });
 }
 
-/** 这一段现在活着一个执行体：`useModel` 的调用记下来，供「就地刷新」那几条断言 */
+/** 这一段现在活着一个 Agent：`useModel` 的调用记下来，供「就地刷新」那几条断言 */
 function wake(host: Host, sessionId: string) {
   const agent = { useModel: vi.fn() };
   host.agents.set(sessionId, agent);
@@ -204,7 +204,7 @@ describe("会话上可改的那几样", () => {
     expect(pinned.pinned).toBe(true);
     expect(host.sessions.get(session.id)?.pinned).toBe(true);
 
-    const { session: switched } = await host.caller.session.setAutoHandoff({
+    const { session: switched } = await host.caller.session.updateAutoHandoff({
       sessionId: session.id,
       autoHandoff: true,
     });
@@ -218,7 +218,7 @@ describe("会话上可改的那几样", () => {
     const host = newHost();
     const session = newSession(host);
 
-    const { session: set } = await host.caller.session.setThresholds({
+    const { session: set } = await host.caller.session.updateThresholds({
       sessionId: session.id,
       handoffThreshold: 120_000,
       guardThreshold: 180_000,
@@ -229,7 +229,7 @@ describe("会话上可改的那几样", () => {
     expect(host.sessions.get(session.id)?.guardThreshold).toBe(180_000);
 
     // 硬线不必大于软线：需求给的是建议，不是约束。这里把软线设到硬线之上，照样写得进去
-    const { session: loosened } = await host.caller.session.setThresholds({
+    const { session: loosened } = await host.caller.session.updateThresholds({
       sessionId: session.id,
       handoffThreshold: 200_000,
       guardThreshold: null,
@@ -239,14 +239,14 @@ describe("会话上可改的那几样", () => {
     expect(host.sessions.get(session.id)?.guardThreshold).toBeNull();
   });
 
-  it("换模型：清掉档位、就地刷新执行体，参数里不带助手定义那一份", async () => {
+  it("换模型：清掉档位、就地刷新Agent，参数里不带AgentDefinition那一份", async () => {
     const host = newHost();
     const session = newSession(host);
     // 上一档思考：换模型必须把它清掉
     host.sessions.update(session.id, { thinkingLevel: "high" });
     const agent = wake(host, session.id);
 
-    const { session: switched } = await host.caller.session.setModel({
+    const { session: switched } = await host.caller.session.updateModel({
       sessionId: session.id,
       modelId: "model-thinking",
     });
@@ -255,7 +255,7 @@ describe("会话上可改的那几样", () => {
     // 档位是模型的参数：不清空就是把一家的 thinking 参数带给另一家
     expect(switched.thinkingLevel).toBeNull();
     expect(host.sessions.get(session.id)?.thinkingLevel).toBeNull();
-    // 就地刷新：不杀执行体，只换它手上的模型与参数。模型这一刻来自会话行，而会话行上没有参数
+    // 就地刷新：不杀 Agent，只换它手上的模型与参数。模型这一刻来自会话行，而会话行上没有参数
     // 这一格 —— 所以参数是空的一份，不是定义那份（那条是配给 `model-plain` 的）
     expect(agent.useModel).toHaveBeenCalledWith("model-thinking", undefined);
   });
@@ -266,7 +266,7 @@ describe("会话上可改的那几样", () => {
     const agent = wake(host, session.id);
 
     const error = await hostErrorOf(
-      host.caller.session.setModel({ sessionId: session.id, modelId: "没有这个模型" }),
+      host.caller.session.updateModel({ sessionId: session.id, modelId: "没有这个模型" }),
     );
 
     expect(error.code).toBe("config_invalid");
@@ -279,7 +279,7 @@ describe("会话上可改的那几样", () => {
     const host = newHost();
 
     const error = await hostErrorOf(
-      host.caller.session.setModel({ sessionId: "没有这一段", modelId: "没有这个模型" }),
+      host.caller.session.updateModel({ sessionId: "没有这一段", modelId: "没有这个模型" }),
     );
 
     // 先认会话，再认模型：两个都不成立时该说的是「这段会话不存在」—— 说成 config_invalid 会让
@@ -290,7 +290,7 @@ describe("会话上可改的那几样", () => {
     expect(error.details).toEqual({ entity: "session", sessionId: "没有这一段" });
   });
 
-  it("会话换过模型时，参数里没有助手定义那一份", async () => {
+  it("会话换过模型时，参数里没有AgentDefinition那一份", async () => {
     const host = newHost();
     const session = newSession(host);
     // 会话行上换成另一个模型：模型这一级的赢家是会话行
@@ -298,7 +298,7 @@ describe("会话上可改的那几样", () => {
     const agent = wake(host, session.id);
 
     // 档位跟随定义（`null`）：这条路上除了档位补丁之外没有别的参数来源，补丁也不叠
-    await host.caller.session.setThinkingLevel({ sessionId: session.id, level: null });
+    await host.caller.session.updateThinkingLevel({ sessionId: session.id, level: null });
 
     const [modelId, params] = agent.useModel.mock.calls[0] ?? [];
     expect(modelId).toBe("model-thinking");
@@ -316,7 +316,7 @@ describe("会话上可改的那几样", () => {
     host.sessions.update(session.id, { modelId: null });
     const agent = wake(host, session.id);
 
-    await host.caller.session.setThinkingLevel({ sessionId: session.id, level: "high" });
+    await host.caller.session.updateThinkingLevel({ sessionId: session.id, level: "high" });
 
     // 基础参数是定义那一份（模型来自定义），档位补丁叠在它上面
     expect(agent.useModel).toHaveBeenCalledWith("model-thinking", {
@@ -332,7 +332,7 @@ describe("会话上可改的那几样", () => {
     host.sessions.setModel(session.id, "model-thinking");
     const agent = wake(host, session.id);
 
-    const { session: leveled } = await host.caller.session.setThinkingLevel({
+    const { session: leveled } = await host.caller.session.updateThinkingLevel({
       sessionId: session.id,
       level: "high",
     });
@@ -350,22 +350,22 @@ describe("会话上可改的那几样", () => {
     host.sessions.setModel(thinking.id, "model-thinking");
 
     const unknown = await hostErrorOf(
-      host.caller.session.setThinkingLevel({ sessionId: thinking.id, level: "max" }),
+      host.caller.session.updateThinkingLevel({ sessionId: thinking.id, level: "max" }),
     );
     expect(unknown.code).toBe("invalid_params");
     // 文案说清可选档位：客户端能照着它把选择器画出来
     expect(unknown.message).toContain("low / high");
     expect(host.sessions.get(thinking.id)?.thinkingLevel).toBeNull();
 
-    // `model-plain` 没挂档位表：只接受 `null`（跟随助手定义）
+    // `model-plain` 没挂档位表：只接受 `null`（跟随 AgentDefinition）
     const plain = newSession(host);
     const noPreset = await hostErrorOf(
-      host.caller.session.setThinkingLevel({ sessionId: plain.id, level: "high" }),
+      host.caller.session.updateThinkingLevel({ sessionId: plain.id, level: "high" }),
     );
     expect(noPreset.code).toBe("invalid_params");
     expect(noPreset.message).toContain("model-plain");
 
-    const { session: followed } = await host.caller.session.setThinkingLevel({
+    const { session: followed } = await host.caller.session.updateThinkingLevel({
       sessionId: plain.id,
       level: null,
     });
@@ -381,7 +381,7 @@ describe("会话上可改的那几样", () => {
     expect(renamed.code).toBe("not_found");
 
     const leveled = await hostErrorOf(
-      host.caller.session.setThinkingLevel({ sessionId: "没有这一段", level: null }),
+      host.caller.session.updateThinkingLevel({ sessionId: "没有这一段", level: null }),
     );
     expect(leveled.code).toBe("not_found");
   });

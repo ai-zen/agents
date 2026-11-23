@@ -1,5 +1,5 @@
 /**
- * `session.transient`：一次性会话那条路（`dev-docs/prd/04-session.md`「一次性会话：唯一的逃生窗」）。
+ * `runtime.agent.runOnce`：一次性会话那条路（`dev-docs/prd/04-session.md`「一次性会话：唯一的逃生窗」）。
  *
  * 这条路是给「一次调用、一个答案、一个退出码」那种调用方（今天头一个是 CLI 的纯 stdio 模式）
  * 用的：投一句、等它跑到闲、把这一次跑出来的消息带回去。它**不是一段会话的第一次运行**，所以
@@ -11,12 +11,12 @@
  *
  * 入参因此是 `cwd`，不是 `workspaceId`：认项目的话，项目行必须先在，于是每敲一次 `ai "…"`
  * 就多出一条项目行（会话行没了，垃圾还在），而项目「只走显式添加」。这一条路只拿一个目录去装配
- * 能力容器 —— 下面那个「不查项目行」的用例就是这一条的判据。
+ * Scope —— 下面那个「不查项目行」的用例就是这一条的判据。
  *
  * 台架是「真的那一部分尽量真」：真内存库、真 `SessionService` / `WorkspaceService`、**真的能力
  * 容器**（临时目录上现造，工具真的装得上）、真的 OpenAI 兼容端点（`@ai-zen/agents-testing`，
  * 一句话真的发出去、真的流回来）。只有 `runtime` 是替身 —— 这条路只用它的 `scopes.for` 一格，
- * 它**不该**走 `wake`（那造的是常驻执行体），所以那个口给的是一个调用即炸的函数：真被走到，
+ * 它**不该**走 `wake`（那造的是常驻 Agent），所以那个口给的是一个调用即炸的函数：真被走到，
  * 用例当场红，而不是安静地又建出一段会话。
  */
 
@@ -49,7 +49,7 @@ import { sessionTable } from "../session/table.js";
 import { workspaceTable } from "../workspace/table.js";
 import { WorkspaceService } from "../workspace/service.js";
 import type { HostApiDeps } from "./deps.js";
-import { sessionRouter } from "./session.js";
+import { agentRouter } from "./agent.js";
 import { createTrpc } from "./trpc.js";
 
 const WORKSPACE_ID = "ws-1";
@@ -59,14 +59,14 @@ const AGENT_ID = "agent-1";
 const REPLY = "命令行里的一次性答案";
 
 /**
- * 助手定义：模型绑在定义上（三级解析的第二级），模板里一条 system。
+ * AgentDefinition：模型绑在定义上（三级解析的第二级），模板里一条 system。
  *
  * 用例里它同时写进磁盘（`createAgent` 从磁盘读）与交给 `definitions` 替身（`modelAndParamsFor`
  * 读同一份）—— 真宿主上那两份本来就是同一份文件，读出来的东西也必须一样。
  */
 const DEFINITION: AgentDefinition = {
   id: AGENT_ID,
-  name: "助手一",
+  name: "AgentDefinition一",
   modelId: "model-1",
   messages: [Message.System("你是一次性会话，答完就散。")],
   permissions: {
@@ -83,7 +83,7 @@ let dir: string;
 let fake: FakeLlm;
 
 beforeEach(async () => {
-  // 真的临时目录：能力容器的 `cwd` 与 `agentsDir` 都长在它下面，调用时递进去的 `cwd` 也是它
+  // 真的临时目录：Scope 的 `cwd` 与 `agentsDir` 都长在它下面，调用时递进去的 `cwd` 也是它
   dir = await mkdtemp(join(tmpdir(), "ai-zen-transient-"));
   fake = await startFakeLlm({ reply: REPLY });
 });
@@ -125,12 +125,12 @@ async function newHost() {
   const workspaces = new WorkspaceService({ workspaces: workspaceTable(db), t });
   const config = configFor();
 
-  // 助手定义真的写到磁盘上：`createAgent` 那一侧只认文件
+  // AgentDefinition 真的写到磁盘上：`createAgent` 那一侧只认文件
   const agentsDir = join(dir, "agents");
   await mkdir(agentsDir, { recursive: true });
   await writeFile(join(agentsDir, `${AGENT_ID}.json`), JSON.stringify(DEFINITION, null, 2));
 
-  // 真的能力容器：这条路要造执行体，「工具装不装得上」不能是替身说了算
+  // 真的 Scope：这条路要造 Agent，「工具装不装得上」不能是替身说了算
   const scope = new Scope({
     getConfig: () => config,
     agentsDir,
@@ -149,9 +149,9 @@ async function newHost() {
         return scope;
       },
     },
-    // 这条路不该唤醒常驻执行体：真被走到就当场红（而不是安静地建出一段会话）
+    // 这条路不该唤醒常驻 Agent：真被走到就当场红（而不是安静地建出一段会话）
     wake: () => {
-      throw new Error("session.transient 不该走 runtime.wake：那造的是常驻执行体");
+      throw new Error("session.transient 不该走 runtime.wake：那造的是常驻Agent");
     },
   } as unknown as AgentRuntime;
 
@@ -171,7 +171,7 @@ async function newHost() {
   } as unknown as HostApiDeps;
 
   const api = createTrpc(t);
-  const router = api.router({ session: sessionRouter(deps, api) });
+  const router = api.router({ runtime: api.router({ agent: agentRouter(deps, api) }) });
   const caller = router.createCaller({});
 
   return { db, sessions, messages, inbox, caller, scope, asked };
@@ -192,7 +192,7 @@ describe("一次性会话跑一次", () => {
   it("答案回来：回执里最后一条 assistant 的正文就是假端点说的那句", async () => {
     const host = await newHost();
 
-    const { messages } = await host.caller.session.transient({
+    const { messages } = await host.caller.runtime.agent.runOnce({
       cwd: dir,
       agentId: AGENT_ID,
       content: "你好",
@@ -204,21 +204,20 @@ describe("一次性会话跑一次", () => {
     // 那一句真的走出去了：假端点收到一次请求，正文里就是投进去的那句话
     expect(fake.requests).toHaveLength(1);
     expect(JSON.stringify(fake.requests[0]?.body.messages)).toContain("你好");
-    // 容器是按入参那个 `cwd` 取的（能力容器按目录一份，这一步只能由宿主给）
+    // 容器是按入参那个 `cwd` 取的（Scope 按目录一份，这一步只能由宿主给）
     expect(host.asked).toEqual([dir]);
   });
 
   it("一个字都不落库：会话空、消息表空、排队表空", async () => {
     const host = await newHost();
 
-    await host.caller.session.transient({
+    await host.caller.runtime.agent.runOnce({
       cwd: dir,
       agentId: AGENT_ID,
       content: "你好",
     });
 
     // 这一段话没有产生任何一段会话：库里一张行都没有
-    await expect(host.caller.session.list({ workspaceId: WORKSPACE_ID })).resolves.toEqual([]);
     expect(countRows(host.db, "sessions")).toBe(0);
     // 消息与排队区同样一个字都没有：这条路不建 inbox 行、不写消息表
     expect(countRows(host.db, "messages")).toBe(0);
@@ -230,11 +229,11 @@ describe("一次性会话跑一次", () => {
 
     const content: AgentNS.MessageContentSection[] = [
       { type: "text", text: "看这张图" },
-      // 一小段假字节：这一条验的是「段数组能过」，不是真发一张图（宿主不拦、也不读素材库）
+      // 一小段假字节：这一条验的是「段数组能过」，不是真发一张图（宿主不拦、也不读 Asset 库）
       { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
     ];
 
-    const { messages } = await host.caller.session.transient({
+    const { messages } = await host.caller.runtime.agent.runOnce({
       cwd: dir,
       agentId: AGENT_ID,
       content,
@@ -257,7 +256,7 @@ describe("一次性会话跑一次", () => {
     // 也不该把两种写法当成两个目录
     const nowhere = join(dir, "没有项目的目录", "..", "没有项目的目录");
 
-    const { messages } = await host.caller.session.transient({
+    const { messages } = await host.caller.runtime.agent.runOnce({
       cwd: nowhere,
       agentId: AGENT_ID,
       content: "你好",

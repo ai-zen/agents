@@ -1,8 +1,8 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 
-import type { Notice } from "./notice/types.js";
+import type { NoticeRecord } from "./notice/types.js";
 import type { Question } from "./question/types.js";
-import type { Session } from "./session/types.js";
+import type { SessionRecord } from "./session/types.js";
 
 /**
  * 推给客户端的事实。全部是「事实变了」，不是「阶段到了」——所以这里没有「这一轮跑完了」这种东西，
@@ -54,7 +54,7 @@ export type HostEvent =
    * 会话行变了。整个一行带走，不说哪几格动过：新建与改动对客户端是同一个动作 —— 拿这一份
    * 替换掉它手里那一行，要说「变了哪些格」就得让客户端知道宿主每次改了哪几处。
    */
-  | { readonly type: "session.changed"; readonly session: Session }
+  | { readonly type: "session.changed"; readonly session: SessionRecord }
   /**
    * 这一段没了。删成功之后发：发起删除的那个客户端自己会换屏，而同一台机器上另一个连着的客户端
    * 要等到下一次 `session.list` 才会发现列表里少了一段。
@@ -69,7 +69,7 @@ export type HostEvent =
    * 不并进 `session.changed`：交接态不落在会话行上，混进那一行就得给它编一个并不存在的字段。
    */
   | { readonly type: "session.handoff"; readonly sessionId: string; readonly handingOff: boolean }
-  | { readonly type: "notice"; readonly notice: Notice }
+  | { readonly type: "notice"; readonly notice: NoticeRecord }
   /**
    * 清掉了哪一档：清一条带 `id`，清一段会话带 `sessionId`，两格都不带就是清掉了全部。
    * 清掉的若是全局通知，`sessionId` 那一格跟着空：它不属于哪一段，收到的人该动的是自己那个栏位。

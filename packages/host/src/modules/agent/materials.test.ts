@@ -1,12 +1,12 @@
 /**
- * 装到执行体上的那几颗插件（`materialsFor` 交给运行时的 `plugins`）。
+ * 装到 Agent 上的那几颗插件（`materialsFor` 交给运行时的 `plugins`）。
  *
  * 钉住两件事：
  *
  * 1. **硬线真的装上了** —— `ContextGuardPlugin` 与 `SubAgentGuardInstallerPlugin` 一颗都没有
- *    装到执行体上时，撞线照样把请求发出去、等端点回错；这件事不会报错，只会让每一次撞线都变成
+ *    装到 Agent 上时，撞线照样把请求发出去、等端点回错；这件事不会报错，只会让每一次撞线都变成
  *    一次白花的请求。
- * 2. **阈值是取值函数** —— 两条阈值改了不重建执行体（`dev-docs/prd/05-control.md`）：装配那一刻
+ * 2. **阈值是取值函数** —— 两条阈值改了不重建 Agent（`dev-docs/prd/05-control.md`）：装配那一刻
  *    算好的数会把用户之后改的数字钉死。这里改一次会话行上的 `guardThreshold`，再从同一颗插件
  *    （以及它给 subagent 装的那一颗）上验一次判定，看的是新值还是旧值。
  *
@@ -36,7 +36,7 @@ import { noticeTable } from "../notice/table.js";
 import { NoticeService } from "../notice/service.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import { workspaceTable } from "../workspace/table.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { materialsFor } from "./materials.js";
@@ -82,7 +82,7 @@ function newHost() {
     definitions: {
       get: async (): Promise<AgentDefinition> => ({
         id: "agent-1",
-        name: "助手",
+        name: "AgentDefinition",
         messages: [],
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
@@ -107,7 +107,7 @@ function newHost() {
   return { deps, sessions, notices };
 }
 
-/** 一条带用量的助手消息：护栏只从消息上读用量 */
+/** 一条带用量的 AgentDefinition 消息：护栏只从消息上读用量 */
 function answered(promptTokens: number): AgentNS.Message {
   return new Message({
     role: AgentNS.Role.Assistant,
@@ -117,7 +117,7 @@ function answered(promptTokens: number): AgentNS.Message {
   });
 }
 
-/** 假执行体：护栏只看 `agent.messages` */
+/** 假 Agent：护栏只看 `agent.messages` */
 function fakeAgent(promptTokens: number) {
   return { messages: [answered(promptTokens)] };
 }
@@ -132,10 +132,10 @@ function pluginOf<T>(materials: WakeMaterials, type: new (...args: never[]) => T
   return found as T;
 }
 
-describe("装到执行体上的插件", () => {
+describe("装到Agent上的插件", () => {
   it("四颗插件都装上了，阈值是取值函数", async () => {
     const host = newHost();
-    const session: Session = host.sessions.create(input);
+    const session: SessionRecord = host.sessions.create(input);
 
     const materials = await materialsFor(host.deps, session);
 
@@ -152,7 +152,7 @@ describe("装到执行体上的插件", () => {
     const agent = fakeAgent(500);
     await expect(guard.onInnerLoopStart(innerLoopCtx(agent))).resolves.toEqual(expect.any(String));
 
-    // 改会话行上的阈值（不重建执行体）：同一颗插件下一次判定读到的是 600，500 不再超线
+    // 改会话行上的阈值（不重建 Agent）：同一颗插件下一次判定读到的是 600，500 不再超线
     host.sessions.update(session.id, { guardThreshold: 600 });
     await expect(guard.onInnerLoopStart(innerLoopCtx(agent))).resolves.toBeUndefined();
 

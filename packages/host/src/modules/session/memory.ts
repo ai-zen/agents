@@ -5,7 +5,7 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { transaction } from "../../infra/db.js";
 import { messageTable } from "./messages.js";
 import { sessionTable } from "./table.js";
-import type { Session } from "./types.js";
+import type { SessionRecord } from "./types.js";
 
 /**
  * 换记忆要的那一批：旧记忆成为另一段会话，原会话换上新的那一份。
@@ -17,7 +17,7 @@ export interface MemoryReplacement {
   /** 记忆要换掉的那一段，id 不变 */
   readonly sessionId: string;
   /** 存档那一段的会话行：身份照抄原会话，id / 名字 / 创建时刻是新的 */
-  readonly archived: Session;
+  readonly archived: SessionRecord;
   /**
    * 换完之后这段记忆**就是**这一份，含开头那几条系统提示。
    *
@@ -25,7 +25,7 @@ export interface MemoryReplacement {
    */
   readonly memory: readonly AgentNS.Message[];
   /**
-   * `memory` 开头有几条是助手定义带来的系统提示（`agent.definition.messages.length`）。
+   * `memory` 开头有几条是 AgentDefinition 带来的系统提示（`agent.definition.messages.length`）。
    *
    * 这几条不落行：装载时由 `createAgent` 装上，行接在它们后面；落成行，下一次装载就会多一份。
    * 由一个数字说清，而不是在这里按形状猜——模板不一定是「连续的非 hidden system」
@@ -60,7 +60,7 @@ export function replaceMemory(db: DatabaseSync, input: MemoryReplacement): void 
       input.sessionId,
     );
 
-    // 开头那几条是助手定义带来的系统提示，避开它们；断点也是 system，但它 `hidden`——
+    // 开头那几条是 AgentDefinition 带来的系统提示，避开它们；断点也是 system，但它 `hidden`——
     // 它不是模板，是上一代留下的路标，得是行。
     for (const message of input.memory.slice(input.templateCount))
       messages.upsert(input.sessionId, message);

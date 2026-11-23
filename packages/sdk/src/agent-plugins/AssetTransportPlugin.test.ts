@@ -9,20 +9,20 @@
  *
  * 请求体不用手搓：用真的 `Agent` 造一条消息、拿它自己的 `formatHistory()` 当 `ctx.body.messages`
  * —— 这正是运行时那一侧的形状（`formatHistory` 会把 `__asset_id` 剥掉，插件必须靠记忆里那一份
- * 才认得出哪一段是素材引用，这一层不能靠用例自己伪造）。
+ * 才认得出哪一段是 Asset 引用，这一层不能靠用例自己伪造）。
  */
 
 import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import type { InnerLoopContext } from "@ai-zen/agents-core";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AppConfig, Endpoint, ToolEnvDeps } from "../types/index.js";
+import type { AppConfig, EndpointDefinition, ToolEnvDeps } from "../types/index.js";
 import { AssetTransportPlugin } from "./AssetTransportPlugin.js";
 
 const MIME = "image/png";
 
 function configWith(patch: { filesApi?: boolean; vision?: boolean } = {}): AppConfig {
-  const endpoint: Endpoint = {
+  const endpoint: EndpointDefinition = {
     id: "e-1",
     name: "端点一",
     baseUrl: "https://api.example.com/v1",
@@ -44,7 +44,7 @@ function configWith(patch: { filesApi?: boolean; vision?: boolean } = {}): AppCo
   };
 }
 
-/** 一段素材引用：出网的那一份里没有 `__asset_id`（core 的白名单会剥掉），所以它只活在记忆里 */
+/** 一段 Asset 引用：出网的那一份里没有 `__asset_id`（core 的白名单会剥掉），所以它只活在记忆里 */
 function assetSection(assetId: string): AgentNS.MessageContentSection {
   return { type: "image_url", image_url: { url: "" }, __asset_id: assetId } as never;
 }
@@ -92,7 +92,7 @@ describe("AssetTransportPlugin", () => {
 
     expect(sentSections(ctx)[1]).toEqual({ type: "file", file_id: "file-1" });
     expect(upload).toHaveBeenCalledTimes(1);
-    // 不是素材的那一段原样留着（同一个引用，没被重建一遍）
+    // 不是 Asset 的那一段原样留着（同一个引用，没被重建一遍）
     expect(sentSections(ctx)[0]).toEqual({ type: "text", text: "看图" });
   });
 
@@ -123,7 +123,7 @@ describe("AssetTransportPlugin", () => {
     expect(sections.every((section) => section.type === "text")).toBe(true);
     const text = sections.map((section) => (section as { text?: string }).text ?? "").join("\n");
     expect(text).toContain("The current model does not support image input");
-    // 说的是哪一份素材也得在
+    // 说的是哪一份 Asset 也得在
     expect(text).toContain("图-a-1.png");
   });
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Scope } from "../../Scope.js";
 import { McpConnectionManager } from "./McpConnectionManager.js";
 import { McpScopePlugin, staleMcpConnections } from "./McpScopePlugin.js";
-import type { AgentDefinition, AppConfig, McpServerConfig } from "../../../types/index.js";
+import type { AgentDefinition, AppConfig, McpServerDefinition } from "../../../types/index.js";
 
 /**
  * MCP 连接与发现结果的对账。
@@ -17,11 +17,11 @@ import type { AgentDefinition, AppConfig, McpServerConfig } from "../../../types
 const CONFIG: AppConfig = { endpoints: [], models: [] };
 
 /** 一个 stdio 定义（覆盖时只写关心的字段） */
-function stdio(id: string, extra: Partial<McpServerConfig> = {}): McpServerConfig {
+function stdio(id: string, extra: Partial<McpServerDefinition> = {}): McpServerDefinition {
   return { id, transport: "stdio", command: "gh", ...extra };
 }
 
-function http(id: string, extra: Partial<McpServerConfig> = {}): McpServerConfig {
+function http(id: string, extra: Partial<McpServerDefinition> = {}): McpServerDefinition {
   return { id, transport: "http", url: "https://example.test/mcp", ...extra };
 }
 
@@ -31,7 +31,7 @@ describe("staleMcpConnections — 哪些连接该断", () => {
   });
 
   it("定义变了的要断：command / args / env / url / headers / transport 任一不同", () => {
-    const cases: McpServerConfig[][] = [
+    const cases: McpServerDefinition[][] = [
       [stdio("s"), stdio("s", { command: "gh-next" })],
       [stdio("s"), stdio("s", { args: ["--stdio"] })],
       [stdio("s", { env: { TOKEN: "旧" } }), stdio("s", { env: { TOKEN: "新" } })],
@@ -54,7 +54,7 @@ describe("staleMcpConnections — 哪些连接该断", () => {
       description: "旧描述",
     });
     // 同一个的定义，只是对象键的书写顺序不同 + description 换了
-    const after: McpServerConfig = {
+    const after: McpServerDefinition = {
       description: "新描述",
       env: { B: "2", A: "1" },
       args: ["--a", "--b"],

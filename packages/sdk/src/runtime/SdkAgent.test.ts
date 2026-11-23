@@ -133,7 +133,7 @@ describe("SdkAgent", () => {
    * 一次调用钉住三个字段都换了、定义上的 `modelId` 也换了，而记忆一个字节没动。
    *
    * 前两件事是「下一次请求按新的走」（请求体在发请求那一刻从这三格拼出来），第三件事是
-   * 「换模型不等于杀执行体」：真正被换掉的只有构造参议。
+   * 「换模型不等于杀 Agent」：真正被换掉的只有构造参议。
    */
   it("useModel 就地刷新：client / model / modelConfig 与定义上的 modelId 一起换，记忆不动", () => {
     const agent = createTestAgent({ scope: modelScope() });
@@ -241,7 +241,7 @@ describe("SdkAgent", () => {
       expect(Array.isArray(ctx.body.messages)).toBe(true);
     });
 
-    it("onInnerLoopStart 能改请求体里的 messages（素材还原走的就是这一缝）", async () => {
+    it("onInnerLoopStart 能改请求体里的 messages（Asset还原走的就是这一缝）", async () => {
       const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
       const agent = createTestAgent({ client });
 

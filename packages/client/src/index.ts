@@ -109,17 +109,17 @@ export type {
 /**
  * 契约类型的转出（只转出形状，运行期不 import 宿主）。
  *
- * 上层只用这个包时也要能写出「一段会话」「一份素材」这种类型，所以跨 wire 的那几个行形状
- * （`Session` / `Workspace` / `Asset` / `Notice` / `Question`）与事件流一起从这里出去 ——
+ * 上层只用这个包时也要能写出「一段会话」「一份 Asset」这种类型，所以跨 wire 的那几个行形状
+ * （`SessionRecord` / `WorkspaceRecord` / `AssetRecord` / `NoticeRecord` / `Question`）与事件流一起从这里出去 ——
  * 它们的定义仍然只有宿主那一份，客户端不包一层。
  */
 export type { AppRouter, HostEvent } from "@ai-zen/agents-host";
 export type {
-  Asset,
+  AssetRecord,
   Choice,
-  Notice,
+  NoticeRecord,
   NoticeLevel,
   Question,
-  Session,
-  Workspace,
+  SessionRecord,
+  WorkspaceRecord,
 } from "@ai-zen/agents-host";

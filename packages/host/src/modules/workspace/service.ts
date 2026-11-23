@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
 import type { workspaceTable } from "./table.js";
-import type { Workspace } from "./types.js";
+import type { WorkspaceRecord } from "./types.js";
 
 /** `SQLITE_CONSTRAINT_UNIQUE`：`node:sqlite` 只报这个数，没有具名的错误类型 */
 const UNIQUE_VIOLATION = 2067;
@@ -21,8 +21,8 @@ export class WorkspaceService {
   constructor(private readonly deps: WorkspaceDeps) {}
 
   /** `cwd` 在这一步归一化一次，此后库里那一格就是绝对路径，读写都拿它当身份 */
-  create(name: string, cwd: string): Workspace {
-    const workspace: Workspace = {
+  create(name: string, cwd: string): WorkspaceRecord {
+    const workspace: WorkspaceRecord = {
       id: crypto.randomUUID(),
       name,
       cwd: resolve(cwd),
@@ -46,15 +46,15 @@ export class WorkspaceService {
     return workspace;
   }
 
-  get(id: string): Workspace | undefined {
+  get(id: string): WorkspaceRecord | undefined {
     return this.deps.workspaces.get(id);
   }
 
-  list(): Workspace[] {
+  list(): WorkspaceRecord[] {
     return this.deps.workspaces.list();
   }
 
-  rename(id: string, name: string): Workspace {
+  rename(id: string, name: string): WorkspaceRecord {
     return this.update(id, { name });
   }
 
@@ -62,7 +62,10 @@ export class WorkspaceService {
    * 需要改哪一格就合并哪一格。`cwd` 与 `createdAt` 不在 patch 里：项目没有搬家的动作，
    * 创建时间也不是可改的事实。
    */
-  update(id: string, patch: Partial<Omit<Workspace, "id" | "cwd" | "createdAt">>): Workspace {
+  update(
+    id: string,
+    patch: Partial<Omit<WorkspaceRecord, "id" | "cwd" | "createdAt">>,
+  ): WorkspaceRecord {
     const current = this.deps.workspaces.get(id);
     if (current === undefined) {
       throw new HostError(
@@ -72,7 +75,7 @@ export class WorkspaceService {
       );
     }
 
-    const next: Workspace = { ...current, ...patch };
+    const next: WorkspaceRecord = { ...current, ...patch };
     this.deps.workspaces.put(next);
     return next;
   }

@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 
-import { discoverMcpServers, type LogSink, type McpServerConfig } from "@ai-zen/agents-sdk";
+import { discoverMcpServers, type LogSink, type McpServerDefinition } from "@ai-zen/agents-sdk";
 
 import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
@@ -57,10 +57,10 @@ export class McpConfig {
   constructor(private readonly deps: McpConfigDeps) {}
 
   /**
-   * 合并后的有效清单。停用的条目自己也不在里面，而且它取消了远处同名的定义 —— 都是 SDK 的
+   * 合并后的有效清单。停用的 InboxEntry 自己也不在里面，而且它取消了远处同名的定义 —— 都是 SDK 的
    * 发现做的。所以「把一条停用的配置重新启用」读的是它所在的那层文件，不是这份清单。
    */
-  async effective(cwd: string): Promise<McpServerConfig[]> {
+  async effective(cwd: string): Promise<McpServerDefinition[]> {
     return discoverMcpServers(this.paths(cwd), { logger: this.deps.log });
   }
 
@@ -75,13 +75,13 @@ export class McpConfig {
    * 名字先被近层认领，远处同名的就不再出现：与 `discoverMcpServers` 同一个口径 —— 写成
    * `disabled: true` 的那一条同样占住名字，它是对这个名字的发言，不是「这一层没提过它」。
    */
-  async describe(cwd: string): Promise<Array<{ server: McpServerConfig; scope: McpScope }>> {
+  async describe(cwd: string): Promise<Array<{ server: McpServerDefinition; scope: McpScope }>> {
     // 能连成一份完整配置的那几条用有效清单里这一份：它已经归一过别名（`type` / `transport` /
     // `transportType`、没写 type 时由 command / url 推断出来的 transport）。
     const connectable = new Map((await this.effective(cwd)).map((server) => [server.id, server]));
 
     const seen = new Set<string>();
-    const items: Array<{ server: McpServerConfig; scope: McpScope }> = [];
+    const items: Array<{ server: McpServerDefinition; scope: McpScope }> = [];
 
     for (const scope of LAYER_ORDER) {
       const servers = this.readRaw(this.pathOf(scope, cwd));
@@ -92,7 +92,7 @@ export class McpConfig {
         if (typeof entry !== "object" || entry === null) continue;
         seen.add(name);
 
-        // 连不上的（停用的、或条目本身不合法：没有 type 也推不出 transport）用这一层的原始条目
+        // 连不上的（停用的、或 InboxEntry 本身不合法：没有 type 也推不出 transport）用这一层的原始 InboxEntry
         // 拼一份 —— 界面要显示的是「这条写在这里」，不是「这条连得上」。
         items.push({
           server: connectable.get(name) ?? serverOf(name, entry as Record<string, unknown>),
@@ -104,7 +104,7 @@ export class McpConfig {
     return items;
   }
 
-  async save(scope: McpScope, cwd: string, server: McpServerConfig): Promise<void> {
+  async save(scope: McpScope, cwd: string, server: McpServerDefinition): Promise<void> {
     const path = this.writablePath(scope, cwd);
     this.mutate(path, (servers) => {
       const existing = servers[server.id] ?? {};
@@ -168,7 +168,7 @@ export class McpConfig {
   }
 
   /**
-   * 改一层并写回**原文件的内容**：只动被点名的那一条，文件里其他键、条目上这一版不认识的键
+   * 改一层并写回**原文件的内容**：只动被点名的那一条，文件里其他键、InboxEntry 上这一版不认识的键
    * 都原样留着。所以这里改的是解析出来的原始对象，而不是归一化之后的那一份 —— 归一化会把
    * 未知键去掉，用它写回等于把别人的字段洗掉了。
    */
@@ -180,7 +180,7 @@ export class McpConfig {
   }
 
   /**
-   * 这一层文件里的原始条目，读不出来时当它空着。
+   * 这一层文件里的原始 InboxEntry，读不出来时当它空着。
    *
    * 与 {@link readForWrite} 是同一份解析口径（同一个 `readTextFile` + `parseRawFile`），但**不抛**：
    * 合并那一路本来就是这么处置坏文件的（由 SDK 的发现记一句日志），把它改成抛错会让界面
@@ -215,7 +215,7 @@ type RawServers = Record<string, Record<string, unknown> | undefined>;
 /**
  * 文件原样：`mcpServers` 之外这一版不认识的键也要能带着走，所以不定成精确形状。
  *
- * 条目里的键同样不归这一层管 —— 认识哪些写法是 SDK 的事，这里只保证没认出来的那些原样回去。
+ * InboxEntry 里的键同样不归这一层管 —— 认识哪些写法是 SDK 的事，这里只保证没认出来的那些原样回去。
  */
 interface RawFile {
   mcpServers: RawServers;
@@ -236,7 +236,7 @@ function parseRawFile(text: string | undefined): RawFile | undefined {
 }
 
 /**
- * 用某一层文件里的原始条目拼一份 `McpServerConfig`。
+ * 用某一层文件里的原始 InboxEntry 拼一份 `McpServerDefinition`。
  *
  * 只有连不上的那几条走到这里，所以它只保证「这条写在这里、长这样」，不保证连得上。认的字段与
  * SDK 的归一化同一份（`discover.ts` 的 `normalizeConfig`）：多认一格，界面就会显示一个写回去
@@ -245,7 +245,7 @@ function parseRawFile(text: string | undefined): RawFile | undefined {
  * `transport` 认不出来时按 `"stdio"` 填：缺一格不该让这条从界面上消失，而界面要选的默认值就是
  * 那个最常用的。
  */
-function serverOf(name: string, raw: Record<string, unknown>): McpServerConfig {
+function serverOf(name: string, raw: Record<string, unknown>): McpServerDefinition {
   const declared = raw.type ?? raw.transport ?? raw.transportType;
   return {
     // 名字就是这一层文件里的那个键：它是这一条的 id，也是 `remove` 认的那一格
@@ -262,7 +262,7 @@ function serverOf(name: string, raw: Record<string, unknown>): McpServerConfig {
     // oauth 是对象就原样带上，否则视为没配（与 SDK 同一判据）
     oauth:
       typeof raw.oauth === "object" && raw.oauth !== null && !Array.isArray(raw.oauth)
-        ? (raw.oauth as McpServerConfig["oauth"])
+        ? (raw.oauth as McpServerDefinition["oauth"])
         : undefined,
   };
 }
@@ -271,7 +271,7 @@ function serverOf(name: string, raw: Record<string, unknown>): McpServerConfig {
 function transportOf(
   declared: unknown,
   raw: Record<string, unknown>,
-): McpServerConfig["transport"] {
+): McpServerDefinition["transport"] {
   if (declared === "stdio" || declared === "http" || declared === "sse") return declared;
   if (raw.url !== undefined) return "http";
   return "stdio";
@@ -281,7 +281,7 @@ function transportOf(
  * 写回时传输方式改回文件里的那个键名。读的时候几个别名都认（那是 SDK 的归一化），写只写标准
  * 那一个：一份文件里同时留着 `type` 与 `transport` 之后，人改哪一个都可能不生效。
  */
-function entryOf(server: McpServerConfig): Record<string, unknown> {
+function entryOf(server: McpServerDefinition): Record<string, unknown> {
   const { id: _id, transport, ...rest } = server;
   return { ...rest, type: transport };
 }

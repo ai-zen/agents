@@ -42,7 +42,7 @@ describe("集成：端到端 Agent 组装", () => {
       id: "my-agent",
       name: "My Agent",
       modelId: "gpt4",
-      messages: [Message.System("你是一个专业的代码助手。")],
+      messages: [Message.System("你是一个专业的代码AgentDefinition。")],
       permissions: {
         tools: { allow: ["read", "exec", "glob", "find_text"] },
         skills: { allow: ["code-review"] },
@@ -95,7 +95,7 @@ describe("集成：端到端 Agent 组装", () => {
       allow: ["read", "exec", "glob", "find_text"],
     });
 
-    expect(agent.messages[0].content).toBe("你是一个专业的代码助手。");
+    expect(agent.messages[0].content).toBe("你是一个专业的代码AgentDefinition。");
 
     const toolNames = agent.tools.map((t: Tool) => t.function.name);
     expect(toolNames).toContain("read");

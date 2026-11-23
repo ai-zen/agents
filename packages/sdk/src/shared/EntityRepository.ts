@@ -43,7 +43,7 @@ export class EntityRepository<T extends { id: string }> {
   /**
    * 列出目录下所有实体。
    *
-   * 一个坏文件只影响它自己那一行（宿主的「这个模型被哪个助手引用」读的是整张表），所以
+   * 一个坏文件只影响它自己那一行（宿主的「这个模型被哪个 AgentDefinition 引用」读的是整张表），所以
    * 这里接住并报一句：跳过的是这一条，不是整张表。
    */
   async list(): Promise<T[]> {

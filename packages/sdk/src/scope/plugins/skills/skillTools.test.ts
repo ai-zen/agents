@@ -93,7 +93,7 @@ describe("createLoadSkillTool", () => {
     const agent = new Agent({
       client: {} as any,
       model: "test",
-      messages: [Message.System("你是一个助手")],
+      messages: [Message.System("你是一个AgentDefinition")],
       tools: [],
     });
 
@@ -244,7 +244,7 @@ describe("createCallSkillSubAgentTool", () => {
     expect(captured!.messages[1].source).toEqual({ kind: "agent", label: "call_skill_sub_agent" });
   });
 
-  it("被派出去的执行体没有平级会话那三个工具，别的工具还在", async () => {
+  it("被派出去的Agent没有平级会话那三个工具，别的工具还在", async () => {
     writeSkill("git", "# Git operations guide", { subAgent: true });
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
 
@@ -259,7 +259,7 @@ describe("createCallSkillSubAgentTool", () => {
         callback: () => "ok",
       });
 
-    // 父 Agent 手上有 `read`，也有平级会话那三个
+    // 父 Agent 手上有 `read`，也有 PeerSession 那三个
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
@@ -281,7 +281,7 @@ describe("createCallSkillSubAgentTool", () => {
     expect(result).toBe("sub-agent result");
     expect(captured).toBeDefined();
     const subAgentNames = captured!.tools.map((t) => t.function.name);
-    // 平级会话是会话级能力：父会话的执行体可以有，被派出去的没有
+    // PeerSession 是会话级能力：父会话的 Agent 可以有，被派出去的没有
     for (const name of PEER_SESSION_TOOL_NAMES) {
       expect(subAgentNames).not.toContain(name);
     }

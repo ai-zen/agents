@@ -7,11 +7,11 @@ import type { LogSink } from "@ai-zen/agents-logger";
 /** 投递这一条要用到的两件事，都由装配根从运行时现取 */
 export interface McpTaskNoticeDeps {
   /**
-   * 这一段此刻活着的执行体。**只有运行时答得出来**：宿主这一侧不留存活表。
+   * 这一段此刻活着的 Agent。**只有运行时答得出来**：宿主这一侧不留存活表。
    * `undefined` 就是那段已经不在（被杀、被删会话，或者进程重启后还没人叫醒它）。
    */
-  readonly alive: (sessionId: string) => Pick<SdkAgent, "push"> | undefined;
-  /** 这个执行体属于哪一段会话；被派出去的那个不属于任何一段 */
+  readonly alive: (sessionId: string) => Pick<SdkAgent, "send"> | undefined;
+  /** 这个 Agent 属于哪一段会话；被派出去的那个不属于任何一段 */
   readonly sessionOf: (agent: Agent) => string | undefined;
   readonly log: LogSink;
 }
@@ -21,7 +21,7 @@ export interface McpTaskNoticeDeps {
  *
  * 两件事只在这里做：
  *
- * - **投**：`agent.push()` 进队列。落库与推给客户端不在这里 —— 那条路已经有一份（观察者听
+ * - **投**：`agent.send()` 进队列。落库与推给客户端不在这里 —— 那条路已经有一份（观察者听
  *   `inboxAdded` 写 `inbox` 表、推 `agent.inbox`），再走一遍就是第二条投递路。
  * - **丢**：那段会话已经不在，就把这条通知丢掉并留一行日志。不唤醒、不建行、不留半条 ——
  *   一条服务器推来的通知不该把一段死会话叫起来（`PRD.md` 4.1）。
@@ -48,7 +48,7 @@ export function createMcpTaskNoticePort(deps: McpTaskNoticeDeps): McpTaskNoticeP
       };
 
       try {
-        agent.push(entry);
+        agent.send(entry);
       } catch (error) {
         // 队列已经不收件（这一段正在被收掉）：同样只是一条没有去处的通知，丢掉并留一行
         deps.log.warn(
@@ -67,7 +67,7 @@ export function createMcpTaskNoticePort(deps: McpTaskNoticeDeps): McpTaskNoticeP
  * 这条通知在会话里说的那句话。
  *
  * 三件事都得说清：任务 id、终态是什么、结果去哪儿取（工具名与两个参数）。少一件，读这句话的
- * 执行体就会去找一个不存在的地方，或者以为结果会自己回来。
+ * Agent 就会去找一个不存在的地方，或者以为结果会自己回来。
  */
 function noticeText(notice: McpTaskNotice): string {
   const where = `{"server":"${notice.server}","task_id":"${notice.taskId}"}`;

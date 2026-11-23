@@ -10,7 +10,7 @@ import type { messageTable } from "./messages.js";
 import type { SessionService } from "./service.js";
 
 /**
- * 撤回要经过的五个域。都是域服务而不是表：每一步都要先读出事实、再动库，而素材要连同盘上的
+ * 撤回要经过的五个域。都是域服务而不是表：每一步都要先读出事实、再动库，而 Asset 要连同盘上的
  * 字节一起收。
  *
  * `runtime` 只为了两件事：它忙不忙（跑着的时候不许撤），以及记忆里活着的那一份在哪里。
@@ -36,13 +36,13 @@ export interface RewindDeps {
  * 2. 目标消息不存在、或不属于这一段 → `not_found`（`messageId` 是客户端给的，它可能属于另一段
  *    会话，也可能那条已经没了）；
  * 3. **只认用户自己说的话**：`role === "user"` 且 `source?.kind === "user"`，别的一律
- *    `invalid_params`。助手的话与工具结果不是「自己说过的话」，撤回它们的语义另说（撤回一条
- *    助手回复等于什么？它后面的工具调用要不要一起作废？），这一版不做；
+ *    `invalid_params`。AgentDefinition 的话与工具结果不是「自己说过的话」，撤回它们的语义另说（撤回一条
+ *    AgentDefinition 回复等于什么？它后面的工具调用要不要一起作废？），这一版不做；
  * 4. **跑着的时候不许撤**：`working` 时记忆正被写（`PRD.md` 4.1：没在跑的时候才可以直接改
  *    记忆），从外面 `splice` 一手就是两个东西同时改同一个数组；
  * 5. 硬删：这一段历史里**从这一条起（含）到最后**的消息逐条删行；记忆里活着的那一份用
- *    `splice` **就地**删（不换数组引用 —— 执行体自己拿着那个数组，换一个它看不见）；
- * 6. 素材：删之前把这几个 id 收起来（`assets.listBySession` 是按「这一段的消息引用了哪些」
+ *    `splice` **就地**删（不换数组引用 —— Agent 自己拿着那个数组，换一个它看不见）；
+ * 6. Asset：删之前把这几个 id 收起来（`assets.listBySession` 是按「这一段的消息引用了哪些」
  *    查的，所以收起的是整段的引用，删完之后由 `sweepUnreferenced` 逐个判「还剩不剩引用」
  *    —— 还被活下来的消息引用的那些会原地留下）；
  * 7. 删掉的每一条推一条 `message.removed`，客户端据此把行去掉；
@@ -78,12 +78,12 @@ export function rewindTo(
 
   const target = history[index]!;
 
-  // 3. 只认用户自己说的话：助手的话、工具结果、宿主注入的那几条（`source.kind` 是 `system` /
+  // 3. 只认用户自己说的话：AgentDefinition 的话、工具结果、宿主注入的那几条（`source.kind` 是 `system` /
   // `agent`）都不是「自己说过的话」。
   if (target.role !== AgentNS.Role.User || target.source?.kind !== "user") {
     throw new HostError(
       "invalid_params",
-      deps.t("只能撤回到自己说过的话之前：助手的话与工具结果不是这个意思"),
+      deps.t("只能撤回到自己说过的话之前：AgentDefinition的话与工具结果不是这个意思"),
       { entity: "message", sessionId, messageId, role: target.role },
     );
   }
@@ -97,7 +97,7 @@ export function rewindTo(
     });
   }
 
-  // 6 的前半步：素材 id 必须在删之前收。消息行一没，关联行跟着级联消失，删完再问「这一段引用过
+  // 6 的前半步：Asset id 必须在删之前收。消息行一没，关联行跟着级联消失，删完再问「这一段引用过
   // 什么」只会得到空。
   const assetIds = deps.assets.listBySession(sessionId).map((asset) => asset.id);
 
@@ -107,14 +107,14 @@ export function rewindTo(
   for (const message of doomed) deps.messages.delete(message.id);
 
   if (agent !== undefined) {
-    // 就地删：`splice` 从目标那条起一直切到末尾，**不换数组引用**（执行体自己拿着它）。
-    // 按 id 找下标而不是直接用上面那个：记忆里前面还接着助手定义带来的系统提示，两边的下标
+    // 就地删：`splice` 从目标那条起一直切到末尾，**不换数组引用**（Agent 自己拿着它）。
+    // 按 id 找下标而不是直接用上面那个：记忆里前面还接着 AgentDefinition 带来的系统提示，两边的下标
     // 不是一个。记忆里找不到这一条（理论上不会）就什么都不动。
     const at = agent.messages.findIndex((message) => message.id === messageId);
     if (at !== -1) agent.messages.splice(at);
   }
 
-  // 6 的后半步：扫的是刚收起来的那一份，不是全表 —— 只有这一段引用过的素材可能刚刚失去最后的
+  // 6 的后半步：扫的是刚收起来的那一份，不是全表 —— 只有这一段引用过的 Asset 可能刚刚失去最后的
   // 引用。它排在删消息之后：关联行要真的没了，`countByAsset` 才会归零。
   deps.assets.sweepUnreferenced(assetIds);
 

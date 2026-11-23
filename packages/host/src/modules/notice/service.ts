@@ -3,7 +3,7 @@ import type { LogSink } from "@ai-zen/agents-logger";
 import type { Bus } from "../../infra/bus.js";
 import type { HostEvent } from "../events.js";
 import type { noticeTable } from "./table.js";
-import type { Notice } from "./types.js";
+import type { NoticeRecord } from "./types.js";
 
 export interface NoticeDeps {
   readonly notices: ReturnType<typeof noticeTable>;
@@ -19,8 +19,8 @@ export class NoticeService {
   constructor(private readonly deps: NoticeDeps) {}
 
   /** `message` 由调用方按当前语言渲染好：文案只有一个产生点，服务层不碰文字 */
-  push(input: Omit<Notice, "id" | "createdAt">): Notice {
-    const notice: Notice = {
+  push(input: Omit<NoticeRecord, "id" | "createdAt">): NoticeRecord {
+    const notice: NoticeRecord = {
       id: crypto.randomUUID(),
       ...input,
       createdAt: Date.now(),
@@ -39,7 +39,7 @@ export class NoticeService {
    * 句子，而宿主自己的日志一律英文、面向开发者与日志聚合 —— 按语言分叉的句子在日志里既筛不
    * 出来，也没法聚合。
    */
-  private report(notice: Notice): void {
+  private report(notice: NoticeRecord): void {
     if (notice.level !== "warning" && notice.level !== "error") return;
     const detail = {
       id: notice.id,
@@ -51,11 +51,11 @@ export class NoticeService {
     else this.deps.log.warn("Notice", detail);
   }
 
-  list(): Notice[] {
+  list(): NoticeRecord[] {
     return this.deps.notices.list();
   }
 
-  listBySession(sessionId: string): Notice[] {
+  listBySession(sessionId: string): NoticeRecord[] {
     return this.deps.notices.listBySession(sessionId);
   }
 
@@ -73,7 +73,7 @@ export class NoticeService {
    * 清一条：回删掉的那一条，不存在的 id 回 `undefined`。不存在不是错误 —— 两个客户端同时清同一条，
    * 后到的那个本来就该拿到「没改动」。
    */
-  clearOne(id: string): Notice | undefined {
+  clearOne(id: string): NoticeRecord | undefined {
     const notice = this.deps.notices.removeOne(id);
     if (notice === undefined) return undefined;
     // 事件带上会话 id：别的客户端据此只动那一段的通知栏；全局那一条不属于任何一段，每段的栏位都得动。

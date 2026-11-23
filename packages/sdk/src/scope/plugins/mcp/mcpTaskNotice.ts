@@ -37,7 +37,7 @@ export interface McpTaskNotice {
  * 都不在 SDK 手里：谁活着、往哪张表写、推给哪个客户端，只有宿主答得出来。所以这里只留一个形状，
  * 由宿主实现，连接管理器只认这两个方法：
  *
- * - {@link McpTaskNoticePort.sessionOf}：发起调用的执行体属于哪一段会话；
+ * - {@link McpTaskNoticePort.sessionOf}：发起调用的 Agent 属于哪一段会话；
  * - {@link McpTaskNoticePort.deliver}：把一条终态通知投进那段会话。
  *
  * SDK 这一侧不记「谁活着」：任务 id 到会话 id 的对应关系留在连接管理器里（进程没了就没了，
@@ -45,14 +45,14 @@ export interface McpTaskNotice {
  */
 export interface McpTaskNoticePort {
   /**
-   * 这个执行体属于哪一段会话；不属于任何一段（被派出去的 subagent、一次性执行体）时是
+   * 这个 Agent 属于哪一段会话；不属于任何一段（被派出去的 subagent、一次性 Agent）时是
    * `undefined` —— 那种调用发起的任务没有会话可以回报。
    */
   sessionOf(agent: Agent): string | undefined;
   /**
    * 把一条终态通知投进那段会话的 inbox。
    *
-   * 返回 `false` 表示那段会话已经不在（没有执行体），这条通知被丢掉了 —— 投递不创建、也不复活
+   * 返回 `false` 表示那段会话已经不在（没有 Agent），这条通知被丢掉了 —— 投递不创建、也不复活
    * 会话，丢不丢、记不记日志都由实现那一侧决定，调用方拿到 `false` 只是不再往下做。
    */
   deliver(sessionId: string, notice: McpTaskNotice): Promise<boolean>;

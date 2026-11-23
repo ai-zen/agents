@@ -10,7 +10,7 @@ export interface ContextGuardOptions {
    * 想调松就把它调大，「安全边界写多少就是多少」比「隐式乘以某个系数」可预测得多。
    *
    * 这一格可以是一个 getter（`get guardTokens(): number`）：那样每次判定都现读，改阈值不必
-   * 重建执行体（两条阈值改了不重建 agent，见 `dev-docs/prd/05-control.md`）。
+   * 重建 Agent（两条阈值改了不重建 agent，见 `dev-docs/prd/05-control.md`）。
    */
   guardTokens: number;
 }
@@ -41,11 +41,11 @@ export interface ContextGuardOptions {
  * ## 为什么是「返回字符串」而不是「抛错」
  *
  * 新 core（`CORE.md` §11）里 `onInnerLoopStart` 能拒：**返回 string = 这一次请求压根没发出去**
- * —— 不会留下一类「永远 Pending 的助手占位」，core 报一个 `denied` 事件（带钩子名与理由），
+ * —— 不会留下一类「永远 Pending 的 AgentDefinition 占位」，core 报一个 `denied` 事件（带钩子名与理由），
  * 然后回外循环等下一个事件，循环还活着。
  *
  * 抛错不是「更硬的拒绝」：钩子里的异常会穿到 `start()` 外面，把整个循环打死
- * （`start()` 的 promise 直接 resolve、循环不再取件），agent 从此变成「塞进去也不动」的
+ * （`start()` 的 promise 直接 resolve、循环不再取走），agent 从此变成「塞进去也不动」的
  * 僵尸。这也是为什么老的「抛 `ContextOverflowError` 让上层接住」不能照搬 —— 上层现在能从
  * `denied` 事件和 `message` 的历史里看到同一件事，不需要一个把 agent 弄死的异常。
  */

@@ -55,7 +55,7 @@ type Listener = (payload: any) => void;
 /**
  * 假 agent：只实现 `HandoffService` 用到的表面。
  *
- * 常驻会话没有 `send()`（`CORE.md` §1）：自交接靠「`push` 一条指令」，判据是那次写文档
+ * 常驻会话没有 `sendAndWait()`（`CORE.md` §1）：自交接靠「`send` 一条指令」，判据是那次写文档
  * 的**工具调用**。所以这个替身要把 core 那条路的三样东西都演出来：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
  *   - `push(entry)`：落一条 user 消息 → 变 `working` → 这一批（`onOuterLoopStart`）→ 跑脚本
@@ -74,21 +74,21 @@ class FakeAgent {
   model = "fake-model";
   modelConfig: Record<string, unknown> = {};
   scope = { cwd: process.cwd() };
-  /** 投进来的指令正文（`push` 收到的 `entry.content`） */
+  /** 投进来的指令正文（`send` 收到的 `entry.content`） */
   sent: string[] = [];
   plugins: any[] = [];
   client: any;
   /** 常驻会话：自交接要求 agent 能「再问一次」 */
   lifetime = "resident";
   state: "working" | "idle" = "idle";
-  /** 还取不取件（另一处状态，不影响 `state`） */
+  /** 还取不取走（另一处状态，不影响 `state`） */
   private outputPaused = false;
 
   get isOutputPaused(): boolean {
     return this.outputPaused;
   }
 
-  /** 关输出闸（与 core 同口径：发事件 + 跑钩子） */
+  /** 关输出开关（与 core 同口径：发事件 + 跑钩子） */
   pauseOutput(): void {
     if (this.outputPaused) return;
     this.outputPaused = true;
@@ -96,13 +96,13 @@ class FakeAgent {
     void this.dispatch("onOutputPaused", { agent: this });
   }
 
-  /** 用户按了停（与 core 同口径：关闸 + 报「有人按了停」） */
+  /** 用户按了停（与 core 同口径：关开关 + 报「有人按了停」） */
   abort(): void {
     this.pauseOutput();
     void this.dispatch("onAbort", { agent: this });
   }
 
-  /** 开输出闸 */
+  /** 开输出开关 */
   resumeOutput(): void {
     if (!this.outputPaused) return;
     this.outputPaused = false;
@@ -235,7 +235,7 @@ class FakeAgent {
 
   // ---- 投递 ----
 
-  push(entry: any): void {
+  send(entry: any): void {
     if (this.closed) {
       throw new AgentError("closed", "往已经关了的 agent 投递");
     }
@@ -403,11 +403,11 @@ describe("handoff", () => {
     expect(agent.sent[0]).not.toContain(FALLBACK_HANDOFF_TEMPLATE.split("\n")[0] + "\n");
   });
 
-  it("交接期间关着输出闸，但 SDK 不开闸（开闸在宿主交接收口）", async () => {
+  it("交接期间关着输出开关，但 SDK 不开开关（开开关在宿主交接收口）", async () => {
     let pausedAtCommit: boolean | undefined;
     const { service } = await makeService({
       onHandoff: (ctx) => {
-        // 宿主换记忆就发生在这一钩子里：此刻闸必须是关的，否则这期间落进来的话会被一起挪进存档
+        // 宿主换记忆就发生在这一钩子里：此刻开关必须是关的，否则这期间落进来的话会被一起挪进存档
         pausedAtCommit = (ctx.agent as any).isOutputPaused;
       },
     });
@@ -418,12 +418,12 @@ describe("handoff", () => {
 
     expect(ctx.mode).toBe("self");
     expect(pausedAtCommit).toBe(true);
-    // 拿到写文档结果时换记忆还没发生：此刻开闸会让这期间落进来的话落进旧记忆
+    // 拿到写文档结果时换记忆还没发生：此刻开开关会让这期间落进来的话落进旧记忆
     expect(resume).not.toHaveBeenCalled();
     expect(agent.isOutputPaused).toBe(true);
   });
 
-  it("summary 那一档也一样：自己关闸，也不开回来", async () => {
+  it("summary 那一档也一样：自己关开关，也不开回来", async () => {
     let pausedAtCommit: boolean | undefined;
     const { service } = await makeService({
       mode: "summary",
@@ -443,7 +443,7 @@ describe("handoff", () => {
     expect(agent.isOutputPaused).toBe(true);
   });
 
-  it("取消（用户按了停）之后不替他把闸开回来", async () => {
+  it("取消（用户按了停）之后不替他把开关开回来", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({
       onSend: (_content, _nth, self) => {
@@ -521,7 +521,7 @@ describe("handoff", () => {
 
     const guard = agent.plugins.find((p) => p instanceof HandoffGuardPlugin)!;
     expect(guard.armed).toBe(false);
-    // 闸还关着（开闸归宿主）：不开回来，下一趟的第一句就是「会话不收件」
+    // 开关还关着（开开关归宿主）：不开回来，下一趟的第一句就是「会话不收件」
     agent.resumeOutput();
     // 同一 agent 反复交接不重复注册守卫
     await service.handoff({ agent: asAgent(agent) });
@@ -543,7 +543,7 @@ describe("handoff", () => {
   it("agent 不收件时这一趟失败，报的是「会话不收件」", async () => {
     // 不收件时 `push` 只会排队，等 resumeOutput 之后突然自己跑起来 —— 那是「用户让它停却看见
     // 它又开口」。这一趟就此失败：既不投递，也不换一个执行者接着做。
-    // 与「会话已不存在」分开报：那一种是这段会话得重开，这一种是让用户放开闸再试。
+    // 与「会话已不存在」分开报：那一种是这段会话得重开，这一种是让用户放开开关再试。
     const { service, dir } = await makeService();
     const agent = new FakeAgent();
     agent.pauseOutput();

@@ -81,7 +81,7 @@ const user = (content: string): AgentNS.InboxInput => ({
 // ---------------------------------------------------------------------------
 
 describe("Agent 观察隔离", () => {
-  it("订阅者抛错，执行体照常跑完", async () => {
+  it("订阅者抛错，Agent照常跑完", async () => {
     const { client } = createMockClient([textStream("第一句答复"), textStream("第二句答复")]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
@@ -93,7 +93,7 @@ describe("Agent 观察隔离", () => {
     });
 
     void agent.start();
-    agent.push(user("第一问"));
+    agent.send(user("第一问"));
     await settled(agent);
 
     const first = agent.messages.at(-1)!;
@@ -103,7 +103,7 @@ describe("Agent 观察隔离", () => {
     expect(agent.state).toBe("idle");
 
     // 循环没坏：再投一句，照样答得出来
-    agent.push(user("第二问"));
+    agent.send(user("第二问"));
     await settled(agent);
 
     const second = agent.messages.at(-1)!;
@@ -130,7 +130,7 @@ describe("Agent 观察隔离", () => {
     });
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     // 先订的那一个每次都炸……
@@ -155,7 +155,7 @@ describe("Agent 观察隔离", () => {
     });
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     expect(observed.length).toBeGreaterThan(0);
@@ -163,7 +163,7 @@ describe("Agent 观察隔离", () => {
     expect(first.event).toBe("state:working");
     expect(first.error).toBeInstanceOf(Error);
     expect(first.error.message).toBe(marker);
-    // 报的是「同一个执行体上的事」，不是别处转来的
+    // 报的是「同一个 Agent 上的事」，不是别处转来的
     expect(first.agent).toBe(agent);
 
     agent.stop();
@@ -186,7 +186,7 @@ describe("Agent 观察隔离", () => {
     });
 
     const death = agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     expect(failedObserverCalled).toBeGreaterThan(0);

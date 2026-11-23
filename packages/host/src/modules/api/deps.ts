@@ -61,8 +61,8 @@ export interface HostApiDeps {
   readonly reloads: ReloadWindow;
   readonly assets: AssetService;
   /**
-   * 出网/素材端口（`readAsset` 在那里），与 `Scope` 拿到的是同一个对象：`materialsFor` 把它
-   * 交给 SDK 的附件传输插件 —— 发出去之前按当下生效的模型重建素材段时，那是它唯一需要的口。
+   * 出网/Asset 端口（`readAsset` 在那里），与 `Scope` 拿到的是同一个对象：`materialsFor` 把它
+   * 交给 SDK 的附件传输插件 —— 发出去之前按当下生效的模型重建 Asset 段时，那是它唯一需要的口。
    */
   readonly assetPort: ToolEnvDeps;
   readonly notices: NoticeService;

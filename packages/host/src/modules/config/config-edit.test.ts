@@ -9,13 +9,13 @@
  * 3. **非法值被拒且改动留住**：形状不对的档位补丁、指不到东西的默认项都被拒，磁盘那份不变。
  *
  * 另外两条是同一条判据的另一半：删图片模型时默认项要改指（不然默认项指着一条不在的），
- * 改中断策略时活着的执行体要当场按新的走（不然「下一句话就按新的来」只在文件层面成立）。
+ * 改中断策略时活着的 Agent 要当场按新的走（不然「下一句话就按新的来」只在文件层面成立）。
  *
  * 语言也是全局那几格之一（`setGlobal` 是它的写口，不另开一条 procedure）：写完宿主那份语言当场
- * 跟着变（`t` 在调用那一刻现读，不重建任何执行体），非法值在边界上被拒、文件一个字都不动。
+ * 跟着变（`t` 在调用那一刻现读，不重建任何 Agent），非法值在边界上被拒、文件一个字都不动。
  * 自动命名开关同走这一条：它是配置项，写成非布尔值同样在边界上被拒。
  *
- * 落盘全用真的：临时目录 + 真的 `ConfigManager`（打桩磁盘只会验到桩）。只有执行体那一条给
+ * 落盘全用真的：临时目录 + 真的 `ConfigManager`（打桩磁盘只会验到桩）。只有 Agent 那一条给
  * `runtime` / `workspaces` / `sessions` 替身 —— 造一个真的运行时得先有一个能出网的模型，
  * 而那条用例问的是「哪几格被赋了新值」。
  */
@@ -29,9 +29,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type {
   AgentRuntime,
   AppConfig,
-  Endpoint,
-  ImageModel,
-  Model,
+  EndpointDefinition,
+  ImageModelDefinition,
+  ModelDefinition,
   ReasoningPresets,
 } from "@ai-zen/agents-sdk";
 import { ConfigManager, DEFAULT_APP_CONFIG } from "@ai-zen/agents-sdk";
@@ -65,15 +65,15 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function endpoint(id: string): Endpoint {
+function endpoint(id: string): EndpointDefinition {
   return { id, name: id, baseUrl: `https://${id}.example/v1`, apiKey: "" };
 }
 
-function model(id: string, endpointId: string): Model {
+function model(id: string, endpointId: string): ModelDefinition {
   return { id, name: id, endpointId, tokenThresholds: { handoff: 100, guard: 150 } };
 }
 
-function imageModel(id: string, endpointId: string): ImageModel {
+function imageModel(id: string, endpointId: string): ImageModelDefinition {
   return { id, name: id, endpointId, modelName: id };
 }
 
@@ -99,7 +99,7 @@ const CONFIG: AppConfig = {
   abortedToolRoundStrategy: "fill",
 };
 
-/** 一段活着的执行体只需要这两格 —— 这条路上会去赋的就是它们 */
+/** 一段活着的 Agent 只需要这两格 —— 这条路上会去赋的就是它们 */
 interface FakeAgent {
   abortedMessageStrategy?: string;
   abortedToolRoundStrategy?: string;
@@ -110,7 +110,7 @@ interface HostOptions {
   readonly config?: AppConfig;
   /** 项目与它名下的会话（`workspaces.list` / `sessions.list` 返回的东西） */
   readonly liveSessions?: string[];
-  /** 谁活着：会话 id → 执行体。不在表里的那一段就是「没有执行体」 */
+  /** 谁活着：会话 id → Agent。不在表里的那一段就是「没有 Agent」 */
   readonly agents?: Map<string, FakeAgent>;
 }
 
@@ -118,7 +118,7 @@ interface HostOptions {
  * 一个真磁盘 + 真的 `ConfigManager` + 四个写口，加一个只挂了 `config` 的 router。
  *
  * `definitions` / `workspaces` / `sessions` / `runtime` 是替身：这几条用例问的是「文件里落了
- * 什么、内存那份是什么、执行体上被赋了什么」，造真的那几个只会让人以为它们也在被验。
+ * 什么、内存那份是什么、Agent 上被赋了什么」，造真的那几个只会让人以为它们也在被验。
  */
 async function newHost(options: HostOptions = {}) {
   await writeFile(configPath, JSON.stringify(options.config ?? CONFIG, null, 2), "utf-8");
@@ -195,7 +195,7 @@ describe("配置面：端点", () => {
   it("删端点时先看还有谁挂着：conflict 里说清是哪几个模型（图片模型也算），处理掉才删得掉", async () => {
     const host = await newHost();
 
-    const refused = await hostErrorOf(host.caller.config.endpoint.remove({ id: "ep-a" }));
+    const refused = await hostErrorOf(host.caller.config.endpoints.delete({ id: "ep-a" }));
 
     expect(refused.code).toBe("conflict");
     // 客户端据此告诉用户「先处理这两个」—— 列表要给全，只说「有模型在用」等于让人自己去翻
@@ -216,11 +216,11 @@ describe("配置面：端点", () => {
       "ep-b",
     ]);
 
-    await host.caller.config.model.remove({ id: "m-a1" });
-    await host.caller.config.model.remove({ id: "m-a2" });
-    await host.caller.config.imageModel.remove({ id: "img-a1" });
-    await host.caller.config.imageModel.remove({ id: "img-a2" });
-    const { config } = await host.caller.config.endpoint.remove({ id: "ep-a" });
+    await host.caller.config.models.delete({ id: "m-a1" });
+    await host.caller.config.models.delete({ id: "m-a2" });
+    await host.caller.config.imageModels.delete({ id: "img-a1" });
+    await host.caller.config.imageModels.delete({ id: "img-a2" });
+    const { config } = await host.caller.config.endpoints.delete({ id: "ep-a" });
 
     expect(config.endpoints.map((item) => item.id)).toEqual(["ep-b"]);
     expect((await onDisk()).endpoints.map((item) => item.id)).toEqual(["ep-b"]);
@@ -229,16 +229,16 @@ describe("配置面：端点", () => {
   it("端点增改：id 重名是 conflict，改不存在的 id 是 not_found", async () => {
     const host = await newHost();
 
-    await host.caller.config.endpoint.add({ endpoint: endpoint("ep-c") });
+    await host.caller.config.endpoints.create({ endpoint: endpoint("ep-c") });
     expect((await onDisk()).endpoints.map((item) => item.id)).toContain("ep-c");
 
     const duplicate = await hostErrorOf(
-      host.caller.config.endpoint.add({ endpoint: endpoint("ep-c") }),
+      host.caller.config.endpoints.create({ endpoint: endpoint("ep-c") }),
     );
     expect(duplicate.code).toBe("conflict");
     expect(duplicate.details).toEqual({ entity: "endpoint", endpointId: "ep-c" });
 
-    const { config } = await host.caller.config.endpoint.update({
+    const { config } = await host.caller.config.endpoints.update({
       id: "ep-b",
       change: { name: "改过的名字" },
     });
@@ -249,7 +249,7 @@ describe("配置面：端点", () => {
     ).toBe(true);
 
     const missing = await hostErrorOf(
-      host.caller.config.endpoint.update({ id: "ep-nowhere", change: { name: "x" } }),
+      host.caller.config.endpoints.update({ id: "ep-nowhere", change: { name: "x" } }),
     );
     expect(missing.code).toBe("not_found");
   });
@@ -259,13 +259,13 @@ describe("配置面：图片模型", () => {
   it("删图片模型时默认项改指到同端点的下一条，同端点没有就清空", async () => {
     const host = await newHost();
 
-    const afterFirst = await host.caller.config.imageModel.remove({ id: "img-a1" });
+    const afterFirst = await host.caller.config.imageModels.delete({ id: "img-a1" });
 
     // 同端点还剩 img-a2：默认项跟着它
     expect(afterFirst.config.defaultImageModel).toBe("img-a2");
     expect((await onDisk()).defaultImageModel).toBe("img-a2");
 
-    const afterSecond = await host.caller.config.imageModel.remove({ id: "img-a2" });
+    const afterSecond = await host.caller.config.imageModels.delete({ id: "img-a2" });
 
     // 同端点一条都不剩了：清空，而**不是**跨到 ep-b 上那条 img-b1
     expect(afterSecond.config.defaultImageModel).toBeUndefined();
@@ -285,7 +285,7 @@ describe("配置面：没改就不写盘", () => {
     await sleep(20);
 
     // `setGlobal` 走的就是 `GeneralConfig.patch`：合出来的那份与当前逐字一样
-    const { config } = await host.caller.config.setGlobal({
+    const { config } = await host.caller.config.update({
       maxToolOutput: host.deps.config.read().maxToolOutput,
     });
 
@@ -301,7 +301,7 @@ describe("配置面：没改就不写盘", () => {
     const before = statSync(configPath).mtimeMs;
     await sleep(20);
 
-    await host.caller.config.setGlobal({ maxToolOutput: 1_000 });
+    await host.caller.config.update({ maxToolOutput: 1_000 });
 
     expect(statSync(configPath).mtimeMs).not.toBe(before);
     expect((await onDisk()).maxToolOutput).toBe(1_000);
@@ -325,8 +325,8 @@ describe("配置面：读", () => {
 
 describe("配置面：语言", () => {
   /**
-   * 语言是宿主的全局那一格，写口就是 `config.setGlobal`（不另开一条 procedure）。写完的即时效果
-   * 不靠重建任何执行体：宿主那份 `t` 是 `createTranslator(() => general.language())`，调用那一刻
+   * 语言是宿主的全局那一格，写口就是 `config.update`（不另开一条 procedure）。写完的即时效果
+   * 不靠重建任何 Agent：宿主那份 `t` 是 `createTranslator(() => general.language())`，调用那一刻
    * 现读，所以下一次渲染就是新语言 —— 这里用同一个造法造一个 `t`，验证的正是那条现读的线。
    *
    * 起手那份配置不写 `language`（缺省按 `en`），写完读回 `zh`：两个方向都验到了。
@@ -336,12 +336,12 @@ describe("配置面：语言", () => {
     const t = createTranslator(() => host.deps.config.language());
     expect(t("交接失败：{reason}", { reason: "x" })).toBe("Handoff failed: x");
 
-    const { config } = await host.caller.config.setGlobal({ language: "zh" });
+    const { config } = await host.caller.config.update({ language: "zh" });
 
     expect(config.language).toBe("zh");
     // 读口看到的是改完之后那一份：客户端不必自己把补丁叠到手里那份快照上
     expect((await host.caller.config.get()).config.language).toBe("zh");
-    // 宿主那份语言跟着变，且不需要重建任何执行体
+    // 宿主那份语言跟着变，且不需要重建任何 Agent
     expect(host.deps.config.language()).toBe("zh");
     expect((await onDisk()).language).toBe("zh");
     // 同一刻产生的下一句就是新语言：语言不是造 `t` 那一刻的快照
@@ -357,14 +357,14 @@ describe("配置面：语言", () => {
     const beforeText = await readFile(configPath, "utf-8");
 
     await expect(
-      host.caller.config.setGlobal({ language: "fr" as unknown as "en" }),
+      host.caller.config.update({ language: "fr" as unknown as "en" }),
     ).rejects.toThrow();
 
     expect(await readFile(configPath, "utf-8")).toBe(beforeText);
     // 内存那一份也没动：拒的是这一次调用，不是「不让改语言」
     expect(host.deps.config.language()).toBe("en");
     // 合法的值照样写得进去
-    const { config } = await host.caller.config.setGlobal({ language: "zh" });
+    const { config } = await host.caller.config.update({ language: "zh" });
     expect(config.language).toBe("zh");
   });
 });
@@ -381,12 +381,12 @@ describe("配置面：自动命名开关", () => {
     // 起手那份没这一格：文件里就是不出现，缺省怎么算由自动命名那一侧判
     expect("autoTitle" in (await onDisk())).toBe(false);
 
-    const on = await host.caller.config.setGlobal({ autoTitle: true });
+    const on = await host.caller.config.update({ autoTitle: true });
     expect(on.config.autoTitle).toBe(true);
     expect((await host.caller.config.get()).config.autoTitle).toBe(true);
     expect((await onDisk()).autoTitle).toBe(true);
 
-    const off = await host.caller.config.setGlobal({ autoTitle: false });
+    const off = await host.caller.config.update({ autoTitle: false });
     expect(off.config.autoTitle).toBe(false);
     expect((await host.caller.config.get()).config.autoTitle).toBe(false);
     expect((await onDisk()).autoTitle).toBe(false);
@@ -402,14 +402,14 @@ describe("配置面：自动命名开关", () => {
     const beforeEvents = host.configEvents.length;
 
     await expect(
-      host.caller.config.setGlobal({ autoTitle: "false" as unknown as boolean }),
+      host.caller.config.update({ autoTitle: "false" as unknown as boolean }),
     ).rejects.toThrow();
 
     expect(await readFile(configPath, "utf-8")).toBe(beforeText);
     expect(host.deps.config.read().autoTitle).toBeUndefined();
     expect(host.configEvents.length).toBe(beforeEvents);
     // 合法的值照样写得进去：拒的是这一格的取值，不是「不让改」
-    const { config } = await host.caller.config.setGlobal({ autoTitle: false });
+    const { config } = await host.caller.config.update({ autoTitle: false });
     expect(config.autoTitle).toBe(false);
   });
 });
@@ -425,7 +425,7 @@ describe("配置面：思考档位表", () => {
     await sleep(20);
 
     const asString = await hostErrorOf(
-      host.caller.config.presets.set({
+      host.caller.config.presets.update({
         presets: { reasoning: { levels: { low: "low" } } } as unknown as ReasoningPresets,
       }),
     );
@@ -436,14 +436,14 @@ describe("配置面：思考档位表", () => {
     expect(asString.details).toMatchObject({ preset: "reasoning", level: "low" });
 
     const asArray = await hostErrorOf(
-      host.caller.config.presets.set({
+      host.caller.config.presets.update({
         presets: { reasoning: { levels: { low: ["low"] } } } as unknown as ReasoningPresets,
       }),
     );
     expect(asArray.code).toBe("invalid_params");
 
     const missingLevels = await hostErrorOf(
-      host.caller.config.presets.set({
+      host.caller.config.presets.update({
         presets: { reasoning: {} } as unknown as ReasoningPresets,
       }),
     );
@@ -458,27 +458,27 @@ describe("配置面：思考档位表", () => {
         levels: { low: { reasoning_effort: "low" }, high: { reasoning_effort: "high" } },
       },
     } as unknown as ReasoningPresets;
-    const written = await host.caller.config.presets.set({ presets: next });
+    const written = await host.caller.config.presets.update({ presets: next });
     expect(Object.keys(written.presets.reasoning.levels)).toEqual(["low", "high"]);
     expect(JSON.parse(await readFile(presetsPath, "utf-8"))).toEqual(next);
 
     const afterWrite = statSync(presetsPath).mtimeMs;
     await sleep(20);
-    await host.caller.config.presets.set({ presets: next });
+    await host.caller.config.presets.update({ presets: next });
     expect(statSync(presetsPath).mtimeMs).toBe(afterWrite);
   });
 });
 
 describe("配置面：中断策略两项", () => {
-  it("改完当场赋到每一段活着的执行体上，不碰没有执行体的那一段，也不碰 maxToolOutput", async () => {
+  it("改完当场赋到每一段活着的Agent上，不碰没有Agent的那一段，也不碰 maxToolOutput", async () => {
     const agents = new Map<string, FakeAgent>([
       ["s-1", {}],
       ["s-2", {}],
     ]);
-    // 三段session，两段活着（s-3 重启之后还没被叫醒）
+    // 三段 session，两段活着（s-3 重启之后还没被叫醒）
     const host: Host = await newHost({ liveSessions: ["s-1", "s-2", "s-3"], agents });
 
-    const { config } = await host.caller.config.setGlobal({
+    const { config } = await host.caller.config.update({
       abortedMessageStrategy: "drop",
       abortedToolRoundStrategy: "drop",
       maxToolOutput: 1_000,
@@ -487,16 +487,16 @@ describe("配置面：中断策略两项", () => {
     expect(config.abortedMessageStrategy).toBe("drop");
     expect(config.abortedToolRoundStrategy).toBe("drop");
 
-    // 两段活着的执行体都拿到了新值：不杀会话、不等下一次唤醒
+    // 两段活着的 Agent 都拿到了新值：不杀会话、不等下一次唤醒
     for (const sessionId of ["s-1", "s-2"]) {
       const agent = agents.get(sessionId);
       expect(agent?.abortedMessageStrategy).toBe("drop");
       expect(agent?.abortedToolRoundStrategy).toBe("drop");
-      // `maxToolOutput` 不在执行体上（由能力容器现读），这条路上一个字都不该写到那里
+      // `maxToolOutput` 不在 Agent 上（由 Scope 现读），这条路上一个字都不该写到那里
       expect("maxToolOutput" in (agent as object)).toBe(false);
     }
 
-    // 没有执行体的那一段没有被凭空造出来
+    // 没有 Agent 的那一段没有被凭空造出来
     expect(agents.has("s-3")).toBe(false);
 
     expect((await onDisk()).abortedMessageStrategy).toBe("drop");
@@ -510,13 +510,13 @@ describe("配置面：默认项", () => {
     const beforeText = await readFile(configPath, "utf-8");
 
     const badModel = await hostErrorOf(
-      host.caller.config.setDefaults({ defaultModel: "no-such-model" }),
+      host.caller.config.defaults.update({ defaultModel: "no-such-model" }),
     );
     expect(badModel.code).toBe("invalid_params");
     expect(badModel.details).toEqual({ entity: "model", modelId: "no-such-model" });
 
     const badAgent = await hostErrorOf(
-      host.caller.config.setDefaults({ defaultAgent: "no-such-agent" }),
+      host.caller.config.defaults.update({ defaultAgent: "no-such-agent" }),
     );
     expect(badAgent.code).toBe("invalid_params");
     expect(badAgent.details).toEqual({
@@ -529,7 +529,7 @@ describe("配置面：默认项", () => {
     expect(host.deps.config.read().defaultModel).toBe("m-a1");
 
     // 清空不校验引用（清空之后没有指向，也就没有指错）
-    const { config } = await host.caller.config.setDefaults({
+    const { config } = await host.caller.config.defaults.update({
       defaultModel: null,
       defaultImageModel: null,
     });
@@ -541,7 +541,7 @@ describe("配置面：默认项", () => {
 
 describe("配置面：恢复出厂", () => {
   /** 出厂那一条模型 / 图模，拷一份当「用户把它改过、还标了自建」的样子 */
-  function modifiedFactoryModel(): Model {
+  function modifiedFactoryModel(): ModelDefinition {
     const factory = DEFAULT_APP_CONFIG.models.find((item) => item.id === "gpt-6-astra");
     if (factory === undefined) throw new Error("出厂清单里没有 gpt-6-astra");
     return {
@@ -563,7 +563,7 @@ describe("配置面：恢复出厂", () => {
     };
     const host = await newHost({ config });
 
-    const reset = await host.caller.config.model.reset({ id: "gpt-6-astra" });
+    const reset = await host.caller.config.models.reset({ id: "gpt-6-astra" });
 
     expect(reset.config.models.find((item) => item.id === "gpt-6-astra")).toEqual({
       ...factory,
@@ -576,7 +576,7 @@ describe("配置面：恢复出厂", () => {
       custom: false,
     });
 
-    const notFactory = await hostErrorOf(host.caller.config.model.reset({ id: "m-a1" }));
+    const notFactory = await hostErrorOf(host.caller.config.models.reset({ id: "m-a1" }));
     expect(notFactory.code).toBe("not_found");
     expect(notFactory.message).toContain("不是出厂的那几个模型之一");
   });
@@ -594,14 +594,14 @@ describe("配置面：恢复出厂", () => {
     };
     const host = await newHost({ config });
 
-    const reset = await host.caller.config.imageModel.reset({ id: "cogview-4" });
+    const reset = await host.caller.config.imageModels.reset({ id: "cogview-4" });
 
     expect(reset.config.imageModels?.find((item) => item.id === "cogview-4")).toEqual({
       ...factory,
       custom: false,
     });
 
-    const notFactory = await hostErrorOf(host.caller.config.imageModel.reset({ id: "img-a1" }));
+    const notFactory = await hostErrorOf(host.caller.config.imageModels.reset({ id: "img-a1" }));
     expect(notFactory.code).toBe("not_found");
     expect(notFactory.message).toContain("不是出厂的那几个图片模型之一");
   });

@@ -108,9 +108,7 @@ function harness(config: {
     dataRoot: DATA_ROOT,
     launchLog: launchLogOf(DATA_ROOT),
     ...(config.settings ? { settings: config.settings } : {}),
-    ...(config.hostEntry === null
-      ? {}
-      : { hostEntry: config.hostEntry ?? "/host/dist/cli.js" }),
+    ...(config.hostEntry === null ? {} : { hostEntry: config.hostEntry ?? "/host/dist/cli.js" }),
     timeoutMs: config.timeoutMs ?? 1_000,
     retryIntervalMs: config.retryIntervalMs ?? 100,
     readTextFile: async (path) => {
@@ -639,9 +637,10 @@ describe("读 pin", () => {
   });
 
   it("形状对：给出那一版（requestedAt 用不到）", async () => {
-    await expect(
-      readHostVersionPin(DATA_ROOT, async () => pinContent("0.2.0")),
-    ).resolves.toEqual({ kind: "pinned", version: "0.2.0" });
+    await expect(readHostVersionPin(DATA_ROOT, async () => pinContent("0.2.0"))).resolves.toEqual({
+      kind: "pinned",
+      version: "0.2.0",
+    });
   });
 
   it("不是 JSON / 没有 version：都算坏了，且指出坏在哪一格", async () => {
@@ -770,7 +769,10 @@ describe("升级：拉哪一版由 pin 定", () => {
       settings: { mode: "local" },
       hostEntry: null,
       files: {
-        [PIN_FILE]: { content: JSON.stringify({ requestedAt: "2026-11-22T03:00:00.000Z" }), fromTick: 0 },
+        [PIN_FILE]: {
+          content: JSON.stringify({ requestedAt: "2026-11-22T03:00:00.000Z" }),
+          fromTick: 0,
+        },
       },
       onSpawn: (_context, files) => {
         files.set(HOST_FILE, {
@@ -835,7 +837,10 @@ describe("升级：子进程以 75 退出不是拉起失败", () => {
 
     expect(contexts).toHaveLength(2);
     expect(error.code).toBe("host_upgrade_failed");
-    expect(error.detail).toMatchObject({ code: UPGRADE_EXIT_CODE, logFile: launchLogOf(DATA_ROOT) });
+    expect(error.detail).toMatchObject({
+      code: UPGRADE_EXIT_CODE,
+      logFile: launchLogOf(DATA_ROOT),
+    });
   });
 
   it("重拉那一版拉不下来：报拉起失败，原因里留着 npx 那行", async () => {

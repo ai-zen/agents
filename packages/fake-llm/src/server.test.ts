@@ -213,7 +213,7 @@ describe("剧本", () => {
     expect(answers).toEqual(["第一句", "第二句", "第二句"]);
   });
 
-  it("给一条目标消息：每次请求都回它", async () => {
+  it("给一InboxEntry标消息：每次请求都回它", async () => {
     llm = await startFakeLlm({ reply: { content: "固定答复" }, chunks: 1 });
 
     for (let at = 0; at < 2; at += 1) {

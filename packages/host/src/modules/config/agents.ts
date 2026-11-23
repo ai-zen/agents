@@ -44,14 +44,14 @@ function withoutUpdatedAt(definition: AgentDefinition): string {
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
- * 助手定义的增删改查。一个定义一个文件（`<数据根>/agents/<id>.json`），落盘交给 SDK 的
+ * AgentDefinition 的增删改查。一个定义一个文件（`<数据根>/agents/<id>.json`），落盘交给 SDK 的
  * `AgentRepository`。
  *
  * 写之前先过一遍校验（{@link AgentDefinitionService.validated}）：仓储只负责读写文件，判断不了
  * 写进去之后还能不能用；而写进去的那几格坏了，失败会发生在很久之后那一句请求里（权限同现是
  * 取工具那一刻，模板没有系统提示是模型开始乱答的那一刻），那时已经看不清是谁写的。
  *
- * 写完之后广播「这个助手变了」。用这个定义的会话要不要跟着变（失效、重建）属于运行时，
+ * 写完之后广播「这个 AgentDefinition 变了」。用这个定义的会话要不要跟着变（失效、重建）属于运行时，
  * 这一层只发出这个事实。
  */
 export class AgentDefinitionService {
@@ -86,7 +86,7 @@ export class AgentDefinitionService {
     if ((await this.deps.repository.read(created.id)) !== null) {
       throw new HostError(
         "conflict",
-        this.deps.t("已经有 id 为 {agentDefinitionId} 的助手了，改它走 update", {
+        this.deps.t("已经有 id 为 {agentDefinitionId} 的AgentDefinition了，改它走 update", {
           agentDefinitionId: created.id,
         }),
         { entity: "agentDefinition", agentDefinitionId: created.id },
@@ -127,10 +127,10 @@ export class AgentDefinitionService {
   }
 
   async remove(id: string): Promise<void> {
-    // 先确认存在：仓储的 `delete` 把「本来就没有」也当成功，那样客户端会以为自己删掉了一个助手
+    // 先确认存在：仓储的 `delete` 把「本来就没有」也当成功，那样客户端会以为自己删掉了一个 AgentDefinition
     await this.get(id);
     await this.deps.repository.delete(id);
-    // 删掉的是默认助手时，默认项也要跟着让位（PRD 3.4）：留着它指向一个不存在的定义，
+    // 删掉的是默认 AgentDefinition 时，默认项也要跟着让位（PRD 3.4）：留着它指向一个不存在的定义，
     // 下一次新建会话会在解析模型那一步失败，而界面上看不出原因。
     //
     // 走 `write` 而不是 `patch` 之后再 `patch`：删定义与清默认是同一次保存，中间那一次写盘会
@@ -159,7 +159,9 @@ export class AgentDefinitionService {
     if (factory === undefined) {
       throw new HostError(
         "not_found",
-        this.deps.t("「{agentDefinitionId}」不是出厂的那两个助手之一", { agentDefinitionId: id }),
+        this.deps.t("「{agentDefinitionId}」不是出厂的那两个AgentDefinition之一", {
+          agentDefinitionId: id,
+        }),
         { entity: "agentDefinition", agentDefinitionId: id },
       );
     }
@@ -202,21 +204,21 @@ export class AgentDefinitionService {
       throw new HostError(
         "invalid_params",
         t(
-          "助手标识 {agentDefinitionId} 只能由字母、数字、点、下划线与连字符组成，且不以点、下划线与连字符开头",
+          "AgentDefinition标识 {agentDefinitionId} 只能由字母、数字、点、下划线与连字符组成，且不以点、下划线与连字符开头",
           { agentDefinitionId: definition.id },
         ),
         { entity: "agentDefinition", agentDefinitionId: definition.id },
       );
     }
 
-    // 模板里没有系统提示 = 这个助手没有身份：它会以任一句话为准则去答，而文件本身看得过去
+    // 模板里没有系统提示 = 这个 AgentDefinition 没有身份：它会以任一句话为准则去答，而文件本身看得过去
     if (
       !Array.isArray(definition.messages) ||
       !definition.messages.some((message) => message.role === AgentNS.Role.System)
     ) {
       throw new HostError(
         "invalid_params",
-        t("助手 {agentDefinitionId} 的模板里至少要有一条 system 消息", {
+        t("AgentDefinition {agentDefinitionId} 的模板里至少要有一条 system 消息", {
           agentDefinitionId: definition.id,
         }),
         { entity: "agentDefinition", agentDefinitionId: definition.id },
@@ -236,7 +238,7 @@ export class AgentDefinitionService {
         if ((allow === undefined) === (deny === undefined)) {
           throw new HostError(
             "invalid_params",
-            t("助手 {agentDefinitionId} 的 {dimension} 权限只能是 allow 或 deny 其一", {
+            t("AgentDefinition {agentDefinitionId} 的 {dimension} 权限只能是 allow 或 deny 其一", {
               agentDefinitionId: definition.id,
               dimension,
             }),
@@ -248,7 +250,7 @@ export class AgentDefinitionService {
         if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== "string")) {
           throw new HostError(
             "invalid_params",
-            t("助手 {agentDefinitionId} 的 {dimension} 权限必须是字符串数组", {
+            t("AgentDefinition {agentDefinitionId} 的 {dimension} 权限必须是字符串数组", {
               agentDefinitionId: definition.id,
               dimension,
             }),
@@ -320,7 +322,7 @@ export class AgentDefinitionService {
   private notFound(id: string): HostError {
     return new HostError(
       "not_found",
-      this.deps.t("找不到 id 为 {agentDefinitionId} 的助手", { agentDefinitionId: id }),
+      this.deps.t("找不到 id 为 {agentDefinitionId} 的AgentDefinition", { agentDefinitionId: id }),
     );
   }
 }

@@ -1,13 +1,13 @@
 /**
- * 五条验收：交接态只落在进入的那一段上，输出闸按 SDK 那一侧的分工走（`start` 不碰、收口开、
- * 取消显式关）；后台那一趟失败也开闸并留下一条通知（成则一句话不说）；换手那一档交接期间这段会话
- * 的消息照样推给客户端，但不落库 —— 收口之后恢复；换记忆之后库里与执行体里是同一份新的，且换的是
+ * 五条验收：交接态只落在进入的那一段上，输出开关按 SDK 那一侧的分工走（`start` 不碰、收口开、
+ * 取消显式关）；后台那一趟失败也开开关并留下一条通知（成则一句话不说）；换手那一档交接期间这段会话
+ * 的消息照样推给客户端，但不落库 —— 收口之后恢复；换记忆之后库里与 Agent 里是同一份新的，且换的是
  * 数组的内容而不是数组本身。
  *
  * 只写文档那一档另有三件：交接回合照常落库（内存与库逐条一致，重启读回来也是同一份）、取消之后
  * 两边仍一致、记忆与存档会话都不动。
  *
- * 自动交接那一条路另有两件：它不经 `start`，所以交接态与闸得由插件那两拍自己接上；开关关着时
+ * 自动交接那一条路另有两件：它不经 `start`，所以交接态与开关得由插件那两拍自己接上；开关关着时
  * 它一格都不碰。
  *
  * 最后一条是执行者：`start` 收到 `mode` 就把它原样递给 SDK（谁写这份文档由那一格定），不给时
@@ -16,8 +16,8 @@
  * 把交接态写成宿主上的一格开关，「这一段在交接」就会连带把别的段的消息写入一起停掉 —— 那几段上
  * 的人只是发现自己的回答不再落库，界面上看不出来。
  *
- * 执行体与 SDK 都是假的：真的 `Agent` 会起请求、跑循环、拉插件，真的 `migrate` 是一次完整的模型
- * 调用，而这几条要证的只有「交接态落在谁身上、闸开没开、记忆落在哪、失败收没收口」。
+ * Agent 与 SDK 都是假的：真的 `Agent` 会起请求、跑循环、拉插件，真的 `migrate` 是一次完整的模型
+ * 调用，而这几条要证的只有「交接态落在谁身上、开关开没开、记忆落在哪、失败收没收口」。
  *
  * **没有「降级」这一档可报**：申请哪个执行者就跑哪个，做不成就抛 —— 于是宿主这一侧只有
  * 「成了」与「失败」两种收口，没有第三种。
@@ -54,7 +54,7 @@ import { QuestionRegistry } from "../question/registry.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { NewSession, Session } from "../session/types.js";
+import type { NewSession, SessionRecord } from "../session/types.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { workspaceTable } from "../workspace/table.js";
 import { HandoffService, type CreateSdkHandoff, type SdkHandoffOptions } from "./service.js";
@@ -70,16 +70,16 @@ const input: NewSession = {
 };
 
 /**
- * 假执行体：只做这几处会问的事，外加让用例自己触发订阅收到的那几条事件。
+ * 假 Agent：只做这几处会问的事，外加让用例自己触发订阅收到的那几条事件。
  *
- * `on` 一个事件名只留一个监听者就够了：同一个执行体不会把同一件事订阅两次。
+ * `on` 一个事件名只留一个监听者就够了：同一个 Agent 不会把同一件事订阅两次。
  */
 function fakeAgent() {
   const listeners = new Map<string, (payload: unknown) => void>();
   const agent = {
     state: "idle" as AgentNS.AgentState,
     messages: [] as AgentNS.Message[],
-    /** 换记忆那一路要数「开头有几条是助手定义带来的系统提示」，假件也得有这一格 */
+    /** 换记忆那一路要数「开头有几条是 AgentDefinition 带来的系统提示」，假件也得有这一格 */
     definition: { messages: [] as AgentNS.Message[] },
     isInputPaused: false,
     isOutputPaused: false,
@@ -105,12 +105,12 @@ function fakeAgent() {
 }
 
 /**
- * 运行时的替身：交接只问它「这一段有没有活执行体」（`get`），观察者只从它的那条事实流上收事实
+ * 运行时的替身：交接只问它「这一段有没有活 Agent」（`get`），观察者只从它的那条事实流上收事实
  * （`observe`）。这两格由用例喂。
  *
  * 它是一个**真的** `AgentRuntime` 实例（端口给空实现，一条路径都走不到），只把上面那两格换成
  * 用例喂的 —— 真的那一套会去造容器、读定义、建模型客户端，而这几条要证的只有「交接态落在谁
- * 身上、闸开没开、记忆落在哪、失败收没收口」。
+ * 身上、开关开没开、记忆落在哪、失败收没收口」。
  */
 function fakeRuntime() {
   const alive = new Map<string, SdkAgent>();
@@ -145,7 +145,7 @@ function fakeRuntime() {
 /**
  * 一趟交接的替身：接住宿主造实例时递给 SDK 的那几格，结论由用例给。
  *
- * 「失败也开闸」那条要的就是一个会抛的替身；其余几条要的是「后台那一趟还没跑完时状态是什么」，
+ * 「失败也开开关」那条要的就是一个会抛的替身；其余几条要的是「后台那一趟还没跑完时状态是什么」，
  * 所以 `migrate` 停在那里等人推。掐断也照真的来：信号响了就抛取消那个类型，它不是失败。
  *
  * `succeed` 没有任何参数：宿主不再读回「这一趟实际是谁写的」（没有降级可报了），成功就是
@@ -303,7 +303,7 @@ function setup(dbFile = ":memory:") {
   new HostObserver({
     messages,
     inbox,
-    // 素材域：这几条用例的消息都是纯文本，引用登记不会走到写盘（`link` 只在带 `__asset_id`
+    // Asset 域：这几条用例的消息都是纯文本，引用登记不会走到写盘（`link` 只在带 `__asset_id`
     // 的段上发生），所以数据根给一个存在的目录就够
     assets: new AssetService({
       assets: assetTable(db),
@@ -318,7 +318,7 @@ function setup(dbFile = ":memory:") {
     isReloading: () => false,
   }).attach(fake.runtime);
 
-  /** 造一个活着的执行体，并把它放进运行时那张登记表（`get` 取到的就是它） */
+  /** 造一个活着的 Agent，并把它放进运行时那张登记表（`get` 取到的就是它） */
   function wake(sessionId: string) {
     const agent = fakeAgent();
     fake.place(sessionId, agent as unknown as SdkAgent);
@@ -391,7 +391,7 @@ function message(id: string, text: string): AgentNS.Message {
 }
 
 describe("交接态", () => {
-  it("只落在进入的那一段上；`start` 不碰闸、收口开、取消关；事件一进一出", async () => {
+  it("只落在进入的那一段上；`start` 不碰开关、收口开、取消关；事件一进一出", async () => {
     const { handoff, handoffs, sessions, runtime, seen, wake, cwd } = setup();
     const first = sessions.create(input);
     const second = sessions.create(input);
@@ -402,7 +402,7 @@ describe("交接态", () => {
     handoff.start(first.id);
     expect(handoff.isHandingOff(first.id)).toBe(true);
     expect(handoff.isHandingOff(second.id)).toBe(false);
-    // 闸不归 `start` 管：关闸是 `HandoffGuardPlugin.onOuterLoopStart` 在指令被取走那一拍做的。
+    // 开关不归 `start` 管：关开关是 `HandoffGuardPlugin.onOuterLoopStart` 在指令被取走那一拍做的。
     // 这里先关上，`runSelfHandoff` 第一句就判「会话不收件」—— 那一趟整个失败（不会换成摘要）
     expect(runtime.get(first.id)?.isOutputPaused).toBe(false);
     expect(runtime.get(second.id)?.isOutputPaused).toBe(false);
@@ -416,14 +416,14 @@ describe("交接态", () => {
     // 不给 `kind` 就是换手那一档：这一格加进来之前，`start` 跑的就是 `migrate`
     expect(handoffs.runs[0].method).toBe("migrate");
 
-    // 后台那一趟跑完：闸开回来、退出交接态
+    // 后台那一趟跑完：开关开回来、退出交接态
     handoffs.runs[0].succeed();
     await settle();
     expect(handoff.isHandingOff(first.id)).toBe(false);
     expect(runtime.get(first.id)?.isOutputPaused).toBe(false);
 
-    // 用户按了停：闸关上、退出交接态 —— 取消之后这一段保持暂停（回滚了就不该再取件）。
-    // 这一下是取消自己关的：取消可能发生在批头关闸之前，那时闸还开着
+    // 用户按了停：开关关上、退出交接态 —— 取消之后这一段保持暂停（回滚了就不该再取走）。
+    // 这一下是取消自己关的：取消可能发生在批头关开关之前，那时开关还开着
     handoff.start(first.id);
     handoff.cancel(first.id);
     await settle();
@@ -442,12 +442,12 @@ describe("交接态", () => {
 describe("交接的执行者", () => {
   /**
    * 调用方挑了「独立摘要」，这一趟就得是摘要：宿主把这一格原样递给 SDK，SDK 照它另起一个一次性
-   * 执行体去写 —— 那一个是空队列、不属于任何记忆，跑完即散。
+   * Agent 去写 —— 那一个是空队列、不属于任何记忆，跑完即散。
    *
    * 逆过来的错法是安静的那种：这一格丢在路上，宿主跑的是默认的 `self`，用户挑的「独立摘要」变成
    * 这段会话自己的 agent 在写文档，而界面上两者长得一模一样。
    *
-   * 「一次性执行体」是 SDK 那一侧的事，宿主这儿能验的只有那一格：递进去的 `mode` 是 `summary`。
+   * 「一次性 Agent」是 SDK 那一侧的事，宿主这儿能验的只有那一格：递进去的 `mode` 是 `summary`。
    * 递进去的 `agent` 仍是这一段自己的 —— 摘要要读它的记忆与模型，写的那一支另起。
    */
   it("给了 `mode: summary` 就按独立摘要跑", async () => {
@@ -473,10 +473,10 @@ describe("交接的执行者", () => {
 
 describe("后台那一趟失败", () => {
   /**
-   * 失败不开闸是这整件事最贵的错：闸关着就没人取件，界面上只表现为「它不理我」，而这段时间投进
+   * 失败不开开关是这整件事最贵的错：开关关着就没人取走，界面上只表现为「它不理我」，而这段时间投进
    * 来的话一直排在队列里，谁也不知道为什么。
    */
-  it("开闸、退出交接态，并推一条通知", async () => {
+  it("开开关、退出交接态，并推一条通知", async () => {
     const { handoff, handoffs, sessions, runtime, notices, seen, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
@@ -500,7 +500,7 @@ describe("后台那一趟失败", () => {
     ]);
   });
 
-  /** 取消不是失败：不推「交接失败」，闸也不开 —— 回滚之后就该停在那一段 */
+  /** 取消不是失败：不推「交接失败」，开关也不开 —— 回滚之后就该停在那一段 */
   it("取消不推通知", async () => {
     const { handoff, handoffs, sessions, runtime, notices, wake } = setup();
     const session = sessions.create(input);
@@ -520,17 +520,17 @@ describe("后台那一趟失败", () => {
  * 两档：只写文档 / 写文档并换手。
  *
  * 这两条验的是「同一条交接态、同一个取消口，最后一步分成两件事」：只写文档那一档跑完之后，会话里
- * 的记忆没被换、没多出存档会话、执行体的身份也没换（多出来的只有一份文档与一条带路径的通知），
+ * 的记忆没被换、没多出存档会话、Agent 的身份也没换（多出来的只有一份文档与一条带路径的通知），
  * 而它写下的那几条消息与库里逐条相等；换手那一档的记忆与存档会话才是它该有的样子。两档的取消都
  * 回到交接前，回去之后内存与库仍是同一份。
  */
 describe("两档", () => {
-  it("只写文档那一档：交接回合照常落库，记忆与库逐条一致；不建存档会话、不换执行体", async () => {
+  it("只写文档那一档：交接回合照常落库，记忆与库逐条一致；不建存档会话、不换Agent", async () => {
     const { handoff, handoffs, sessions, messages, notices, runtime, wake, cwd, reportMessage } =
       setup();
     const session = sessions.create(input);
     const agent = wake(session.id);
-    // 交接前的那一份记忆：库里一条、执行体手里也是那一条
+    // 交接前的那一份记忆：库里一条、Agent 手里也是那一条
     const old = message("m-1", "旧记忆里的那句");
     messages.upsertMany(session.id, [old]);
     agent.messages.push(old);
@@ -556,14 +556,14 @@ describe("两档", () => {
     handoffs.runs[0].succeed();
     await settle();
 
-    // 记忆：库里那一份与执行体手里那一份逐条相等（条数、id、顺序），交接回合那几条也在
+    // 记忆：库里那一份与 Agent 手里那一份逐条相等（条数、id、顺序），交接回合那几条也在
     const inDb = messages.listBySession(session.id).map((item) => item.id);
     expect(inDb).toEqual([old.id, "round-1", "round-2"]);
     expect(agent.messages.map((item) => item.id)).toEqual(inDb);
     // 没有多出一段「已存档_」会话，会话行一个字都没动
     expect(sessions.list(input.workspaceId).map((item) => item.name)).toEqual([session.name]);
     expect(sessions.get(session.id)).toEqual(before);
-    // 执行体的身份没换：还是原来那一个对象
+    // Agent 的身份没换：还是原来那一个对象
     expect(runtime.get(session.id)).toBe(agent);
 
     // 文档真的写在了项目的 handoffs 下，通知说的就是那一个路径
@@ -575,7 +575,7 @@ describe("两档", () => {
     expect(pushed[0].code).toBe("handoff_document");
     expect(pushed[0].message).toContain(written);
 
-    // 收口与换手那一档同一份：交接态退掉、闸开回来
+    // 收口与换手那一档同一份：交接态退掉、开关开回来
     expect(handoff.isHandingOff(session.id)).toBe(false);
     expect(agent.isOutputPaused).toBe(false);
   });
@@ -622,7 +622,7 @@ describe("两档", () => {
 
     await settle();
 
-    // 失败那条路与换手那一档同一份：一条带原因的通知、闸开回来、交接态退掉
+    // 失败那条路与换手那一档同一份：一条带原因的通知、开关开回来、交接态退掉
     const pushed = notices.listBySession(session.id);
     expect(pushed).toHaveLength(1);
     expect(pushed[0].level).toBe("error");
@@ -679,7 +679,7 @@ describe("两档", () => {
       handoff.cancel(session.id);
       await settle();
 
-      // 交接态退掉、闸留在关着的那一边（回滚之后就该停在那一段），也没有任何通知
+      // 交接态退掉、开关留在关着的那一边（回滚之后就该停在那一段），也没有任何通知
       expect(handoff.isHandingOff(session.id)).toBe(false);
       expect(agent.isOutputPaused).toBe(true);
       expect(notices.listBySession(session.id)).toEqual([]);
@@ -738,10 +738,10 @@ describe("两档", () => {
 
 describe("收口", () => {
   /**
-   * 成了就一句话不说：闸开回来、交接态摘掉、没有通知。从前这里还有一条「降级成摘要」的警告，
+   * 成了就一句话不说：开关开回来、交接态摘掉、没有通知。从前这里还有一条「降级成摘要」的警告，
    * 现在没有降级了 —— 换执行者那件事不存在，也就没有什么要告知的（`PRD.md` 3.6）。
    */
-  it("成功收口不推任何通知，闸开回来、交接态摘掉", async () => {
+  it("成功收口不推任何通知，开关开回来、交接态摘掉", async () => {
     const { handoff, handoffs, sessions, runtime, notices, wake } = setup();
     const session = sessions.create(input);
     wake(session.id);
@@ -778,7 +778,7 @@ describe("收口", () => {
     expect(pushed[0].code).toBe("handoff_failed");
     expect(pushed[0].message).toContain("it no longer exists");
     expect(pushed[0].durationMs).toBeNull();
-    // 失败也开闸、也退交接态 —— 两者是失败那条路的一部分，不是降级
+    // 失败也开开关、也退交接态 —— 两者是失败那条路的一部分，不是降级
     expect(runtime.get(session.id)?.isOutputPaused).toBe(false);
     expect(handoff.isHandingOff(session.id)).toBe(false);
   });
@@ -789,7 +789,7 @@ describe("换记忆", () => {
    * 只落库不换内存是这整件事唯一没有红灯的那种错：库里是新记忆、模型手里还是旧的，它会带着旧
    * 记忆继续跑，直到进程重启才「好了」。
    */
-  it("commit 之后库里与执行体里都是新记忆", () => {
+  it("commit 之后库里与Agent里都是新记忆", () => {
     const { handoff, sessions, messages, wake } = setup();
     const session = sessions.create(input);
     const agent = wake(session.id);
@@ -807,9 +807,9 @@ describe("换记忆", () => {
     });
     handoff.commit(session.id, [prompt, breakpoint], 1);
 
-    // 库里：原会话只剩断点那一条（开头那条系统提示不落成行，装载时由助手定义装上）
+    // 库里：原会话只剩断点那一条（开头那条系统提示不落成行，装载时由 AgentDefinition 装上）
     expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([breakpoint.id]);
-    // 内存里：执行体手里那一份也换成了新的，系统提示还在
+    // 内存里：Agent 手里那一份也换成了新的，系统提示还在
     expect(agent.messages.map((item) => item.id)).toEqual([prompt.id, breakpoint.id]);
   });
 
@@ -863,7 +863,7 @@ describe("交接期间不落库", () => {
  *
  * 阈值 100 配用例里那条 200 的用量，就是「越线」。
  */
-function autoMigrate(handoff: HandoffService, session: Session) {
+function autoMigrate(handoff: HandoffService, session: SessionRecord) {
   return new AutoMigratePlugin({
     service: handoff.automatic(session),
     handoffTokens: 100,
@@ -873,7 +873,7 @@ function autoMigrate(handoff: HandoffService, session: Session) {
   });
 }
 
-/** 一条带用量的助手消息：越线只读上一次回答的 `usage.prompt_tokens` */
+/** 一条带用量的 AgentDefinition 消息：越线只读上一次回答的 `usage.prompt_tokens` */
 function answered(promptTokens: number): AgentNS.Message {
   return new Message({
     role: AgentNS.Role.Assistant,
@@ -903,7 +903,7 @@ describe("自动交接", () => {
     messageAdded(session.id, agent, "m-1", "这一任最后说的");
     expect(messages.get("m-1")).toBeUndefined();
 
-    // 关闸那一半在 SDK 的 `HandoffGuardPlugin`（指令被取走那一拍）：这里照那一拍按住
+    // 关开关那一半在 SDK 的 `HandoffGuardPlugin`（指令被取走那一拍）：这里照那一拍按住
     agent.pauseOutput();
     handoffs.runs[0].succeed();
     await idle;

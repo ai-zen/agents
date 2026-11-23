@@ -54,7 +54,7 @@ function setup() {
   return { db, inbox, seqOf };
 }
 
-/** 投递那一路写下去的那一条（宿主自己投的条目都带 `messageId`） */
+/** 投递那一路写下去的那一条（宿主自己投的 InboxEntry 都带 `messageId`） */
 function entry(messageId: string, content: string, createdAt: string) {
   return {
     messageId,
@@ -106,7 +106,9 @@ describe("inbox 表的写", () => {
   it("`sessionId` 指不到会话时照旧抛错：外键失败不是可以咽掉的那一种", () => {
     const { inbox } = setup();
 
-    expect(() => inbox.insert("no-such-session", entry("m-1", "没处安放", "2026-01-01T00:00:00Z"))).toThrow();
+    expect(() =>
+      inbox.insert("no-such-session", entry("m-1", "没处安放", "2026-01-01T00:00:00Z")),
+    ).toThrow();
     expect(inbox.listBySession("no-such-session")).toEqual([]);
   });
 });

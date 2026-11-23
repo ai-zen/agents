@@ -140,11 +140,11 @@ export namespace AgentNS {
     /** 宿主、定时器、外部系统注入的（含那条隐藏的 cwd 消息） */
     | { kind: "system"; label: string };
 
-  /** 带正文的条目：落地成一条 User 消息 */
+  /** 带正文的 InboxEntry：写进 messages 成一条 User 消息 */
   export interface InboxEntryWithContent {
     /**
-     * 落地成 User 消息时用的 id，由投递方给定 —— 客户端据此乐观回显；缺省则由 core 生成。
-     * 只有会落地的条目才有这一格。
+     * 写进 messages 成 User 消息时用的 id，由投递方给定 —— 客户端据此乐观回显；缺省则由 core 生成。
+     * 只有会写进 messages 的 InboxEntry 才有这一格。
      */
     messageId?: string;
     /** core 补：进来的时刻。注释里用它让模型判断时效 */
@@ -157,7 +157,7 @@ export namespace AgentNS {
   }
 
   /**
-   * **钥匙**：只为把它叫起来，自己不落地成任何消息。
+   * **钥匙**：只为把它叫起来，自己不写进 messages 成任何消息。
    *
    * 存在的唯一理由是「输入已经在 `messages` 里了」—— 委派的 subagent、装载好历史的一次性
    * 会话，都是这种情形：燃料装好了，只差拧一下。没有正文就没有消息，所以没有 `messageId`，
@@ -186,7 +186,7 @@ export namespace AgentNS {
    *   否则等在外面的 subagent 会在半截处收走结果。
    *
    * 「从下一批起还收不收件」**不在这一格里**：它是另一处状态（`Agent.isOutputPaused`）。
-   * 两件事压在同一格上必然有一格报不出来：不取件时投进来的那批照跑（口径如此），跑完就该报
+   * 两件事压在同一格上必然有一格报不出来：不取走时投进来的那批照跑（口径如此），跑完就该报
    * 闲，而那个开关仍旧是 true —— 压成一格的话，这一拍只能报一个，另一个必然丢。
    *
    * 不报「出过错」：**出过错是事实，不是状态**（读那条消息的 `status` / `error`）。

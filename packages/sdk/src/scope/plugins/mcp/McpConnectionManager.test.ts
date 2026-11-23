@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { McpConnectionManager } from "./McpConnectionManager.js";
-import type { McpServerConfig } from "../../../types/index.js";
+import type { McpServerDefinition } from "../../../types/index.js";
 
 // 纯 mock 对象，不涉及 vi.mock
 const mockClient = {
@@ -29,14 +29,14 @@ const mockTransport = {
   send: vi.fn().mockResolvedValue(undefined),
 };
 
-const stdioConfig: McpServerConfig = {
+const stdioConfig: McpServerDefinition = {
   id: "test-stdio",
   transport: "stdio",
   command: "node",
   args: ["server.js"],
 };
 
-const httpConfig: McpServerConfig = {
+const httpConfig: McpServerDefinition = {
   id: "test-http",
   transport: "http",
   url: "https://mcp.example.com",
@@ -126,19 +126,19 @@ describe("McpConnectionManager", () => {
   it("stdio 缺少 command 时抛出错误", async () => {
     // 使用默认构造（无 factory）来测试校验逻辑，因为 mock 工厂会绕过校验
     const rawManager = new McpConnectionManager();
-    const badConfig: McpServerConfig = { id: "bad", transport: "stdio" };
+    const badConfig: McpServerDefinition = { id: "bad", transport: "stdio" };
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing command");
   });
 
   it("http 缺少 url 时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
-    const badConfig: McpServerConfig = { id: "bad", transport: "http" };
+    const badConfig: McpServerDefinition = { id: "bad", transport: "http" };
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing url");
   });
 
   it("sse 缺少 url 时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
-    const badConfig: McpServerConfig = { id: "bad", transport: "sse" };
+    const badConfig: McpServerDefinition = { id: "bad", transport: "sse" };
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing url");
   });
 

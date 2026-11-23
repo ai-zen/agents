@@ -65,7 +65,7 @@ export type FakeLlmContentSection =
 export type FakeLlmStreamPart = "reasoning" | "tool_call" | "content";
 
 /**
- * 一条目标消息：端点要把它倒推成 delta 流里的那些增量。
+ * 一InboxEntry标消息：端点要把它倒推成 delta 流里的那些增量。
  *
  * 缺的格一律按「这条消息没有它」处理：没有 `finish_reason` 时，带工具调用的算
  * `tool_calls`，其余算 `stop`。
@@ -89,10 +89,10 @@ export interface FakeLlmMessage {
 }
 
 /**
- * 剧本：按这次请求决定回哪条目标消息。
+ * 剧本：按这次请求决定回哪InboxEntry标消息。
  *
  * - 字符串 = 正文是这句话、没有工具调用的那条消息；
- * - 一条目标消息 = 每次请求都回它；
+ * - 一InboxEntry标消息 = 每次请求都回它；
  * - 数组 = 按请求序号取，用完停在最后一条；
  * - 函数 = 自己按请求体算（`index` 是这次请求的序号，从 0 起）。
  */

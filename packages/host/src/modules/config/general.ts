@@ -25,7 +25,7 @@ export type ConfigSlice = "general" | "models";
  * 维护“文件里那份”和“内存里那份”两个答案，而它们一定会在某次之后不一致。
  *
  * 反过来说，**写必须经过这里**（{@link write}）：绕过它直接写 `ConfigManager`，内存那份就留在
- * 旧值上，而运行期读的正是内存那一份（能力容器的 `getConfig`、模型解析的兜底、`setModel` 的
+ * 旧值上，而运行期读的正是内存那一份（Scope 的 `getConfig`、模型解析的兜底、`setModel` 的
  * 校验）—— 那时「改完下一句话就按新的走」只在文件层面成立。
  */
 export class GeneralConfig {

@@ -169,7 +169,7 @@ describe("Agent 投递", () => {
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
 
-    agent.push(user("在吗"));
+    agent.send(user("在吗"));
     await settled(agent);
 
     const messages = agent.messages;
@@ -182,7 +182,7 @@ describe("Agent 投递", () => {
     await agent.start();
   });
 
-  it("钥匙不落地，只是把这一圈叫起来", async () => {
+  it("钥匙不写进 messages，只是把这一圈叫起来", async () => {
     const { client, create } = createMockClient([textStream("接着答")]);
     const agent = new Agent({
       client,
@@ -192,7 +192,7 @@ describe("Agent 投递", () => {
     });
     void agent.start();
 
-    agent.push(); // 拧钥匙：不给正文
+    agent.send(); // 拧钥匙：不给正文
     await settled(agent);
 
     expect(create).toHaveBeenCalledTimes(1);
@@ -215,9 +215,9 @@ describe("Agent 投递", () => {
     agent.stop();
     await agent.start();
 
-    expect(() => agent.push(user("晚了"))).toThrow(AgentError);
+    expect(() => agent.send(user("晚了"))).toThrow(AgentError);
     try {
-      agent.push(user("晚了"));
+      agent.send(user("晚了"));
     } catch (error) {
       expect((error as AgentError).code).toBe("closed");
     }
@@ -227,8 +227,8 @@ describe("Agent 投递", () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
-    agent.push(user("一"));
-    agent.push(user("二"));
+    agent.send(user("一"));
+    agent.send(user("二"));
     expect(agent.inboxSize).toBe(2);
 
     agent.kill();
@@ -238,21 +238,21 @@ describe("Agent 投递", () => {
     expect(agent.messages).toHaveLength(0);
   });
 
-  it("push 分得清「输入闸暂时关着」与「agent 已经终结」", async () => {
+  it("push 分得清「输入开关暂时关着」与「agent 已经终结」", async () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
 
     // 暂时不收：等一等还能投
     agent.pauseInput();
-    expect(codeOf(() => agent.push(user("一")))).toBe("input_paused");
+    expect(codeOf(() => agent.send(user("一")))).toBe("input_paused");
 
     agent.resumeInput();
-    expect(codeOf(() => agent.push(user("二")))).toBeUndefined();
+    expect(codeOf(() => agent.send(user("二")))).toBeUndefined();
 
     // 已经终结：再等也不会有人来取
     agent.kill();
-    expect(codeOf(() => agent.push(user("三")))).toBe("closed");
+    expect(codeOf(() => agent.send(user("三")))).toBe("closed");
 
     await agent.start();
   });
@@ -273,7 +273,7 @@ describe("Agent 流末的用量与结束原因", () => {
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
 
-    agent.push(user("问一句"));
+    agent.send(user("问一句"));
     await settled(agent);
 
     const assistant = agent.messages.at(-1)!;
@@ -302,7 +302,7 @@ describe("Agent 流末的用量与结束原因", () => {
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
 
-    agent.push(user("问一句"));
+    agent.send(user("问一句"));
     await settled(agent);
 
     // 没有 choices 就没有增量、也没有结束原因，但用量照收
@@ -362,7 +362,7 @@ describe("Agent 死亡事件", () => {
     const seen: string[] = [];
     agent.on("stopped", () => seen.push("stopped"));
 
-    agent.push(user("这一条还在队里"));
+    agent.send(user("这一条还在队里"));
     agent.stop();
     // 没起来过：只能由本体当场说
     expect(seen).toEqual(["stopped"]);
@@ -395,7 +395,7 @@ describe("Agent 死亡事件", () => {
     });
 
     const death = agent.start();
-    agent.push(user("慢慢来"));
+    agent.send(user("慢慢来"));
     await until(() => agent.state === "working");
 
     agent.kill();
@@ -433,7 +433,7 @@ describe("Agent 死亡事件", () => {
     });
 
     const death = agent.start();
-    agent.push(user("问一句"));
+    agent.send(user("问一句"));
     await until(() => agent.state === "working");
 
     agent.stop();
@@ -450,7 +450,7 @@ describe("Agent 死亡事件", () => {
 });
 
 describe("Agent 中断", () => {
-  it("abort 有自己的事实：闸已经关着也照发（拿闸猜不出「谁按的停」）", async () => {
+  it("abort 有自己的事实：开关已经关着也照发（拿开关猜不出「谁按的停」）", async () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
@@ -463,7 +463,7 @@ describe("Agent 中断", () => {
     agent.abort();
     agent.abort();
 
-    // 闸那一下只有第一次翻得动（后面一声不响），但「按了停」发生几次就是几条事实
+    // 开关那一下只有第一次翻得动（后面一声不响），但「按了停」发生几次就是几条事实
     expect(seen).toEqual(["output:paused", "aborted", "aborted"]);
 
     agent.kill();
@@ -487,41 +487,41 @@ describe("Agent 关输入", () => {
     agent.pauseInput();
     expect(agent.isInputPaused).toBe(true);
     expect(paused).toBe(1);
-    expect(() => agent.push(user("进不来"))).toThrow(AgentError);
+    expect(() => agent.send(user("进不来"))).toThrow(AgentError);
 
     agent.resumeInput();
     agent.resumeInput();
     expect(agent.isInputPaused).toBe(false);
     expect(resumed).toBe(1);
-    expect(() => agent.push(user("又进来了"))).not.toThrow();
+    expect(() => agent.send(user("又进来了"))).not.toThrow();
 
     agent.kill();
     await agent.start();
   });
 
-  it("两道闸互不相干：关输入不动排队区，关输出不动投递", async () => {
+  it("两道开关互不相干：关输入不动排队区，关输出不动投递", async () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
 
-    agent.push(user("一"));
-    agent.push(user("二"));
+    agent.send(user("一"));
+    agent.send(user("二"));
 
     agent.pauseInput();
-    // 关的是「还收不收」，不是「取不取」：排队区一件不动，输出闸也没翻
+    // 关的是「还收不收」，不是「取不取」：排队区一件不动，输出开关也没翻
     expect(agent.inboxSize).toBe(2);
     expect(agent.isOutputPaused).toBe(false);
 
     agent.pauseOutput();
     agent.resumeInput();
     expect(agent.isOutputPaused).toBe(true);
-    expect(() => agent.push(user("三"))).not.toThrow();
+    expect(() => agent.send(user("三"))).not.toThrow();
 
     agent.kill();
     await agent.start();
   });
 
-  it("关门之后不许再开输入闸：投进去也没人取了", async () => {
+  it("关门之后不许再开输入开关：投进去也没人取了", async () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
@@ -531,7 +531,7 @@ describe("Agent 关输入", () => {
     agent.on("input:resumed", () => (resumed += 1));
 
     agent.stop();
-    // 关门本来就走过这道闸，于是事件也只有这一条（不多发）
+    // 关门本来就走过这道开关，于是事件也只有这一条（不多发）
     expect(agent.isInputPaused).toBe(true);
     expect(paused).toBe(1);
 
@@ -543,7 +543,7 @@ describe("Agent 关输入", () => {
   });
 });
 
-describe("Agent 不取件", () => {
+describe("Agent 不取走", () => {
   it("abort 掐在途、从此不收件；resumeOutput 之后接着跑", async () => {
     let signal: AbortSignal | undefined;
     const create = vi.fn(async (_body: any, options: any) => {
@@ -557,12 +557,12 @@ describe("Agent 不取件", () => {
     });
     void agent.start();
 
-    agent.push(user("慢慢来"));
+    agent.send(user("慢慢来"));
     await until(() => agent.state === "working");
     await until(() => signal !== undefined);
 
     agent.abort();
-    // 开关翻成不取件了，而 state 那一格还停在 working：两处状态各说各的（这批跑完才报闲）
+    // 开关翻成不取走了，而 state 那一格还停在 working：两处状态各说各的（这批跑完才报闲）
     expect(agent.isOutputPaused).toBe(true);
     expect(agent.state).toBe("working");
     expect(signal!.aborted).toBe(true);
@@ -593,7 +593,7 @@ describe("Agent 错误", () => {
     agent.on("failed", (payload) => failed.push(payload));
 
     void agent.start();
-    agent.push(user("在吗"));
+    agent.send(user("在吗"));
     // 出错之后 state 会回到 idle：出错不终结 agent
     await settled(agent);
 
@@ -632,7 +632,7 @@ describe("Agent 修复", () => {
     agent.on("messageRemoved", ({ message }) => removed.push(message));
 
     void agent.start();
-    agent.push(user("接着问"));
+    agent.send(user("接着问"));
     await settled(agent);
 
     expect(agent.messages.some((m) => m.id === "half")).toBe(false);
@@ -644,7 +644,7 @@ describe("Agent 修复", () => {
 });
 
 describe("Agent 工具", () => {
-  it("按调用顺序落地 tool 消息，即使完成顺序相反", async () => {
+  it("按调用顺序写进 messages tool 消息，即使完成顺序相反", async () => {
     class Slow extends Tool {
       function = { name: "slow", description: "s", parameters: {} } as any;
       async exec(_ctx: ToolCallContext) {
@@ -675,7 +675,7 @@ describe("Agent 工具", () => {
     });
     void agent.start();
 
-    agent.push(user("跑两个工具"));
+    agent.send(user("跑两个工具"));
     await settled(agent);
 
     const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
@@ -717,7 +717,7 @@ describe("Agent 工具段里按中断", () => {
     });
     void agent.start();
 
-    agent.push(user("跑个会挂住的工具"));
+    agent.send(user("跑个会挂住的工具"));
     await until(() => toolStarted);
     agent.abort();
 
@@ -746,11 +746,11 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
       messages: [Message.System("sys"), Message.User("干件事", { kind: "agent", label: "测试" })],
     });
 
-    const messages = await agent.send();
+    const messages = await agent.sendAndWait();
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(messages.at(-1)!.content).toBe("一次性结果");
-    // 不关门：输入闸还在、循环还在等下一件事（与 `runOnce` 那一步差的就是这个）
+    // 不关门：输入开关还在、循环还在等下一件事（与 `runOnce` 那一步差的就是这个）
     expect(agent.isInputPaused).toBe(false);
     expect(agent.started).toBe(true);
     expect(agent.state).toBe("idle");
@@ -775,7 +775,7 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
     });
 
     let returned = false;
-    const done = agent.send().then((messages) => {
+    const done = agent.sendAndWait().then((messages) => {
       returned = true;
       return messages;
     });
@@ -796,7 +796,7 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds(), lifetime: "one-shot" });
 
-    await expect(agent.send()).rejects.toThrow(/messages 是空的/);
+    await expect(agent.sendAndWait()).rejects.toThrow(/messages 是空的/);
   });
 
   it("常驻 agent 不许 send：常驻会话没有「等到跑完」这回事", async () => {
@@ -808,7 +808,7 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
       messages: [Message.User("x", { kind: "user" })],
     });
 
-    await expect(agent.send()).rejects.toThrow(/常驻会话没有/);
+    await expect(agent.sendAndWait()).rejects.toThrow(/常驻会话没有/);
   });
 });
 
@@ -859,7 +859,7 @@ describe("Agent runOnce", () => {
     expect(create).toHaveBeenCalledTimes(1);
     expect(messages.at(-1)!.content).toBe("一次性结果");
     // 死了就死透
-    expect(() => agent.push(user("还想再来一次"))).toThrow(AgentError);
+    expect(() => agent.send(user("还想再来一次"))).toThrow(AgentError);
   });
 
   it("没有燃料就抛裸 Error", async () => {
@@ -913,10 +913,10 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(); // 这一次是发起它的那一次
+    agent.send(); // 这一次是发起它的那一次
     await until(() => agent.state === "working");
 
-    expect(() => agent.push(user("偷偷再塞一条"))).toThrow(AgentError);
+    expect(() => agent.send(user("偷偷再塞一条"))).toThrow(AgentError);
 
     agent.kill();
     await agent.start();
@@ -945,7 +945,7 @@ describe("Agent runOnce", () => {
     agent.use({ onToolStart: () => "这个工具现在不许用" });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
@@ -990,7 +990,7 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     // 两个钩子正交：工具不存在时只问「怎么回应它」，不问「要不要开始跑」
@@ -1032,7 +1032,7 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     expect(seen).toEqual(["onToolStart"]);
@@ -1055,7 +1055,7 @@ describe("Agent runOnce", () => {
     agent.use({ onUnknownTool: () => "没有这个工具，试试 call_mcp_tool" });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
@@ -1081,7 +1081,7 @@ describe("Agent runOnce", () => {
     agent.use({ onUnknownTool: () => undefined });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
@@ -1100,7 +1100,7 @@ describe("Agent runOnce", () => {
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
@@ -1144,7 +1144,7 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(user("跑两下"));
+    agent.send(user("跑两下"));
     await settled(agent);
 
     // 未知工具那一次：`onToolStart` 不该来，`onToolEnd` 也不该来（没有 start 的 end
@@ -1179,7 +1179,7 @@ describe("Agent runOnce", () => {
     agent.on("toolStarted", (payload) => started.push(payload.toolCall.function?.name ?? "?"));
 
     void agent.start();
-    agent.push(user("跑两下"));
+    agent.send(user("跑两下"));
     await settled(agent);
 
     // 未知工具从来没跑过：发一条 start 只会让拿它建「工具调用卡片」的订阅方凭空多一张
@@ -1216,7 +1216,7 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(user("跑一下"));
+    agent.send(user("跑一下"));
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
@@ -1240,7 +1240,7 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     expect(agent.messages.at(-1)!.content).toBe("依旧正常");
@@ -1264,7 +1264,7 @@ describe("Agent runOnce", () => {
     });
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     expect(calls).toEqual(["second"]);
@@ -1274,12 +1274,12 @@ describe("Agent runOnce", () => {
     await agent.start();
   });
 
-  it("inboxPending 给出还没取走的条目，且一个都不取走", () => {
+  it("inboxPending 给出还没取走的InboxEntry，且一个都不取走", () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
-    agent.push(user("一"));
-    agent.push(); // 钥匙：没有正文
+    agent.send(user("一"));
+    agent.send(); // 钥匙：没有正文
 
     const pending = agent.inboxPending;
     expect(pending).toHaveLength(2);
@@ -1299,8 +1299,8 @@ describe("Agent runOnce", () => {
     const added: any[] = [];
     agent.on("inboxAdded", (payload) => added.push(payload));
 
-    agent.push(user("一句"));
-    agent.push(); // 钥匙：没有正文
+    agent.send(user("一句"));
+    agent.send(); // 钥匙：没有正文
 
     expect(added).toHaveLength(2);
     // 载荷就是队列里那一条：`createdAt` / `source` / 正文都在
@@ -1325,8 +1325,8 @@ describe("Agent runOnce", () => {
     expect(agent.clearInbox()).toEqual([]);
     expect(cleared).toHaveLength(0);
 
-    agent.push(user("一"));
-    agent.push(user("二"));
+    agent.send(user("一"));
+    agent.send(user("二"));
     const dropped = agent.clearInbox();
 
     expect(dropped).toHaveLength(2);
@@ -1340,7 +1340,7 @@ describe("Agent runOnce", () => {
     agent.kill();
   });
 
-  it("inboxTaken 在落地之后报，带的是被取走的那些条目（含钥匙）", async () => {
+  it("inboxTaken 在写进 messages之后报，带的是被取走的那些InboxEntry（含钥匙）", async () => {
     const { client } = createMockClient([textStream("好")]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
@@ -1354,12 +1354,12 @@ describe("Agent runOnce", () => {
     agent.on("inboxTaken", (payload) => {
       order.push("inboxTaken");
       taken.push(payload);
-      // 落地必须先发生：报这一刻，消息已经在了
+      // 写进 messages 必须先发生：报这一刻，消息已经在了
       addedBefore.push(agent.messages.filter((m) => m.role === AgentNS.Role.User).length);
     });
 
-    agent.push(user("一句"));
-    agent.push(); // 钥匙
+    agent.send(user("一句"));
+    agent.send(); // 钥匙
 
     void agent.start();
     await until(() => taken.length > 0);
@@ -1369,7 +1369,7 @@ describe("Agent runOnce", () => {
     // 两条都被取走了：一条带正文、一条是钥匙
     expect(taken[0].entries).toHaveLength(2);
     expect(taken[0].entries[1].content).toBeUndefined();
-    // 报之前那条 user 消息已经落地了，事件次序也是落地在前
+    // 报之前那条 user 消息已经写进 messages 了，事件次序也是写进 messages 在前
     expect(addedBefore[0]).toBe(1);
     expect(order).toEqual(["messageAdded", "inboxTaken"]);
     // 队列已空
@@ -1381,12 +1381,12 @@ describe("Agent runOnce", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 恢复：把旧的条目原样放回队列（PRD 4.12）
+// 恢复：把旧的 InboxEntry 原样放回队列（PRD 4.12）
 // ---------------------------------------------------------------------------
 
-describe("Agent 恢复：把旧条目原样放回", () => {
+describe("Agent 恢复：把旧InboxEntry原样放回", () => {
   /**
-   * 一条「上一次存下来」的条目：`createdAt` 是很久以前那一刻，来源不是用户本人。
+   * 一条「上一次存下来」的 InboxEntry：`createdAt` 是很久以前那一刻，来源不是用户本人。
    *
    * 这两点是有意的 —— 它们正是「恢复 ≠ 投递」会被看出来的地方：投递会盖新的时间，而
    * `{kind:"user"}` 这个来源也不加注释行。
@@ -1416,7 +1416,7 @@ describe("Agent 恢复：把旧条目原样放回", () => {
     agent.kill();
   });
 
-  it("放回之后被取走：落地用的是存下来的 messageId 与 createdAt", async () => {
+  it("放回之后被取走：写进 messages用的是存下来的 messageId 与 createdAt", async () => {
     const { client } = createMockClient([textStream("补好了")]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
@@ -1425,9 +1425,9 @@ describe("Agent 恢复：把旧条目原样放回", () => {
     await settled(agent);
 
     const landed = agent.messages[0]!;
-    // id 用条目自带的那一个（客户端先画的就是它）
+    // id 用 InboxEntry 自带的那一个（客户端先画的就是它）
     expect(landed.id).toBe("早先那条");
-    // 来源注释里那一刻时间是条目自己的 createdAt —— 不是「重启那一刻」（段序也没变：注释在前）
+    // 来源注释里那一刻时间是 InboxEntry 自己的 createdAt —— 不是「重启那一刻」（段序也没变：注释在前）
     const sections = landed.content as AgentNS.MessageContentSection[];
     expect(sections[0]).toMatchObject({ type: "text" });
     expect((sections[0] as { text: string }).text).toContain("2026-01-02T03:04:05.000Z");
@@ -1444,7 +1444,7 @@ describe("Agent 恢复：把旧条目原样放回", () => {
     agent.restore([
       { ...stored, messageId: "第一条", content: "第一句" },
       { ...stored, messageId: "第二条", content: "第二句" },
-      // 钥匙也在放回之列：它同样是一条「当时排着、没人取走」的条目
+      // 钥匙也在放回之列：它同样是一条「当时排着、没人取走」的 InboxEntry
       { createdAt: "2026-01-02T03:04:06.000Z", priority: "low", content: undefined },
     ]);
 
@@ -1474,7 +1474,7 @@ describe("Agent 恢复：把旧条目原样放回", () => {
     expect(codeOf(() => closed.restore([stored]))).toBe("closed");
 
     const healthy = new Agent({ client, model: "m", newMessageId: makeIds() });
-    // 半截条目：宁可当场炸，也不要把半截数据装进队列
+    // 半截 InboxEntry：宁可当场炸，也不要把半截数据装进队列
     const broken = [
       { createdAt: "", priority: "low" as const, content: undefined },
       { createdAt: "2026-01-02T03:04:05.000Z", priority: "high" as const, content: "没有来源" },

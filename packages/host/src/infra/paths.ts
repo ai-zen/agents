@@ -9,7 +9,7 @@ export function resolveDataRoot(): string {
 /**
  * 数据根下那几个固定位置。
  *
- * 宿主与命令行读同一份：库名、日志目录、助手目录、`run/` 下那三份文件，各出现在这里一次。
+ * 宿主与命令行读同一份：库名、日志目录、AgentDefinition 目录、`run/` 下那三份文件，各出现在这里一次。
  * `run/` 下的三份各是一个交付口：`host.json` 说连哪儿，`token` 给本机客户端一串能用的凭证明文，
  * `next-version.json` 说下次该跑哪一版。
  */

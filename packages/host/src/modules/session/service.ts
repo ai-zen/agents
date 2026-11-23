@@ -3,7 +3,7 @@ import { HostError } from "../../infra/errors.js";
 import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { sessionTable } from "./table.js";
-import type { NewSession, Session } from "./types.js";
+import type { NewSession, SessionRecord } from "./types.js";
 
 export interface SessionDeps {
   readonly sessions: ReturnType<typeof sessionTable>;
@@ -21,9 +21,9 @@ export interface SessionDeps {
 export class SessionService {
   constructor(private readonly deps: SessionDeps) {}
 
-  create(input: NewSession): Session {
+  create(input: NewSession): SessionRecord {
     const now = Date.now();
-    const session: Session = {
+    const session: SessionRecord = {
       id: crypto.randomUUID(),
       workspaceId: input.workspaceId,
       name: input.name,
@@ -44,15 +44,15 @@ export class SessionService {
     return session;
   }
 
-  get(id: string): Session | undefined {
+  get(id: string): SessionRecord | undefined {
     return this.deps.sessions.get(id);
   }
 
-  list(workspaceId: string): Session[] {
+  list(workspaceId: string): SessionRecord[] {
     return this.deps.sessions.listByWorkspace(workspaceId);
   }
 
-  update(id: string, patch: Partial<Omit<Session, "id" | "createdAt">>): Session {
+  update(id: string, patch: Partial<Omit<SessionRecord, "id" | "createdAt">>): SessionRecord {
     const current = this.deps.sessions.get(id);
     if (current === undefined) {
       throw new HostError(
@@ -65,14 +65,14 @@ export class SessionService {
       );
     }
 
-    const next: Session = { ...current, ...patch, updatedAt: Date.now() };
+    const next: SessionRecord = { ...current, ...patch, updatedAt: Date.now() };
     this.deps.sessions.put(next);
     this.deps.events.emit({ type: "session.changed", session: next });
     return next;
   }
 
   /** 换模型必须清掉 `thinkingLevel`：档位是模型的参数，把一家的 thinking 参数带到另一家会被直接拒 */
-  setModel(id: string, modelId: string | null): Session {
+  setModel(id: string, modelId: string | null): SessionRecord {
     return this.update(id, { modelId, thinkingLevel: null });
   }
 

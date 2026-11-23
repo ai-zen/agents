@@ -1,7 +1,7 @@
 /**
  * 会话行：一段持续的身份与历史，一行记录，永远存在。时间一律是 epoch 毫秒。
  */
-export interface Session {
+export interface SessionRecord {
   id: string;
   workspaceId: string;
   name: string;
@@ -11,7 +11,7 @@ export interface Session {
   agentId: string;
   /** `null` 表示这段会话当前指不到任何模型（那个端点上没有剩下的可指） */
   modelId: string | null;
-  /** `null` 表示跟随助手定义的档位 */
+  /** `null` 表示跟随 AgentDefinition 的档位 */
   thinkingLevel: string | null;
   autoHandoff: boolean;
   /** 谁开的这段会话，`null` 表示用户建的 */

@@ -14,9 +14,9 @@ import {
   supportsFilesApi,
   toDataUrl,
 } from "./content-blocks.js";
-import type { AppConfig, Endpoint, Model } from "../types/index.js";
+import type { AppConfig, EndpointDefinition, ModelDefinition } from "../types/index.js";
 
-const deepseek: Endpoint = {
+const deepseek: EndpointDefinition = {
   id: "deepseek",
   name: "DeepSeek",
   baseUrl: "https://api.deepseek.com/v1",
@@ -24,7 +24,7 @@ const deepseek: Endpoint = {
   capabilities: { filesApi: true },
 };
 
-const openai: Endpoint = {
+const openai: EndpointDefinition = {
   id: "openai",
   name: "OpenAI",
   baseUrl: "https://api.openai.com/v1",
@@ -128,7 +128,7 @@ describe("fileToContentSection：传输方式选择", () => {
     await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
     await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
     // 换个端点再传一次：`file_id` 是端点维度资源，SDK 也不替调用方记
-    const other: Endpoint = { ...deepseek, id: "deepseek-2" };
+    const other: EndpointDefinition = { ...deepseek, id: "deepseek-2" };
     await fileToContentSection({ source: { path: file }, endpoint: other, deps: { upload } });
     expect(upload).toHaveBeenCalledTimes(3);
   });
@@ -166,7 +166,12 @@ describe("fileToContentSection：传输方式选择", () => {
 
   it("模型明确不支持视觉：图片退化为文本路径提示", async () => {
     const file = await tmpImage();
-    const model = { id: "text-only", name: "T", endpointId: "openai", vision: false } as Model;
+    const model = {
+      id: "text-only",
+      name: "T",
+      endpointId: "openai",
+      vision: false,
+    } as ModelDefinition;
     const r = await fileToContentSection({ source: { path: file }, endpoint: openai, model });
     expect(r.transport).toBe("text");
     expect((r.section as any).text).toContain(file);
@@ -174,7 +179,7 @@ describe("fileToContentSection：传输方式选择", () => {
   });
 
   it("非视觉模型：内存来源（base64 / data）也退化为文本提示", async () => {
-    const textOnly = { id: "text-only", name: "T", endpointId: "openai" } as Model; // 缺省 vision
+    const textOnly = { id: "text-only", name: "T", endpointId: "openai" } as ModelDefinition; // 缺省 vision
     const fromBase64 = await fileToContentSection({
       source: { base64: "AAAA", mime: "image/png", filename: "mcp-media-1.png" },
       endpoint: openai,
@@ -191,7 +196,7 @@ describe("fileToContentSection：传输方式选择", () => {
     expect(fromBytes.transport).toBe("text");
 
     // 视觉模型则照常内联
-    const vision = { id: "v", name: "V", endpointId: "openai", vision: true } as Model;
+    const vision = { id: "v", name: "V", endpointId: "openai", vision: true } as ModelDefinition;
     const ok = await fileToContentSection({
       source: { base64: "AAAA", mime: "image/png" },
       endpoint: openai,
@@ -240,7 +245,7 @@ describe("fileToContentSection：传输方式选择", () => {
  */
 describe("默认上传实现（真 HTTP，不注入 upload）", () => {
   async function fakeEndpoint(): Promise<{
-    endpoint: Endpoint;
+    endpoint: EndpointDefinition;
     requests: Array<{ url?: string; auth?: string; body: string }>;
     reply: { status: number; body: string };
     close: () => Promise<void>;

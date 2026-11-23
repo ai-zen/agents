@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { McpServerConfig } from "@ai-zen/agents-sdk";
+import type { McpServerDefinition } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { HostApiDeps } from "./deps.js";
@@ -23,17 +23,17 @@ const scopeSchema = z.enum([
  *
  * 写完也回这一份（而不是只回一个 `ok`）：客户端不必再发一次 `list`，也就不必处理「两个请求
  * 之间夹进另一处改动」这种两半不一致的处境。形状只有 SDK 那一处（`types/index.ts` 的
- * `McpServerConfig`），这里不抄第二份：`z.custom` 就是「这个值的形状由别处声明」
+ * `McpServerDefinition`），这里不抄第二份：`z.custom` 就是「这个值的形状由别处声明」
  * （`config.ts` 的 `config` 与 `agentDefinition.ts` 的 `definition` 是同一个先例）。
  */
 const serversResult = z.object({
-  servers: z.array(z.object({ scope: scopeSchema, server: z.custom<McpServerConfig>() })),
+  servers: z.array(z.object({ scope: scopeSchema, server: z.custom<McpServerDefinition>() })),
 });
 
 /**
  * MCP 配置面：列（每条写在哪一层）、加一条、删一条、改一条。
  *
- * 这一层只把项目换成那个目录，其余的判断都在 `McpConfig` 那一侧：写哪两层、与文件里已有条目
+ * 这一层只把项目换成那个目录，其余的判断都在 `McpConfig` 那一侧：写哪两层、与文件里已有 InboxEntry
  * 合并（不是覆盖）、这一层没有它时 `not_found`、不可写的那三层 `unsupported`。在这里再判一次
  * 就多出一处会与那里不一致的规则。
  *
@@ -60,12 +60,12 @@ export function mcpRouter(deps: HostApiDeps, api: Trpc) {
      * `scope` 在入参里是那五层，**可写的只有两层**：另外三层由 `McpConfig.save` 抛
      * `unsupported`（它比这里多知道一条「那个文件是谁的」），这一层不重判。
      */
-    save: api.procedure
+    update: api.procedure
       .input(
         z.object({
           workspaceId: z.string(),
           scope: scopeSchema,
-          server: z.custom<McpServerConfig>(),
+          server: z.custom<McpServerDefinition>(),
         }),
       )
       .output(serversResult)
@@ -76,7 +76,7 @@ export function mcpRouter(deps: HostApiDeps, api: Trpc) {
       }),
 
     /** 删一条。这一层里没有它就是 `not_found`（`McpConfig.remove` 抛的那一句，这里不另判） */
-    remove: api.procedure
+    delete: api.procedure
       .input(z.object({ workspaceId: z.string(), scope: scopeSchema, name: z.string() }))
       .output(serversResult)
       .mutation(async ({ input }) => {

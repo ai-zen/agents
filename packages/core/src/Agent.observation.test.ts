@@ -63,7 +63,7 @@ function makeStream(chunks: AnyChunk[]): AsyncIterable<ChatCompletionChunk> {
 }
 
 /**
- * 掐得住的流：第一片照常给出，之后停在闸上，`release()` 一响才把剩下的片吐完。
+ * 掐得住的流：第一片照常给出，之后停在开关上，`release()` 一响才把剩下的片吐完。
  *
  * 中断与杀死这两个用例都要「正收着流的时候动手」，所以需要一个停得住的流 —— 它只停在那儿，
  * 不参与别处任何判断。
@@ -202,7 +202,7 @@ describe("一趟请求的边界", () => {
     );
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     // 一条占位（`messageAdded`）+ 四条边界事实：这一趟从「有了那条占位」到「它定型」的全程
@@ -253,7 +253,7 @@ describe("一趟请求的边界", () => {
     const names = recordAllEvents(agent);
 
     void agent.start();
-    agent.push(user("跑个工具"));
+    agent.send(user("跑个工具"));
     await settled(agent);
 
     // 第一趟的尾巴排在它引出的工具之后：工具跑完、钩子跑完，才说「这一趟结束」
@@ -282,7 +282,7 @@ describe("一趟请求的边界", () => {
     agent.on("denied", (payload) => denials.push(payload));
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     // 拒在造 assistant 占位之前：没有占位就是没有事实，一对事件都不发
@@ -313,7 +313,7 @@ describe("一趟请求的边界", () => {
     const names = recordAllEvents(agent);
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     // 等到第一片真的进来：这时这一趟已经在收流了
     await until(() => names.includes("delta"));
 
@@ -352,10 +352,10 @@ describe("定稿", () => {
     const names = recordAllEvents(agent);
     const finished = recordFinished(agent);
 
-    // 这一轮**只拧一把钥匙**、history 空着：于是这一轮里落地的消息只有那条 assistant 占位，
+    // 这一轮**只拧一把钥匙**、history 空着：于是这一轮里写进 messages 的消息只有那条 assistant 占位，
     // 「整轮里只有一条」才是一句能直接钉的话（用户说的话那一条由下面那个用例单独管）。
     void agent.start();
-    agent.push();
+    agent.send();
     await settled(agent);
 
     // 流式期间一片都不发：两片 delta 之后才有那一条
@@ -383,7 +383,7 @@ describe("定稿", () => {
     const finished = recordFinished(agent);
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await settled(agent);
 
     const said = agent.messages.find((message) => message.role === AgentNS.Role.User)!;
@@ -413,7 +413,7 @@ describe("定稿", () => {
     const finished = recordFinished(agent);
 
     void agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await until(() => names.includes("delta"));
 
     // 第二片之前掐住：这一趟的收尾落在中断之后
@@ -463,13 +463,13 @@ describe("序号与时刻", () => {
     const facts = recordFacts(agent);
 
     void agent.start();
-    agent.push(user("跑个工具"));
+    agent.send(user("跑个工具"));
     await settled(agent);
 
     // 工具那一趟真的发生了（不然这一条问的事件太少）
     expect(facts.some((fact) => fact.name === "toolFinished")).toBe(true);
 
-    // 序号是这个执行体自己的那一条链：1、2、3……不重、不掉、不跳
+    // 序号是这个 Agent 自己的那一条链：1、2、3……不重、不掉、不跳
     const seqs = facts.map((fact) => fact.seq);
     expect(seqs[0]).toBe(1);
     expect(seqs).toEqual(seqs.map((_, index) => index + 1));
@@ -493,7 +493,7 @@ describe("序号与时刻", () => {
     const facts = recordFacts(agent);
 
     const death = agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await until(() => facts.some((fact) => fact.name === "delta"));
 
     // 正收着流的时候杀死：那一次请求的收尾还在后头，它会想再说几条
@@ -531,7 +531,7 @@ describe("死了之后不再有事实", () => {
     const names = recordAllEvents(agent);
 
     const death = agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await until(() => names.includes("delta"));
 
     // 正收着流的时候杀死：那一次请求的收尾还在后头
@@ -567,7 +567,7 @@ describe("死了之后不再有事实", () => {
     const names = recordAllEvents(agent);
 
     const death = agent.start();
-    agent.push(user("说话"));
+    agent.send(user("说话"));
     await until(() => names.includes("delta"));
 
     agent.kill();

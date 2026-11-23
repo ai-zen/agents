@@ -8,7 +8,7 @@ import type { ClientCapabilities, Task } from "@modelcontextprotocol/sdk/types.j
 import type { Agent } from "@ai-zen/agents-core";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import type {
-  McpServerConfig,
+  McpServerDefinition,
   McpServerManifest,
   McpConnectionState,
 } from "../../../types/index.js";
@@ -82,7 +82,7 @@ const DEFAULT_IDLE_TIMEOUT: Record<string, number> = {
 export class McpConnectionManager {
   private servers = new Map<string, ConnectionEntry>();
   /** 可替换的 transport 工厂，用于测试注入 */
-  private _transportFactory?: (config: McpServerConfig) => Transport;
+  private _transportFactory?: (config: McpServerDefinition) => Transport;
   /** 可替换的 Client 工厂，用于测试注入 */
   private _clientFactory?: () => Client;
   /** 日志口（构造时定下缺省：不注入就什么都不写） */
@@ -112,7 +112,7 @@ export class McpConnectionManager {
    * @param taskNotice 任务通知的投递口（可选）：不给就没有地方投，任务状态只当没收到
    */
   constructor(
-    transportFactory?: (config: McpServerConfig) => Transport,
+    transportFactory?: (config: McpServerDefinition) => Transport,
     clientFactory?: () => Client,
     logger: LogSink = SILENT_LOG,
     taskNotice?: McpTaskNoticePort,
@@ -151,8 +151,8 @@ export class McpConnectionManager {
   /**
    * 记住一个任务是谁发起的：状态通知到了要投进那段会话的 inbox。
    *
-   * 会话 id 只有投递口答得出来（发起调用的是执行体，它属于哪一段会话是运行时的事）。答不出来
-   * 就什么都不记 —— 那种调用（被派出去的 subagent、一次性执行体）发起的任务没有会话可以回报。
+   * 会话 id 只有投递口答得出来（发起调用的是 Agent，它属于哪一段会话是运行时的事）。答不出来
+   * 就什么都不记 —— 那种调用（被派出去的 subagent、一次性 Agent）发起的任务没有会话可以回报。
    */
   rememberTask(name: string, taskId: string, agent: Agent): void {
     const sessionId = this._taskNotice?.sessionOf(agent);
@@ -179,7 +179,7 @@ export class McpConnectionManager {
 
   async connect(
     name: string,
-    config: McpServerConfig,
+    config: McpServerDefinition,
     options: McpConnectOptions = {},
   ): Promise<McpServerManifest> {
     const existing = this.servers.get(name);
@@ -267,7 +267,7 @@ export class McpConnectionManager {
     }
   }
 
-  private async doConnect(name: string, config: McpServerConfig): Promise<void> {
+  private async doConnect(name: string, config: McpServerDefinition): Promise<void> {
     const transport = this.createTransport(config);
     const client = this._clientFactory
       ? this._clientFactory()
@@ -405,7 +405,7 @@ export class McpConnectionManager {
    * 一条任务状态通知该干什么。
    *
    * 只有终态才投：`working` / `input_required` 不是「有事要人动手」，每一条都投就是刷屏；
-   * 终态那一条是要人（执行体）去拉结果的信号，投进发起这次调用的那段会话。
+   * 终态那一条是要人（Agent）去拉结果的信号，投进发起这次调用的那段会话。
    *
    * 对应关系用过就删：这里记的是「哪个任务还欠谁一条回报」，终态之后就没了。
    */
@@ -468,7 +468,7 @@ export class McpConnectionManager {
    * 根据配置创建对应的 Transport 实例。
    * 如果设置了自定义工厂（测试用），则使用自定义工厂。
    */
-  private createTransport(config: McpServerConfig): Transport {
+  private createTransport(config: McpServerDefinition): Transport {
     if (this._transportFactory) {
       return this._transportFactory(config);
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { AppConfig, Model } from "../types/index.js";
+import type { AppConfig, ModelDefinition } from "../types/index.js";
 import {
   DEFAULT_HANDOFF_THRESHOLD,
   normalizeConfig,
@@ -7,11 +7,11 @@ import {
 } from "./normalize.js";
 
 /** 一个模型（只填用例关心的那几格，其余走 type assertion） */
-function model(fields: Record<string, unknown> = {}): Model {
-  return { id: "m", name: "M", endpointId: "e", ...fields } as unknown as Model;
+function model(fields: Record<string, unknown> = {}): ModelDefinition {
+  return { id: "m", name: "M", endpointId: "e", ...fields } as unknown as ModelDefinition;
 }
 
-function raw(value: Model): Record<string, unknown> {
+function raw(value: ModelDefinition): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
@@ -129,7 +129,7 @@ describe("normalizeConfig", () => {
     expect(result.config.defaultModel).toBe("m");
   });
 
-  it("只补部分模型时，未变的条目保持同一引用", () => {
+  it("只补部分模型时，未变的InboxEntry保持同一引用", () => {
     const ok = model({ tokenThresholds: { handoff: 1, guard: 2 } });
     const missing = model({ id: "m2" });
     const config = { endpoints: [], models: [ok, missing] } as unknown as AppConfig;

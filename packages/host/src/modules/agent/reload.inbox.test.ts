@@ -2,7 +2,7 @@
  * 重装前后，库里那一份排队区与内存里那一份对得上。
  *
  * 这条路上有两件事同时成立才算对：
- * - `materialsFor` 抢在杀之前把还排着的条目交给重装，装回来时它们被原样放回队列（内存那一份）；
+ * - `materialsFor` 抢在杀之前把还排着的 InboxEntry 交给重装，装回来时它们被原样放回队列（内存那一份）；
  * - 杀报出的 `inboxCleared` 在重装窗口里不作废库里那几行（`ReloadWindow`）。
  *
  * 缺了后者，库里那几行会被观察者删掉，而放回队列那一步刻意不报 `inboxAdded`（放回去不是新变化），
@@ -11,7 +11,7 @@
  *
  * 台架：真内存库、真 `SessionService`、真 `inbox` 表、真 `materialsFor`、真的 `HostObserver`
  * （删库行那一步正是要验的东西，换成替身就等于把它一起替掉了），只有运行时是替身 —— 造一个真
- * 运行时得先有一个能出网的模型、一份定义文件与一批能力容器，而这里要验的是「那一次清空之后库里
+ * 运行时得先有一个能出网的模型、一份定义文件与一批 Scope，而这里要验的是「那一次清空之后库里
  * 还剩什么」。替身的 `kill` / `wake` 照内核那两条的口径来：`kill` 清空队列并报 `inboxCleared`，
  * `wake` 把材料里的 `waiting` 放回队列、不报任何事实（内核的 `restore` 就是这样）。
  */
@@ -33,7 +33,7 @@ import { NoticeService } from "../notice/service.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { workspaceTable } from "../workspace/table.js";
 import { inboxTable } from "./inbox.js";
@@ -52,8 +52,8 @@ const MODEL = {
 };
 
 /**
- * 执行体替身：只留这条路上读写的那三格 —— 内存里的队列、队列还等不等着取件（输出闸）、
- * 以及关闸那个动作。重装会把输出闸按杀之前读到的那一格关回去，于是放回队列的条目不会立刻被
+ * Agent 替身：只留这条路上读写的那三格 —— 内存里的队列、队列还等不等着取走（输出开关）、
+ * 以及关开关那个动作。重装会把输出开关按杀之前读到的那一格关回去，于是放回队列的 InboxEntry 不会立刻被
  * 取走，用例因此看得见「排队区里排着两条」。
  */
 function fakeAgent(waiting: readonly AgentNS.InboxEntry[]): {
@@ -90,7 +90,7 @@ function newHost() {
     definitions: {
       get: async (): Promise<AgentDefinition> => ({
         id: "agent-1",
-        name: "助手",
+        name: "AgentDefinition",
         messages: [],
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
@@ -117,7 +117,7 @@ function newHost() {
   } as MaterialsDeps;
 
   const reloads = new ReloadWindow();
-  /** 此刻有执行体的那几段会话 */
+  /** 此刻有 Agent 的那几段会话 */
   const alive = new Map<string, ReturnType<typeof fakeAgent>>();
   const listeners = new Set<(fact: RuntimeFact) => void>();
 
@@ -185,7 +185,7 @@ function newHost() {
       sessions,
       workspaces,
       runtime: runtime as never,
-      materials: (session: Session) => materialsFor(materialDeps, session),
+      materials: (session: SessionRecord) => materialsFor(materialDeps, session),
       reloads,
       onError: (error: unknown, what: string) => {
         throw new Error(`重装报了错（${what}）：${String(error)}`);
@@ -194,7 +194,7 @@ function newHost() {
   };
 }
 
-/** 排队区里的那一条（投递那条路先落库的那一份，宿主自己投的条目都带 `messageId`） */
+/** 排队区里的那一条（投递那条路先落库的那一份，宿主自己投的 InboxEntry 都带 `messageId`） */
 function pending(messageId: string, content: string, createdAt: string) {
   return {
     messageId,
@@ -206,7 +206,7 @@ function pending(messageId: string, content: string, createdAt: string) {
 }
 
 /**
- * 一条条目的身份。`AgentNS.InboxEntry` 是「带正文的条目」与「钥匙」的并集，钥匙没有
+ * 一条 InboxEntry 的身份。`AgentNS.InboxEntry` 是「带正文的 InboxEntry」与「钥匙」的并集，钥匙没有
  * `messageId`（它没有正文，也没有可恢复的东西），所以判据在键上。
  */
 function messageIdOf(entry: AgentNS.InboxEntry): string | undefined {
@@ -214,7 +214,7 @@ function messageIdOf(entry: AgentNS.InboxEntry): string | undefined {
 }
 
 describe("重装前后排队区对得上", () => {
-  it("两条排着的条目在重装之后：内存里按原顺序还在，库里那两行也还在", async () => {
+  it("两条排着的InboxEntry在重装之后：内存里按原顺序还在，库里那两行也还在", async () => {
     const host = newHost();
     const session = host.sessions.create({
       workspaceId: host.workspace.id,
@@ -231,7 +231,7 @@ describe("重装前后排队区对得上", () => {
     const second = pending("m-2", "第二句还在等", "2026-01-01T00:00:01.000Z");
     host.inbox.insert(session.id, first);
     host.inbox.insert(session.id, second);
-    // 这段会话正关着输出闸（用户按过中断）：放回队列的条目不会立刻被取走
+    // 这段会话正关着输出开关（用户按过中断）：放回队列的 InboxEntry 不会立刻被取走
     const before = fakeAgent([first, second]);
     before.pauseOutput();
     host.alive.set(session.id, before);
@@ -263,7 +263,7 @@ describe("重装前后排队区对得上", () => {
     host.inbox.insert(session.id, only);
     host.alive.set(session.id, fakeAgent([only]));
 
-    // 不进窗口的那一次杀：用户按的是杀死，条目作废、库里也删
+    // 不进窗口的那一次杀：用户按的是杀死，InboxEntry 作废、库里也删
     host.runtime.kill(session.id);
 
     expect(host.alive.has(session.id)).toBe(false);

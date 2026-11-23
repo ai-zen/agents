@@ -14,7 +14,7 @@ const MAX_HANDOFF_TOKENS = 50_000;
  *
  * 自动交接走的是 `migrate()`（写文档 + 换记忆：记忆长什么样只有 SDK 那一处算，落在哪儿看有
  * 没有注入落库接缝）。`handoff` 一并挂上 spy 但插件不该碰它 —— 那一路只产文档、不换记忆，
- * 自动交接要是走它，平级会话越线之后记忆根本不会换。用例靠「`handoff` 一次都没被调用」钉住。
+ * 自动交接要是走它，PeerSession 越线之后记忆根本不会换。用例靠「`handoff` 一次都没被调用」钉住。
  */
 function stubService(options: { handingOff?: boolean } = {}) {
   const handoff = vi.fn(async () => ({}) as any);
@@ -234,7 +234,7 @@ describe("AutoMigratePlugin", () => {
     });
   });
 
-  it("交接失败时没有「压过了」的回声，但有一条失败回声（宿主据此把闸开回来）", async () => {
+  it("交接失败时没有「压过了」的回声，但有一条失败回声（宿主据此把开关开回来）", async () => {
     const { service, migrate } = stubService();
     const boom = new Error("boom");
     migrate.mockRejectedValueOnce(boom);
@@ -301,7 +301,7 @@ describe("AutoMigratePlugin", () => {
     expect(migrate).toHaveBeenCalledTimes(1);
   });
 
-  it("失败回声自己抛错也不接：那是「把闸开回来」的唯一一道门", async () => {
+  it("失败回声自己抛错也不接：那是「把开关开回来」的唯一一道门", async () => {
     const { service, migrate } = stubService();
     migrate.mockRejectedValueOnce(new Error("boom"));
     await expect(
@@ -311,12 +311,12 @@ describe("AutoMigratePlugin", () => {
           handoffTokens: MAX_HANDOFF_TOKENS,
           resolveMode: async () => "self" as const,
           onFailed: async () => {
-            throw new Error("闸没打开");
+            throw new Error("开关没打开");
           },
         }),
         { promptTokens: MAX_HANDOFF_TOKENS + 1 },
       ),
-    ).rejects.toThrow("闸没打开");
+    ).rejects.toThrow("开关没打开");
   });
 
   it("用户取消不记 error 日志（取消是用户按的停，不是迁移失败）", async () => {

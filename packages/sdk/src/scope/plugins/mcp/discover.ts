@@ -1,12 +1,12 @@
 import { promises as fs } from "node:fs";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
-import type { McpServerConfig } from "../../../types/index.js";
+import type { McpServerDefinition } from "../../../types/index.js";
 
 /**
- * 归一化原始 MCP server 配置为内部 McpServerConfig。
+ * 归一化原始 MCP server 配置为内部 McpServerDefinition。
  * 处理业界标准中的字段别名差异。
  */
-function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerConfig | null {
+function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerDefinition | null {
   // disabled 处理
   if (raw.disabled === true) return null;
 
@@ -15,7 +15,7 @@ function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerCon
   const transport = normalizeTransport(transportRaw, raw);
   if (!transport) return null;
 
-  const config: McpServerConfig = {
+  const config: McpServerDefinition = {
     id,
     transport,
     description: raw.description as string | undefined,
@@ -24,10 +24,10 @@ function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerCon
     env: raw.env as Record<string, string> | undefined,
     url: raw.url as string | undefined,
     headers: raw.headers as Record<string, string> | undefined,
-    // oauth 是对象就原样带上（形状见 McpServerConfig["oauth"]），否则视为没配
+    // oauth 是对象就原样带上（形状见 McpServerDefinition["oauth"]），否则视为没配
     oauth:
       typeof raw.oauth === "object" && raw.oauth !== null && !Array.isArray(raw.oauth)
-        ? (raw.oauth as McpServerConfig["oauth"])
+        ? (raw.oauth as McpServerDefinition["oauth"])
         : undefined,
   };
 
@@ -41,7 +41,7 @@ function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerCon
 function normalizeTransport(
   type: string,
   raw: Record<string, unknown>,
-): McpServerConfig["transport"] | null {
+): McpServerDefinition["transport"] | null {
   if (type === "stdio") return "stdio";
   if (type === "http") return "http";
   if (type === "sse") return "sse";
@@ -62,7 +62,7 @@ function normalizeTransport(
  * ```
  *
  * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。靠前的文件里
- * **任何一条**占住这个名字的条目都算数，包括 `disabled: true` 的那一条：近层停用即取消远层。
+ * **任何一条**占住这个名字的 InboxEntry 都算数，包括 `disabled: true` 的那一条：近层停用即取消远层。
  */
 /** 发现 MCP 配置时的选项 */
 export interface DiscoverMcpServersOptions {
@@ -73,10 +73,10 @@ export interface DiscoverMcpServersOptions {
 export async function discoverMcpServers(
   paths: string[],
   options: DiscoverMcpServersOptions = {},
-): Promise<McpServerConfig[]> {
+): Promise<McpServerDefinition[]> {
   const logger = options.logger ?? SILENT_LOG;
   const seen = new Set<string>();
-  const items: McpServerConfig[] = [];
+  const items: McpServerDefinition[] = [];
 
   for (const path of paths) {
     try {
@@ -99,7 +99,7 @@ export async function discoverMcpServers(
         if (!rawServer || typeof rawServer !== "object") continue;
 
         // 名字先认领，再决定收不收：写成 `disabled: true` 的那一条也是这一层对这个名字的
-        // 发言，远处同名的定义不该越过它生效。放到收进结果之后再认领，停用条目就不占名字
+        // 发言，远处同名的定义不该越过它生效。放到收进结果之后再认领，停用 InboxEntry 就不占名字
         // —— 人写「别用」，合并出来的却是一条能用的。
         seen.add(id);
         const normalized = normalizeConfig(id, rawServer);

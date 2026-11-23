@@ -29,7 +29,7 @@ import { noticeTable } from "../notice/table.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import { workspaceTable } from "../workspace/table.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { GUARD_BLOCKED_NOTICE_CODE, GuardNoticePlugin } from "./guard-notice.js";
@@ -61,7 +61,7 @@ function setup() {
     definitions: {
       get: async (): Promise<AgentDefinition> => ({
         id: "agent-1",
-        name: "助手",
+        name: "AgentDefinition",
         messages: [],
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
@@ -83,7 +83,7 @@ function setup() {
     onError: () => {},
   } as MaterialsDeps;
 
-  const session: Session = sessions.create({
+  const session: SessionRecord = sessions.create({
     workspaceId: "ws-1",
     name: "1712345678000",
     nameIsAuto: true,
@@ -100,7 +100,7 @@ function setup() {
   return { deps, sessions, notices, session, pushed };
 }
 
-/** 一条带用量的助手消息：护栏只从消息上读用量 */
+/** 一条带用量的 AgentDefinition 消息：护栏只从消息上读用量 */
 function answered(promptTokens: number): AgentNS.Message {
   return new Message({
     role: AgentNS.Role.Assistant,
@@ -114,7 +114,7 @@ function answered(promptTokens: number): AgentNS.Message {
   });
 }
 
-/** 假执行体：护栏只看 `agent.messages` */
+/** 假 Agent：护栏只看 `agent.messages` */
 function fakeAgent(promptTokens: number) {
   return { messages: [answered(promptTokens)] };
 }
@@ -123,7 +123,7 @@ function innerLoopCtx(agent: unknown): never {
   return { agent, body: { messages: [] } } as never;
 }
 
-async function guardOf(deps: MaterialsDeps, session: Session): Promise<GuardNoticePlugin> {
+async function guardOf(deps: MaterialsDeps, session: SessionRecord): Promise<GuardNoticePlugin> {
   const materials = await materialsFor(deps, session);
   const guard = (materials.plugins ?? []).find((plugin) => plugin instanceof GuardNoticePlugin);
   if (guard === undefined) throw new Error("材料里没有 GuardNoticePlugin");
@@ -188,7 +188,7 @@ describe("撞上硬线之后", () => {
       expect.any(String),
     );
 
-    // 阈值是取值函数：改会话行当场生效，不重建执行体
+    // 阈值是取值函数：改会话行当场生效，不重建 Agent
     host.sessions.update(host.session.id, { guardThreshold: 2000 });
 
     await expect(guard.onInnerLoopStart(innerLoopCtx(fakeAgent(1200)))).resolves.toBeUndefined();

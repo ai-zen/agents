@@ -28,7 +28,7 @@ import { QuestionRegistry } from "../question/registry.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { NewSession, Session } from "../session/types.js";
+import type { NewSession, SessionRecord } from "../session/types.js";
 import { workspaceTable } from "../workspace/table.js";
 import type { WorkspaceService } from "../workspace/service.js";
 import { HandoffService } from "./service.js";
@@ -73,7 +73,7 @@ function newHost() {
 
 type Host = ReturnType<typeof newHost>;
 
-function newSession(host: Host, autoHandoff: boolean): Session {
+function newSession(host: Host, autoHandoff: boolean): SessionRecord {
   return host.sessions.create({ ...input, autoHandoff });
 }
 
@@ -173,7 +173,7 @@ describe("越线那一刻问不问", () => {
     expect(host.questions.list(session.id)).toHaveLength(1);
 
     host.questions.answer(host.questions.list(session.id)[0].id, "summary");
-    // 两道等的是同一句：答复一落地，两处拿到的是同一个值
+    // 两道等的是同一句：答复一写进 messages，两处拿到的是同一个值
     await expect(first).resolves.toBe("summary");
     await expect(second).resolves.toBe("summary");
     expect(host.questions.list(session.id)).toEqual([]);

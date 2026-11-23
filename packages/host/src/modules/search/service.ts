@@ -1,4 +1,4 @@
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import type { searchTable } from "./table.js";
 import type { MessageSearchScope, SearchHit } from "./types.js";
 
@@ -22,7 +22,7 @@ export class SearchService {
     keyword: string,
     workspaceId: string | undefined,
     limit: number,
-  ): Promise<Session[]> {
+  ): Promise<SessionRecord[]> {
     const trimmed = keyword.trim();
     return trimmed === "" ? [] : this.deps.search.sessions(trimmed, workspaceId, limit);
   }

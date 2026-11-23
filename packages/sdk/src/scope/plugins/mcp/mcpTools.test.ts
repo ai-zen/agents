@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
-import type { AppConfig, McpServerConfig, ToolEnv, UploadFn } from "../../../types/index.js";
+import type { AppConfig, McpServerDefinition, ToolEnv, UploadFn } from "../../../types/index.js";
 import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 
 /**
@@ -72,7 +72,7 @@ function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
 }
 
 /**
- * 工具运行上下文：模型名来自 `ctx.agent.model`（= Model.modelName ?? id）。
+ * 工具运行上下文：模型名来自 `ctx.agent.model`（= ModelDefinition.modelName ?? id）。
  *
  * 端点只能按当前模型反查（`file_id` 是端点维度资源，且不拿 `config.defaultModel` 兜底），
  * 所以测试也必须把 ctx 传进去。
@@ -116,7 +116,7 @@ function mockManager(overrides?: Record<string, any>): McpConnectionManager {
   } as unknown as McpConnectionManager;
 }
 
-const mcps: McpServerConfig[] = [
+const mcps: McpServerDefinition[] = [
   {
     id: "github",
     description: "GitHub file and repository tools",
@@ -850,7 +850,7 @@ describe("createReadMcpResourceTool", () => {
     expect(mockUpload).toHaveBeenCalledTimes(1);
   });
 
-  it("文本资源超限时落盘 result.txt 并只返回头尾预览（与 call_mcp_tool 同一闸门）", async () => {
+  it("文本资源超限时落盘 result.txt 并只返回头尾预览（与 call_mcp_tool 同一开关门）", async () => {
     const long = "x".repeat(500);
     const tool = readResourceTool(
       mockManager({

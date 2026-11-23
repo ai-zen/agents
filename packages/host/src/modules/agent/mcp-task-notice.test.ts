@@ -7,14 +7,14 @@ import { createMcpTaskNoticePort } from "./mcp-task-notice.js";
 /**
  * MCP 任务通知的投递口：到了终态就投进发起那次调用的那段会话。
  *
- * 这里盯的是「投」与「丢」两件事：投进去的条目长什么样（来源是系统、label 带服务器名、正文
+ * 这里盯的是「投」与「丢」两件事：投进去的 InboxEntry 长什么样（来源是系统、label 带服务器名、正文
  * 说清任务 id / 终态 / 去哪儿取），以及那段会话已经不在时只丢不抛。
  *
  * 「服务器推来的状态」那一半在 SDK 那一侧（`McpConnectionManager` 的用例里用内存传输跑真形状），
  * 这里接着的是它的下游：拿到一条终态事实之后，那段会话的队列里落下的是什么。
  */
 
-/** 投进去的条目（投递口只碰 `push` 这一格） */
+/** 投进去的 InboxEntry（投递口只碰 `send` 这一格） */
 interface PushedEntry {
   priority: string;
   source: { kind: string; label: string };
@@ -36,7 +36,7 @@ describe("MCP 任务通知的投递口", () => {
     const pushed: PushedEntry[] = [];
     const log = fakeLog();
     const port = createMcpTaskNoticePort({
-      alive: () => ({ push: (entry?: unknown) => void pushed.push(entry as PushedEntry) }),
+      alive: () => ({ send: (entry?: unknown) => void pushed.push(entry as PushedEntry) }),
       sessionOf: () => "session-1",
       log,
     });
@@ -57,7 +57,7 @@ describe("MCP 任务通知的投递口", () => {
   it("三种终态各自说清是哪一种，服务器给的那句说明跟着带上", async () => {
     const texts: string[] = [];
     const port = createMcpTaskNoticePort({
-      alive: () => ({ push: (entry?: unknown) => void texts.push((entry as PushedEntry).content) }),
+      alive: () => ({ send: (entry?: unknown) => void texts.push((entry as PushedEntry).content) }),
       sessionOf: () => "session-1",
       log: fakeLog(),
     });
@@ -95,7 +95,7 @@ describe("MCP 任务通知的投递口", () => {
     const log = fakeLog();
     const port = createMcpTaskNoticePort({
       alive: () => ({
-        push: () => {
+        send: () => {
           throw new Error("closed");
         },
       }),

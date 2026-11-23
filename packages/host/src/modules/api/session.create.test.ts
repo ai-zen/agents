@@ -1,14 +1,14 @@
 /**
  * `session.create`：建行只写一行。
  *
- * 这一条 procedure 做且只做一件事：解析模型、写一行会话。不唤醒执行体、不投递、不推任何
- * 「这一段活了」的事实 —— 起执行体是 `agent.wake`，投话是 `agent.send`，三件事各有一条口。
+ * 这一条 procedure 做且只做一件事：解析模型、写一行会话。不唤醒 Agent、不投递、不推任何
+ * 「这一段活了」的事实 —— 起 Agent 是 `runtime.agent.wake`，投话是 `runtime.agent.send`，三件事各有一条口。
  * 建出来的这一段与「重启之后所有会话都是死的」是同一种状态：`session.open` 读回来 `live` 是
  * `null`，消息与排队区都是空的。
  *
  * 台架与 `session.transient.test.ts` 同一口径：真内存库、真 `SessionService`、真的 OpenAI 兼容
  * 端点（`@ai-zen/agents-testing`）—— 只有 `runtime` 是替身。替身只做一件事：把「有没有人来
- * 唤醒我」记下来，`wake` 真被走到就当场红 —— 建行顺带叫醒执行体正是这一刀要拆掉的那一件事。
+ * 唤醒我」记下来，`wake` 真被走到就当场红 —— 建行顺带叫醒 Agent 正是这一刀要拆掉的那一件事。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -44,9 +44,9 @@ const MODEL_ID = "model-1";
 
 const DEFINITION: AgentDefinition = {
   id: AGENT_ID,
-  name: "助手一",
+  name: "AgentDefinition一",
   modelId: MODEL_ID,
-  messages: [Message.System("你是一个用例里的助手。")],
+  messages: [Message.System("你是一个用例里的AgentDefinition。")],
   permissions: {
     tools: { allow: ["*"] },
     skills: { allow: ["*"] },
@@ -89,7 +89,7 @@ function configFor(defaultModel: string | null): AppConfig {
 /**
  * 这一条路上的几个域：库与服务都是真的，`runtime` 是替身。
  *
- * `wake` 调用即炸：建行不该造执行体，真被走到就要当场红，而不是安静地多出一段「活了」的会话。
+ * `wake` 调用即炸：建行不该造 Agent，真被走到就要当场红，而不是安静地多出一段「活了」的会话。
  */
 function newHost(options: { defaultModel?: string | null; definition?: AgentDefinition } = {}) {
   const db = openDatabase(":memory:");
@@ -116,7 +116,7 @@ function newHost(options: { defaultModel?: string | null; definition?: AgentDefi
     get: () => undefined,
     wake: (sessionId: string) => {
       wakes.push(sessionId);
-      throw new Error("session.create 不该唤醒执行体：那一条是 agent.wake");
+      throw new Error("session.create 不该唤醒Agent：那一条是 runtime.agent.wake");
     },
   } as unknown as AgentRuntime;
 
@@ -133,7 +133,10 @@ function newHost(options: { defaultModel?: string | null; definition?: AgentDefi
   } as unknown as HostApiDeps;
 
   const api = createTrpc(t);
-  const router = api.router({ session: sessionRouter(deps, api), agent: agentRouter(deps, api) });
+  const router = api.router({
+    session: sessionRouter(deps, api),
+    runtime: api.router({ agent: agentRouter(deps, api) }),
+  });
 
   return { db, caller: router.createCaller({}), wakes };
 }
@@ -174,7 +177,7 @@ describe("session.create：只写一行", () => {
     expect(countRows(host.db, "sessions")).toBe(1);
   });
 
-  it("没有执行体：open 回来 live 为 null，消息与排队区都是空的", async () => {
+  it("没有Agent：open 回来 live 为 null，消息与排队区都是空的", async () => {
     const host = newHost();
 
     const { session } = await host.caller.session.create({
@@ -217,13 +220,13 @@ describe("session.create：只写一行", () => {
   });
 });
 
-describe("agent.send：只投递", () => {
+describe("runtime.agent.send：只投递", () => {
   it("缺 sessionId 在边界上被拒（zod），一次唤醒都没有发生", async () => {
     const host = newHost();
 
     // 少一格必填入参：tRPC 的入参校验先于 resolver 跑，所以下面那句断言的就是「边界上被拒」
     await expect(
-      host.caller.agent.send({
+      host.caller.runtime.agent.send({
         workspaceId: WORKSPACE_ID,
         agentId: AGENT_ID,
         content: "这句话没有说给哪一段",
@@ -231,13 +234,13 @@ describe("agent.send：只投递", () => {
       } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    // 拒在入口，所以库里一行都没有，也没人去唤醒执行体
+    // 拒在入口，所以库里一行都没有，也没人去唤醒 Agent
     expect(countRows(host.db, "sessions")).toBe(0);
     expect(host.wakes).toEqual([]);
     expect(fake.requests).toEqual([]);
   });
 
-  it("给一段没有执行体的会话投递：not_found，那一句一个字都没进去", async () => {
+  it("给一段没有Agent的会话投递：not_found，那一句一个字都没进去", async () => {
     const host = newHost();
     const { session } = await host.caller.session.create({
       workspaceId: WORKSPACE_ID,
@@ -245,7 +248,7 @@ describe("agent.send：只投递", () => {
     });
 
     await expect(
-      host.caller.agent.send({
+      host.caller.runtime.agent.send({
         workspaceId: WORKSPACE_ID,
         agentId: AGENT_ID,
         sessionId: session.id,
@@ -267,7 +270,7 @@ describe("agent.send：只投递", () => {
     const host = newHost();
 
     await expect(
-      host.caller.agent.send({
+      host.caller.runtime.agent.send({
         workspaceId: WORKSPACE_ID,
         agentId: AGENT_ID,
         sessionId: "没有这一段",

@@ -2,7 +2,7 @@ import { AgentNS } from "./AgentNS.js";
 import { Message, generateMessageId } from "./Message.js";
 
 /**
- * inbox 条目落成消息内容的**唯一实现**：用户来源原样，其他来源在正文最前面加一行注释
+ * inbox InboxEntry 落成消息内容的**唯一实现**：用户来源原样，其他来源在正文最前面加一行注释
  *（来源 + 创建时间）。
  *
  * ## 为什么除了 `source` 还要在正文里写一行
@@ -13,15 +13,15 @@ import { Message, generateMessageId } from "./Message.js";
  * ## 为什么时间也写进这行注释
  *
  * 外部通知可能是很久以前发生的（排队、重试、别的会话攒下的结果）。模型拿到它得能判断
- * 时效性，否则会把一条陈年结果当成刚刚发生的事。时间就用条目自己的 `createdAt`，不另算一份。
+ * 时效性，否则会把一条陈年结果当成刚刚发生的事。时间就用 InboxEntry 自己的 `createdAt`，不另算一份。
  *
  * ## 为什么分段内容不是「转成纯文本再拼」
  *
- * 条目内容可能是多模态数组（文本 + 图片 + 文件）。拼成字符串等于把图片段整段丢掉，
+ * InboxEntry 内容可能是多模态数组（文本 + 图片 + 文件）。拼成字符串等于把图片段整段丢掉，
  * 模型看到的就是「一条只有注释的消息」。所以数组走「在最前面插一段 text 注释」：
  * 段序保持不变，往后排队的内容原封不动地留在后面。
  *
- * @returns 字符串内容返回 `注释\n\n 正文`；数组内容返回「注释段 + 原有各段」
+ * @returns 字符串内容返回 ` 注释\n\n 正文 `；数组内容返回「注释段 + 原有各段」
  */
 export function inboxEntryContent(entry: AgentNS.InboxEntryWithContent): AgentNS.MessageContent {
   if (entry.source.kind === "user") return entry.content;
@@ -35,12 +35,12 @@ export function inboxEntryContent(entry: AgentNS.InboxEntryWithContent): AgentNS
 }
 
 /**
- * 把一条 inbox 条目落成待追加的 User 消息。
+ * 把一条 inbox InboxEntry 落成待追加的 User 消息。
  *
  * 内容由 {@link inboxEntryContent} 决定；这里只负责「消息」这一层：角色、状态、id、来源。
  * 状态给 `Completed`，与 `Message.User()` 一致 —— 它是用户已经说完的话，不是待写占位。
  *
- * **钥匙（没有正文的条目）返回 `undefined`**：它只负责把人叫起来，历史里一个字都不多加。
+ * **钥匙（没有正文的 InboxEntry）返回 `undefined`**：它只负责把人叫起来，历史里一个字都不多加。
  */
 export function inboxEntryMessage(entry: AgentNS.InboxEntry): AgentNS.Message | undefined {
   if (entry.content === undefined) return undefined;

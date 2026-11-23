@@ -1,9 +1,17 @@
 import { z } from "zod";
 
-import type { AppConfig, Endpoint, ImageModel, Model, ReasoningPresets } from "@ai-zen/agents-sdk";
+import type {
+  AppConfig,
+  EndpointDefinition,
+  ImageModelDefinition,
+  ModelDefinition,
+  ReasoningPresets,
+} from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
+import { agentDefinitionRouter } from "./agentDefinition.js";
 import type { HostApiDeps } from "./deps.js";
+import { mcpRouter } from "./mcp.js";
 import type { Trpc } from "./trpc.js";
 
 /**
@@ -17,7 +25,7 @@ import type { Trpc } from "./trpc.js";
  */
 const configResult = z.object({ config: z.custom<AppConfig>() });
 
-/** 动一个已经存在的条目时，入参只需要它的 id */
+/** 动一个已经存在的 InboxEntry 时，入参只需要它的 id */
 const idInput = z.object({ id: z.string() });
 
 /** 默认项五格：给了 `null` 就是清空（`string | null` 与 `undefined` 在入参上分得开） */
@@ -70,33 +78,35 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
         presets: await deps.config.presets(),
       })),
 
-    /**
-     * 默认项五格。给了 `null` 就是清空（写进去的是 `undefined`，文件里这一格消失）。
-     *
-     * **赋值时校验引用**：指着一个不存在的助手 / 模型，下一次新建会话会在解析模型那一步失败，
-     * 而界面上看不出原因（出厂同步会改指 `defaultImageModel` / `defaultMigrationModel`，但那是
-     * 下次启动的事）。清空不校验 —— 清空之后没有指向，也就没有指错。
-     */
-    setDefaults: api.procedure
-      .input(defaultsInput)
-      .output(configResult)
-      .mutation(async ({ input }) => ({ config: await setDefaults(deps, input) })),
+    defaults: api.router({
+      /**
+       * 默认项五格。给了 `null` 就是清空（写进去的是 `undefined`，文件里这一格消失）。
+       *
+       * **赋值时校验引用**：指着一个不存在的 AgentDefinition / 模型，下一次新建会话会在解析模型那一步失败，
+       * 而界面上看不出原因（出厂同步会改指 `defaultImageModel` / `defaultMigrationModel`，但那是
+       * 下次启动的事）。清空不校验 —— 清空之后没有指向，也就没有指错。
+       */
+      update: api.procedure
+        .input(defaultsInput)
+        .output(configResult)
+        .mutation(async ({ input }) => ({ config: await setDefaults(deps, input) })),
+    }),
 
     /**
      * 全局那几格：语言、自动命名开关、工具输出上限、中断策略两项。
      *
-     * `language` 写完**不重建任何执行体**：宿主那份语言只有一个写口（`HostApp` 上的 `t`），它
+     * `language` 写完**不重建任何 Agent**：宿主那份语言只有一个写口（`HostApp` 上的 `t`），它
      * 在调用那一刻现读配置，下一次渲染就是新语言。已经落库的通知也不回填 —— 那里存的是产生那
      * 一刻的成品句子，改语言不追认旧账。
      *
-     * `autoTitle` 同样不重建执行体：自动命名在动手之前现读配置（`AutoNamer`），所以写完之后
+     * `autoTitle` 同样不重建 Agent：自动命名在动手之前现读配置（`AutoNamer`），所以写完之后
      * 下一次变闲就是新值。已经起过名的会话不受影响 —— 名字是会话行的格子，这一格只决定还要不要
      * 发那次请求。
      *
-     * 中断策略写完**就地刷新活着的执行体**（见 `applyInterruptStrategies`）；`maxToolOutput` 不
+     * 中断策略写完**就地刷新活着的 Agent**（见 `applyInterruptStrategies`）；`maxToolOutput` 不
      * 在这条路上刷新，理由也写在那儿。
      */
-    setGlobal: api.procedure
+    update: api.procedure
       .input(globalInput)
       .output(configResult)
       .mutation(async ({ input }) => {
@@ -118,39 +128,43 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
         return { config };
       }),
 
-    endpoint: api.router({
-      add: api.procedure
-        .input(z.object({ endpoint: z.custom<Endpoint>() }))
+    endpoints: api.router({
+      create: api.procedure
+        .input(z.object({ endpoint: z.custom<EndpointDefinition>() }))
         .output(configResult)
         .mutation(async ({ input }) => ({ config: await deps.endpoints.add(input.endpoint) })),
 
       update: api.procedure
-        .input(z.object({ id: z.string(), change: z.custom<Partial<Omit<Endpoint, "id">>>() }))
+        .input(
+          z.object({ id: z.string(), change: z.custom<Partial<Omit<EndpointDefinition, "id">>>() }),
+        )
         .output(configResult)
         .mutation(async ({ input }) => ({
           config: await deps.endpoints.update(input.id, input.change),
         })),
 
-      remove: api.procedure
+      delete: api.procedure
         .input(idInput)
         .output(configResult)
         .mutation(async ({ input }) => ({ config: await deps.endpoints.remove(input.id) })),
     }),
 
-    model: api.router({
-      add: api.procedure
-        .input(z.object({ model: z.custom<Model>() }))
+    models: api.router({
+      create: api.procedure
+        .input(z.object({ model: z.custom<ModelDefinition>() }))
         .output(configResult)
         .mutation(async ({ input }) => ({ config: await deps.models.add(input.model) })),
 
       update: api.procedure
-        .input(z.object({ id: z.string(), change: z.custom<Partial<Omit<Model, "id">>>() }))
+        .input(
+          z.object({ id: z.string(), change: z.custom<Partial<Omit<ModelDefinition, "id">>>() }),
+        )
         .output(configResult)
         .mutation(async ({ input }) => ({
           config: await deps.models.update(input.id, input.change),
         })),
 
-      remove: api.procedure
+      delete: api.procedure
         .input(idInput)
         .output(configResult)
         .mutation(async ({ input }) => ({ config: await deps.models.remove(input.id) })),
@@ -162,20 +176,25 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
         .mutation(async ({ input }) => ({ config: await deps.models.reset(input.id) })),
     }),
 
-    imageModel: api.router({
-      add: api.procedure
-        .input(z.object({ model: z.custom<ImageModel>() }))
+    imageModels: api.router({
+      create: api.procedure
+        .input(z.object({ model: z.custom<ImageModelDefinition>() }))
         .output(configResult)
         .mutation(async ({ input }) => ({ config: await deps.imageModels.add(input.model) })),
 
       update: api.procedure
-        .input(z.object({ id: z.string(), change: z.custom<Partial<Omit<ImageModel, "id">>>() }))
+        .input(
+          z.object({
+            id: z.string(),
+            change: z.custom<Partial<Omit<ImageModelDefinition, "id">>>(),
+          }),
+        )
         .output(configResult)
         .mutation(async ({ input }) => ({
           config: await deps.imageModels.update(input.id, input.change),
         })),
 
-      remove: api.procedure
+      delete: api.procedure
         .input(idInput)
         .output(configResult)
         .mutation(async ({ input }) => ({ config: await deps.imageModels.remove(input.id) })),
@@ -192,11 +211,24 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
        * 意思）；这一格出参是 `presets` 而不是 `config` —— 它写的是另一份文件，回来的自然是
        * 那一份。
        */
-      set: api.procedure
+      update: api.procedure
         .input(z.object({ presets: z.custom<ReasoningPresets>() }))
         .output(z.object({ presets: z.custom<ReasoningPresets>() }))
         .mutation(async ({ input }) => ({ presets: await deps.presets.write(input.presets) })),
     }),
+
+    /**
+     * AgentDefinition：一条一个文件（`<数据根>/agents/<id>.json`）。
+     *
+     * 它在 `config.` 下面，因为它就是配置的一种 —— 广义上说，凡是宿主读盘拿到的「该怎么跑」
+     * 都算配置，端点、模型、档位表、AgentDefinition 只是各占一份文件或一份文件里的一组。
+     * 名字取 `agents` 而不是 `agentDefinition`：`runtime.agent` 是活着的那个，`config.agents`
+     * 是 ` 能跑的东西的清单 `，第一段已经把它们分开了。
+     */
+    agents: agentDefinitionRouter(deps, api),
+
+    /** MCP 服务器：五层 `mcp.json` 的增删读。名字取 `mcp` —— 英文里没“mcps”。 */
+    mcp: mcpRouter(deps, api),
   });
 }
 
@@ -262,13 +294,13 @@ async function assertAgentDefinition(deps: HostApiDeps, id: string): Promise<voi
   if (all.some((definition) => definition.id === id)) return;
   throw new HostError(
     "invalid_params",
-    deps.t("找不到 id 为 {agentDefinitionId} 的助手", { agentDefinitionId: id }),
+    deps.t("找不到 id 为 {agentDefinitionId} 的AgentDefinition", { agentDefinitionId: id }),
     { entity: "agentDefinition", agentDefinitionId: id },
   );
 }
 
 /**
- * 把中断策略两项赋到**每一段活着的执行体**上。
+ * 把中断策略两项赋到**每一段活着的 Agent**上。
  *
  * 需求原文说这两项「只在造 agent 时读，改完要重建才生效」（`prd/03-legacy.md` 3.4），而过关
  * 标准是「改完下一句话就按新的走」（`prd/PLAN.md` 第 9 行）。两者靠**就地赋这两格**同时成立：
@@ -276,8 +308,8 @@ async function assertAgentDefinition(deps: HostApiDeps, id: string): Promise<voi
  * `this.abortedToolRoundStrategy`），所以赋完不杀会话、下一句话就是新策略 —— 而「重建」会把
  * 排队区作废、把正在写的那一条掐成 aborted，用户按的只是改个开关。
  *
- * `maxToolOutput` **不在这条路上刷**：它是能力容器的输入（工具拿 `Scope.config` 现读），
- * 执行体上没有这一格；容器由配置事件驱动重读（`app.ts` 里那条订阅），写完之后它自己就拿
+ * `maxToolOutput` **不在这条路上刷**：它是 Scope 的输入（工具拿 `Scope.config` 现读），
+ * Agent 上没有这一格；容器由配置事件驱动重读（`app.ts` 里那条订阅），写完之后它自己就拿
  * 新值了。
  */
 function applyInterruptStrategies(deps: HostApiDeps, config: AppConfig): void {
@@ -288,7 +320,7 @@ function applyInterruptStrategies(deps: HostApiDeps, config: AppConfig): void {
 
   for (const workspace of deps.workspaces.list()) {
     for (const session of deps.sessions.list(workspace.id)) {
-      // 拿到就是活着的那一个；`undefined` 表示这段会话现在没有执行体（重启之后都是这一种），
+      // 拿到就是活着的那一个；`undefined` 表示这段会话现在没有 Agent（重启之后都是这一种），
       // 它下一次被装起来时会读到新配置，现在没有可赋的对象
       const agent = deps.runtime.get(session.id);
       if (agent === undefined) continue;

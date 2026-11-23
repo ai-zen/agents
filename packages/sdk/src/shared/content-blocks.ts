@@ -21,7 +21,13 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { AppConfig, Endpoint, Model, ToolEnvDeps, UploadFn } from "../types/index.js";
+import type {
+  AppConfig,
+  EndpointDefinition,
+  ModelDefinition,
+  ToolEnvDeps,
+  UploadFn,
+} from "../types/index.js";
 
 /** 上传函数类型（定义在 types，此处再导出方便既有引用） */
 export type { UploadFn };
@@ -80,9 +86,9 @@ export type FileSource =
 export interface FileToSectionInput {
   source: FileSource;
   /** 当前模型所用端点：决定能否走 Files API */
-  endpoint?: Endpoint | null;
+  endpoint?: EndpointDefinition | null;
   /** 当前模型：`vision === false` 时图片退化为文本提示 */
-  model?: Model | null;
+  model?: ModelDefinition | null;
   signal?: AbortSignal;
   /** 覆盖内联体积上限 */
   maxInlineBytes?: number;
@@ -107,13 +113,13 @@ export interface FileToSectionResult {
  * 由「发给 API 的模型名」反查它绑定的模型定义与端点。
  *
  * 工具在 `call()` 阶段拿不到 Agent 定义，但 `ctx.agent.model` 就是发给 API 的
- * 模型名（`Model.modelName ?? Model.id`）。必须按**当前实际使用的模型**定位端点：
+ * 模型名（`ModelDefinition.modelName ?? ModelDefinition.id`）。必须按**当前实际使用的模型**定位端点：
  * `file_id` 是端点维度资源，传错端点会得到 not found。
  */
 export function resolveModelAndEndpoint(
   config: AppConfig,
   apiModelName?: string,
-): { model?: Model; endpoint?: Endpoint | null } {
+): { model?: ModelDefinition; endpoint?: EndpointDefinition | null } {
   const models = config.models ?? [];
   const endpoints = config.endpoints ?? [];
   const findEndpoint = (id?: string) => (id ? (endpoints.find((e) => e.id === id) ?? null) : null);
@@ -127,7 +133,7 @@ export function resolveModelAndEndpoint(
 }
 
 /** 端点是否声明了 Files API 能力 */
-export function supportsFilesApi(endpoint?: Endpoint | null): boolean {
+export function supportsFilesApi(endpoint?: EndpointDefinition | null): boolean {
   return endpoint?.capabilities?.filesApi === true;
 }
 

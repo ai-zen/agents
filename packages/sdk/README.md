@@ -31,7 +31,7 @@ import { ConfigManager, DEFAULT_AGENT_ID, Scope, allInOne, createAgent } from "@
 const base = mkdtempSync(join(tmpdir(), "my-agent-"));
 
 const config = new ConfigManager(join(base, "config.json"));
-await config.bootstrap();  // config.json, a default agent, a default sub-agent, factory skills
+await config.bootstrap(); // config.json, a default agent, a default sub-agent, factory skills
 
 const current = await config.read();
 await config.write({
@@ -73,8 +73,8 @@ Three things trip people up, and all three are in the code above:
   model resolution fails with `Endpoint "x" is not configured` — patch them as a batch, as above.
 
 An agent that should stay alive and take one more message at any time is built the same way minus
-`lifetime: "one-shot"`: `push()` a message, listen for `state:idle`, and `stop()` when done. There is
-no "deliver and wait" on a resident agent — it can be pushed by anyone at any time, so there is
+`lifetime: "one-shot"`: `send()` a message, listen for `state:idle`, and `stop()` when done. There is
+no "send and wait" on a resident Agent — it can be sent to by anyone at any time, so there is
 nothing for a wait to attach to. The kernel page explains why.
 
 Two agents talking to each other: see the example at the end of this file.
@@ -88,23 +88,23 @@ Two halves behind one package name.
 - The runtime keeps those agents alive and lets them talk to each other: one resident agent per
   session, facts forwarded outward, `post` from one session to another.
 
-The kernel itself (`@ai-zen/agents-core`) is underneath both: an `Agent`, its loop, its two gates,
+The kernel itself (`@ai-zen/agents-core`) is underneath both: an `Agent`, its loop, its two switches,
 its events and hooks. This package adds what one particular product needs around it — and nothing
 that belongs to a host.
 
-| Half | Members |
-|---|---|
+| Half            | Members                                                                                                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Capability face | `createAgent`, `SdkAgent`, `Scope` + its five capability sources (`allInOne`), `PermissionEvaluator`, `ConfigManager`, `AgentRepository`, `HandoffService` + `HandoffGuardPlugin`, `completeOnce` |
-| Runtime | `AgentRuntime` (`wake` / `post` / `status` / `openPeer` / `kill` / `observe`), `Scopes`, `RuntimePeerSessions` |
+| Runtime         | `AgentRuntime` (`wake` / `post` / `status` / `openPeer` / `kill` / `observe`), `Scopes`, `RuntimePeerSessions`                                                                                    |
 
 ### What it deliberately does not do
 
-| Not here | Where it lives |
-|---|---|
-| storage, tables, migrations | the host |
-| connections, discovery files, credentials | the host |
-| user-visible copy, languages, i18n | the host |
-| session rows | the host — a session is an opaque identity string here |
+| Not here                                  | Where it lives                                         |
+| ----------------------------------------- | ------------------------------------------------------ |
+| storage, tables, migrations               | the host                                               |
+| connections, discovery files, credentials | the host                                               |
+| user-visible copy, languages, i18n        | the host                                               |
+| session rows                              | the host — a session is an opaque identity string here |
 
 The rule the layering is measured by: this package never imports the host. A session is passed
 around as a `string`; what that session is called is asked from a port, never stored. If a piece of
@@ -119,12 +119,12 @@ is missing: the port should be declared here and implemented by the caller.
 
 `AgentRuntime` does none of these itself, but each of them has to happen somewhere:
 
-| Port | What the caller provides |
-|---|---|
-| `openScope(cwd, peers)` | build a capability container for that directory |
-| `open(input)` | create a session: write the row, choose the identity, hand back `WakeMaterials` |
-| `nameOf(sessionId)` | the session's current name, read from its row; `undefined` = no such session |
-| `log` | a `LogSink`; omit it and nothing is logged |
+| Port                    | What the caller provides                                                        |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| `openScope(cwd, peers)` | build a Scope for that directory                                 |
+| `open(input)`           | create a session: write the row, choose the identity, hand back `WakeMaterials` |
+| `nameOf(sessionId)`     | the session's current name, read from its row; `undefined` = no such session    |
+| `log`                   | a `LogSink`; omit it and nothing is logged                                      |
 
 `WakeMaterials` is everything needed to assemble one agent, given from above: `cwd`, `agentId`,
 `modelId` / `modelParams`, `lineage`, `history` and the `waiting` entries not taken last time.
@@ -137,8 +137,9 @@ plugins, and the tools that came out of them. It runs a three-stage pipeline per
 built, not when each call arrives.
 
 ```ts
-const scope = new Scope({ getConfig: () => config.read(), agentsDir, cwd })
-  .use(...allInOne({ toolsPaths, skillsPaths, subAgentsPaths, mcpPaths }));
+const scope = new Scope({ getConfig: () => config.read(), agentsDir, cwd }).use(
+  ...allInOne({ toolsPaths, skillsPaths, subAgentsPaths, mcpPaths }),
+);
 await scope.init();
 ```
 
@@ -150,13 +151,13 @@ again instead of rebuilding the container. `use()` must happen before `init()`.
 `allInOne(options)` returns the five standard plugins in this order — built-in tools, user tools,
 skills, MCP, sub-agents — so a later source wins when two of them offer the same name.
 
-| Plugin | Source |
-|---|---|
+| Plugin                    | Source                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------ |
 | `BuiltinToolsScopePlugin` | the built-in tool set; each tool declares its own availability (`isAvailable`) |
-| `UserToolsScopePlugin` | tool scripts found on disk |
-| `SkillsScopePlugin` | skill directories, plus the tools that load a skill |
-| `McpScopePlugin` | MCP servers (see below) |
-| `SubAgentsScopePlugin` | sub-agent definitions on disk, exposed as one delegation tool each |
+| `UserToolsScopePlugin`    | tool scripts found on disk                                                     |
+| `SkillsScopePlugin`       | skill directories, plus the tools that load a skill                            |
+| `McpScopePlugin`          | MCP servers (see below)                                                        |
+| `SubAgentsScopePlugin`    | sub-agent definitions on disk, exposed as one delegation tool each             |
 
 `allInOne` options: `skillsPaths`, `toolsPaths`, `subAgentsPaths`, `mcpPaths`, `logger`,
 `mcpTaskNotice`. To drop or replace one source, construct the plugins one by one and `use()` them.
@@ -183,14 +184,14 @@ model never sees it.
 
 ### Definitions, configuration and models
 
-| Member | What it owns |
-|---|---|
-| `ConfigManager` | `config.json` and the directories beside it: read, write, factory defaults, recovery of a broken file, reasoning presets, factory skills, `mcp.json` |
-| `AgentRepository` | one agent definition per file, `<agentsDir>/<id>.json` |
-| `createAgent(scope, agentId, options)` | one assembled `SdkAgent`: definition read, model resolved, tools built from the filtered candidates |
-| `resolveModel` / `resolveModelParams` | session override > definition > `config.defaultModel`, the only implementation |
-| `createModel` / `createModelFromConfig` | the `OpenAI` client, the model name and the request parameters |
-| `completeOnce` | one non-streaming call with no tools and no history |
+| Member                                  | What it owns                                                                                                                                         |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ConfigManager`                         | `config.json` and the directories beside it: read, write, factory defaults, recovery of a broken file, reasoning presets, factory skills, `mcp.json` |
+| `AgentRepository`                       | one agent definition per file, `<agentsDir>/<id>.json`                                                                                               |
+| `createAgent(scope, agentId, options)`  | one assembled `SdkAgent`: definition read, model resolved, tools built from the filtered candidates                                                  |
+| `resolveModel` / `resolveModelParams`   | session override > definition > `config.defaultModel`, the only implementation                                                                       |
+| `createModel` / `createModelFromConfig` | the `OpenAI` client, the model name and the request parameters                                                                                       |
+| `completeOnce`                          | one non-streaming call with no tools and no history                                                                                                  |
 
 `createAgent` options: `modelId` and `modelParams` (the session-level level), `lifetime`
 (`"one-shot"` for an agent that runs once and dies), `canOpenPeers`, and the two interruption
@@ -208,10 +209,10 @@ model and parameters in place without killing the agent.
 
 `HandoffService` writes a handoff document, and optionally replaces the memory with it.
 
-| Method | What it does |
-|---|---|
+| Method            | What it does                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
 | `handoff(params)` | gives the agent one instruction to write the document, and changes nothing else about the session |
-| `migrate(params)` | writes the document, then computes the new memory and commits it |
+| `migrate(params)` | writes the document, then computes the new memory and commits it                                  |
 
 Two modes for who writes the document: `self` (the same agent, in its own session — the default) and
 `summary` (one separate model call over a serialized history). Two strategies for what happens to the
@@ -237,24 +238,24 @@ line), `SubAgentGuardInstallerPlugin` (install the guard on sub-agents too), `Ha
 
 `AgentRuntime` keeps one resident agent per session and forwards the kernel's facts.
 
-| Member | What it does |
-|---|---|
-| `wake(sessionId, materials)` | assemble, register, start; idempotent, concurrent calls share one assembly |
-| `post({ from, to, content })` | put one sentence in another session's inbox; answers `{ ok: true }` or a reason |
-| `status(sessionId)` | whether it is working or idle, its name, an excerpt of the last thing it said |
-| `openPeer({ from, prompt, agentId?, modelId?, label? })` | open a peer session, wake it, post the first prompt, return immediately |
-| `kill(sessionId)` | unregister, kill, report that it is gone |
-| `close()` | kill everything and tear every container down |
-| `observe(listener)` | subscribe to the facts; returns an unsubscribe function |
-| `get(sessionId)` / `sessionOf(agent)` / `aliveOn(cwd)` | the snapshots: which agent, which session, which sessions on that directory |
-| `scopes` / `peerSessions` | the container registry, and the peer-session port this runtime implements |
+| Member                                                   | What it does                                                                    |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `wake(sessionId, materials)`                             | assemble, register, start; idempotent, concurrent calls share one assembly      |
+| `post({ from, to, content })`                            | put one sentence in another session's inbox; answers `{ ok: true }` or a reason |
+| `status(sessionId)`                                      | whether it is working or idle, its name, an excerpt of the last thing it said   |
+| `openPeer({ from, prompt, agentId?, modelId?, label? })` | open a peer session, wake it, post the first prompt, return immediately         |
+| `kill(sessionId)`                                        | unregister, kill, report that it is gone                                        |
+| `close()`                                                | kill everything and tear every container down                                   |
+| `observe(listener)`                                      | subscribe to the facts; returns an unsubscribe function                         |
+| `get(sessionId)` / `sessionOf(agent)` / `aliveOn(cwd)`   | the snapshots: which agent, which session, which sessions on that directory     |
+| `scopes` / `peerSessions`                                | the container registry, and the peer-session port this runtime implements       |
 
 Facts are a discriminated union: `resident:appeared` and `resident:gone` (the runtime's own two),
 `scope:appeared` / `scope:refreshed` / `scope:gone` (from the container registry), and every kernel
 event of every agent, unchanged in name and payload, with the `sessionId` added.
 
 There is no "wait until it is done" on the runtime: a resident session is never done, it goes from
-working to idle and can be pushed again at any moment. Nothing in the runtime waits for a caller; a
+working to idle and can be sent to again at any moment. Nothing in the runtime waits for a caller; a
 delivery is what wakes a session up.
 
 #### Scopes: containers live by directory
@@ -262,12 +263,12 @@ delivery is what wakes a session up.
 `Scopes` owns the container registry: one container per `cwd`, shared by every session working in
 that directory.
 
-| Member | What it does |
-|---|---|
-| `for(cwd)` | the container for that directory, built on first use |
-| `dispose(cwd)` | tear it down — refuses while any session is still alive on that directory |
+| Member         | What it does                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `for(cwd)`     | the container for that directory, built on first use                                                          |
+| `dispose(cwd)` | tear it down — refuses while any session is still alive on that directory                                     |
 | `refreshAll()` | let every already-built container re-read the configuration; reports how many were refreshed and which failed |
-| `disposeAll()` | tear down everything, for process shutdown |
+| `disposeAll()` | tear down everything, for process shutdown                                                                    |
 
 There is no idle timer, no reference counting and no automatic collection: a container lives because
 someone holds it, and it is torn down when someone tears it down. "Nobody is using it" is not a
@@ -281,11 +282,11 @@ its own usage, and it stays in the session list afterwards.
 
 The model side is three tools (`packages/sdk/src/scope/plugins/peers/`):
 
-| Tool | What it does |
-|---|---|
-| `create_session` | open a peer session and return `{ sessionId, label }` at once |
+| Tool                  | What it does                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------------- |
+| `create_session`      | open a peer session and return `{ sessionId, label }` at once                                |
 | `read_session_status` | whether it is working or idle, whether it is alive, its name, an excerpt of its last message |
-| `post_message` | put one message in that session's inbox |
+| `post_message`        | put one message in that session's inbox                                                      |
 
 They implement nothing themselves. `PeerSessionsScopePlugin` takes a `PeerSessionPort` with three
 methods — `create`, `status`, `send` — and without a port it produces no tools at all. The runtime
@@ -315,10 +316,10 @@ model gets, so it does not start treating another session's transcript as its ow
 
 Two built-in tools return immediately and report later:
 
-| Tool | What it does |
-|---|---|
-| `async_exec` | run a shell command in the background; its output and exit status are pushed back into the session as a new message |
-| `async_timeout` | a timer; when it fires, a message carrying the task id is pushed back |
+| Tool            | What it does                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `async_exec`    | run a shell command in the background; its output and exit status are sent back into the session as a new message |
+| `async_timeout` | a timer; when it fires, a message carrying the task id is sent back                                               |
 
 Both are in `scope/plugins/builtin/` (`AsyncExecTool`, `AsyncTimeoutTool`, `asyncTasks`). The result
 comes back through a delivery into the same session, at low priority, so it never lands inside the
@@ -409,7 +410,13 @@ runtime.observe((fact: RuntimeFact) => {
 names.set("lead", "lead");
 names.set("helper", "helper");
 await runtime.wake("lead", { cwd: base, agentId: "lead", lineage: null, history: [], waiting: [] });
-await runtime.wake("helper", { cwd: base, agentId: "helper", lineage: null, history: [], waiting: [] });
+await runtime.wake("helper", {
+  cwd: base,
+  agentId: "helper",
+  lineage: null,
+  history: [],
+  waiting: [],
+});
 
 // the helper is woken up by this delivery, runs on its own, and comes back to idle
 console.log(await runtime.post({ from: "lead", to: "helper", content: "Say hi in one line." }));

@@ -8,7 +8,7 @@ import {
   resolveModelParams,
   type AgentDefinition,
   type AgentPlugin,
-  type Model,
+  type ModelDefinition,
   type ModelParams,
   type ResolvedModel,
   type ToolEnvDeps,
@@ -22,22 +22,22 @@ import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import type { WorkspaceService } from "../workspace/service.js";
 import { GuardNoticePlugin } from "./guard-notice.js";
 import type { inboxTable } from "./inbox.js";
 
 export interface MaterialsDeps {
-  /** 项目行：`cwd` 从它上面取（能力容器按目录一份） */
+  /** 项目行：`cwd` 从它上面取（Scope 按目录一份） */
   readonly workspaces: WorkspaceService;
-  /** 助手定义：装哪一个、它绑的模型是三级解析的第二级 */
+  /** AgentDefinition：装哪一个、它绑的模型是三级解析的第二级 */
   readonly definitions: AgentDefinitionService;
   /** 现读的配置：`defaultModel`、模型表、思考档位表都在它上面 */
   readonly config: GeneralConfig;
   /** 历史（含 `hidden`）与排队区：这段会话此刻的全部材料 */
   readonly messages: ReturnType<typeof messageTable>;
   readonly inbox: ReturnType<typeof inboxTable>;
-  /** 阈值与自动交接开关在越线那一刻从会话行现读：那两格改了不重建执行体 */
+  /** 阈值与自动交接开关在越线那一刻从会话行现读：那两格改了不重建 Agent */
   readonly sessions: SessionService;
   /** 自动交接发起的那一趟：它与手动交接共用交接态、取消口与落库 */
   readonly handoff: HandoffService;
@@ -48,9 +48,9 @@ export interface MaterialsDeps {
   /** 插件钩子里失败的去处（宿主日志）：那里没有人接得住异常 */
   readonly onError: (error: unknown, what: string) => void;
   /**
-   * 出网/素材端口。**与 `openScope` 里交给 `Scope` 的是同一个对象**（在装配根造一次）：
-   * 附件传输插件靠它读素材字节，工具那一侧也读同一份 —— 两边各拼一个 `readAsset` 的话，
-   * 「素材怎么取」就成了两份得同时改的实现。
+   * 出网/Asset 端口。**与 `openScope` 里交给 `Scope` 的是同一个对象**（在装配根造一次）：
+   * 附件传输插件靠它读 Asset 字节，工具那一侧也读同一份 —— 两边各拼一个 `readAsset` 的话，
+   * 「Asset 怎么取」就成了两份得同时改的实现。
    */
   readonly assetPort: ToolEnvDeps;
 }
@@ -59,7 +59,7 @@ export interface MaterialsDeps {
  * 把一段会话装起来需要的**材料**从库里读出来，交给运行时 —— `wake(身份, 材料)` 的另一半。
  *
  * 这一份是宿主在这条路上唯一的活：历史与排队区只在这里认得出自己的表，三级模型解析只有 SDK 的
- * `resolveModel` 一处实现，项目行与助手定义是宿主的财产。装起来（造容器、造执行体、登记、开跑）
+ * `resolveModel` 一处实现，项目行与 AgentDefinition 是宿主的财产。装起来（造容器、造 Agent、登记、开跑）
  * 全是运行时的事，宿主一个字节都不碰。
  *
  * **这里不做状态归一，也不写回库。** 上个进程没写完的那几条（`pending` / `writing`）由运行时
@@ -73,7 +73,10 @@ export interface MaterialsDeps {
  * `aborted` 的那几条改回 `completed` 是另一拍，它落在装载之后、同一条消息又只定稿一次，
  * 那一次改动写不回库。
  */
-export async function materialsFor(deps: MaterialsDeps, session: Session): Promise<WakeMaterials> {
+export async function materialsFor(
+  deps: MaterialsDeps,
+  session: SessionRecord,
+): Promise<WakeMaterials> {
   // 连 `hidden` 的一起取：那些消息只是不给人看，模型照样得看到。
   const history = deps.messages.listBySession(session.id);
 
@@ -87,7 +90,7 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
   // 生效模型与请求参数（含档位补丁）只有 `modelAndParamsFor` 一处实现 —— 换模型、换档位那两个
   // procedure 也调它，否则「哪一份参数发给哪个模型」就会在三条路上各写一遍。
   //
-  // 删助手不看还有几段会话在用它，所以这段会话的助手可能已经不在了。SDK 那一层只会抛出一句
+  // 删 AgentDefinition 不看还有几段会话在用它，所以这段会话的 AgentDefinition 可能已经不在了。SDK 那一层只会抛出一句
   // 英文的 `Agent "x" not found`，它带不上 `not_found` 这个码；`modelAndParamsFor` 里那次
   // `definitions.get` 缺了就是一条客户端认得出的失败。
   const { resolved, model, params: modelParams } = await modelAndParamsFor(deps, session);
@@ -100,7 +103,7 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
     );
   }
 
-  // 排队区：已经从库里放回队列的那几条，先在表里删掉。一条条目落过地没有，判据是它那条消息在
+  // 排队区：已经从库里放回队列的那几条，先在表里删掉。一条 InboxEntry 落过地没有，判据是它那条消息在
   // 不在历史里 —— 判据只有读得到历史的地方成立，所以这件事留在这里，`wake` 那一侧只负责把
   // 剩下的放回队列（它拿得到同一份历史，会再滤一遍）。
   const landed = new Set(history.map((message) => message.id));
@@ -118,7 +121,7 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
     cwd: workspace.cwd,
     agentId: session.agentId,
     // 把解析出来的生效模型**显式**递下去，而不是让 `createAgent` 再按三级链算一遍：SDK 那一层
-    // 「参数不跨级混合」—— `modelParams` 只在模型来自会话行时才被用上，模型来自助手定义或全局
+    // 「参数不跨级混合」—— `modelParams` 只在模型来自会话行时才被用上，模型来自 AgentDefinition 或全局
     // 兜底时整份会被忽略。而上面那份参数**已经**是按 `resolveModelParams` 判好、档位补丁叠好的
     // 成品，必须让 SDK 原样用它；不显式说明生效模型，用户只改档位、没换过模型（最常见的那一种）
     // 就一点都不生效。解析本身仍然只有 `resolveModel` 一处实现。
@@ -137,21 +140,21 @@ export async function materialsFor(deps: MaterialsDeps, session: Session): Promi
  * 一边装上」这种地方表现出来，而那种缺口不报错。
  *
  * `session` 给 `null` 就是**一次性会话**那一路（`PRD.md` 4.1）：它没有会话行，于是
- * - **不装** `AutoMigratePlugin`：自动交接的阈值与开关都长在会话行上，而这个执行体跑完就散，
+ * - **不装** `AutoMigratePlugin`：自动交接的阈值与开关都长在会话行上，而这个 Agent 跑完就散，
  *   没有「下一代」可交接；
- * - 其余照装 —— 它仍是一个执行体：撞硬线一样要拒（{@link ContextGuardPlugin}）、它的 subagent
- *   一样要罩（{@link SubAgentGuardInstallerPlugin}）、带素材的消息一样要在出网前重建
+ * - 其余照装 —— 它仍是一个 Agent：撞硬线一样要拒（{@link ContextGuardPlugin}）、它的 subagent
+ *   一样要罩（{@link SubAgentGuardInstallerPlugin}）、带 Asset 的消息一样要在出网前重建
  *   （{@link AssetTransportPlugin}）。
  *
- * 阈值用的是**取值函数**而不是装配时算好的数：两条阈值改了不重建执行体
+ * 阈值用的是**取值函数**而不是装配时算好的数：两条阈值改了不重建 Agent
  * （`dev-docs/prd/05-control.md`），装一次就等于把用户之后改的数字钉死在装配那一刻。两颗插件
  * 拿到的是**同一个**对象 —— 主 Agent 与 subagent 必须同源，各算一份就会在「改完阈值之后主 Agent
  * 按新的、subagent 按旧的」上分家。没有会话行时它读到的就是生效模型上那一条（没有行可改）。
  */
 export function hostPlugins(
   deps: MaterialsDeps,
-  session: Session | null,
-  model: Model,
+  session: SessionRecord | null,
+  model: ModelDefinition,
 ): AgentPlugin[] {
   /**
    * 硬线阈值：会话行上的 `guardThreshold` 优先，否则生效模型的 `tokenThresholds.guard`。
@@ -170,7 +173,7 @@ export function hostPlugins(
 
   if (session !== null) {
     // 自动交接：装在这一段上，越线之后由插件自己发起。阈值与开关两格是取值函数而不是装配时
-    // 算好的数 —— 改阈值、改开关都不重建执行体（`PRD.md` 4.7），装一次就等于把用户之后的选择
+    // 算好的数 —— 改阈值、改开关都不重建 Agent（`PRD.md` 4.7），装一次就等于把用户之后的选择
     // 钉死在装配那一刻。
     plugins.push(
       new AutoMigratePlugin({
@@ -179,7 +182,7 @@ export function hostPlugins(
           return deps.sessions.get(session.id)?.handoffThreshold ?? model.tokenThresholds.handoff;
         },
         resolveMode: () => deps.handoff.automaticMode(session.id),
-        // 闸只在这两拍开：关闸那一半在 SDK 的 `HandoffGuardPlugin`，开闸只有宿主知道什么时候该开
+        // 开关只在这两拍开：关开关那一半在 SDK 的 `HandoffGuardPlugin`，开开关只有宿主知道什么时候该开
         // （记忆换完了 / 这一趟没成）。取消不走这里 —— 回滚之后就该停在那一段
         onMigrated: () => deps.handoff.finish(session.id),
         onFailed: ({ error }) => deps.handoff.finish(session.id, { error }),
@@ -210,7 +213,7 @@ export function hostPlugins(
     // 硬线要罩住 subagent 与孙级：委派边界上把同一颗护栏装到它们身上，阈值与主 Agent 同源
     new SubAgentGuardInstallerPlugin(guardThreshold),
     // 发出去之前把带 `__asset_id` 的段按当下生效的模型与端点重建：内容在库里只有一份（原样
-    // 落库），出网那一份每次现造。端口就是 `Scope` 那一份 —— 素材库是宿主的财产，SDK 只认
+    // 落库），出网那一份每次现造。端口就是 `Scope` 那一份 —— Asset 库是宿主的财产，SDK 只认
     // `readAsset` 这一个函数。
     new AssetTransportPlugin({ config: () => deps.config.read(), deps: deps.assetPort }),
   );
@@ -219,7 +222,7 @@ export function hostPlugins(
 }
 
 /**
- * 算「这一段会话用哪个模型、带哪一份参数」要的那两样：配置给模型表与档位表，助手定义给三级
+ * 算「这一段会话用哪个模型、带哪一份参数」要的那两样：配置给模型表与档位表，AgentDefinition 给三级
  * 解析的第二级与「模型来自定义」那一级的基础参数。
  *
  * 只要这两格而不是整个 `MaterialsDeps`：换模型、换档位那两个 procedure 手上没有项目行、
@@ -233,27 +236,27 @@ export interface ModelAndParamsDeps {
 /**
  * 算「用哪个模型、带哪一份参数」要读的那几格。
  *
- * 一段会话（`Session`）本身就是这一份：`agentId` 是定义，`modelId` / `thinkingLevel` 是两级
+ * 一段会话（`SessionRecord`）本身就是这一份：`agentId` 是定义，`modelId` / `thinkingLevel` 是两级
  * 覆盖。**一次性会话没有行**，所以宿主给的是「三格都没有覆盖」的那一份（`modelId: null`、
- * `thinkingLevel: null`），模型就从助手定义落到全局兜底 —— 档位那一格这一次没有，因为它本来
+ * `thinkingLevel: null`），模型就从 AgentDefinition 落到全局兜底 —— 档位那一格这一次没有，因为它本来
  * 就长在会话行上。
  */
 export interface ModelSource {
-  /** 用哪个助手定义装（三级解析的第二级与「模型来自定义」那一级的基础参数都在它上面） */
+  /** 用哪个 AgentDefinition 装（三级解析的第二级与「模型来自定义」那一级的基础参数都在它上面） */
   readonly agentId: string;
-  /** 会话级模型覆盖（`null` = 跟随助手定义） */
+  /** 会话级模型覆盖（`null` = 跟随 AgentDefinition） */
   readonly modelId: string | null;
-  /** 会话级思考档位（`null` = 跟随助手定义） */
+  /** 会话级思考档位（`null` = 跟随 AgentDefinition） */
   readonly thinkingLevel: string | null;
 }
 
 export interface ModelAndParams {
-  /** 助手定义（`definitions.get` 的那一份）：它的 `modelId` 是解析的第二级，`modelParams` 是模型来自定义那一级时的基础参数 */
+  /** AgentDefinition（`definitions.get` 的那一份）：它的 `modelId` 是解析的第二级，`modelParams` 是模型来自定义那一级时的基础参数 */
   readonly definition: AgentDefinition;
   /** 三级解析的结果（唯一实现是 SDK 的 `resolveModel`）；三级都空时 `null` */
   readonly resolved: ResolvedModel | null;
   /** 配置里对应生效模型的那一行 —— 阈值与档位表名都长在它上面；配置里没有这个模型时 `undefined` */
-  readonly model: Model | undefined;
+  readonly model: ModelDefinition | undefined;
   /** 请求参数（`undefined` 表示不带覆盖、让模型走自己的出厂参数） */
   readonly params: ModelParams | undefined;
 }

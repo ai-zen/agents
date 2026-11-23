@@ -9,10 +9,10 @@ import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import { CANCEL_MCP_TASK_TOOL, GET_MCP_TASK_RESULT_TOOL } from "./mcpTaskNotice.js";
 import type {
-  Endpoint,
-  McpServerConfig,
+  EndpointDefinition,
+  McpServerDefinition,
   McpServerManifest,
-  Model,
+  ModelDefinition,
   ToolEnv,
   ToolEnvDeps,
 } from "../../../types/index.js";
@@ -21,18 +21,18 @@ const EMPTY_HINT = "(No MCP servers available, ask the user to add one)";
 
 /**
  * 创建 load_mcp 工具。
- * server 枚举由 filteredMcps （完整 McpServerConfig[]）自动推导，
+ * server 枚举由 filteredMcps （完整 McpServerDefinition[]）自动推导，
  * 查找配置也直接使用 filteredMcps，与枚举来源一致。
  *
  * @param logger 日志口（可选）：报「连上了、清单多大」那两句走它；不注入就不记（库缺省沉默）
  */
 export function createLoadMcpTool(
   mcpManager: McpConnectionManager,
-  filteredMcps: McpServerConfig[],
+  filteredMcps: McpServerDefinition[],
   logger: LogSink = SILENT_LOG,
 ): CallbackTool {
   // 构建 id→config 查找表
-  const configMap = new Map<string, McpServerConfig>();
+  const configMap = new Map<string, McpServerDefinition>();
   for (const s of filteredMcps) {
     configMap.set(s.id, s);
   }
@@ -127,14 +127,14 @@ interface McpCallOutput {
 
 /** 媒体转换所需的上下文：端点决定能否上传，模型决定是否看得见图 */
 interface MediaContext {
-  endpoint?: Endpoint | null;
-  model?: Model | null;
+  endpoint?: EndpointDefinition | null;
+  model?: ModelDefinition | null;
   signal?: AbortSignal;
   /** 出网动作的注入点（缺省走真实 OpenAI SDK） */
   deps?: ToolEnvDeps;
 }
 
-/** 当前这次调用该按哪个端点、哪个模型处理媒体（模型名从执行体上现读） */
+/** 当前这次调用该按哪个端点、哪个模型处理媒体（模型名从 Agent 上现读） */
 function mediaContextOf(env: ToolEnv, ctx?: ToolCallContext): MediaContext {
   const { model, endpoint } = resolveModelAndEndpoint(env.config, ctx?.agent?.model);
   return { endpoint, model, signal: ctx?.signal, deps: env.deps };
@@ -209,7 +209,7 @@ async function resourceToMessageSection(
  * 文本类（text / resource.text / resource_link / 未知类型）归一为 `text` 块，
  * 由调用方拼接成正文后进入输出保护；
  * 媒体类（image / audio / resource.blob）经 `mediaSection()` → `fileToContentSection()`：
- * 端点支持 Files API 时上传为 `file` 块，否则 base64 内联——图片不进字符闸门，也不丢弃。
+ * 端点支持 Files API 时上传为 `file` 块，否则 base64 内联——图片不进字符开关门，也不丢弃。
  */
 async function toMessageSection(
   block: any,

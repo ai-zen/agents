@@ -18,7 +18,7 @@ const refreshReport = z.object({
 });
 
 /**
- * 能力容器这一面：让宿主现在就把每个已造好的容器按磁盘上的配置重读一遍。
+ * Scope 这一面：让宿主现在就把每个已造好的容器按磁盘上的配置重读一遍。
  *
  * 只刷已经造好的：没人用过的目录没有容器，下一次用到时按新配置现造 —— 为了能刷一次而先造
  * 一个，等于凭空多装一份能力（连一次 MCP 连接都可能跟着来）。
@@ -32,8 +32,6 @@ export function scopeRouter(deps: HostApiDeps, api: Trpc) {
      * 无入参：刷哪几份由宿主自己知道（就是它手上那些容器），调用方说得出「刷哪些目录」的时候
      * 再说 —— 那时这一格该长的是筛选条件，不是现在编一个用不上的。
      */
-    reload: api.procedure
-      .output(refreshReport)
-      .mutation(() => deps.runtime.scopes.refreshAll()),
+    reload: api.procedure.output(refreshReport).mutation(() => deps.runtime.scopes.refreshAll()),
   });
 }

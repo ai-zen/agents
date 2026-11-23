@@ -2,7 +2,7 @@ import { CallbackTool } from "@ai-zen/agents-core";
 import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
 
 /**
- * 平级会话（peer session）的三个工具 —— **只负责把模型的话翻译成端口调用**。
+ * PeerSession（peer session）的三个工具 —— **只负责把模型的话翻译成端口调用**。
  *
  * 端口（{@link PeerSessionPort}）由宿主实现：开一段会话、把一句话投进去、现读它此刻落在哪一格，
  * 都是宿主的事（会话是宿主的财产，SDK 不认识会话）。SDK 这一侧只有三样东西：参数说明、
@@ -16,7 +16,7 @@ import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
  *
  * ## 投递不承诺任何未来
  *
- * `post_message` 的回执只有「收下了」。那边忙不忙、什么时候取件、取走之后会做什么，**都不是
+ * `post_message` 的回执只有「收下了」。那边忙不忙、什么时候取走、取走之后会做什么，**都不是
  * 这一句话能定下的**，写在回执里就是对未来的断言 —— 而未来只能靠观测（`read_session_status`）
  * 与对方自己发来的话去读。所以本文件的回执里没有「把它叫起来了」「排在它手头那批后面」这类话。
  *
@@ -27,7 +27,7 @@ import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
  * 不是一道校验。只有**创建**还有「只限一层」这条产品限制，它写在 `create_session` 那边。
  */
 
-/** `create_session`：开一段平级会话，建完即回 */
+/** `create_session`：开一段 PeerSession，建完即回 */
 export const CREATE_SESSION_TOOL = "create_session";
 /** `read_session_status`：只问状态 + 一句摘要，绝不返回全量消息 */
 export const READ_SESSION_STATUS_TOOL = "read_session_status";
@@ -44,9 +44,9 @@ export const PEER_SESSION_TOOL_NAMES = [
 /**
  * 忙不忙 —— **只读的观测值**，就是 core 的 `agent.state` 那两格（`PRD.md` 4.4），名字不改。
  *
- * 这里**没有** `paused`、也没有 `dead`：那两件事不是「忙不忙」—— 一个是输出闸关着（它闲着，
+ * 这里**没有** `paused`、也没有 `dead`：那两件事不是「忙不忙」—— 一个是输出开关关着（它闲着，
  * 但不会自己动），一个是根本没有 agent 对象。挤进同一格，模型就分不清「它闲着」与「它压根
- * 不是活的」。死活由同一个答复里的 `alive` 说；两道闸对平级会话不报（`PRD.md` 4.6 只要
+ * 不是活的」。死活由同一个答复里的 `alive` 说；两道开关对 PeerSession 不报（`PRD.md` 4.6 只要
  * 「忙不忙 + 最近一句摘要」）。
  *
  * 也**没有** `running` / `failed` / `aborted`：失败是某条消息上的事实（那条消息的 `status` /
@@ -58,7 +58,7 @@ export type PeerSessionActivity = "working" | "idle";
  * `create_session` 被**结构化拒绝**的原因。
  *
  * 拒绝是返回结果而不是异常：模型要能读懂并改变策略（「这层不能开分身了，那我自己做」
- * 「这个助手没有可用模型，换一个」「手头那几个还忙，先等一等或分给更少的会话」），异常只会
+ * 「这个 AgentDefinition 没有可用模型，换一个」「手头那几个还忙，先等一等或分给更少的会话」），异常只会
  * 把它这一步打断。
  *
  * 三条都是**创建**的限制：`post_message` 没有「只限一层」「限额」这类判据 —— 投递只看目标
@@ -83,7 +83,7 @@ export type PeerSessionCreated =
  * 身上的事实，找不到就没有对象可读）。把它挤进同一格会让模型把「会话被删了」当成一种可等的情形。
  *
  * 有这一段时只有三格：**忙不忙**（`status`）、**叫什么**（`label`）、**最近一句说了什么**
- * （`lastMessage`：最近一条助手消息的正文摘要，截断到 300 字，超出以省略号收尾；它还没说过话
+ * （`lastMessage`：最近一条 AgentDefinition 消息的正文摘要，截断到 300 字，超出以省略号收尾；它还没说过话
  * 就是 `null`）—— 这就是需求说的「忙不忙 + 最近一句摘要」的全部（`PRD.md` 2.3 / 4.6、
  * `PLAN.md` 10.2）。
  *
@@ -96,10 +96,10 @@ export type PeerSessionStatus =
       found: true;
       /** 忙不忙（两格，见 {@link PeerSessionActivity}） */
       status: PeerSessionActivity;
-      /** 死活：那一段此刻还有没有 agent 对象（`false` = 死了，投过去也没人取件） */
+      /** 死活：那一段此刻还有没有 agent 对象（`false` = 死了，投过去也没人取走） */
       alive: boolean;
       label: string;
-      /** 最近一条助手消息的正文摘要（最多 300 字 + 省略号）；还没说过话就是 `null` */
+      /** 最近一条 AgentDefinition 消息的正文摘要（最多 300 字 + 省略号）；还没说过话就是 `null` */
       lastMessage: string | null;
     };
 
@@ -107,7 +107,7 @@ export type PeerSessionStatus =
  * `post_message` 被拒绝的两种原因 —— 就是投递的两条判据。
  *
  * `gone`：这段会话不在（会话行被删了）；
- * `dead`：会话在，但那边没有 agent 对象，投过去也没有人会取件。
+ * `dead`：会话在，但那边没有 agent 对象，投过去也没有人会取走。
  *
  * 两者对模型是同一类答复：这句话没投出去，别等回音。
  */
@@ -116,13 +116,13 @@ export type PeerSessionSendRejectReason = "gone" | "dead";
 /**
  * `post_message` 的答案。
  *
- * 成功只有 `ok`，一个字段都不多：投递那一刻能定下的只有「收下了」。那边忙不忙、什么时候取件
+ * 成功只有 `ok`，一个字段都不多：投递那一刻能定下的只有「收下了」。那边忙不忙、什么时候取走
  * 都不是回执该说的话（那是对未来的断言）。
  */
-export type PeerSessionSent = { ok: true } | { ok: false; reason: PeerSessionSendRejectReason };
+export type PeerSessionPosted = { ok: true } | { ok: false; reason: PeerSessionSendRejectReason };
 
 /** `post_message` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
-export interface PeerSessionSendInput {
+export interface PeerSessionPostInput {
   /** 谁在调这个工具（`ctx.agent`）—— 宿主据此认领「哪一段会话在说话」与消息署名 */
   caller: Agent;
   sessionId: string;
@@ -154,7 +154,7 @@ export interface PeerSessionPort {
   create(input: PeerSessionCreateInput): Promise<PeerSessionCreated>;
   /**
    * 现读那一格**加上最近一句的摘要**（不存镜像：状态是活对象身上的事实）；找不到就是
-   * `found: false`。摘要只是「最近一条助手消息的开头一段」，不是消息列表。
+   * `found: false`。摘要只是「最近一条 AgentDefinition 消息的开头一段」，不是消息列表。
    */
   status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus>;
   /**
@@ -165,7 +165,7 @@ export interface PeerSessionPort {
    *
    * 收下了就是 `{ ok: true }`；没投出去给原因（{@link PeerSessionSendRejectReason}）。
    */
-  send(input: PeerSessionSendInput): Promise<PeerSessionSent>;
+  post(input: PeerSessionPostInput): Promise<PeerSessionPosted>;
 }
 
 /**
@@ -434,7 +434,7 @@ function post_messageTool(port: PeerSessionPort): Tool {
       },
     },
     callback: async (input: Record<string, unknown>, ctx: ToolCallContext) => {
-      const sent = await port.send({
+      const sent = await port.post({
         caller: ctx.agent,
         sessionId: typeof input.sessionId === "string" ? input.sessionId : "",
         content: typeof input.content === "string" ? input.content : String(input.content ?? ""),

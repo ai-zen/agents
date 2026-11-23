@@ -58,7 +58,7 @@ export class AgentContext {
    */
   lifetime: AgentNS.AgentLifetime;
   /**
-   * 造消息 id 的唯一来源。助手占位、投递时没给 id 的条目，都问它。
+   * 造消息 id 的唯一来源。AgentDefinition 占位、投递时没给 id 的 InboxEntry，都问它。
    *
    * 从外面注入的好处：宿主想让 id 与自己的库对齐（或测试里要可预测），
    * 不必改 core；core 也不需要知道 id 长什么样。

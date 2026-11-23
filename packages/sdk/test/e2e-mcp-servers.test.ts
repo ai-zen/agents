@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
 import { McpConnectionManager } from "../src/scope/plugins/mcp/McpConnectionManager.js";
-import type { McpServerConfig } from "../src/types/index.js";
+import type { McpServerDefinition } from "../src/types/index.js";
 
 // ---------------------------------------------------------------------------
 // 路径
@@ -21,14 +21,14 @@ const STDIO_SERVER = join(PROJECT_DIR, "mcp-servers", "stdio-server.mjs");
 // ---------------------------------------------------------------------------
 // 配置
 // ---------------------------------------------------------------------------
-const stdioConfig: McpServerConfig = {
+const stdioConfig: McpServerDefinition = {
   id: "test-stdio",
   transport: "stdio",
   command: "node",
   args: [STDIO_SERVER],
 };
 
-const sseConfig: McpServerConfig = {
+const sseConfig: McpServerDefinition = {
   id: "test-sse",
   transport: "sse",
   url: "http://127.0.0.1:9876/sse",

@@ -19,8 +19,8 @@ export interface PresetDeps {
  * 它是**独立的一份文件**（`<数据根>/reasoning-presets.json`），不是 `AppConfig` 的一格 ——
  * 所以它没有 `GeneralConfig` 里那份内存副本，读与写都是现碰磁盘（理由见 `GeneralConfig.presets()`）。
  *
- * 写完**不发配置事件**：能力容器的装配不读这张表，读它的是「选档位那一刻」
- * （`session.setThinkingLevel` 现读磁盘）与模型写入时的校验（`ModelService.assertWritable`）。
+ * 写完**不发配置事件**：Scope 的装配不读这张表，读它的是「选档位那一刻」
+ * （`session.updateThinkingLevel` 现读磁盘）与模型写入时的校验（`ModelService.assertWritable`）。
  * 发一个没人需要重读的事件，只会让每个容器白刷一次。
  */
 export class PresetService {

@@ -538,7 +538,7 @@ describe("ConfigManager.ensureDefaultMcpConfig", () => {
   it("mcp.json 是合法对象 → 一个字节都不动，不回调", async () => {
     testDir = await tempDir();
     const { manager, recovered } = makeManagerWithCallback(testDir);
-    // 用户自己的条目 + 这一版不认识的顶层键：都该原样留着
+    // 用户自己的 InboxEntry + 这一版不认识的顶层键：都该原样留着
     const custom = {
       mcpServers: { "my-server": { type: "stdio", command: "my-cmd", env: { A: "1" } } },
       somethingUnknown: [1, 2, 3],

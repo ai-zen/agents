@@ -19,7 +19,7 @@ import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
 import { noticeTable } from "../notice/table.js";
-import type { Notice } from "../notice/types.js";
+import type { NoticeRecord } from "../notice/types.js";
 import { sessionTable } from "../session/table.js";
 import { workspaceTable } from "../workspace/table.js";
 import { noticeRouter } from "./notice.js";
@@ -63,7 +63,7 @@ function newHost() {
   const caller = router.createCaller({});
 
   /** 产生一条通知。`sessionId` 给 `null` 就是全局的那一档 */
-  function push(sessionId: string | null): Notice {
+  function push(sessionId: string | null): NoticeRecord {
     return notices.push({
       level: "info",
       code: "saved",
@@ -74,7 +74,7 @@ function newHost() {
   }
 
   /** 库里那几条的 id，按字典序定序 —— `createdAt` 只到毫秒，同毫秒的先后不是这里要验的事 */
-  function ids(rows: readonly Notice[]): string[] {
+  function ids(rows: readonly NoticeRecord[]): string[] {
     return rows.map((row) => row.id).sort();
   }
 
@@ -88,7 +88,7 @@ describe("清通知的三个粒度", () => {
     const second = host.push("s-1");
     const elsewhere = host.push("s-2");
 
-    await expect(host.caller.notice.clearOne({ id: second.id })).resolves.toEqual({
+    await expect(host.caller.notice.delete({ id: second.id })).resolves.toEqual({
       changed: true,
     });
 
@@ -104,7 +104,7 @@ describe("清通知的三个粒度", () => {
     const host = newHost();
     const only = host.push("s-1");
 
-    await expect(host.caller.notice.clearOne({ id: "not-a-notice" })).resolves.toEqual({
+    await expect(host.caller.notice.delete({ id: "not-a-notice" })).resolves.toEqual({
       changed: false,
     });
 
@@ -118,7 +118,7 @@ describe("清通知的三个粒度", () => {
     host.push("s-1");
     const another = host.push("s-2");
 
-    await host.caller.notice.clear({ sessionId: "s-1" });
+    await host.caller.notice.deleteAll({ sessionId: "s-1" });
 
     // 那一段只剩全局那条（全局通知哪一段都看得见），别的会话那条也不该被连坐
     expect(host.ids(await host.caller.notice.list({ sessionId: "s-1" }))).toEqual([global.id]);
@@ -131,7 +131,7 @@ describe("清通知的三个粒度", () => {
     host.push("s-1");
     host.push("s-2");
 
-    await host.caller.notice.clear({});
+    await host.caller.notice.deleteAll({});
 
     expect(await host.caller.notice.list({})).toEqual([]);
     expect(await host.caller.notice.list({ sessionId: "s-1" })).toEqual([]);

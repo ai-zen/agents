@@ -21,7 +21,7 @@ import type { QuestionRegistry } from "../question/registry.js";
 import { replaceMemory } from "../session/memory.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import type { WorkspaceService } from "../workspace/service.js";
 
 /**
@@ -95,7 +95,7 @@ export function createSdkHandoff(options: SdkHandoffOptions): SdkHandoff {
 /**
  * 一次交接是哪一档。
  *
- * - `document`：只写交接文档，记忆一个字节都不动、不建存档会话、不换执行体的身份；
+ * - `document`：只写交接文档，记忆一个字节都不动、不建存档会话、不换 Agent 的身份；
  * - `swap`：写完文档之后把这段记忆换成新的一份，旧记忆成为另一段存档会话。
  *
  * 两档共用交接态与取消口：取消都要回到交接前（半截文档删掉、这一段退出交接态）。
@@ -129,7 +129,7 @@ export interface HandoffDeps {
   /** 文档落在项目里，得按会话所属项目的 `cwd` 现算 */
   readonly workspaces: WorkspaceService;
   /**
-   * 这一段此刻活着的执行体：问运行时（谁活着只有它知道）。闸、记忆、取消口都落在那个执行体上，
+   * 这一段此刻活着的 Agent：问运行时（谁活着只有它知道）。开关、记忆、取消口都落在那个 Agent 上，
    * 没有它时每一处都是空操作。
    */
   readonly runtime: AgentRuntime;
@@ -155,7 +155,7 @@ export interface HandoffDeps {
  */
 export class HandoffService {
   /**
-   * 这段会话此刻在交接。两档都进这一格：界面上的「正在交接」、只留中断、输入闸都读它。
+   * 这段会话此刻在交接。两档都进这一格：界面上的「正在交接」、只留中断、输入开关都读它。
    */
   private readonly handingOff = new Set<string>();
   /**
@@ -198,13 +198,13 @@ export class HandoffService {
    * 就是把「交接开始了」这句话扣到交接快结束才说 —— 那期间界面还允许发消息。所以这里只做同步
    * 的三件事（造取消口、置交接态、发事件），成败都从事件与通知里看。
    *
-   * **不碰输出闸。** 闸的两半按 SDK 的分工走：关闸是 `HandoffGuardPlugin.onOuterLoopStart` 在
-   * 指令被取走那一拍做的事，开闸是宿主在收口（{@link finish}）做的事。这里先关上的话，`migrate`
+   * **不碰输出开关。** 开关的两半按 SDK 的分工走：关开关是 `HandoffGuardPlugin.onOuterLoopStart` 在
+   * 指令被取走那一拍做的事，开开关是宿主在收口（{@link finish}）做的事。这里先关上的话，`migrate`
    * 一开跑就撞上 `runSelfHandoff` 的第一句（会话不收件就不投递）—— 那一趟直接是失败，用户在
    * 通知里只会看到一句「会话不收件」。
    *
-   * 四条判据的顺序不能换。没有活执行体时其余三格都无从谈起；已经在这一趟里的那一段，它自己
-   * 正在写文档、输出闸也是关着的 —— 把这一条排到后面，用户拿到的就是 `working` 或
+   * 四条判据的顺序不能换。没有活 Agent 时其余三格都无从谈起；已经在这一趟里的那一段，它自己
+   * 正在写文档、输出开关也是关着的 —— 把这一条排到后面，用户拿到的就是 `working` 或
    * `output_paused`，而真实原因是「已经在交接了」。
    *
    * `mode` 是调用方显式挑的执行者（自交接 / 独立摘要）：给了就用它跑这一趟。不给时这一格不往下
@@ -228,7 +228,7 @@ export class HandoffService {
     if (agent === undefined) {
       throw new HostError(
         "conflict",
-        this.deps.t("会话 {sessionId} 没有运行中的执行体，无法交接", { sessionId }),
+        this.deps.t("会话 {sessionId} 没有运行中的Agent，无法交接", { sessionId }),
         { entity: "session", sessionId, reason: "no_agent" },
       );
     }
@@ -271,16 +271,16 @@ export class HandoffService {
   }
 
   /**
-   * 收口：退出交接态，把输出闸开回来，再把这一趟的结果说给用户。
+   * 收口：退出交接态，把输出开关开回来，再把这一趟的结果说给用户。
    *
    * **没有降级这条支**：申请哪个执行者就跑哪个，做不成就抛 —— 那样走到的一律是「失败」
    * （一条带原因的通知），不会出现「换了个执行者、界面上一切正常」那种收口。
    *
-   * 开闸只能在这里，不能更早：SDK 那边关闸之后还要写文档，而记忆换成新的那一拍在宿主这一侧
-   * （{@link commit}）。在写文档那一刻开闸，这期间落进来的话就会随旧记忆一起进存档。
+   * 开开关只能在这里，不能更早：SDK 那边关开关之后还要写文档，而记忆换成新的那一拍在宿主这一侧
+   * （{@link commit}）。在写文档那一刻开开关，这期间落进来的话就会随旧记忆一起进存档。
    *
    * 自动交接那条路在插件的 `onMigrated` / `onFailed` 里走到这里 —— 那两拍是「这一趟结束了」
-   * 唯一对外的回声，闸与通知因此只有这一份实现。取消不走这里（{@link cancel}）。
+   * 唯一对外的回声，开关与通知因此只有这一份实现。取消不走这里（{@link cancel}）。
    *
    * 不在交接态时是空操作：第二次到这里事实没有变化，不再推事件也不再推通知。
    */
@@ -295,7 +295,7 @@ export class HandoffService {
     // 也就没有要告知的人
     if (this.deps.sessions.get(sessionId) === undefined) return;
 
-    // 成了就到此为止：记忆换了、闸开了，没什么要说的
+    // 成了就到此为止：记忆换了、开关开了，没什么要说的
     if (outcome === undefined) return;
 
     this.deps.notices.push({
@@ -334,17 +334,17 @@ export class HandoffService {
   }
 
   /**
-   * 用户按了停：掐断那一趟，关闸，退出交接态，**不开闸** —— 回滚之后就该停在那一段，开闸等于替
+   * 用户按了停：掐断那一趟，关开关，退出交接态，**不开开关** —— 回滚之后就该停在那一段，开开关等于替
    * 用户按了「继续」。
    *
-   * 「不开闸」现在得**显式关一次**：闸已经不再由 {@link start} 关（那一手会让每一趟交接都失败），
-   * 而取消完全可能发生在批头关闸之前 —— 那一拍还没到，闸就一直是开着的。「取消不开闸」的意思是
-   * 取消之后保持暂停；不显式关这一下，取消会顺手把闸留在开着的状态，那一段于是接着取件。
+   * 「不开开关」现在得**显式关一次**：开关已经不再由 {@link start} 关（那一手会让每一趟交接都失败），
+   * 而取消完全可能发生在批头关开关之前 —— 那一拍还没到，开关就一直是开着的。「取消不开开关」的意思是
+   * 取消之后保持暂停；不显式关这一下，取消会顺手把开关留在开着的状态，那一段于是接着取走。
    *
    * 掐断排在最前面：SDK 的取消只认调用方递进去的 `signal`（它自己不持有句柄），不掐这一下，
    * 后台那一趟会接着把整段历史烧完 —— 界面上写着「已中断」，账单上写着没中断。
    *
-   * 不在交接态时是空操作，与 {@link finish} 同 —— 关闸因此也只能排在判据之后：不然一次无处可去
+   * 不在交接态时是空操作，与 {@link finish} 同 —— 关开关因此也只能排在判据之后：不然一次无处可去
    * 的取消会把一段没在交接的会话按住。
    */
   cancel(sessionId: string): void {
@@ -357,7 +357,7 @@ export class HandoffService {
   }
 
   /**
-   * 把 SDK 算好的那份记忆落到库、换到执行体上，记忆长什么样不在这里算。
+   * 把 SDK 算好的那份记忆落到库、换到 Agent 上，记忆长什么样不在这里算。
    *
    * 这份记忆的来处是 SDK 的 `commitMemory` 接缝：`migrate()` 算好递进来，而那个实例是
    * {@link run} 每趟现造的，`sessionId` 由闭包捕获。
@@ -378,7 +378,7 @@ export class HandoffService {
     }
 
     const at = Date.now();
-    const archived: Session = {
+    const archived: SessionRecord = {
       id: crypto.randomUUID(),
       workspaceId: session.workspaceId,
       name: this.deps.t("已存档_{name}", { name: session.name }),
@@ -414,7 +414,7 @@ export class HandoffService {
     this.deps.sessions.update(sessionId, {});
   }
 
-  /** 这段会话此刻在不在交接：界面上的「正在交接」、只留中断、输入闸都读它（两档都有交接态） */
+  /** 这段会话此刻在不在交接：界面上的「正在交接」、只留中断、输入开关都读它（两档都有交接态） */
   isHandingOff(sessionId: string): boolean {
     return this.handingOff.has(sessionId);
   }
@@ -433,12 +433,12 @@ export class HandoffService {
    * 越线那一刻这一趟要不要交班，用哪个执行者（`dev-docs/prd/07-handoff.md`「谁建的会话，自动交接
    * 开不开」那一张表）。
    *
-   * 现读而不是让调用方把值递进来：开关改了不重建执行体（`dev-docs/prd/05-control.md`），装配那
+   * 现读而不是让调用方把值递进来：开关改了不重建 Agent（`dev-docs/prd/05-control.md`），装配那
    * 一刻读到的值会让用户改完没反应。
    *
    * 四条分支，顺序就是下面这几条（顺序本身就是口径）：
    *   1. 会话行不在 → `null`（这一段没了，没什么可交的）；
-   *   2. 开着自动交接（平级会话默认开，或用户自己打开）→ `"self"`，**不问**；
+   *   2. 开着自动交接（PeerSession 默认开，或用户自己打开）→ `"self"`，**不问**；
    *   3. 这一段答过「不交接」→ `null`，**不再问**；
    *   4. 否则问一道三选题，等一个答复。
    *
@@ -526,12 +526,12 @@ export class HandoffService {
    * 插件只碰 `handingOff` 与 `migrate` 两格（另外两格是「只写文档」与文档目录，宿主这一侧没有
    * 对应的路），所以这里也只给那两格。
    */
-  automatic(session: Session): SdkHandoffService {
+  automatic(session: SessionRecord): SdkHandoffService {
     const sessionId = session.id;
     const handoffDir = this.handoffDir(session);
     const isHandingOff = () => this.isHandingOff(sessionId);
     const facade = {
-      // 整趟跑着的时候它必须是 true：交接回合结束、执行体又变闲那一拍插件会再到这里一次，
+      // 整趟跑着的时候它必须是 true：交接回合结束、Agent 又变闲那一拍插件会再到这里一次，
       // 那时用量还超着线，不让行就是「交接触发交接」
       get handingOff(): boolean {
         return isHandingOff();
@@ -545,7 +545,7 @@ export class HandoffService {
    * 进入交接态：造这一趟的取消口、置态、发事件。
    *
    * 手动与自动两条路共用它，四条判据不在这里 —— 那四条判的是「人现在能不能点交接」，而自动
-   * 那一趟是插件自己发的，它只在执行体闲着时才会到这里。
+   * 那一趟是插件自己发的，它只在 Agent 闲着时才会到这里。
    *
    * `kind` 只决定这一趟进不进落库抑制那一格（见 {@link suppressesPersist}）。
    */
@@ -559,7 +559,7 @@ export class HandoffService {
   }
 
   /** 交接文档落在项目里，按会话所属项目的 `cwd` 现算：多项目共用一个目录，文档就跟代码分家了 */
-  private handoffDir(session: Session): string {
+  private handoffDir(session: SessionRecord): string {
     const workspace = this.deps.workspaces.get(session.workspaceId);
     if (workspace === undefined) {
       throw new HostError(
@@ -573,18 +573,18 @@ export class HandoffService {
 
   /**
    * 后台那一趟：造一个只为这一趟服务的 SDK 实例，按这一档调 `handoff` 或 `migrate`，成败都在收口
-   * 里落地。
+   * 里写进 messages。
    *
-   * 失败与成功各走一条，两条都必须退出交接态：留在交接态的会话不再取件（换手那一档连消息也
-   * 不落库）。失败还要把闸开回来（只有取消不开）—— `start` 早就返回了，{@link finish} 推的那条
+   * 失败与成功各走一条，两条都必须退出交接态：留在交接态的会话不再取走（换手那一档连消息也
+   * 不落库）。失败还要把开关开回来（只有取消不开）—— `start` 早就返回了，{@link finish} 推的那条
    * 通知是用户唯一能拿到「为什么没换」的地方。
    *
    * 两档只在最后一步分岔：只写文档那一档不调 `commitMemory`（SDK 的 `handoff` 根本不会叫它），
-   * 于是记忆、存档会话、执行体的身份一格都不动，这一趟要告知的只有文档落在哪。它写下的那几条
+   * 于是记忆、存档会话、Agent 的身份一格都不动，这一趟要告知的只有文档落在哪。它写下的那几条
    * 消息照常落库，收口之后也不截 —— 这一段会话真的说了那几句。
    *
-   * 取消不是失败：`cancel` 已经摘了牌、也把闸留在关着的那一边。这里还认一种它不经手
-   * 的取消 —— 用户在界面上按停打的是这段会话的中断（`agent.abort()`，它不碰这里的 `signal`），
+   * 取消不是失败：`cancel` 已经摘了牌、也把开关留在关着的那一边。这里还认一种它不经手
+   * 的取消 —— 用户在界面上按停打的是这段会话的中断（`runtime.agent.abort()`，它不碰这里的 `signal`），
    * SDK 抛的同样是取消；报成失败就会凭空多一条「交接失败」。
    */
   private async run(run: {
@@ -606,7 +606,7 @@ export class HandoffService {
         commitMemory: (commit) =>
           this.commit(sessionId, commit.memory, agent.definition.messages?.length ?? 0),
       });
-      // `mode` 原样递给 SDK：摘要那一档它自己起一个一次性执行体去写，这段会话的 agent 只被读
+      // `mode` 原样递给 SDK：摘要那一档它自己起一个一次性 Agent 去写，这段会话的 agent 只被读
       // 历史（`summary` 不往它的队列里投指令）
       if (kind === "document") {
         // 只写文档：回来的路径是这一趟唯一要告知的事，记忆那一侧 SDK 一个字节都不动
@@ -656,7 +656,7 @@ export class HandoffService {
   /**
    * 自动那一趟：插件越线时发起，不经 `start` 的四条判据。
    *
-   * 收口不在这里：成与不成从插件的两个回声里走 {@link finish}（闸只能在那里开）。取消只能
+   * 收口不在这里：成与不成从插件的两个回声里走 {@link finish}（开关只能在那里开）。取消只能
    * 在这里交给 {@link cancel} —— 插件把取消咽掉、不会叫它的 `onFailed`，不在这里摘牌，这一段
    * 的消息从此不再落库。
    *
@@ -684,7 +684,7 @@ export class HandoffService {
         throw error;
       }
 
-      // 执行体已经关门：插件对那一格也不叫 `onFailed`（那里没有可收的东西），交接态就没人摘。
+      // Agent 已经关门：插件对那一格也不叫 `onFailed`（那里没有可收的东西），交接态就没人摘。
       // 留着它，这段会话重新被叫醒之后消息永远不落库，而界面上只是「它不回话」
       if (error instanceof AgentError && error.code === "closed") this.finish(sessionId, { error });
       throw error;

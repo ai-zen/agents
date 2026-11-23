@@ -28,7 +28,11 @@ const llm = await startFakeLlm({
 const response = await fetch(`${llm.baseUrl}/chat/completions`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ model: "fake-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+  body: JSON.stringify({
+    model: "fake-model",
+    stream: true,
+    messages: [{ role: "user", content: "hi" }],
+  }),
 });
 
 console.log(await response.text()); // data: {...}\n\ndata: {...}\n\ndata: [DONE]\n\n
@@ -57,9 +61,7 @@ const llm = await startFakeLlm({
   reply: {
     reasoning_content: "先确认路径存在",
     content: "读一下这个文件",
-    tool_calls: [
-      { id: "call_1", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
-    ],
+    tool_calls: [{ id: "call_1", function: { name: "read_file", arguments: '{"path":"a.txt"}' } }],
     usage: { prompt_tokens: 128, completion_tokens: 24 },
   },
 });
@@ -68,18 +70,18 @@ const llm = await startFakeLlm({
 That one message turns into this sequence of `choices[0].delta` values (frame envelopes are
 elided):
 
-| # | delta | why |
-|---|---|---|
-| 1 | `{ role: "assistant", content: "" }` | every stream opens with the role and empty content |
-| 2 | `{ reasoning_content: "先确认" }` | reasoning is cut into pieces at `chunkSize` |
-| 3 | `{ reasoning_content: "路径存" }` | … |
-| 4 | `{ reasoning_content: "在" }` | the last piece is shorter |
-| 5 | `{ tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "read_file", arguments: "" } }] }` | the first frame of a tool call carries `index`, `id` and the function name |
-| 6 | `{ tool_calls: [{ index: 0, function: { arguments: "{\"p" } }] }` | arguments follow in increments, split verbatim |
-| 7 | … | … until the whole argument string has been sent |
-| 8 | `{ content: "读一下" }` | content is cut the same way |
-| 9 | … | … |
-| 10 | `{ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 128, completion_tokens: 24, total_tokens: 152 } }` | the closing frame: no delta, just why it stopped and what it cost |
+| #   | delta                                                                                                                          | why                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| 1   | `{ role: "assistant", content: "" }`                                                                                           | every stream opens with the role and empty content                         |
+| 2   | `{ reasoning_content: "先确认" }`                                                                                              | reasoning is cut into pieces at `chunkSize`                                |
+| 3   | `{ reasoning_content: "路径存" }`                                                                                              | …                                                                          |
+| 4   | `{ reasoning_content: "在" }`                                                                                                  | the last piece is shorter                                                  |
+| 5   | `{ tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "read_file", arguments: "" } }] }`               | the first frame of a tool call carries `index`, `id` and the function name |
+| 6   | `{ tool_calls: [{ index: 0, function: { arguments: "{\"p" } }] }`                                                              | arguments follow in increments, split verbatim                             |
+| 7   | …                                                                                                                              | … until the whole argument string has been sent                            |
+| 8   | `{ content: "读一下" }`                                                                                                        | content is cut the same way                                                |
+| 9   | …                                                                                                                              | …                                                                          |
+| 10  | `{ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 128, completion_tokens: 24, total_tokens: 152 } }` | the closing frame: no delta, just why it stopped and what it cost          |
 
 Rules that the table does not show:
 
@@ -136,41 +138,51 @@ counted from 0 in arrival order — the same number `failOn` uses.
 const llm = await startFakeLlm({
   reply: "一二三四五六七八",
   chunks: 4,
-  chunkDelayMs: 80,                                        // wait between frames
-  jsonDelayMs: 200,                                        // wait before a non-streaming reply
-  breakAfter: 3,                                           // drop the connection after 3 frames
-  failWith: { status: 500, message: "上游炸了" },            // answer with an error instead
-  failOn: 1,                                               // …but only for request number 1
+  chunkDelayMs: 80, // wait between frames
+  jsonDelayMs: 200, // wait before a non-streaming reply
+  breakAfter: 3, // drop the connection after 3 frames
+  failWith: { status: 500, message: "上游炸了" }, // answer with an error instead
+  failOn: 1, // …but only for request number 1
 });
 ```
 
-| Option | What it does |
-|---|---|
-| `chunks` / `chunkSize` | how finely the message is cut (piece count / characters per piece) |
-| `chunkDelayMs` | gap between two frames; the window a test needs to look at a stream mid-flight |
-| `jsonDelayMs` | gap before a non-streaming reply; the window a test needs to cancel a request in flight |
-| `breakAfter` | after that many frames the socket is dropped: no closing frame, no `[DONE]`. The only way to reproduce "the reply started and then the stream died" |
-| `failWith` | respond with that status and message in OpenAI's error shape |
-| `failOn` | restrict `failWith` to one request number (0-based); other requests answer normally |
-| `usage` | the usage reported on the closing frame when the target message does not carry one |
+| Option                 | What it does                                                                                                                                        |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chunks` / `chunkSize` | how finely the message is cut (piece count / characters per piece)                                                                                  |
+| `chunkDelayMs`         | gap between two frames; the window a test needs to look at a stream mid-flight                                                                      |
+| `jsonDelayMs`          | gap before a non-streaming reply; the window a test needs to cancel a request in flight                                                             |
+| `breakAfter`           | after that many frames the socket is dropped: no closing frame, no `[DONE]`. The only way to reproduce "the reply started and then the stream died" |
+| `failWith`             | respond with that status and message in OpenAI's error shape                                                                                        |
+| `failOn`               | restrict `failWith` to one request number (0-based); other requests answer normally                                                                 |
+| `usage`                | the usage reported on the closing frame when the target message does not carry one                                                                  |
 
 What can be observed afterwards:
 
-| Field | Meaning |
-|---|---|
-| `llm.baseUrl` | root address, goes straight into an endpoint config |
-| `llm.requests` | every request received, in arrival order: `method`, `path`, parsed `body` |
+| Field                     | Meaning                                                                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.baseUrl`             | root address, goes straight into an endpoint config                                                                                                            |
+| `llm.requests`            | every request received, in arrival order: `method`, `path`, parsed `body`                                                                                      |
 | `llm.requests[i].aborted` | the client hung up before the response was finished (a real cancel reached the socket). Requests where the endpoint itself dropped the connection stay `false` |
-| `await llm.close()` | stop listening |
+| `await llm.close()`       | stop listening                                                                                                                                                 |
 
 ## API
 
 ```typescript
 export { startFakeLlm, buildDeltas, cutText, splitReply, DEFAULT_CHUNKS };
 export type {
-  FakeLlm, FakeLlmOptions, FakeLlmRequest, FakeLlmReply, FakeLlmMessage,
-  FakeLlmDelta, FakeLlmToolCall, FakeLlmFunctionCall, FakeLlmContentSection,
-  FakeLlmUsage, FakeLlmFinishReason, FakeLlmStreamPart, FakeLlmChunking,
+  FakeLlm,
+  FakeLlmOptions,
+  FakeLlmRequest,
+  FakeLlmReply,
+  FakeLlmMessage,
+  FakeLlmDelta,
+  FakeLlmToolCall,
+  FakeLlmFunctionCall,
+  FakeLlmContentSection,
+  FakeLlmUsage,
+  FakeLlmFinishReason,
+  FakeLlmStreamPart,
+  FakeLlmChunking,
 };
 ```
 

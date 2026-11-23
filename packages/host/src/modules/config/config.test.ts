@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { AppConfig, Endpoint, Model } from "@ai-zen/agents-sdk";
+import type { AppConfig, EndpointDefinition, ModelDefinition } from "@ai-zen/agents-sdk";
 import { ConfigManager } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -29,11 +29,11 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-function endpoint(id: string): Endpoint {
+function endpoint(id: string): EndpointDefinition {
   return { id, name: id, baseUrl: `https://${id}.example/v1`, apiKey: "" };
 }
 
-function model(id: string, endpointId: string): Model {
+function model(id: string, endpointId: string): ModelDefinition {
   return { id, name: id, endpointId, tokenThresholds: { handoff: 100, guard: 150 } };
 }
 

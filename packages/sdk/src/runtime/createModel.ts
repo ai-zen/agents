@@ -20,7 +20,7 @@ export interface AgentModel {
  *
  * 这是 SDK 对「模型参数」的唯一处理逻辑：不解释键名、不做档位推导、不知道厂商差异。
  * 需要多层次语义（如「思考档位」）的应用，在**写配置时**就把档位展开成具体参数，存进
- * `Model.defaultParams` / `AgentDefinition.modelParams`，运行期这边只做浅合并。
+ * `ModelDefinition.defaultParams` / `AgentDefinition.modelParams`，运行期这边只做浅合并。
  *
  * 没有覆盖时返回原对象（保持 `undefined` 语义，避免凭空塞一个空对象）。
  */

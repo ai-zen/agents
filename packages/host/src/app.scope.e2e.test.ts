@@ -1,5 +1,5 @@
 /**
- * `scope.reload` 这一条在真宿主里跑一趟：叫醒一段会话（能力容器随之造出来）、往项目里多写一份
+ * `runtime.scope.reload` 这一条在真宿主里跑一趟：叫醒一段会话（Scope 随之造出来）、往项目里多写一份
  * skill、改一处配置，然后调这一条，看回执里的份数对不对，以及容器是不是真的重读了一次磁盘。
  *
  * 为什么要在真宿主里验：这条 procedure 的价值全在「真的动手刷了一遍」上 —— 只看它的形状，一个
@@ -23,13 +23,13 @@ import { HostApp } from "./app.js";
 import { openDatabase } from "./infra/db.js";
 import { workspaceTable } from "./modules/workspace/table.js";
 
-/** 假端点回的这句话：这条用例只借它把执行体叫醒，内容一个字都不判 */
+/** 假端点回的这句话：这条用例只借它把 Agent 叫醒，内容一个字都不判 */
 const REPLY = "收到。";
 
 /** 后写进项目的那份 skill：它的目录名就是容器里认的名字 */
 const LATE_SKILL = "late-skill";
 
-/** `scope.reload` 的回执（形状与宿主那条 procedure 的出参一致） */
+/** `runtime.scope.reload` 的回执（形状与宿主那条 procedure 的出参一致） */
 interface RefreshReport {
   readonly total: number;
   readonly refreshed: number;
@@ -120,7 +120,7 @@ function writeSkill(cwd: string, id: string): void {
 /**
  * 问一个容器「现在能拿出哪些 skill」。
  *
- * 权限给的是四维全放行：这里问的是容器看见什么，不是「谁能用」（那要按一段会话的助手定义算）。
+ * 权限给的是四维全放行：这里问的是容器看见什么，不是「谁能用」（那要按一段会话的 AgentDefinition 算）。
  */
 async function skillsOf(scope: { filter: (definition: AgentDefinition) => { skills: string[] } }) {
   const definition = {
@@ -137,7 +137,7 @@ async function skillsOf(scope: { filter: (definition: AgentDefinition) => { skil
   return scope.filter(definition).skills;
 }
 
-describe("能力容器的刷新", () => {
+describe("Scope的刷新", () => {
   const workspaceId = randomUUID();
   let dataRoot: string;
   let previousHome: string | undefined;
@@ -221,15 +221,15 @@ describe("能力容器的刷新", () => {
   }, 60_000);
 
   it("叫醒一段会话之后容器就有一份；改配置再刷新，份数对得上、容器真的重读了磁盘", async () => {
-    // 建一段会话并把执行体叫起来：容器按目录造，造出来这一份就是后面要刷的那一份。
-    // 建行与起来执行体是两条口，投话是第三条
+    // 建一段会话并把 Agent 叫起来：容器按目录造，造出来这一份就是后面要刷的那一份。
+    // 建行与起来 Agent 是两条口，投话是第三条
     const created = await client.mutation<{ session: { id: string } }>("session.create", {
       workspaceId,
       agentId: "default",
     });
     const sessionId = created.session.id;
-    await client.mutation("agent.wake", { sessionId });
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.wake", { sessionId });
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId,
@@ -248,10 +248,10 @@ describe("能力容器的刷新", () => {
     expect(await skillsOf(await app.runtime.scopes.for(cwd))).not.toContain(LATE_SKILL);
 
     // 两件事都做在调用之前：一份配置改动，加上项目里多出来的一份 skill。后者只能靠重读磁盘看见
-    await client.mutation("config.setGlobal", { maxToolOutput: 12_345 });
+    await client.mutation("config.update", { maxToolOutput: 12_345 });
     writeSkill(cwd, LATE_SKILL);
 
-    const report = await client.mutation<RefreshReport>("scope.reload", {});
+    const report = await client.mutation<RefreshReport>("runtime.scope.reload", {});
 
     // 这个项目上一份容器，而它刷成了：数字不是编的
     expect(report.total).toBe(1);
@@ -270,7 +270,7 @@ describe("能力容器的刷新", () => {
     };
 
     try {
-      const report = await client.mutation<RefreshReport>("scope.reload", {});
+      const report = await client.mutation<RefreshReport>("runtime.scope.reload", {});
 
       expect(report.total).toBe(1);
       expect(report.refreshed).toBe(0);

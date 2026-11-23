@@ -11,7 +11,7 @@
  * 大小写不该影响结果 —— 用户打 `app` 与打 `APP` 要的是同一批文件。
  *
  * 台架照 `workspace/remove.test.ts`：真临时目录、真内存库、真 `WorkspaceService`；调用从
- * `createCaller` 走，与客户端同一入口（`agent.clearInbox.test.ts` 也是这个搭法）。这一条 procedure
+ * `createCaller` 走，与客户端同一入口（`runtime.agent.clearInbox.test.ts` 也是这个搭法）。这一条 procedure
  * 只用 `workspaces` 与 `t` 两格，其余域整份转成 `HostApiDeps`：补齐它们得编出一堆与本题无关的
  * 替身，那些替身一格都不会被走到。
  */
@@ -66,7 +66,7 @@ function newTree(paths: readonly string[]): string {
 
 /**
  * 这一次调用抛出的是哪个 `HostError`。tRPC 把 resolver 抛出的原始错误放在 `cause` 里（出网那一层
- * 换成 tRPC 自己的码），所以码要从 `cause` 上读 —— 与 `agent.clearInbox.test.ts` 同一处判法。
+ * 换成 tRPC 自己的码），所以码要从 `cause` 上读 —— 与 `runtime.agent.clearInbox.test.ts` 同一处判法。
  */
 async function hostErrorOf(call: Promise<unknown>): Promise<HostError> {
   try {

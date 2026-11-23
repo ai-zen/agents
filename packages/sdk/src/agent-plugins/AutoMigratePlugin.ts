@@ -47,11 +47,11 @@ export interface AutoMigrateOptions {
    * 迁移**没成**的回声（可选）：模型没有写出来、写出来不够长、落库失败、端点 4xx……
    *
    * **取消不算失败**（用户按了停那条不叫它）：那是回到交接前，没什么要收尾的。
-   * 宿主拿它把输出闸开回来 —— 闸是交接那一批的批头关上的，而开闸只有宿主能决定
+   * 宿主拿它把输出开关开回来 —— 开关是交接那一批的批头关上的，而开开关只有宿主能决定
    * （SDK 不认识「记忆换完了」这件事，见 `HandoffService.runHandoff` 的注释）。
    *
-   * 钩子抛错就让这一次迁移报错（本插件不接）：这一道是「把闸开回来」的唯一一道门，
-   * 它自己崩了被吞成一行日志，闸就可能一直关着。
+   * 钩子抛错就让这一次迁移报错（本插件不接）：这一道是「把开关开回来」的唯一一道门，
+   * 它自己崩了被吞成一行日志，开关就可能一直关着。
    */
   onFailed?: (info: AutoMigrateTriggerInfo & { error: unknown }) => void | Promise<void>;
   /**
@@ -149,7 +149,7 @@ export class AutoMigratePlugin implements AgentPlugin {
       // 不报错、也不换执行者 —— 那会为一个已经没有的会话白烧一次全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
       this.logger.error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
-      // 失败回声是「把闸开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里炸出来
+      // 失败回声是「把开关开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里炸出来
       await onFailed?.({ promptTokens, handoffTokens, error: err });
       return;
     }

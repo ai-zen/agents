@@ -1,5 +1,5 @@
 /**
- * 平级会话这条链路的宿主级验收：一段真的会话从自己的能力容器里取出 `create_session`、真的执行它，
+ * PeerSession 这条链路的宿主级验收：一段真的会话从自己的 Scope 里取出 `create_session`、真的执行它，
  * 再用 `post_message` 往新开的那一段会话投一句话；反过来也投一次；再验两条投递被拒，以及
  * 「agent 开出来的会话手上没有 `create_session`」。
  *
@@ -7,7 +7,7 @@
  * 宿主这一侧的接线（`app.ts` 里 `openScope` 与 `open` 这两个端口）此前没有任何用例走过 —— 端口
  * 接错、血缘与自动交接的初值写反、投递没落到排队区，sdk 那边照样是绿的。
  *
- * 模型不发起工具调用（假端点只回文本）：工具实例是从执行体手上取出来的，与 core 在模型发起工具
+ * 模型不发起工具调用（假端点只回文本）：工具实例是从 Agent 手上取出来的，与 core 在模型发起工具
  * 调用时拿到的是同一个（`tool.exec(ctx)`），验的正是宿主的接线。
  */
 
@@ -31,7 +31,7 @@ import { WebSocket } from "ws";
 
 import { HostApp } from "./app.js";
 import { openDatabase } from "./infra/db.js";
-import type { Session } from "./modules/session/types.js";
+import type { SessionRecord } from "./modules/session/types.js";
 import { workspaceTable } from "./modules/workspace/table.js";
 
 /** 假端点回的这句话：两段会话说同一句就够，判据是「话落在谁那边」 */
@@ -119,7 +119,7 @@ class HostClient {
 
 /** `session.open` 回来的那几格；用例只断言用得上的 */
 interface Opened {
-  readonly session: Session;
+  readonly session: SessionRecord;
   readonly live: {
     readonly state: string;
     readonly inputPaused: boolean;
@@ -137,25 +137,25 @@ function textOf(message: AgentNS.Message): string {
   return content.map((section) => (section.type === "text" ? section.text : "")).join("");
 }
 
-/** 排队区条目的正文：与消息同一种形状 */
+/** 排队区 InboxEntry 的正文：与消息同一种形状 */
 function entryText(entry: AgentNS.InboxEntry): string {
   return typeof entry.content === "string" ? entry.content : "";
 }
 
-/** 执行体手上那一个工具；不在就是装配错了，当场说清是哪一个 */
+/** Agent 手上那一个工具；不在就是装配错了，当场说清是哪一个 */
 function toolOf(agent: Agent, name: string): Tool {
   const tool = agent.tools.find((item) => item.function.name === name);
-  if (tool === undefined) throw new Error(`执行体手上没有 "${name}" 这个工具`);
+  if (tool === undefined) throw new Error(`Agent手上没有 "${name}" 这个工具`);
   return tool;
 }
 
-/** 执行体手上这批工具的名字 */
+/** Agent 手上这批工具的名字 */
 function toolNamesOf(agent: Agent): string[] {
   return agent.tools.map((tool) => tool.function.name);
 }
 
 /**
- * 调一次工具：`ctx` 与 core 在模型发起工具调用时造的是同一个形状，`ctx.agent` 就是那个执行体
+ * 调一次工具：`ctx` 与 core 在模型发起工具调用时造的是同一个形状，`ctx.agent` 就是那个 Agent
  * （端口据此认领「哪一段会话在说话」）。
  */
 async function callTool(tool: Tool, agent: Agent, args: Record<string, unknown>): Promise<any> {
@@ -187,14 +187,14 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
   /** 由它开出来的那一段会话 */
   let peerId: string;
 
-  /** 这一段此刻什么样：有执行体时消息与排队区从它的内存读，没有才读库 */
+  /** 这一段此刻什么样：有 Agent 时消息与排队区从它的内存读，没有才读库 */
   const opened = (sessionId: string): Promise<Opened> =>
     client.query<Opened>("session.open", { sessionId });
 
-  /** 这一段执行体的工具（宿主装配出来的那一份，不是替身） */
+  /** 这一段 Agent 的工具（宿主装配出来的那一份，不是替身） */
   const agentOf = (sessionId: string): Agent => {
     const agent = app.runtime.get(sessionId);
-    if (agent === undefined) throw new Error(`会话 "${sessionId}" 没有执行体`);
+    if (agent === undefined) throw new Error(`会话 "${sessionId}" 没有Agent`);
     return agent;
   };
 
@@ -255,7 +255,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
       ),
     );
 
-    // 项目行直接写进表（不走 `workspace.create`）：这条用例要看的是平级会话落哪一行，
+    // 项目行直接写进表（不走 `workspace.create`）：这条用例要看的是 PeerSession 落哪一行，
     // 从 procedure 建项目只会让这一串里多绕一层与它无关的东西
     const db = openDatabase(join(dataRoot, "ai-zen.db"));
     for (const [id, name] of [
@@ -289,15 +289,15 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     rmSync(dataRoot, { recursive: true, force: true });
   }, 60_000);
 
-  it("先有一段真的会话：一行落库、执行体在跑、它手上有那三个工具", async () => {
+  it("先有一段真的会话：一行落库、Agent在跑、它手上有那三个工具", async () => {
     // 建行、叫起来、投一句：三件事各有一条口
     const created = await client.mutation<{ session: { id: string } }>("session.create", {
       workspaceId,
       agentId: "default",
     });
     leadId = created.session.id;
-    await client.mutation("agent.wake", { sessionId: leadId });
-    await client.mutation("agent.send", {
+    await client.mutation("runtime.agent.wake", { sessionId: leadId });
+    await client.mutation("runtime.agent.send", {
       workspaceId,
       agentId: "default",
       sessionId: leadId,
@@ -305,7 +305,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
       messageId: randomUUID(),
     });
 
-    // 等到模型真的答过一句：只看 `state` 的话，投递与取件之间那一拍也会报闲
+    // 等到模型真的答过一句：只看 `state` 的话，投递与取走之间那一拍也会报闲
     await until(async () => {
       const view = await opened(leadId);
       expect(view.messages.some((message) => textOf(message) === REPLY)).toBe(true);
@@ -337,7 +337,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     peerId = String(created.sessionId);
 
     // 会话行真的落了库（`session.list` 读的就是库里的表）
-    const rows = await client.query<Session[]>("session.list", { workspaceId });
+    const rows = await client.query<SessionRecord[]>("session.list", { workspaceId });
     const peer = rows.find((row) => row.id === peerId);
     expect(peer).toBeDefined();
     expect(peer!.lineage).toBe(leadId);
@@ -348,7 +348,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     expect(peer!.nameIsAuto).toBe(false);
     // 另一个项目里一行都没有多出来
     expect(
-      await client.query<Session[]>("session.list", { workspaceId: otherWorkspaceId }),
+      await client.query<SessionRecord[]>("session.list", { workspaceId: otherWorkspaceId }),
     ).toEqual([]);
 
     // 那一段自己跑起来了：交给它的那句话成了它的第一条用户消息
@@ -372,11 +372,11 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     expect(names).toContain(READ_SESSION_STATUS_TOOL);
   }, 60_000);
 
-  it("投给那一段会话的一句话进它的排队区，取件之后成了一条署名的用户消息", async () => {
+  it("投给那一段会话的一句话进它的排队区，取走之后成了一条署名的用户消息", async () => {
     const lead = agentOf(leadId);
 
-    // 关掉它的输出闸：这句话就停在排队区里，看得见（开着的时候它一取就走）
-    await client.mutation("agent.pause", { sessionId: peerId });
+    // 关掉它的输出开关：这句话就停在排队区里，看得见（开着的时候它一取就走）
+    await client.mutation("runtime.agent.pauseOutput", { sessionId: peerId });
     expect((await opened(peerId)).live?.outputPaused).toBe(true);
 
     const accepted = await callTool(toolOf(lead, POST_MESSAGE_TOOL), lead, {
@@ -387,13 +387,13 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     expect(accepted).toMatchObject({ accepted: true });
     expect(accepted.hint).toContain("inbox");
 
-    // 排队区里有它：这一段有执行体，所以读的是它的内存（`session.open` 就是这么读的）
+    // 排队区里有它：这一段有 Agent，所以读的是它的内存（`session.open` 就是这么读的）
     const paused = await opened(peerId);
     expect(paused.inbox.map(entryText)).toContain(TO_PEER);
 
-    await client.mutation("agent.resume", { sessionId: peerId });
+    await client.mutation("runtime.agent.resumeOutput", { sessionId: peerId });
 
-    // 开闸之后它取件，这句话成了它自己记忆里的一条用户消息，署名是发起方那一格现读的名字
+    // 开开关之后它取走，这句话成了它自己记忆里的一条用户消息，署名是发起方那一格现读的名字
     await until(async () => {
       const view = await opened(peerId);
       const heard = view.messages.filter((message) => textOf(message).includes(TO_PEER));
@@ -408,7 +408,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
   }, 60_000);
 
   it("反向：那一段会话也能投回开它的那一段", async () => {
-    await client.mutation("agent.pause", { sessionId: leadId });
+    await client.mutation("runtime.agent.pauseOutput", { sessionId: leadId });
     expect((await opened(leadId)).live?.outputPaused).toBe(true);
 
     const peer = agentOf(peerId);
@@ -421,7 +421,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     const paused = await opened(leadId);
     expect(paused.inbox.map(entryText)).toContain(TO_LEAD);
 
-    await client.mutation("agent.resume", { sessionId: leadId });
+    await client.mutation("runtime.agent.resumeOutput", { sessionId: leadId });
 
     await until(async () => {
       const view = await opened(leadId);
@@ -441,21 +441,21 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     expect(gone).toMatchObject({ rejected: "gone" });
     expect(gone.hint).toContain("Nothing was sent");
 
-    // 这一段已经死了：行还在，执行体没了
+    // 这一段已经死了：行还在，Agent 没了
     const doomed = await callTool(toolOf(lead, CREATE_SESSION_TOOL), lead, {
       prompt: "这一段会被杀掉。",
       label: "待杀",
     });
     const doomedId = String(doomed.sessionId);
-    await client.mutation("agent.kill", { sessionId: doomedId });
-    const rows = await client.query<Session[]>("session.list", { workspaceId });
+    await client.mutation("runtime.agent.kill", { sessionId: doomedId });
+    const rows = await client.query<SessionRecord[]>("session.list", { workspaceId });
     expect(rows.some((row) => row.id === doomedId)).toBe(true);
 
     const dead = await callTool(post, lead, { sessionId: doomedId, content: "还在吗" });
     expect(dead).toMatchObject({ rejected: "dead" });
     expect(dead.hint).toContain("Nothing was sent");
 
-    // 那句话没有落进它的排队区（拒不是静默收下）：这一段没有执行体，读的就是库里那几行
+    // 那句话没有落进它的排队区（拒不是静默收下）：这一段没有 Agent，读的就是库里那几行
     const after = await opened(doomedId);
     expect(after.live).toBeNull();
     expect(after.inbox.map(entryText)).not.toContain("还在吗");

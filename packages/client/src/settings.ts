@@ -165,7 +165,7 @@ export function settingsToTarget(settings: ConnectionSettings): {
 }
 
 /**
- * 界面上那一行字（`本机宿主` / 那个地址）。不含凭证：地址里的 userinfo 会被抹掉 ——
+ * 界面上那一行字（` 本机宿主 ` / 那个地址）。不含凭证：地址里的 userinfo 会被抹掉 ——
  * 有人会把钥匙写进地址（`wss://token@host`），而这一行要上屏。
  */
 export function settingsLabel(settings: ConnectionSettings): string {

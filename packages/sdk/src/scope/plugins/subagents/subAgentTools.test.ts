@@ -57,7 +57,7 @@ function fakePeerSessionPort(): PeerSessionPort {
     async status() {
       return { found: false, status: null };
     },
-    async send() {
+    async post() {
       return { ok: true };
     },
   };
@@ -66,7 +66,7 @@ function fakePeerSessionPort(): PeerSessionPort {
 /**
  * 桩插件：只贡献一个 `ordinary_tool`。
  *
- * 它就是「别的工具」：用来证明剔除只掐掉平级会话那三个名字，普通回调工具照旧进得了执行体。
+ * 它就是「别的工具」：用来证明剔除只掐掉 PeerSession 那三个名字，普通回调工具照旧进得了 Agent。
  */
 function ordinaryToolPlugin(): ScopePlugin {
   return {
@@ -169,7 +169,7 @@ describe("createSubAgentTool", () => {
     expect(userMessage.content).toBe("do it");
   });
 
-  it("被派出去的执行体没有平级会话那三个工具与两个后台工具，别的工具还在", async () => {
+  it("被派出去的Agent没有平级会话那三个工具与两个后台工具，别的工具还在", async () => {
     // 这里要一个**真实**的 Scope：`mockScope()` 的 filter 与 instantiate 都是桩，会把 exclude 吃掉，
     // 那样这条用例就证明不了剔除真的发生了。
     const scope = new Scope({
@@ -189,7 +189,7 @@ describe("createSubAgentTool", () => {
     host.use({
       onSubAgentStart: ({ subAgent }) => {
         captured = subAgent;
-        // 拒掉这次委派：本用例只关心造出来的执行体手上有什么工具，不跑请求
+        // 拒掉这次委派：本用例只关心造出来的 Agent 手上有什么工具，不跑请求
         return "denied by test";
       },
     });

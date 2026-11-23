@@ -133,9 +133,9 @@ export class ConfigManager {
    * 确保 config.json 存在。不存在时写入出厂默认配置 DSL。
    *
    * 已存在时执行「出厂模型清单同步」（见 syncManagedModels）：
-   * models / imageModels 中凡是**没有** `custom: true` 的条目一律视为出厂托管，
+   * models / imageModels 中凡是**没有** `custom: true` 的 InboxEntry 一律视为出厂托管，
    * 会被移除并替换为 DEFAULT_APP_CONFIG 中的最新定义；标了 `custom: true` 的
-   * 条目视为用户自有，原样保留。同步结果与磁盘内容一致时不写盘。
+   * InboxEntry 视为用户自有，原样保留。同步结果与磁盘内容一致时不写盘。
    */
   async ensureDefaultConfig(): Promise<AppConfig> {
     const onDisk = await this.readRaw();
@@ -163,7 +163,7 @@ export class ConfigManager {
    * - agents/ 为空 → 写入默认 Agent（含 modelId）
    * - 已有其他 Agent → 返回 null
    *
-   * 模型按三级解析（`会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`）。
+   * 模型按三级解析（` 会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`）。
    * 这里只负责把默认 Agent 的 `modelId` 补齐 —— 老配置里的 Agent 定义可能根本没写
    * `modelId`（用户的兜底是 `config.defaultModel`），补齐时优先用它，升级才不会改变用户
    * 实际在用的模型。
@@ -245,7 +245,7 @@ export class ConfigManager {
    * 确保 basePath/sub-agents/{DEFAULT_SUBAGENT_ID}.json 存在。
    *
    * - 文件已存在 → 返回已有定义，不覆盖
-   * - sub-agents/ 为空 → 写入默认通用助手 SubAgent
+   * - sub-agents/ 为空 → 写入默认通用 AgentDefinition SubAgent
    * - 已有其他 SubAgent → 返回 null
    */
   async ensureDefaultSubAgent(): Promise<AgentDefinition | null> {
@@ -357,7 +357,7 @@ export class ConfigManager {
       ) as ReasoningPresets;
     } catch (error) {
       // 只有「还没有这个文件」可以当成要释放出厂值。文件在却读不出来（不是 JSON、权限不对）
-      // 时**不覆盖** —— 那会把用户标了 `custom: true` 的条目一起抹掉，那是「擅自修」
+      // 时**不覆盖** —— 那会把用户标了 `custom: true` 的 InboxEntry 一起抹掉，那是「擅自修」
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.logger.error(
           `[ConfigManager] 思考策略表读不出来，本次不写盘（你的表原样留着）：${String(error)}`,
@@ -526,13 +526,13 @@ export class ConfigManager {
  * 同步出厂托管的模型清单（与默认 Agent 的 custom 机制一致）。
  *
  * 规则：
- * - 未标 `custom: true` 的条目 → 由 SDK 托管，从结果中移除，改用 defaults 中的最新定义；
- * - 标了 `custom: true` 的条目 → 用户自有，原样保留；与出厂定义同 id 时用户版本优先；
+ * - 未标 `custom: true` 的 InboxEntry → 由 SDK 托管，从结果中移除，改用 defaults 中的最新定义；
+ * - 标了 `custom: true` 的 InboxEntry → 用户自有，原样保留；与出厂定义同 id 时用户版本优先；
  * - 默认模型 ID（defaultImageModel / defaultMigrationModel）
  *   在合并后若已不存在 → 回退到出厂默认，避免悬空引用。
  *
  * `defaultModel`（三级解析的全局兜底）**不在这里校验、也不在这里改写**：它指向一个已被删掉
- * 的模型时，`createAgent` 会在真要跑的时候报 `Model "x" not found` —— 那时用户看得见自己
+ * 的模型时，`createAgent` 会在真要跑的时候报 `ModelDefinition "x" not found` —— 那时用户看得见自己
  * 刚删了什么；而在这里默默换成别的模型，只会让「我明明没改它」变成一宗悬案。
  *
  * 端点（endpoints）不参与托管，始终保持用户配置。
@@ -544,7 +544,7 @@ export function syncManagedModels(config: AppConfig): AppConfig {
   ): T[] => {
     const kept = (existing ?? []).filter((m) => m.custom === true);
     const keptIds = new Set(kept.map((m) => m.id));
-    // 出厂定义在前，用户自有条目随后；同 id 时用户版本胜出（出厂侧已剔除）
+    // 出厂定义在前，用户自有 InboxEntry 随后；同 id 时用户版本胜出（出厂侧已剔除）
     return [...defaults.filter((m) => !keptIds.has(m.id)), ...kept];
   };
 

@@ -79,7 +79,7 @@ const PUBLIC = "0.0.0.0";
 export const UPGRADE_EXIT_CODE = 75;
 
 export interface HostAppDeps {
-  /** 库、配置、日志、助手定义都在它下面 */
+  /** 库、配置、日志、AgentDefinition 都在它下面 */
   readonly dataRoot: string;
   /** 配置的读写入口（`config.json` 与它同目录的那几个文件） */
   readonly manager: ConfigManager;
@@ -161,11 +161,11 @@ export class HostApp {
   /**
    * 谁活着、怎么装起来、容器什么时候拆：全在这一处（宿主不再自己留一份）。
    *
-   * 它是个薄壳与运行时之间唯一的接面：宿主给四格端口（造容器、开平级会话的行、现读会话名、日志），
+   * 它是个薄壳与运行时之间唯一的接面：宿主给四格端口（造容器、开 PeerSession 的行、现读会话名、日志），
    * 其余全部问它。
    *
-   * 对外只读：用例要取的正是那一段执行体手上的工具实例（宿主把端口接上没有，只有真的从容器里
-   * 取出工具、真的执行一次才看得出来），而装配根之外没有第二条路拿得到执行体。
+   * 对外只读：用例要取的正是那一段 Agent 手上的工具实例（宿主把端口接上没有，只有真的从容器里
+   * 取出工具、真的执行一次才看得出来），而装配根之外没有第二条路拿得到 Agent。
    */
   readonly runtime: AgentRuntime;
   /** 全进程一份的观察者：把运行时的事实翻译成写库与推送 */
@@ -278,12 +278,12 @@ export class HostApp {
     });
 
     /**
-     * 素材端口：**只在这里造一次**，两处用 —— 能力容器的 `Scope.deps`（工具那一侧）与
-     * `materialsFor` 交给附件传输插件的那一格。两处各拼一个 `readAsset` 的话，「素材怎么取」
+     * Asset 端口：**只在这里造一次**，两处用 —— Scope 的 `Scope.deps`（工具那一侧）与
+     * `materialsFor` 交给附件传输插件的那一格。两处各拼一个 `readAsset` 的话，「Asset 怎么取」
      * 就成了两份得同时改的实现，而它们差一步就会在「工具能看见图、发出去的那一份看不见」
      * 这种地方表现出来。
      *
-     * 找不到就是 `undefined`，**不抛**：素材被删是一个正常处境（引用归零就会删），发送前那一步
+     * 找不到就是 `undefined`，**不抛**：Asset 被删是一个正常处境（引用归零就会删），发送前那一步
      * 把它换成一句「附件已不在」的文本就好。字节读不出来（文件没了）才抛 —— 那是一件真事故，
      * 由调用方接住并说清。
      */
@@ -334,20 +334,20 @@ export class HostApp {
     // 运行时：装起来、登记、开跑、发话、拆容器全在它那一侧。宿主给它四格端口，每一格都是
     // 「只有宿主答得出」的事（怎么装配能力、怎么开一行会话、一段会话此刻叫什么、日志往哪写）。
     //
-    // 建在交接之前：交接的编排要问它「这一段有没有活执行体」。
+    // 建在交接之前：交接的编排要问它「这一段有没有活 Agent」。
     this.runtime = new AgentRuntime({
       /**
-       * 造一个能力容器。什么时候造、造几个、什么时候拆不归这里（归运行时），这里只回答
+       * 造一个 Scope。什么时候造、造几个、什么时候拆不归这里（归运行时），这里只回答
        * 「这个目录上怎么把能力装起来」。
        *
-       * 平级会话那三个工具随本次装配一起下去：端口由运行时给，容器在同一次装配里把它装成工具。
+       * PeerSession 那三个工具随本次装配一起下去：端口由运行时给，容器在同一次装配里把它装成工具。
        */
       openScope: async (cwd, peers) => {
         const scope = new Scope({
           getConfig: () => this.general.read(),
           agentsDir,
           cwd,
-          // 工具那一侧的出网/素材端口（与 `materialsFor` 给附件插件的是同一个对象）
+          // 工具那一侧的出网/Asset 端口（与 `materialsFor` 给附件插件的是同一个对象）
           deps: assetPort,
         }).use(
           ...allInOne({
@@ -360,7 +360,7 @@ export class HostApp {
             // 任务状态到了就投进发起那次调用的那段会话（丢不丢由这个口判）
             mcpTaskNotice,
           }),
-          // 平级会话的三个工具：能力不在这里，它们只认这一个端口
+          // PeerSession 的三个工具：能力不在这里，它们只认这一个端口
           new PeerSessionsScopePlugin(peers),
         );
         // 工具环境的日志口就挂装配根这一份 `FileLogger`。
@@ -369,7 +369,7 @@ export class HostApp {
         // 对象上即可 —— 容器里所有内置工具拿到的都是它，与 `allInOne` 的 `logger` 是同一个实例。
         //
         // 为什么非挂不可：`async_exec` / `async_timeout` 的结果要投回发起它的那段会话，而那时
-        // 那段会话可能已经没有执行体了，投递被队列挡回来。这件事没有第二个去处 —— 发起它的那次
+        // 那段会话可能已经没有 Agent 了，投递被队列挡回来。这件事没有第二个去处 —— 发起它的那次
         // 工具调用当场就返回了，结果回来的那一刻没有任何调用点接得住。不挂这一格，那一行就落到
         // 库的缺省沉默实现上，等于没有写。
         scope.env.log = this.log;
@@ -378,7 +378,7 @@ export class HostApp {
       },
 
       /**
-       * 开一段平级会话：写行、定身份，把装它的材料交回去（装起来由运行时自己接着做）。
+       * 开一段 PeerSession：写行、定身份，把装它的材料交回去（装起来由运行时自己接着做）。
        *
        * 新会话挂在**开出它的那一段**的项目下：会话是项目里的东西，一段会话开出来的那一段
        * 当然也在同一个项目里干活。模型先解析、解析不出来直接回一句结构化的拒绝 —— 不先写行，
@@ -387,7 +387,7 @@ export class HostApp {
       open: async (input) => {
         const opener = sessions.get(input.lineage);
         if (opener === undefined) {
-          // 运行时只会从活着的执行体那一段进来，走到这里说明行刚好被删了。开不出来就是开不出来，
+          // 运行时只会从活着的 Agent 那一段进来，走到这里说明行刚好被删了。开不出来就是开不出来，
           // 不假装成功
           throw new Error(
             `Cannot open a peer session from "${input.lineage}": that session does not exist`,
@@ -400,7 +400,7 @@ export class HostApp {
           agentModelId: definition.modelId,
           defaultModel: this.general.read().defaultModel,
         });
-        // 模型解析不出来是**结构化的拒绝**：模型读得懂，可以换一个助手或自己干
+        // 模型解析不出来是**结构化的拒绝**：模型读得懂，可以换一个 AgentDefinition 或自己干
         if (resolved === null) return { ok: false, reason: "model_unresolved" };
 
         const session = sessions.create({
@@ -411,8 +411,8 @@ export class HostApp {
           nameIsAuto: input.label === undefined,
           agentId: input.agentId,
           modelId: resolved.modelId,
-          // 平级会话默认自动交接：撞线自己交班、不问（`dev-docs/prd/01-decisions.md` 第 45 行：
-          // 用户建的会话默认关、平级会话反过来默认开）。血缘就是开出它的那一段
+          // PeerSession 默认自动交接：撞线自己交班、不问（`dev-docs/prd/01-decisions.md` 第 45 行：
+          // 用户建的会话默认关、PeerSession 反过来默认开）。血缘就是开出它的那一段
           //（「只许开一层」那条判据在运行时那边）
           autoHandoff: true,
           lineage: input.lineage,
@@ -470,7 +470,7 @@ export class HostApp {
      * 观察者：全进程一份，**挂在第一次 `wake` 之前**。
      *
      * 它是这个进程里所有会话「消息与状态落库、再推给客户端」的唯一出口。`wake` 一返回，那段会话
-     * 的执行体就已经在跑了（运行时那边 `void agent.start()`），它发出来的每一条事实都要有人接；
+     * 的 Agent 就已经在跑了（运行时那边 `void agent.start()`），它发出来的每一条事实都要有人接；
      * 而事实只报变化、没有回放 —— 晚一步挂，从装载到挂上之间那几条就永远丢了。
      */
     this.observer = new HostObserver({
@@ -479,7 +479,7 @@ export class HostApp {
       assets,
       events,
       onError,
-      // 消息落不落库：换手那一档在交接期间不落；交接态会在一个执行体的寿命里变几次，所以传函数不传值
+      // 消息落不落库：换手那一档在交接期间不落；交接态会在一个 Agent 的寿命里变几次，所以传函数不传值
       suppressesPersist: (sessionId) => handoff.suppressesPersist(sessionId),
       isReloading: (sessionId) => reloads.covers(sessionId),
     });
@@ -506,7 +506,7 @@ export class HostApp {
     // 配置面改完之后，运行期要知道。没有这一条，用户在界面上停掉一个 MCP 服务器、
     // 运行期照旧连着它，直到进程重启——「启停即时生效」就不成立。
     //
-    // 助手定义的变动不走这里：它不进容器的配置，受影的是那几段会话的执行体。
+    // AgentDefinition 的变动不走这里：它不进容器的配置，受影的是那几段会话的 Agent。
     configEvents.subscribe((event) => {
       if (event.kind === "agentDefinition") return;
       void this.runtime.scopes.refreshAll();
@@ -665,11 +665,11 @@ export class HostApp {
   }
 
   /**
-   * 收尾：先告诉观察者「进程正在往下走」，再把执行体杀光、把能力容器拆光（它们在拆之前还会写库），
+   * 收尾：先告诉观察者「进程正在往下走」，再把 Agent 杀光、把 Scope 拆光（它们在拆之前还会写库），
    * 然后才解观察者那条订阅，接着断连接，最后关库与日志。
    *
    * `runtime.close()` 与老的两步同次序：先 `kill` 再 `disposeAll` —— 反过来的话，拆容器会遇到
-   * 还活着的执行体，而那时已经没有「稍后再拆」这回事。
+   * 还活着的 Agent，而那时已经没有「稍后再拆」这回事。
    *
    * pin 的去留只听 {@link upgrading} 那一格：正常关闭要把 pin 清掉（留着它，启动方式会在下一次
    * 起来时照着老 pin 把服务又拉起来），而升级那一路留下 pin —— 那条 pin 正是要让启动方式读到
@@ -708,7 +708,7 @@ export class HostApp {
   /** {@link stop} 的那一遍收尾。只有 `stop` 调它，于是它一辈子只跑一次 */
   private async shutdown(): Promise<void> {
     // 开关必须先打开、再 `close()`：那里面每一次 `kill` 都会清空队列并报 `inboxCleared`，而关机时
-    // 那不是「这些条目作废」—— 它们一条都没作废，下次打开还要接着等（需求：关掉再打开，记忆与
+    // 那不是「这些 InboxEntry 作废」—— 它们一条都没作废，下次打开还要接着等（需求：关掉再打开，记忆与
     // 排队区都在）。晚一步开，观察者已经照老规矩把库里那几行删掉了。
     this.observer.shutdown();
     await this.runtime.close();

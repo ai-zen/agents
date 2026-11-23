@@ -195,7 +195,12 @@ describe("formatHistory 的逐段路径", () => {
 describe("formatHistory 的产物（逐字节回归）", () => {
   it("与改动前一致：前缀缓存依赖这份字节稳定", () => {
     const agent = makeAgent([
-      { id: "m1", createdAt: Date.now(), role: AgentNSValue.Role.System, content: "你是助手" },
+      {
+        id: "m1",
+        createdAt: Date.now(),
+        role: AgentNSValue.Role.System,
+        content: "你是AgentDefinition",
+      },
       {
         id: "m2",
         createdAt: Date.now(),
@@ -261,7 +266,7 @@ describe("formatHistory 的产物（逐字节回归）", () => {
     ]);
 
     expect(JSON.stringify(agent.formatHistory())).toBe(
-      '[{"role":"system","content":"你是助手"},' +
+      '[{"role":"system","content":"你是AgentDefinition"},' +
         '{"role":"user","content":[{"type":"text","text":"看看这张"},' +
         '{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA","detail":"low"}},' +
         '{"type":"file","file_id":"file-1"},' +

@@ -2,11 +2,11 @@
  * 两条验收：同一份字节存两次只留一行、一份文件；引用它的消息删掉之后 `sweepUnreferenced`
  * 才删字节，还有别的引用时行与字节都不动。
  *
- * 另有两条量尺寸的（PNG 量得出、非图片没有那两格）与一条幂等的（同一对消息与素材反复 link
+ * 另有两条量尺寸的（PNG 量得出、非图片没有那两格）与一条幂等的（同一对消息与 Asset 反复 link
  * 只留一行引用）。
  *
  * 两条都是「不报错也不工作」的那种错：去重没落在唯一索引上，多出来的文件没有任何人看得见；
- * 清理早一步，列表里那条素材就变成一个打不开的名字。
+ * 清理早一步，列表里那条 Asset 就变成一个打不开的名字。
  */
 
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -88,7 +88,7 @@ function pngHeader(width: number, height: number): Buffer {
   return bytes;
 }
 
-describe("素材", () => {
+describe("Asset", () => {
   it("同一份字节存两次只有一行、只有一份文件", () => {
     const { assets, dataRoot } = newHost();
     const bytes = Buffer.from("同一份字节");
@@ -121,7 +121,7 @@ describe("素材", () => {
     expect("height" in stored).toBe(false);
   });
 
-  it("同一对消息与素材 link 三次，引用仍然只有一条", () => {
+  it("同一对消息与Asset link 三次，引用仍然只有一条", () => {
     const { assets, messages, sessionAssets } = newHost();
     const stored = assets.store(Buffer.from("一份字节"), "image/png", null);
     messages.upsert("s-1", message("m-1", "看图"));

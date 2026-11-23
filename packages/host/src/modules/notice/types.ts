@@ -8,7 +8,7 @@ export type NoticeLevel = "info" | "success" | "warning" | "error";
  * 到出口再按语言渲染，前提是同一个进程里可能同时存在几种语言 —— 这个前提不存在，所以这里
  * 没有 `params` 那一格。代价是用户之后改了语言，旧通知保留旧语言。
  */
-export interface Notice {
+export interface NoticeRecord {
   id: string;
   level: NoticeLevel;
   /** 给客户端做条件判断、给日志分类，不用于匹配文案 */

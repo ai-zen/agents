@@ -1,5 +1,5 @@
 import { DEFAULT_APP_CONFIG } from "@ai-zen/agents-sdk";
-import type { AppConfig, Model } from "@ai-zen/agents-sdk";
+import type { AppConfig, ModelDefinition } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
@@ -20,7 +20,7 @@ export interface ModelDeps {
 export class ModelService {
   constructor(private readonly deps: ModelDeps) {}
 
-  async add(model: Model): Promise<AppConfig> {
+  async add(model: ModelDefinition): Promise<AppConfig> {
     const current = this.deps.general.read();
     // 与端点同一条规矩：id 是默认项与会话行引用它的方式，重名之后「引用的是哪一条」变成
     // 看谁赢 —— 那种配置不报错，只是让某一段会话悄悄换了个模型
@@ -36,12 +36,12 @@ export class ModelService {
     return this.write({ ...current, models: [...current.models, model] });
   }
 
-  async update(id: string, change: Partial<Omit<Model, "id">>): Promise<AppConfig> {
+  async update(id: string, change: Partial<Omit<ModelDefinition, "id">>): Promise<AppConfig> {
     const current = this.deps.general.read();
     const found = current.models.find((model) => model.id === id);
     if (found === undefined) throw this.notFound(id);
 
-    const next: Model = { ...found, ...change };
+    const next: ModelDefinition = { ...found, ...change };
     await this.assertWritable(next, current);
     return this.write({
       ...current,
@@ -93,7 +93,7 @@ export class ModelService {
       );
     }
 
-    const next: Model = { ...factory, custom: false };
+    const next: ModelDefinition = { ...factory, custom: false };
     await this.assertWritable(next, current);
     return this.write({
       ...current,
@@ -105,8 +105,8 @@ export class ModelService {
     return this.deps.general.write(next, "models");
   }
 
-  private async assertWritable(model: Model, config: AppConfig): Promise<void> {
-    // 形状由边界上的 `.input()` 声明，但那一格是 `z.custom`（`Model` 的形状只有 SDK 一处，
+  private async assertWritable(model: ModelDefinition, config: AppConfig): Promise<void> {
+    // 形状由边界上的 `.input()` 声明，但那一格是 `z.custom`（`ModelDefinition` 的形状只有 SDK 一处，
     // 不在这里抄第二份）。抄不了就得自己判：读不到两条阈值时下面那次比较会抛 TypeError，
     // 那是宿主事故的报法，而这里是「写进来的一格不对」。
     if (

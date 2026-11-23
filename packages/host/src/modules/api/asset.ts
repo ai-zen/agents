@@ -4,12 +4,12 @@ import { base64ByteLength } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { AssetService } from "../asset/service.js";
-import type { Asset } from "../asset/types.js";
+import type { AssetRecord } from "../asset/types.js";
 import type { Translator } from "../i18n/index.js";
 import type { Trpc } from "./trpc.js";
 
 /**
- * 素材行过 wire 的那一份。形状只有 `asset/types.ts` 那一处，这里是它的声明式影子。
+ * Asset 行过 wire 的那一份。形状只有 `asset/types.ts` 那一处，这里是它的声明式影子。
  *
  * `sha256` 出去是因为客户端要能判断两次上传是不是同一份字节：去重命中时回来的行是第一次那一份，
  * 靠 `id` 认不出来。
@@ -28,14 +28,14 @@ const assetSchema = z.object({
 });
 
 /**
- * 一张素材的上限：**4MB**（`dev-docs/prd/09-attachments.md` 第 5 行，用户拍定的那一个数）。
+ * 一张 Asset 的上限：**4MB**（`dev-docs/prd/09-attachments.md` 第 5 行，用户拍定的那一个数）。
  *
  * 数值只在这里写一次：超出上限**报错、不截断** —— 截断过的图片是另一张图，用户还会以为它
  * 完整地发出去了。
  */
 const MAX_ASSET_BYTES = 4 * 1024 * 1024;
 
-/** 这两个 procedure 用到的只有素材这一个域，加一个翻译口（超限那条文案要说清数值） */
+/** 这两个 procedure 用到的只有 Asset 这一个域，加一个翻译口（超限那条文案要说清数值） */
 export interface AssetApiDeps {
   readonly assets: AssetService;
   readonly t: Translator;
@@ -56,7 +56,7 @@ export function assetRouter(deps: AssetApiDeps, api: Trpc) {
       }),
 
     /**
-     * 上传一份素材：客户端给 base64、mime 与（可选）文件名，回来的就是那一行。
+     * 上传一份 Asset：客户端给 base64、mime 与（可选）文件名，回来的就是那一行。
      *
      * **宿主提供这个入口**（粘贴只是客户端那一半，两条路上限与数值一致）。体积先按 base64 量
      * 一次、不解码：**超了报错、不截断** —— 截断过的图片是另一张图，用户还会以为它完整地发出去了。
@@ -70,7 +70,7 @@ export function assetRouter(deps: AssetApiDeps, api: Trpc) {
           base64: z.string(),
         }),
       )
-      .output(z.object({ asset: z.custom<Asset>() }))
+      .output(z.object({ asset: z.custom<AssetRecord>() }))
       .mutation(({ input }) => {
         const bytes = base64ByteLength(input.base64);
         if (bytes > MAX_ASSET_BYTES) {

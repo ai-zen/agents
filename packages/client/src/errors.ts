@@ -34,7 +34,7 @@ import { isTRPCClientError } from "@trpc/client";
  * 有用 —— 调用方按已知的码分支，其余落进 `default` 即可。
  */
 export type HostErrorCode =
-  /** `not_found`：这段会话、这条消息、这份素材不在 */
+  /** `not_found`：这段会话、这条消息、这份 Asset 不在 */
   | "not_found"
   /** `invalid_params`：世界没毛病，给的东西不对（只认自己说过的话、档位表里没有这个档……） */
   | "invalid_params"
@@ -44,7 +44,7 @@ export type HostErrorCode =
   | "busy"
   /** `unsupported`：这一版不做这件事 */
   | "unsupported"
-  /** `config_invalid`：配置里缺一格或指向了不存在的东西（比如这个助手没有可用模型） */
+  /** `config_invalid`：配置里缺一格或指向了不存在的东西（比如这个 AgentDefinition 没有可用模型） */
   | "config_invalid"
   /** `not_available`：这一版不存在（换个版本再挑） */
   | "not_available"

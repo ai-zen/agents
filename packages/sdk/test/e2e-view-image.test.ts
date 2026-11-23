@@ -174,7 +174,7 @@ const DEFINITION = (modelId: string, id: string, name: string): AgentDefinition 
   name,
   messages: [
     Message.System(
-      "你是一个视觉助手。查看图片后，用中文简洁描述图片中的颜色和形状，不要多余解释。",
+      "你是一个视觉AgentDefinition。查看图片后，用中文简洁描述图片中的颜色和形状，不要多余解释。",
     ),
   ],
   modelId,
@@ -261,7 +261,7 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
         modelConfig: model.modelConfig,
         messages: [
           Message.System(
-            "你是一个视觉助手。必须使用 view_image 工具查看用户给出的图片路径，然后用中文描述图片中的颜色和形状。",
+            "你是一个视觉AgentDefinition。必须使用 view_image 工具查看用户给出的图片路径，然后用中文描述图片中的颜色和形状。",
           ),
         ],
         tools: [viewImageTool],

@@ -51,7 +51,7 @@ export function searchRouter(deps: SearchApiDeps, api: Trpc) {
 
     /**
      * 没有 `.output()`：会话过 wire 的形状已经声明在 `session.list` 上，这里再写一份就是
-     * 第二份，两处迟早对不上。出去的仍是 `Session`，tRPC 从返回类型推。
+     * 第二份，两处迟早对不上。出去的仍是 `SessionRecord`，tRPC 从返回类型推。
      */
     sessions: api.procedure
       .input(sessionSearchInput)

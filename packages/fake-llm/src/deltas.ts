@@ -45,7 +45,7 @@ export function cutText(text: string, chunking: FakeLlmChunking = {}): string[] 
 }
 
 /**
- * 一条目标消息 → 首片之后的所有增量（首片由端点自己发，它只有 `role`）。
+ * 一InboxEntry标消息 → 首片之后的所有增量（首片由端点自己发，它只有 `role`）。
  *
  * 切分只动位置不动内容：工具参数原样切开，拼回去必须与目标消息里那一串一字不差 ——
  * 这里不 parse 它是为了不把调用方的排版（空格、键序）改成另一份。

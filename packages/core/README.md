@@ -58,7 +58,7 @@ needs.
 
 A separate notify channel — a condition variable, a timer, a polling thread — would have to be kept
 in step with the queue, and the two drift apart at the first bug. So there is only one structure:
-the queue notifies on push, and while it is empty the loop is parked on that notification. Nothing
+the queue notifies on send, and while it is empty the loop is parked on that notification. Nothing
 else is ever signalled.
 
 ```ts
@@ -69,7 +69,7 @@ for await (const batch of inbox.asTakeAll()) {
 
 ```text
 start() → outer loop
- └─ wait on the output gate                     ← once, before taking anything
+ └─ wait on the output switch                     ← once, before taking anything
     for await (batch of inbox.asTakeAll())
         state = "working"
         repair history                          ← the only place that looks back
@@ -77,12 +77,12 @@ start() → outer loop
         report inboxTaken
         onOuterLoopStart → inner loop → onOuterLoopEnd
         queue empty → state = "idle"
-        wait on the output gate                 ← once per batch, at the tail
+        wait on the output switch                 ← once per batch, at the tail
 ```
 
-The wait on the output gate exists twice — once before entering and once at the tail of every batch.
+The wait on the output switch exists twice — once before entering and once at the tail of every batch.
 That is what "nothing is taken between batches" means in practice: entries that arrive while the
-gate is on stay in the queue, are visible as a count, can be persisted, and can be restored later.
+switch is on stay in the queue, are visible as a count, can be persisted, and can be restored later.
 
 The inner loop repeats while the last response asked for tools. It is a `while`, not recursion: each
 level of recursion adds a stack frame and a private copy of local state, and "which iteration is it
@@ -103,10 +103,10 @@ in-flight work cut right now.
 | Action | What it does |
 |---|---|
 | `start()` | Starts waiting for entries. Returns a promise that resolves only when the agent is dead, and never rejects |
-| `stop()` | Closes the input gate, lets the entries already queued drain, then dies |
-| `pauseOutput()` | Turns the output gate on: nothing is taken from the next batch on. In-flight work is not touched |
-| `abort()` | Cuts the in-flight request and tools, then turns the output gate on, then reports `aborted` |
-| `resumeOutput()` | Turns the output gate off. Only that flag is flipped; `state` is not touched |
+| `stop()` | Closes the input switch, lets the entries already queued drain, then dies |
+| `pauseOutput()` | Turns the output switch on: nothing is taken from the next batch on. In-flight work is not touched |
+| `abort()` | Cuts the in-flight request and tools, then turns the output switch on, then reports `aborted` |
+| `resumeOutput()` | Turns the output switch off. Only that flag is flipped; `state` is not touched |
 | `kill()` | Hard landing: dead immediately, everything queued is discarded |
 
 | | Let it finish by itself | Cut in-flight work now |
@@ -118,14 +118,14 @@ in-flight work cut right now.
 - `abort()` always implies "no more taking" (work cannot continue after being cut); the converse does
   not hold: `pauseOutput()` does not abort anything.
 - `kill()` is not a faster `stop()`. It is a `stop()` that discards whatever has not been processed.
-- Repeating any of the six is a no-op. Only delivery throws (`push()` on a closed agent, `restore()`
+- Repeating any of the six is a no-op. Only delivery throws (`send()` on a closed agent, `restore()`
   on a closed or incomplete one).
 - Neither `stop()` nor `kill()` can be undone: a dead agent is dead, and reviving it means
   constructing a new one.
 - `start()`'s promise never rejects. A failed request is one failed request — it lands on that
   message's `error` and on the `failed` event, and the loop waits for the next entry.
 
-The output gate is released from both sides: `resumeOutput()` flips it, and `stop()` / `kill()` also
+The output switch is released from both sides: `resumeOutput()` flips it, and `stop()` / `kill()` also
 release whatever waits on it. Otherwise a loop parked while paused would wait for a `resumeOutput()`
 that never comes, and the promise from `start()` would never resolve.
 
@@ -139,26 +139,26 @@ fact lives in its own place, and none of them speaks for another.
 | Place | Member | Says | Changed by | Events |
 |---|---|---|---|---|
 | Outward state | `state: "working" \| "idle"` | whether there is work in hand | the loop position only | `state:working` / `state:idle` |
-| Output gate | `isOutputPaused` | whether entries are still taken (`true` = not from the next batch on) | `pauseOutput()` / `resumeOutput()` | `output:paused` / `output:resumed` |
-| Input gate | `isInputPaused` | whether entries are still accepted (`true` = `push()` is refused) | `pauseInput()` / `resumeInput()`; `stop()` / `kill()` are producers of it | `input:paused` / `input:resumed` |
+| Output switch | `isOutputPaused` | whether entries are still taken (`true` = not from the next batch on) | `pauseOutput()` / `resumeOutput()` | `output:paused` / `output:resumed` |
+| Input switch | `isInputPaused` | whether entries are still accepted (`true` = `send()` is refused) | `pauseInput()` / `resumeInput()`; `stop()` / `kill()` are producers of it | `input:paused` / `input:resumed` |
 
-One sentence separates the gates: the input gate blocks delivery, the output gate blocks taking.
-With the input gate closed, `push()` throws `closed` while the queue and the batch in hand stay
-untouched. With the output gate on, nothing is taken while delivery still works and entries stay
-queued. Neither gate takes part in `state`, so "the batch that arrived while output was paused has
+One sentence separates the switches: the input switch blocks delivery, the output switch blocks taking.
+With the input switch closed, `send()` throws `closed` while the queue and the batch in hand stay
+untouched. With the output switch on, nothing is taken while delivery still works and entries stay
+queued. Neither switch takes part in `state`, so "the batch that arrived while output was paused has
 finished" and "output is still paused" are two facts that can both be reported.
 
 `state` is decided by the position of the loop and by nothing else: a batch is taken → `working`;
 the batch is done and the queue is really empty → `idle`.
 
-`stop()` and `kill()` close the input gate themselves and it never opens again afterwards: once the
+`stop()` and `kill()` close the input switch themselves and it never opens again afterwards: once the
 queue has declared that no further entries will arrive, letting one in would hand it to a queue
 nobody takes from.
 
 - `pauseOutput()` takes effect from the next batch: the batch in hand finishes.
 - `abort()` cuts in-flight work (the request and the tools) and reports `aborted`; the agent does not
-  die, the output gate is simply on. Dying is `kill()`'s business.
-- Each gate has its own pair of events, and its current value is read from the live object
+  die, the output switch is simply on. Dying is `kill()`'s business.
+- Each switch has its own pair of events, and its current value is read from the live object
   (`agent.isOutputPaused` / `agent.isInputPaused`), not carried in the event payload.
 - There is no "errored" state: an error is a fact on a message, read from its `status` / `error`.
   There is no "dead" state either: dead means there is no agent object.
@@ -172,14 +172,14 @@ not how long the object lives — it is what it can do at all.
 | | Resident | One-shot |
 |---|---|---|
 | How it is started | `start()`, then it waits for entries | `runOnce()`, its life sits inside the call stack |
-| Who feeds it | anyone, any number of times (`push()`) | the one caller that started it, once |
-| How it closes | `stop()` when nobody pushes any more | closed on its own: a second `push()` throws `closed` |
+| Who feeds it | anyone, any number of times (`send()`) | the one caller that started it, once |
+| How it closes | `stop()` when nobody sends any more | closed on its own: a second `send()` throws `closed` |
 | Tools whose result arrives later | supported | not supported |
 
 The last row is the hard one, and the assembly step has to refuse such tools up front rather than
 discovering it at delivery time.
 
-A resident session also has no "deliver and wait": it can be pushed from any trigger at any time, so
+A resident session also has no "deliver and wait": it can be sent to from any trigger at any time, so
 "I wait until it is idle" has nothing to attach to. Only a one-shot agent has one causal chain — the
 caller's own call.
 
@@ -230,7 +230,7 @@ Three facts are reported, and every change of the inbox means one of them:
 
 | Event | Payload | When |
 |---|---|---|
-| `inboxAdded` | `entry` | an entry was pushed |
+| `inboxAdded` | `entry` | an entry was sent |
 | `inboxTaken` | `entries` | these entries left the queue and their messages are already landed |
 | `inboxCleared` | `entries` | the queue was voided (`clearInbox()`), not taken |
 
@@ -258,8 +258,8 @@ of those positions, may refuse. They are separate because they answer different 
 what it is doing" and "decide whether this may happen". Merging them would make every subscriber a
 potential veto.
 
-There are four refusing hooks, and they fail closed — a gate that lets work through when its guard is
-broken is not a gate. Every other hook fails open and is treated as not having spoken. Both report
+There are four refusing hooks, and they fail closed — a switch that lets work through when its guard is
+broken is not a switch. Every other hook fails open and is treated as not having spoken. Both report
 `failed`; a thrown plugin must not leave an agent that looks alive and does nothing.
 
 `onOuterLoopStart` cannot refuse: the batch has already been taken out of the queue, and a refusal
@@ -271,8 +271,8 @@ would leave it without an owner. A decision about a batch belongs before deliver
 
 | Entry | What it does | Waits? |
 |---|---|---|
-| `push(input?)` | Puts one entry in the inbox and returns; throws `closed` on a closed agent; no `input` = turn the key only | no |
-| `send(input?, { signal })` | Starts if needed, pushes, waits until idle, returns `messages` (does not close) | yes |
+| `send(input?)` | Puts one entry in the inbox and returns; throws `closed` on a closed agent; no `input` = turn the key only | no |
+| `sendAndWait(input?, { signal })` | Starts if needed, sends, waits until idle, returns `messages` (does not close) | yes |
 | `runOnce(input?, { signal })` | Starts, `send`, closes, waits until dead, returns `messages` | yes |
 
 `send()` and `runOnce()` refuse anything whose `lifetime` is not `"one-shot"`. `runOnce()` also
@@ -292,7 +292,7 @@ Reading the queue without taking anything:
 `inboxAdded` (the row is already in storage, restoring is not a new change). It refuses a one-shot
 agent (its life is on the call stack, there is no "keep waiting after a restart"), a closed or
 killed agent, and an entry whose shape is incomplete — a half entry is rejected on the spot rather
-than pushed into the queue.
+than sent into the queue.
 
 ### Repair strategies
 
@@ -345,8 +345,8 @@ should not kill the request that was being watched.
 |---|---|---|
 | `onInit` | no | after registration, unrelated to lifecycle |
 | `onStart` / `onStop` / `onKill` | no | the edges of the life |
-| `onOutputPaused` / `onOutputResumed` | no | the output gate flipped |
-| `onAbort` | no | someone pressed stop (sent even when the gate was already on) |
+| `onOutputPaused` / `onOutputResumed` | no | the output switch flipped |
+| `onAbort` | no | someone pressed stop (sent even when the switch was already on) |
 | `onIdle` | no | the outward state became `idle` |
 | `onOuterLoopStart` / `onOuterLoopEnd` | no | a batch began / ended |
 | `onInnerLoopStart` | yes | before the assistant placeholder exists; also allowed to rewrite the request body |
@@ -372,8 +372,8 @@ One class, one instance in two places.
 export type AgentErrorCode =
   | "request-failed"   // could not connect / no response
   | "stream-failed"    // a response came, but the stream broke or did not fit
-  | "closed"           // the agent is finished: pushing will never be taken again
-  | "input_paused";    // the input gate is closed right now: wait and push again
+  | "closed"           // the agent is finished: sending will never be taken again
+  | "input_paused";    // the input switch is closed right now: wait and send again
 
 export class AgentError extends Error {
   readonly code: AgentErrorCode;

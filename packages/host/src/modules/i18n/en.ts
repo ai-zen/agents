@@ -11,17 +11,17 @@ export const en: Record<string, string> = {
   "项目 {workspaceId} 的目录 {cwd} 已经不在了":
     'The directory "{cwd}" of the workspace "{workspaceId}" is gone',
   "找不到 id 为 {modelId} 的模型": 'Cannot find the model "{modelId}"',
-  "找不到 id 为 {agentDefinitionId} 的助手":
+  "找不到 id 为 {agentDefinitionId} 的 AgentDefinition":
     'Cannot find the agent definition "{agentDefinitionId}"',
-  "已经有 id 为 {agentDefinitionId} 的助手了，改它走 update":
+  "已经有 id 为 {agentDefinitionId} 的 AgentDefinition 了，改它走 update":
     'The agent definition "{agentDefinitionId}" already exists; use update to change it',
-  "助手标识 {agentDefinitionId} 只能由字母、数字、点、下划线与连字符组成，且不以点、下划线与连字符开头":
+  "AgentDefinition 标识 {agentDefinitionId} 只能由字母、数字、点、下划线与连字符组成，且不以点、下划线与连字符开头":
     'The agent definition id "{agentDefinitionId}" must be usable as a file name: letters, digits, dot, underscore and hyphen, and it must not start with dot, underscore or hyphen',
-  "助手 {agentDefinitionId} 的模板里至少要有一条 system 消息":
+  "AgentDefinition {agentDefinitionId} 的模板里至少要有一条 system 消息":
     'The template of the agent definition "{agentDefinitionId}" needs at least one system message',
-  "助手 {agentDefinitionId} 的 {dimension} 权限只能是 allow 或 deny 其一":
+  "AgentDefinition {agentDefinitionId} 的 {dimension} 权限只能是 allow 或 deny 其一":
     'The {dimension} permission of the agent definition "{agentDefinitionId}" must be either allow or deny, not both',
-  "助手 {agentDefinitionId} 的 {dimension} 权限必须是字符串数组":
+  "AgentDefinition {agentDefinitionId} 的 {dimension} 权限必须是字符串数组":
     'The {dimension} permission of the agent definition "{agentDefinitionId}" must be an array of strings',
   "subagent {agentDefinitionId} 的函数名不能为空":
     'The function name of the subagent "{agentDefinitionId}" must not be empty',
@@ -29,7 +29,7 @@ export const en: Record<string, string> = {
     'The function parameters of the subagent "{agentDefinitionId}" are not valid JSON: {reason}',
   "subagent {agentDefinitionId} 的参数结构必须是一个对象：它是一份 JSON Schema":
     'The function parameters of the subagent "{agentDefinitionId}" must be an object: they are a JSON Schema',
-  "「{agentDefinitionId}」不是出厂的那两个助手之一":
+  "「{agentDefinitionId}」不是出厂的那两个之一":
     '"{agentDefinitionId}" is not one of the two factory agent definitions',
   "找不到 id 为 {endpointId} 的端点": 'Cannot find the endpoint "{endpointId}"',
   "交接阈值 {handoff} 必须小于防护阈值 {guard}":
@@ -39,7 +39,7 @@ export const en: Record<string, string> = {
   "MCP 配置 {path} 不由宿主写入": 'The host does not write the MCP config "{path}"',
   "MCP 配置 {path} 里没有名为 {name} 的服务器":
     'The MCP config "{path}" has no server named "{name}"',
-  "会话 {sessionId} 没有运行中的执行体，先运行它再投递":
+  "会话 {sessionId} 没有运行中的 Agent，先运行它再投递":
     'Session "{sessionId}" has no running agent; start the session before sending',
   "宿主内部出错，这次调用没有完成": "Internal host failure: the call did not complete",
   "{version} 不是一个具体的版本号：挑版本是客户端的事，宿主只认一个号":
@@ -47,9 +47,9 @@ export const en: Record<string, string> = {
   "{version} 在 registry 上没有，磁盘上也不是这一版":
     '"{version}" is not on the registry, and the installed copy is not that version',
   宿主访问令牌无效: "The host access token is not valid",
-  "助手 {agentDefinitionId} 没有可用的模型":
+  "AgentDefinition {agentDefinitionId} 没有可用的模型":
     'The agent definition "{agentDefinitionId}" has no usable model',
-  "找不到 id 为 {assetId} 的素材": 'Cannot find the asset "{assetId}"',
+  "找不到 id 为 {assetId} 的 Asset": 'Cannot find the asset "{assetId}"',
   "一张最多 4MB（{max} 字节），这一张 {bytes} 字节；超出上限报错，不截断":
     "One image may be up to 4MB ({max} bytes); this one is {bytes} bytes. Over the limit is an error, the bytes are not truncated",
   "找不到 id 为 {credentialId} 的凭证": 'Cannot find the credential "{credentialId}"',
@@ -57,7 +57,7 @@ export const en: Record<string, string> = {
   "题 {questionId} 的候选项里没有 {value}": 'The question "{questionId}" has no choice "{value}"',
   "会话 {sessionId} 正在交接": 'Session "{sessionId}" is being handed off',
   "已存档_{name}": "archived_{name}",
-  "会话 {sessionId} 没有运行中的执行体，无法交接":
+  "会话 {sessionId} 没有运行中的 Agent，无法交接":
     'Session "{sessionId}" has no running agent; handoff requires one',
   "会话 {sessionId} 还在回答，等它答完再交接":
     'Session "{sessionId}" is still answering; hand off after it becomes idle',
@@ -70,9 +70,9 @@ export const en: Record<string, string> = {
   "这一次请求没有发出去：上一次请求的输入用了 {used} tokens，超过了防护阈值 {guard}。换模型、调高防护阈值或者新开一段会话之后可以接着试。":
     "This request was not sent: the previous request's input used {used} tokens, above the guard threshold of {guard}. Switch the model, raise the guard threshold, or start a new session, then try again.",
   "配置里没有 id 为 {modelId} 的模型": 'The config has no model "{modelId}"',
-  "这段会话没有生效模型，思考档位只能跟随助手定义":
+  "这段会话没有生效模型，思考档位只能跟随 AgentDefinition":
     "This session has no effective model; the thinking level can only follow the agent definition",
-  "模型 {modelId} 没有思考档位，只能跟随助手定义":
+  "模型 {modelId} 没有思考档位，只能跟随 AgentDefinition":
     'The model "{modelId}" has no thinking levels; the thinking level can only follow the agent definition',
   "模型 {modelId} 没有 {level} 这一档，可选：{levels}":
     'The model "{modelId}" has no level "{level}"; available: {levels}',
@@ -100,7 +100,7 @@ export const en: Record<string, string> = {
   "思考档位表 {preset} 缺少 levels": 'The reasoning preset "{preset}" has no "levels"',
   "思考档位表 {preset} 的 {level} 这一档必须是一个对象：一档的补丁是「参数名 → 值」":
     'Level "{level}" of the reasoning preset "{preset}" must be an object: a level patch is a map of parameter name → value',
-  "只能撤回到自己说过的话之前：助手的话与工具结果不是这个意思":
+  "只能撤回到自己说过的话之前：assistant 那条消息与工具结果不是这个意思":
     "You can only rewind to before something you said yourself; replies and tool results are not yours to unsend",
   "这段会话还在跑，等它停下来再撤回": "This session is still running; rewind once it stops",
 };

@@ -66,7 +66,7 @@ export type ReasoningPatch = ModelParams;
  * 表里有 `off` 键就能关，没有就不能（如智谱 GLM-5.3 系，官方原文「其余输入将报错」）。
  */
 export interface ReasoningPreset {
-  /** 用户改过 → SDK 初始化不再覆盖该策略（与 `Model.custom` 同构） */
+  /** 用户改过 → SDK 初始化不再覆盖该策略（与 `ModelDefinition.custom` 同构） */
   custom?: boolean;
   /** 档位名 → 参数补丁 */
   levels: Record<string, ReasoningPatch>;
@@ -77,7 +77,7 @@ export interface ReasoningPreset {
  * `config/reasoning-presets.ts`。
  *
  * 这份表是 **CLI / 桌面端等客户端共享的资产**：它定义「有哪些档位、每档写什么参数」，
- * 由 `Model.reasoningPreset` 引用。客户端据此限制可选强度、把选中的档位展开成参数
+ * 由 `ModelDefinition.reasoningPreset` 引用。客户端据此限制可选强度、把选中的档位展开成参数
  * 写进 `AgentDefinition.modelParams`。
  *
  * **SDK 自身不消费它生成请求参数**：参数合并只是 `{...defaultParams, ...modelParams}`
@@ -86,7 +86,7 @@ export interface ReasoningPreset {
 export type ReasoningPresets = Record<string, ReasoningPreset>;
 
 /** API 端点 */
-export interface Endpoint {
+export interface EndpointDefinition {
   id: string;
   name: string;
   baseUrl: string;
@@ -117,8 +117,8 @@ export interface TokenThresholds {
   guard: number;
 }
 
-/** 模型配置，绑定一个 Endpoint */
-export interface Model {
+/** 模型配置，绑定一个 EndpointDefinition */
+export interface ModelDefinition {
   id: string;
   name: string;
   endpointId: string;
@@ -158,7 +158,7 @@ export interface AgentDefinition {
   messages: AgentNS.Message[];
   /**
    * 绑定模型 id —— 三级解析的**第二级**（`createAgent` 里唯一一处实现）：
-   * `会话级覆盖 > 本字段 > AppConfig.defaultModel`。
+   * ` 会话级覆盖 > 本字段 > AppConfig.defaultModel`。
    *
    * 日常在用的模型写在这里（`/model --agent` 写的就是它）；缺省时落到配置层的兜底模型
    * —— 三级都空时 `createAgent` 才报错（带上 agentId）。
@@ -196,7 +196,7 @@ export interface AgentDefinition {
 // ---- 配置文件 ----
 
 /** 图片生成模型配置 */
-export interface ImageModel {
+export interface ImageModelDefinition {
   id: string;
   name: string;
   endpointId: string;
@@ -216,17 +216,17 @@ export interface ImageModel {
 
 /** config.json 结构 */
 export interface AppConfig {
-  endpoints: Endpoint[];
-  models: Model[];
+  endpoints: EndpointDefinition[];
+  models: ModelDefinition[];
   /** 图片生成模型列表 */
-  imageModels?: ImageModel[];
+  imageModels?: ImageModelDefinition[];
   /** 默认图片生成模型 ID */
   defaultImageModel?: string;
   /** 默认 Agent ID（CLI/Desktop 使用） */
   defaultAgent?: string;
   /**
    * 全局兜底模型 id —— 三级解析的**最后一级**（解析顺序的唯一实现在 SDK 的
-   * `createAgent` / `resolveModel`）：`会话级覆盖 > AgentDefinition.modelId > 本字段`。
+   * `createAgent` / `resolveModel`）：` 会话级覆盖 > AgentDefinition.modelId > 本字段 `。
    *
    * 它不是主真相源：日常在用的模型写在 **Agent 定义** 上，这里只在 Agent **没绑模型**
    * 时兜底（用户清掉了某个 Agent 的 `modelId`，仍希望整个应用有个能跑的模型）。
@@ -322,7 +322,7 @@ export interface AppConfig {
  * 后注册的 mock 就再也不生效）。
  */
 export type UploadFn = (input: {
-  endpoint: Endpoint;
+  endpoint: EndpointDefinition;
   data: Uint8Array;
   filename: string;
   signal?: AbortSignal;
@@ -330,8 +330,8 @@ export type UploadFn = (input: {
 
 /** 图片生成函数签名（默认实现走 OpenAI SDK 的 `images.generate`） */
 export type GenerateImageFn = (input: {
-  endpoint: Endpoint;
-  /** 发给端点的图片模型名（`ImageModel.modelName ?? id`） */
+  endpoint: EndpointDefinition;
+  /** 发给端点的图片模型名（`ImageModelDefinition.modelName ?? id`） */
   model: string;
   prompt: string;
   size?: string;
@@ -359,10 +359,10 @@ export interface ToolEnvDeps {
   /** 调用端点生成图片，默认 `client.images.generate` */
   generateImage?: GenerateImageFn;
   /**
-   * 按 id 取一份素材的字节。素材库是宿主的财产，SDK 不认识它；这一格是「发出去之前按当前模型
+   * 按 id 取一份 Asset 的字节。Asset 库是宿主的财产，SDK 不认识它；这一格是「发出去之前按当前模型
    * 重建内容段」唯一需要外部给的东西。
    *
-   * 取不到（那份素材已经不在）就回 `undefined`，**不要抛**：发送前的那一步要把它换成一句
+   * 取不到（那份 Asset 已经不在）就回 `undefined`，**不要抛**：发送前的那一步要把它换成一句
    * 「附件已不在」的文本，而不是让整次请求失败。
    */
   readAsset?: (assetId: string) => { bytes: Uint8Array; mime: string; name?: string } | undefined;
@@ -396,7 +396,7 @@ export interface ToolEnv {
 export type McpConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
 /** MCP 服务器配置 */
-export interface McpServerConfig {
+export interface McpServerDefinition {
   id: string;
   /** transport 类型，内部统一使用 "stdio" | "http" | "sse" */
   transport: "stdio" | "http" | "sse";

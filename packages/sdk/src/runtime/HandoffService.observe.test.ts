@@ -74,14 +74,14 @@ class FakeAgent {
   /** 常驻会话：自交接要求 agent 能「再问一次」 */
   lifetime = "resident";
   state: "working" | "idle" = "idle";
-  /** 还取不取件（另一处状态，不影响 `state`） */
+  /** 还取不取走（另一处状态，不影响 `state`） */
   private outputPaused = false;
 
   get isOutputPaused(): boolean {
     return this.outputPaused;
   }
 
-  /** 关输出闸（与 core 同口径：发事件 + 跑钩子） */
+  /** 关输出开关（与 core 同口径：发事件 + 跑钩子） */
   pauseOutput(): void {
     if (this.outputPaused) return;
     this.outputPaused = true;
@@ -89,13 +89,13 @@ class FakeAgent {
     void this.dispatch("onOutputPaused", { agent: this });
   }
 
-  /** 用户按了停（与 core 同口径：关闸 + 报「有人按了停」） */
+  /** 用户按了停（与 core 同口径：关开关 + 报「有人按了停」） */
   abort(): void {
     this.pauseOutput();
     void this.dispatch("onAbort", { agent: this });
   }
 
-  /** 开输出闸 */
+  /** 开输出开关 */
   resumeOutput(): void {
     if (!this.outputPaused) return;
     this.outputPaused = false;
@@ -228,7 +228,7 @@ class FakeAgent {
 
   // ---- 投递 ----
 
-  push(entry: any): void {
+  send(entry: any): void {
     if (this.closed) {
       throw new AgentError("closed", "往已经关了的 agent 投递");
     }

@@ -9,7 +9,7 @@ import type {
   AgentDefinition,
   AppConfig,
   ToolEnv,
-  ImageModel,
+  ImageModelDefinition,
   GenerateImageFn,
 } from "../../../types/index.js";
 
@@ -27,7 +27,7 @@ const defaultGenerateImage: GenerateImageFn = async ({
   const result = await client.images.generate({ model, prompt, size, quality } as any, { signal });
   return {
     created: result.created,
-    // 有的端点只返回 b64_json，两类字段都原样带出去，由调用方决定怎么落地
+    // 有的端点只返回 b64_json，两类字段都原样带出去，由调用方决定怎么写进 messages
     data: (result.data ?? []) as { url?: string; b64_json?: string }[],
   };
 };
@@ -109,7 +109,7 @@ export class GenerateImageTool extends SdkCallbackTool {
       }
 
       const modelId = input.model || defaultImageModel;
-      const imageModel: ImageModel | undefined = modelId
+      const imageModel: ImageModelDefinition | undefined = modelId
         ? imageModels.find((m) => m.id === modelId)
         : imageModels[0];
 

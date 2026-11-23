@@ -60,7 +60,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
 
@@ -88,7 +88,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
 
@@ -126,7 +126,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
 
@@ -160,7 +160,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
 
@@ -200,7 +200,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [buildTool(child)],
     });
 
@@ -231,7 +231,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [buildTool(child)],
     });
 
@@ -264,7 +264,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const host = new Agent({
       client: createMockClient(),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [buildTool(child)],
     });
 
@@ -381,7 +381,7 @@ describe("AgentToolLazy 委派用量", () => {
     const host = new Agent({
       client: sequenceClient([usageStream("好", usageOf(1, 1, 2))]),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
 
@@ -428,7 +428,7 @@ describe("AgentToolLazy 委派用量", () => {
     const host = new Agent({
       client: sequenceClient([usageStream("好", usageOf(1, 1, 2))]),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
 
@@ -499,7 +499,7 @@ describe("AgentToolLazy 收口转发", () => {
     const host = new Agent({
       client: sequenceClient([]),
       model: "gpt-4",
-      messages: [Message.System("主助手")],
+      messages: [Message.System("主AgentDefinition")],
       tools: [tool],
     });
     const ctx = new ToolCallContext({

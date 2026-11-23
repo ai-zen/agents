@@ -56,12 +56,12 @@ export interface CreateAgentOptions {
    */
   lifetime?: AgentNS.AgentLifetime;
   /**
-   * 这一段能不能再开平级会话（缺省能）。
+   * 这一段能不能再开 PeerSession（缺省能）。
    *
    * 「这一段自己是不是别人开出来的」只有运行时知道（`WakeMaterials.lineage`），所以由它给这一格。
    * 给 `false` 时排掉的是 `create_session` 一个工具：再开一层就是套娃，而排掉工具比让它调一次
    * 再回 `depth_exceeded` 早一步 —— 模型手上没有这个工具，也就不会去试。投递与问状态那两个照旧
-   * 留着：平级会话之间是双向说话的。
+   * 留着：PeerSession 之间是双向说话的。
    */
   canOpenPeers?: boolean;
 }
@@ -73,7 +73,7 @@ export interface CreateAgentOptions {
  * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）；
  * **参数取「模型来自哪一级」那一份**，不跨级混合（同一处实现：`resolveModelParams`）。
  *
- * 寿命由 `options.lifetime` 定：缺省造出来的是**常驻**执行体；`one-shot` 造出来的是「一次调用、
+ * 寿命由 `options.lifetime` 定：缺省造出来的是**常驻**Agent；`one-shot` 造出来的是「一次调用、
  * 一个答案、一个退出码」那一种（只能 `send` / `runOnce`，跑完就散）。
  *
  * ```ts
@@ -83,7 +83,7 @@ export interface CreateAgentOptions {
  *   modelId: "gpt-6-astra",
  *   modelParams: { reasoning_effort: "high" },
  * });
- * // 一次性执行体：没有会话行、跑完就死（宿主 `session.transient` 走这一条）
+ * // 一次性 Agent：没有会话行、跑完就死（宿主 `session.transient` 走这一条）
  * const once = await createAgent(scope, "my-agent", { lifetime: "one-shot" });
  * ```
  */
@@ -97,7 +97,7 @@ export async function createAgent(
   try {
     stored = await repository.read(agentId);
   } catch (error) {
-    // 文件在、但读不出来（不是 JSON / 没权限）：这不是「没有这个助手」，别对用户说那句假话
+    // 文件在、但读不出来（不是 JSON / 没权限）：这不是「没有这个 AgentDefinition」，别对用户说那句假话
     throw new Error(
       `Agent "${agentId}" definition could not be read: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
@@ -140,11 +140,11 @@ export async function createAgent(
   const tools = scope.buildTools(definition, {
     exclude: {
       subagents: definition.function?.name ? [definition.function.name] : undefined,
-      // 平级会话那三个工具是会话级能力，谁手上没有哪一个，判据都是「它是不是一段能自己开平级
+      // PeerSession 那三个工具是会话级能力，谁手上没有哪一个，判据都是「它是不是一段能自己开平级
       // 会话的会话」。下面两支各自排掉哪些，理由不同：
       //
-      // - 一次性执行体手上什么都没有（第一处是 `subAgentTools.ts` 给 subagent 的 exclude，那边
-      //   的判据是「被派出去的」，这边的判据是「一次性的」，结论一样）：它不是一段会话的执行体
+      // - 一次性 Agent 手上什么都没有（第一处是 `subAgentTools.ts` 给 subagent 的 exclude，那边
+      //   的判据是「被派出去的」，这边的判据是「一次性的」，结论一样）：它不是一段会话的 Agent
       //   —— 没有可以署名的身份（`post_message` 要写「来自哪一段会话」，它会把发起方标签算成
       //   agentId 那串字符串），也开不出有人认领的新会话（`create_session` 必然回
       //   `depth_exceeded`）；而 `async_exec` / `async_timeout` 的结果在将来某个时刻才回来，
@@ -152,7 +152,7 @@ export async function createAgent(
       //   必错的路都要烧一次模型调用去走 —— 不如一开始就不给。
       // - 别人开出来的那一段会话（`canOpenPeers: false`）只排 `create_session`：再开一层就是
       //   套娃；投递与问状态那两个照旧留着，平级之间是双向说话的。两个后台工具也照旧留着
-      //   —— 它是常驻执行体，结果有人收。
+      //   —— 它是常驻 Agent，结果有人收。
       //
       // 取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的配置，这条规矩不长在那儿；
       // 而 filter 先按 exclude 剔除、再按权限过滤，定义写 `allow: ["*"]` 也照样剔得掉。
@@ -179,7 +179,7 @@ export async function createAgent(
       options.abortedToolRoundStrategy ?? scope.config?.abortedToolRoundStrategy,
     abortedToolRoundReason: options.abortedToolRoundReason,
     abortedMessageStrategy: options.abortedMessageStrategy ?? scope.config?.abortedMessageStrategy,
-    // 缺省由 core 定（`resident`）：这里只在调用方显式要一次性执行体时才把那一格递下去
+    // 缺省由 core 定（`resident`）：这里只在调用方显式要一次性 Agent 时才把那一格递下去
     lifetime: options.lifetime,
   });
 
@@ -189,7 +189,7 @@ export async function createAgent(
 /**
  * 这一段手上不该有的工具。
  *
- * 两种情形排掉的名单不一样（一次性执行体既没有会话级能力、也没有能收到结果的将来，别人开出来的
+ * 两种情形排掉的名单不一样（一次性 Agent 既没有会话级能力、也没有能收到结果的将来，别人开出来的
  * 那一段只少了 `create_session`），名单只在这一处算 —— 调用方只说自己是什么，不自己拼名字。
  */
 function excludedTools(options: CreateAgentOptions): string[] | undefined {

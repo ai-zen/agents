@@ -121,7 +121,7 @@ describe("startFakeLlm：非流式分支", () => {
     expect(json.usage.completion_tokens).toBe(7);
   });
 
-  it("jsonDelayMs：请求先落地，响应要等延迟过了才来（取消类用例就靠这段窗口）", async () => {
+  it("jsonDelayMs：请求先写进 messages，响应要等延迟过了才来（取消类用例就靠这段窗口）", async () => {
     const delayMs = 120;
     llm = await startFakeLlm({ reply: "慢答复", jsonDelayMs: delayMs });
 

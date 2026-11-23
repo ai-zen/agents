@@ -9,7 +9,7 @@ function createMockAgent(): Agent {
   return new Agent({
     client: {} as any,
     model: "gpt-4",
-    messages: [Message.System("测试助手")],
+    messages: [Message.System("测试AgentDefinition")],
     tools: [],
   });
 }

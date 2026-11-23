@@ -2,7 +2,7 @@
  * 运行时的验收：**不 import 宿主**。
  *
  * 这里要守住的三件事（`dev-docs/PLAN.md` 第一段）：
- *   1. 常驻：一段会话登记一个执行体，叫醒就开始跑；杀死之后它不再回应，说过的话还在；
+ *   1. 常驻：一段会话登记一个 Agent，叫醒就开始跑；杀死之后它不再回应，说过的话还在；
  *   2. 事件驱动：没有人 `await`，一条投递也把它从闲推到忙、跑完自己回到闲；
  *   3. 互相说话：一段会话把话寄给另一段，另一边收下、跑完、回一句落回发起方那边。
  *
@@ -46,7 +46,7 @@ import type { SdkAgent } from "./SdkAgent.js";
 
 interface Harness {
   runtime: AgentRuntime;
-  /** 这一段在哪个目录上干活（能力容器按它取） */
+  /** 这一段在哪个目录上干活（Scope 按它取） */
   cwd: string;
   /** 造过的容器，按目录顺序（同一个目录只该有一次） */
   opened: string[];
@@ -100,7 +100,7 @@ async function harness(options: { reply?: FakeLlmOptions["reply"] } = {}): Promi
   const ports: RuntimePorts = {
     openScope: async (scopeCwd, peers) => {
       opened.push(scopeCwd);
-      // 真实的宿主在这里读能力路径、装一整套插件；这里只装平级会话那三个工具 ——
+      // 真实的宿主在这里读能力路径、装一整套插件；这里只装 PeerSession 那三个工具 ——
       // 端口随造容器的请求下来，正是要验的那一处接线
       const scope = new Scope({ getConfig: () => config, agentsDir, cwd: scopeCwd }).use(
         new PeerSessionsScopePlugin(peers),
@@ -225,13 +225,13 @@ type ScopeGone = Extract<RuntimeFact, { type: "scope:gone" }>;
 /**
  * 某一段会话收到的事实，按到达顺序。
  *
- * 能力容器那三格没有会话身份（判据是目录，不是会话），不在这一份里 —— 所以先看它有没有这一格。
+ * Scope 那三格没有会话身份（判据是目录，不是会话），不在这一份里 —— 所以先看它有没有这一格。
  */
 function factsOf(facts: readonly RuntimeFact[], sessionId: string): RuntimeFact[] {
   return facts.filter((fact) => "sessionId" in fact && fact.sessionId === sessionId);
 }
 
-/** 直接调一次工具（模型那一侧的位置：`ctx.agent` 就是调用它的那个执行体） */
+/** 直接调一次工具（模型那一侧的位置：`ctx.agent` 就是调用它的那个 Agent） */
 async function callTool(tool: Tool, agent: Agent, args: Record<string, unknown>) {
   const toolCall: AgentNS.ToolCall = {
     id: `call-${Math.random().toString(36).slice(2, 8)}`,
@@ -355,7 +355,7 @@ describe("运行时：常驻与互相说话", () => {
     expect(h.opened).toEqual([h.cwd]);
   });
 
-  it("恢复：历史接在模板后面，已经在历史里的条目不再放回队列", async () => {
+  it("恢复：历史接在模板后面，已经在历史里的InboxEntry不再放回队列", async () => {
     const h = await harness();
     const landed: AgentNS.Message = {
       ...Message.User("早说过的话"),
@@ -408,7 +408,7 @@ describe("运行时：常驻与互相说话", () => {
     expect(h.runtime.get("b")).toBeUndefined();
     expect(h.runtime.aliveOn(h.cwd)).toEqual(["a"]);
 
-    // 会话行还在、只是没人取件 → dead；行都没了 → gone
+    // 会话行还在、只是没人取走 → dead；行都没了 → gone
     expect(await h.runtime.post({ from: "a", to: "b", content: "还在吗" })).toEqual({
       ok: false,
       reason: "dead",
@@ -431,7 +431,7 @@ describe("运行时：常驻与互相说话", () => {
     expect(h.opened).toEqual([h.cwd]);
     expect(h.runtime.aliveOn(h.cwd)).toEqual(["a", "b"]);
 
-    // 还有活执行体时不许拆：拆了就是把正在干活的会话静默杀掉
+    // 还有活 Agent 时不许拆：拆了就是把正在干活的会话静默杀掉
     await expect(h.runtime.scopes.dispose(h.cwd)).rejects.toThrow(/2 session/);
 
     h.runtime.kill("a");
@@ -454,20 +454,20 @@ describe("运行时：常驻与互相说话", () => {
     };
 
     const a = await h.wake("a", "lead", { plugins: [plugin] });
-    // 还没投过话，这一拍理应还没到：底下那一下才说明它真被挂在了这个执行体上
+    // 还没投过话，这一拍理应还没到：底下那一下才说明它真被挂在了这个 Agent 上
     expect(entered).toBe(0);
 
-    // 用户说的话也是一条投递，进执行体的队列
-    a.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    // 用户说的话也是一条投递，进 Agent 的队列
+    a.send({ content: "跑一句", priority: "low", source: { kind: "user" } });
     await until(() => a.state === "idle" && words(a, "收到").length > 0, 5000);
 
-    // 装晚了的后果就是这里恒为 0：第一批取件在插件装上之前就跑了
+    // 装晚了的后果就是这里恒为 0：第一批取走在插件装上之前就跑了
     expect(entered).toBeGreaterThan(0);
   });
 });
 
 describe("运行时：观察面（只订阅、不介入）", () => {
-  it("装载时归一的那些条目会报一条 messageChanged", async () => {
+  it("装载时归一的那些InboxEntry会报一条 messageChanged", async () => {
     const h = await harness();
 
     /**
@@ -521,7 +521,7 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     const a = await h.wake("a", "lead");
     const b = await h.wake("b", "helper");
 
-    // 谁活着：两段各一条「出现」，带目录、血缘（两段都是人建的，所以是 null）与执行体本身
+    // 谁活着：两段各一条「出现」，带目录、血缘（两段都是人建的，所以是 null）与 Agent 本身
     const appeared = seen.filter((fact): fact is Appeared => fact.type === "resident:appeared");
     expect(appeared.map((fact) => fact.sessionId)).toEqual(["a", "b"]);
     expect(appeared[0]).toMatchObject({ cwd: h.cwd, lineage: null, agent: a });
@@ -559,8 +559,8 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     expect(gone.map((fact) => fact.sessionId)).toEqual(["b"]);
 
     const marked = seen.length;
-    // 让这一段再跑一句走的是用户说话那条路：用户说的话也是一条投递，进执行体的队列
-    a.push({ content: "再跑一句", priority: "low", source: { kind: "user" } });
+    // 让这一段再跑一句走的是用户说话那条路：用户说的话也是一条投递，进 Agent 的队列
+    a.send({ content: "再跑一句", priority: "low", source: { kind: "user" } });
     await until(() => a.state === "idle" && words(a, "假端点说的那句").length > 0, 5000);
 
     expect(factsOf(seen.slice(marked), "b")).toEqual([]);
@@ -576,8 +576,8 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     off();
 
     const a = await h.wake("a", "lead");
-    // 用户说的话也是一条投递，进执行体的队列
-    a.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    // 用户说的话也是一条投递，进 Agent 的队列
+    a.send({ content: "跑一句", priority: "low", source: { kind: "user" } });
     await until(() => a.state === "idle" && words(a, "收到").length > 0, 5000);
 
     // 整个过程中一条事实都没收到
@@ -595,8 +595,8 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     h.runtime.kill("a");
     const marked = seen.length;
 
-    // 用户说的话也是一条投递，进执行体的队列
-    b.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    // 用户说的话也是一条投递，进 Agent 的队列
+    b.send({ content: "跑一句", priority: "low", source: { kind: "user" } });
     await until(() => b.state === "idle" && words(b, "收到").length > 0, 5000);
 
     const ofB = factsOf(seen.slice(marked), "b").map((fact) => fact.type);
@@ -616,23 +616,23 @@ describe("运行时：观察面（只订阅、不介入）", () => {
       counted += 1;
     });
 
-    // 叫醒照常返回：拿得到执行体，而不是一个旁路者的错误
+    // 叫醒照常返回：拿得到 Agent，而不是一个旁路者的错误
     const a = await h.wake("a", "lead");
     expect(a).toBeDefined();
 
-    // 用户说的话也是一条投递，进执行体的队列 —— 它还活着，跑得完这一句
-    a.push({ content: "跑一句", priority: "low", source: { kind: "user" } });
+    // 用户说的话也是一条投递，进 Agent 的队列 —— 它还活着，跑得完这一句
+    a.send({ content: "跑一句", priority: "low", source: { kind: "user" } });
     await until(() => a.state === "idle" && words(a, "收到").length > 0, 5000);
 
     // 第二个订阅者照常收到事实（一个订阅者炸了不该让别人瞎）
     expect(counted).toBeGreaterThan(0);
-    // 登记项就是那个执行体，而且它真的跑完了那一句
+    // 登记项就是那个 Agent，而且它真的跑完了那一句
     expect(h.runtime.get("a")).toBe(a);
     expect(words(a, "收到").length).toBeGreaterThan(0);
   });
 });
 
-describe("运行时的观察面：能力容器", () => {
+describe("运行时的观察面：Scope", () => {
   it("容器造起来、刷新过、拆掉，三件事都听得见", async () => {
     const h = await harness();
     const seen: RuntimeFact[] = [];
@@ -644,7 +644,7 @@ describe("运行时的观察面：能力容器", () => {
     const appeared = seen.filter((fact): fact is ScopeAppeared => fact.type === "scope:appeared");
     expect(appeared).toHaveLength(1);
     expect(appeared[0]!.cwd).toBe(h.cwd);
-    // 能力快照：这个容器装了平级会话插件，那三个工具都在里面（不必再摸容器去问）
+    // 能力快照：这个容器装了 PeerSession 插件，那三个工具都在里面（不必再摸容器去问）
     expect(appeared[0]!.capabilities.tools).toEqual(
       expect.arrayContaining([CREATE_SESSION_TOOL, READ_SESSION_STATUS_TOOL, POST_MESSAGE_TOOL]),
     );
@@ -667,7 +667,7 @@ describe("运行时的观察面：能力容器", () => {
     ]);
     expect(refreshed[0]!.capabilities).toEqual(appeared[0]!.capabilities);
 
-    // 拆掉：先杀掉这一段（还有活执行体时拆会被拒），再拆
+    // 拆掉：先杀掉这一段（还有活 Agent 时拆会被拒），再拆
     h.runtime.kill("a");
     await h.runtime.scopes.dispose(h.cwd);
 

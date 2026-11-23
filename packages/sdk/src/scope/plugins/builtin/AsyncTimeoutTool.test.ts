@@ -4,7 +4,7 @@ import { AsyncTimeoutTool } from "./AsyncTimeoutTool.js";
 import { makeEnv } from "../../../test-support/test-helpers.js";
 import { until, stopAgent } from "../../../test-support/agent-round.js";
 
-/** 收件人：一个真实执行体；`onInnerLoopStart` 拒掉每一次请求（本文件不跑真实请求） */
+/** 收件人：一个真实 Agent；`onInnerLoopStart` 拒掉每一次请求（本文件不跑真实请求） */
 function makeAgent(): Agent {
   const agent = new Agent({ client: {} as never, model: "test-model", tools: [] });
   agent.use({ onInnerLoopStart: () => "denied by test" });
@@ -141,7 +141,7 @@ describe("AsyncTimeoutTool", () => {
     agent.kill();
   });
 
-  it("两个执行体各数各的定时器：一段被收掉不影响另一段", async () => {
+  it("两个Agent各数各的定时器：一段被收掉不影响另一段", async () => {
     vi.useFakeTimers();
     const tool = new AsyncTimeoutTool(makeEnv());
     const first = makeAgent();
@@ -158,7 +158,7 @@ describe("AsyncTimeoutTool", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("没有执行体可投（工具不是被 agent 调用的）时直接报错", async () => {
+  it("没有Agent可投（工具不是被 agent 调用的）时直接报错", async () => {
     const tool = new AsyncTimeoutTool(makeEnv());
     await expect(tool.call({ ms: 100 })).rejects.toThrow("must be called by an agent");
   });

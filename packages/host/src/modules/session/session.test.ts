@@ -21,7 +21,7 @@ import { replaceMemory } from "./memory.js";
 import { messageTable } from "./messages.js";
 import { SessionService } from "./service.js";
 import { sessionTable } from "./table.js";
-import type { NewSession, Session } from "./types.js";
+import type { NewSession, SessionRecord } from "./types.js";
 
 /** 会话挂在外键上，所以每一个库都得先有一个项目行，不然插入会被 `foreign_keys` 拦住 */
 function newDatabase() {
@@ -187,7 +187,11 @@ describe("换记忆", () => {
     const original = sessions.create(input);
     messages.upsertMany(original.id, [message("m-1", "第一句"), message("m-2", "第二句")]);
 
-    const archived: Session = { ...original, id: "archived-1", name: `已存档_${original.name}` };
+    const archived: SessionRecord = {
+      ...original,
+      id: "archived-1",
+      name: `已存档_${original.name}`,
+    };
     const prompt = Message.System("You are a test assistant.");
     const breakpoint = new Message({
       role: AgentNS.Role.System,
@@ -207,14 +211,14 @@ describe("换记忆", () => {
     // 旧记忆整段搬过去：归属变了，`seq` 一个字不动
     expect(messages.listBySession("archived-1").map((item) => item.id)).toEqual(["m-1", "m-2"]);
     expect(seqsOf(db, "archived-1")).toEqual([1, 2]);
-    // 原会话只剩断点那一条：助手定义带来的系统提示不落成行，否则下次装载会多一份
+    // 原会话只剩断点那一条：AgentDefinition 带来的系统提示不落成行，否则下次装载会多一份
     expect(messages.listBySession(original.id).map((item) => item.id)).toEqual([breakpoint.id]);
     expect(seqsOf(db, original.id)).toEqual([1]);
 
     // 人为造一次失败：自引用的消息序列化不了，第三件写着的时候炸掉，看前两件有没有一起退回去
     const broken = message("m-3", "这一条写不进去");
     (broken as unknown as { self: unknown }).self = broken;
-    const secondArchived: Session = { ...original, id: "archived-2" };
+    const secondArchived: SessionRecord = { ...original, id: "archived-2" };
 
     expect(() =>
       replaceMemory(db, {

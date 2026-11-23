@@ -61,9 +61,9 @@ async function makeScope(
     /** 覆盖/追加配置（三级解析的用例要看 `defaultModel`） */
     config?: Partial<AppConfig>;
     /**
-     * 装不装平级会话插件（装了才有那三个会话级工具）。
+     * 装不装 PeerSession 插件（装了才有那三个会话级工具）。
      *
-     * 它不在 `allInOne` 里：平级会话不是磁盘上的定义，是宿主的运行时能力（候选名固定三个，
+     * 它不在 `allInOne` 里：PeerSession 不是磁盘上的定义，是宿主的运行时能力（候选名固定三个，
      * 从端口进来），所以标准插件包里没有它 —— 要测那三个名字就得自己装一个。
      */
     peerSessions?: boolean;
@@ -88,7 +88,7 @@ function fakePeerSessionPort(): PeerSessionPort {
     async status() {
       return { found: false, status: null };
     },
-    async send() {
+    async post() {
       return { ok: true };
     },
   };
@@ -176,7 +176,7 @@ describe("createAgent", () => {
     );
   });
 
-  it("定义文件在但读不出来：报真实原因，不说「找不到这个助手」", async () => {
+  it("定义文件在但读不出来：报真实原因，不说「找不到这个AgentDefinition」", async () => {
     const agentsDir = join(dir, "agents");
     await fs.mkdir(agentsDir, { recursive: true });
     await fs.writeFile(join(agentsDir, "broken.json"), "{ 这里坏掉了", "utf-8");
@@ -396,7 +396,7 @@ describe("createAgent", () => {
    * `send` / `runOnce` 一次（宿主的一次性会话、subagent 走的后一条）。缺省不许被默默改掉 ——
    * 常驻是能力更大的那个。
    */
-  it("lifetime：缺省造常驻执行体，显式 one-shot 才是一次性", async () => {
+  it("lifetime：缺省造常驻Agent，显式 one-shot 才是一次性", async () => {
     await writeAgentFile("my-agent");
     const scope = await makeScope();
 
@@ -409,15 +409,15 @@ describe("createAgent", () => {
   });
 
   /**
-   * 寿命不只改「能投几次」，还改**手上有什么工具**：会话级工具跟着「是不是一段会话的执行体」走，
+   * 寿命不只改「能投几次」，还改**手上有什么工具**：会话级工具跟着「是不是一段会话的 Agent」走，
    * 两个后台工具跟着「将来还有没有人收结果」走。
    *
-   * 一次性执行体不属于任何一段会话（没有可署名的身份、也开不出有人认领的新会话），那三个工具
+   * 一次性 Agent 不属于任何一段会话（没有可署名的身份、也开不出有人认领的新会话），那三个工具
    * 在它手上只有必错的路；它也没有能收到后台结果的将来（寿命在调用栈里）。所以造工具时一并排掉
    *（`createAgent.ts` 里那处 exclude，与 `subAgentTools.ts` 给 subagent 的是同一件事的两处）。
-   * 常驻的那一侧两样都有：它**就是**一段会话的执行体。
+   * 常驻的那一侧两样都有：它**就是**一段会话的 Agent。
    */
-  it("一次性执行体拿不到平级会话那三个工具与两个后台工具，常驻的两样都有", async () => {
+  it("一次性Agent拿不到平级会话那三个工具与两个后台工具，常驻的两样都有", async () => {
     await writeAgentFile("my-agent");
     const scope = await makeScope({ peerSessions: true });
 
@@ -447,7 +447,7 @@ describe("createAgent", () => {
     expect(names).not.toContain(CREATE_SESSION_TOOL);
     expect(names).toContain(POST_MESSAGE_TOOL);
     expect(names).toContain(READ_SESSION_STATUS_TOOL);
-    // 它是常驻执行体：两个后台工具的结果有人收，照旧在
+    // 它是常驻 Agent：两个后台工具的结果有人收，照旧在
     for (const name of ASYNC_TASK_TOOL_NAMES) expect(names).toContain(name);
   });
 });

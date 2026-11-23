@@ -15,10 +15,10 @@ import type { AppConfig, ToolEnv } from "../../../types/index.js";
 const LONG_COMMAND = process.platform === "win32" ? "ping -n 20 127.0.0.1" : "sleep 20";
 
 /**
- * 收件人：一个真实执行体。
+ * 收件人：一个真实 Agent。
  *
  * `onInnerLoopStart` 拒掉每一次请求：本文件关心的是「结果有没有投回来」，不需要真的发请求，
- * 而这一句拒绝让落地之后不再往下走（投进来的条目照样落成消息）。
+ * 而这一句拒绝让写进 messages 之后不再往下走（投进来的 InboxEntry 照样落成消息）。
  */
 function makeAgent(): Agent {
   const agent = new Agent({ client: {} as never, model: "test-model", tools: [] });
@@ -193,7 +193,7 @@ describe("AsyncExecTool", () => {
     expect(agent.messages).toHaveLength(0);
   });
 
-  it("没有执行体可投（工具不是被 agent 调用的）时直接报错", async () => {
+  it("没有Agent可投（工具不是被 agent 调用的）时直接报错", async () => {
     const tool = new AsyncExecTool(makeEnv());
     await expect(tool.call({ command: "echo hello" })).rejects.toThrow(
       "must be called by an agent",

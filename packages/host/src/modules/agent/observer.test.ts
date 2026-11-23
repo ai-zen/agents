@@ -5,7 +5,7 @@
  * 消息再报一次 `messageChanged` 之后仍然是两行。
  *
  * 两半各管一件事：
- * - 少了登记，那份素材就没人认领 —— 用户删了那条消息之后它会被当成无主的东西删掉，而列表里
+ * - 少了登记，那份 Asset 就没人认领 —— 用户删了那条消息之后它会被当成无主的东西删掉，而列表里
  *   它又还在；
  * - 不幂等，「同一条消息被报很多次」就会把引用行乘以次数（流式期间一条长回答会被写很多次），
  *   `countByAsset` 于是永远归不了零。
@@ -13,8 +13,8 @@
  * 其二：关机时 `inboxCleared` 不删库，没关机时照删。两者是同一个内核事实（`kill` 清空队列），
  * 后果却相反 —— 关机不是杀死那一段，还没被处理的那几句话一条都没作废，下次打开还要接着等。
  *
- * 其三：重装期间也不删库（`ReloadWindow`）。同一个事实在那一刻说的是「旧执行体没了」，而那些条目
- * 正等着被装回来的执行体原样取走（`prd/05-control.md` 的「换模型不是杀死」）；窗口一关，同一个
+ * 其三：重装期间也不删库（`ReloadWindow`）。同一个事实在那一刻说的是「旧 Agent 没了」，而那些 InboxEntry
+ * 正等着被装回来的 Agent 原样取走（`prd/05-control.md` 的「换模型不是杀死」）；窗口一关，同一个
  * 事实照旧是作废 —— 杀死就是杀死。
  */
 
@@ -100,7 +100,7 @@ function setup() {
     },
   } as unknown as AgentRuntime);
 
-  // 素材行得先在：`session_assets.assetId` 指着它（引用行不能凭空造一个 id）
+  // Asset 行得先在：`session_assets.assetId` 指着它（引用行不能凭空造一个 id）
   const first = assets.store(Buffer.from("第一张图"), "image/png", "一.png");
   const second = assets.store(Buffer.from("第二张图"), "image/png", "二.png");
 
@@ -123,7 +123,7 @@ function setup() {
   };
 }
 
-/** 带两段素材引用的一条用户消息：`__asset_id` 是段上的本地标记，会原样落库 */
+/** 带两段 Asset 引用的一条用户消息：`__asset_id` 是段上的本地标记，会原样落库 */
 function messageWithAssets(id: string, assetIds: readonly string[]): AgentNS.Message {
   return new Message({
     id,
@@ -170,7 +170,7 @@ function inboxClearedFact(): RuntimeFact {
   };
 }
 
-describe("观察者登记素材引用", () => {
+describe("观察者登记Asset引用", () => {
   it("一条带两个 `__asset_id` 的消息落库之后恰两行引用，再报一次 `messageChanged` 仍是两行", () => {
     const { emit, first, second, sessionAssets, messages } = setup();
     const message = messageWithAssets("m-1", [first.id, second.id]);
@@ -230,7 +230,7 @@ describe("关机时排队区不作废", () => {
 });
 
 /**
- * 重装期间那一次清空。`kill()` 报的是同一个事实，但重装这条路上那些条目一条都没作废：装回来
+ * 重装期间那一次清空。`kill()` 报的是同一个事实，但重装这条路上那些 InboxEntry 一条都没作废：装回来
  * 的时候它们会被原样放回队列（`restore` 刻意不报 `inboxAdded`），所以库行删了就再也回不来。
  * 窗口一关，同一个事实照旧是作废 —— 「杀死就作废」并没有因为这一格松掉。
  */
@@ -258,7 +258,7 @@ describe("重装期间排队区不作废", () => {
   });
 });
 
-/** 投递那条路写下去的那一条（宿主自己投的条目都带 `messageId`） */
+/** 投递那条路写下去的那一条（宿主自己投的 InboxEntry 都带 `messageId`） */
 function pendingEntry(messageId: string, content: string) {
   return {
     messageId,
@@ -269,11 +269,8 @@ function pendingEntry(messageId: string, content: string) {
   };
 }
 
-/** 一段有正文的条目进队时 core 报的那一条 */
-function inboxAddedFact(
-  sessionId: string,
-  entry: ReturnType<typeof pendingEntry>,
-): RuntimeFact {
+/** 一段有正文的 InboxEntry 进队时 core 报的那一条 */
+function inboxAddedFact(sessionId: string, entry: ReturnType<typeof pendingEntry>): RuntimeFact {
   return {
     type: "inboxAdded",
     sessionId,

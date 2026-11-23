@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import { jsonTable } from "../../infra/json-table.js";
-import type { Session } from "./types.js";
+import type { SessionRecord } from "./types.js";
 
 /**
  * 会话表。排序与过滤用到的三列由库从 `payload` 里算出来，JS 一个字节都不写。
@@ -25,18 +25,18 @@ export function sessionTable(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS sessions_order ON sessions (workspaceId, pinned DESC, createdAt DESC);
   `);
 
-  const rows = jsonTable<Session>(db, "sessions");
+  const rows = jsonTable<SessionRecord>(db, "sessions");
 
   return {
     ...rows,
 
-    listByWorkspace(workspaceId: string): Session[] {
+    listByWorkspace(workspaceId: string): SessionRecord[] {
       return rows.query("WHERE workspaceId = ? ORDER BY pinned DESC, createdAt DESC", [
         workspaceId,
       ]);
     },
 
-    list(): Session[] {
+    list(): SessionRecord[] {
       return rows.query("ORDER BY pinned DESC, createdAt DESC");
     },
   };

@@ -79,7 +79,7 @@ export class AsyncTimeoutTool extends SdkCallbackTool {
 }
 
 /**
- * 排一个定时器，并把它的回收登记到执行体名下。
+ * 排一个定时器，并把它的回收登记到 Agent 名下。
  *
  * 超过 {@link MAX_TIMER_MS} 的等待要分段排：setTimeout 拿到更长的延时会立刻触发，那样
  * 一次跨月的定时会在下一拍就报「时间到了」。分段之后每一段到点再排下一段，对外仍然是一次定时。

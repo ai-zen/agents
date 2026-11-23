@@ -11,7 +11,7 @@ import {
 import { McpConnectionManager } from "./McpConnectionManager.js";
 import { CANCEL_MCP_TASK_TOOL, GET_MCP_TASK_RESULT_TOOL } from "./mcpTaskNotice.js";
 import type { McpTaskNoticePort } from "./mcpTaskNotice.js";
-import type { McpServerConfig } from "../../../types/index.js";
+import type { McpServerDefinition } from "../../../types/index.js";
 import type { LogSink } from "../../../shared/logger.js";
 import type { Scope, FilterOutput } from "../../Scope.js";
 import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
@@ -38,7 +38,7 @@ export class McpScopePlugin implements ScopePlugin {
   private readonly mcpManager: McpConnectionManager | undefined;
   /** 日志口（可选）：连接管理器与 `load_mcp` 那两句都走它；不注入就不记 */
   private readonly logger?: LogSink;
-  private servers: McpServerConfig[] = [];
+  private servers: McpServerDefinition[] = [];
 
   /**
    * @param options.taskNotice 任务通知的投递口（可选）：不给就是任务状态没有人接，其余照常
@@ -70,7 +70,7 @@ export class McpScopePlugin implements ScopePlugin {
    *
    * 于是「改了 mcp 配置」只需刷一次 Scope，不必重建它。
    */
-  private async reconcileConnections(discovered: McpServerConfig[]): Promise<void> {
+  private async reconcileConnections(discovered: McpServerDefinition[]): Promise<void> {
     const manager = this.mcpManager;
     if (!manager) return;
     for (const id of staleMcpConnections(this.servers, discovered)) {
@@ -137,8 +137,8 @@ export class McpScopePlugin implements ScopePlugin {
  * 新增的不在结论里 —— 新增不主动连，保持懒连接。
  */
 export function staleMcpConnections(
-  previous: readonly McpServerConfig[],
-  discovered: readonly McpServerConfig[],
+  previous: readonly McpServerDefinition[],
+  discovered: readonly McpServerDefinition[],
 ): string[] {
   const nextById = new Map(discovered.map((config) => [config.id, config]));
   const stale: string[] = [];
@@ -154,14 +154,14 @@ export function staleMcpConnections(
 /**
  * 「定义」的指纹：哪些字段变了就算连接不能再用。
  *
- * 算进来的是**连接事实**：transport 以及各 transport 的落地参数（command / args / env /
+ * 算进来的是**连接事实**：transport 以及各 transport 的写进 messages 参数（command / args / env /
  * url / headers / oauth）。不算 `description` —— 它只影响 `load_mcp` 给人看的那段文字，
  * 与怎么连无关，改它不该把一条好连接断掉（新描述下一次实例化就带上了）。
  * `id` 也不进指纹：按 id 配对的，同一 id 才比。
  *
  * 键顺序用排序后的规范化 JSON 抹平（同一份配置不同写法不该被当成「变了」）。
  */
-function definitionFingerprint(config: McpServerConfig): string {
+function definitionFingerprint(config: McpServerDefinition): string {
   const { id: _id, description: _description, ...definition } = config;
   return canonicalJson(definition);
 }

@@ -243,7 +243,7 @@ describe("端到端：真实文件系统路径", () => {
       await checkPaths();
       const agent = await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant");
       expect(agent).not.toBeNull();
-      expect(agent!.name).toBe("代码助手");
+      expect(agent!.name).toBe("代码AgentDefinition");
       expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
     });
 
@@ -326,7 +326,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(agent.scope).toBe(scope);
 
       // 元数据
-      expect(agent.definition.name).toBe("代码助手");
+      expect(agent.definition.name).toBe("代码AgentDefinition");
       expect(agent.definition.permissions?.tools).toEqual({ allow: ["*"] });
 
       // 模型
@@ -334,7 +334,7 @@ describe("端到端：真实文件系统路径", () => {
 
       // 消息
       expect(agent.messages[0].role).toBe("system");
-      expect(agent.messages[0].content).toContain("代码助手");
+      expect(agent.messages[0].content).toContain("代码AgentDefinition");
 
       // 工具
       const names = agent.tools.map((t: Tool) => t.function.name);

@@ -30,11 +30,9 @@ export function hostRouter(deps: HostApiDeps, api: Trpc) {
      * 回 `{ accepted: true }` 而不是「关完了」：收尾排在答复之后（连接会被断掉，那正是关掉宿主
      * 的一部分），客户端拿到这一个答复就该知道这一条已经受理，随后是重连还是退回连接屏由它自己定。
      */
-    shutdown: api.procedure
-      .output(z.object({ accepted: z.literal(true) }))
-      .mutation(() => {
-        deps.shutdown();
-        return { accepted: true };
-      }),
+    shutdown: api.procedure.output(z.object({ accepted: z.literal(true) })).mutation(() => {
+      deps.shutdown();
+      return { accepted: true };
+    }),
   });
 }

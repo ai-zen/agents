@@ -40,7 +40,7 @@ export function noticeRouter(deps: NoticeApiDeps, api: Trpc) {
      * 不给 `sessionId` 就清全部。确认在客户端做：这里多一个 `confirm` 参数，只是把同一件事
      * 在两处各判一遍，而两处迟早会对不上。
      */
-    clear: api.procedure.input(scopeInput).mutation(({ input }) => {
+    deleteAll: api.procedure.input(scopeInput).mutation(({ input }) => {
       if (input.sessionId === undefined) deps.notices.clear();
       else deps.notices.clearBySession(input.sessionId);
     }),
@@ -54,7 +54,7 @@ export function noticeRouter(deps: NoticeApiDeps, api: Trpc) {
      *
      * 回的是「改动没改动」：那条已经不在了就是没改动，不抛错，也不假装成功。
      */
-    clearOne: api.procedure
+    delete: api.procedure
       .input(z.object({ id: z.string() }))
       .output(z.object({ changed: z.boolean() }))
       .mutation(({ input }) => ({ changed: deps.notices.clearOne(input.id) !== undefined })),

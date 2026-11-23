@@ -1,5 +1,5 @@
 import { DEFAULT_APP_CONFIG } from "@ai-zen/agents-sdk";
-import type { AppConfig, ImageModel } from "@ai-zen/agents-sdk";
+import type { AppConfig, ImageModelDefinition } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
@@ -21,7 +21,7 @@ export interface ImageModelDeps {
 export class ImageModelService {
   constructor(private readonly deps: ImageModelDeps) {}
 
-  async add(model: ImageModel): Promise<AppConfig> {
+  async add(model: ImageModelDefinition): Promise<AppConfig> {
     const current = this.deps.general.read();
     const imageModels = current.imageModels ?? [];
     if (imageModels.some((item) => item.id === model.id)) {
@@ -36,13 +36,13 @@ export class ImageModelService {
     return this.write({ ...current, imageModels: [...imageModels, model] });
   }
 
-  async update(id: string, change: Partial<Omit<ImageModel, "id">>): Promise<AppConfig> {
+  async update(id: string, change: Partial<Omit<ImageModelDefinition, "id">>): Promise<AppConfig> {
     const current = this.deps.general.read();
     const imageModels = current.imageModels ?? [];
     const found = imageModels.find((item) => item.id === id);
     if (found === undefined) throw this.notFound(id);
 
-    const next: ImageModel = { ...found, ...change };
+    const next: ImageModelDefinition = { ...found, ...change };
     this.assertEndpoint(next, current);
     return this.write({
       ...current,
@@ -92,7 +92,7 @@ export class ImageModelService {
       );
     }
 
-    const next: ImageModel = { ...factory, custom: false };
+    const next: ImageModelDefinition = { ...factory, custom: false };
     this.assertEndpoint(next, current);
     return this.write({
       ...current,
@@ -108,7 +108,7 @@ export class ImageModelService {
    * 图模挂在哪个端点上，与模型是同一条判据（`ModelService.assertWritable` 的第一条）：
    * 端点不在的话，这个图模要到真去生成图片那一刻才失败。
    */
-  private assertEndpoint(model: ImageModel, config: AppConfig): void {
+  private assertEndpoint(model: ImageModelDefinition, config: AppConfig): void {
     if (config.endpoints.some((endpoint) => endpoint.id === model.endpointId)) return;
     throw new HostError(
       "config_invalid",

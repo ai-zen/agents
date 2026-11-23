@@ -25,7 +25,7 @@ export interface DiscoveryDeps {
 
 /**
  * 一种能力。值就是它在各层目录下的子目录名，取自 SDK 的 `CONFIG_SUB_DIRS`：那一份里另外两个
- * 目录不是能力（`agents` 只在数据根一处放助手定义，`mcp-oauth` 是凭据），剩下的正是这三种。
+ * 目录不是能力（`agents` 只在数据根一处放 AgentDefinition，`mcp-oauth` 是凭据），剩下的正是这三种。
  */
 type Ability = Exclude<(typeof CONFIG_SUB_DIRS)[number], "agents" | "mcp-oauth">;
 
@@ -62,7 +62,7 @@ interface Layer {
  * 层表只有 {@link layers} 一份，四种用途都从它投影：层序、各层有哪些能力都只写在那里。按能力各写
  * 一份目录拼接的话，「`sub-agents` 只在 `.agents` 下」这类差别就会有四处要改。
  *
- * 读不出来的目录与文件不进返回值：界面要的是「现在能用什么」。列一条带原因的坏条目，客户端还得
+ * 读不出来的目录与文件不进返回值：界面要的是「现在能用什么」。列一条带原因的坏 InboxEntry，客户端还得
  * 自己判一次这一条能不能用，那份判断迟早会长出第二个版本。
  *
  * 不接日志口：那几个发现函数不给 `logger` 就什么都不记。等 `config/` 下有了统一的日志口再接，
@@ -77,7 +77,7 @@ export class Discovery {
    * 目录名与选项名对不上的只有 subagent 那一种（`sub-agents` 对着 `subAgentsPaths`），
    * 那个对不上的地方只在这一个方法里写一次。
    *
-   * `agentsDir` 不在这里：助手定义只有数据根下一处，与项目无关，`Scope` 自己收它。
+   * `agentsDir` 不在这里：AgentDefinition 只有数据根下一处，与项目无关，`Scope` 自己收它。
    */
   abilityPaths(cwd: string): AbilityPaths {
     return {
@@ -105,7 +105,7 @@ export class Discovery {
 
   /**
    * 由近及远。项目里宿主自己的目录 `.ai-zen` 只放 Skill：用户工具与 subagent 的约定目录都在
-   * `.agents` 下，数据根那一层同理 —— 顶层助手定义在 `agents/`，而那个目录不是 subagent 的来源。
+   * `.agents` 下，数据根那一层同理 —— 顶层 AgentDefinition 在 `agents/`，而那个目录不是 subagent 的来源。
    *
    * `.ai-zen/skills` 排在同一个项目下 `.agents/skills` 前面：前者是宿主自己的目录，后者与别的
    * 工具共用，同名时以宿主那一份为准。

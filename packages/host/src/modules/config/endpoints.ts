@@ -1,4 +1,4 @@
-import type { AppConfig, Endpoint } from "@ai-zen/agents-sdk";
+import type { AppConfig, EndpointDefinition } from "@ai-zen/agents-sdk";
 
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
@@ -23,7 +23,7 @@ export interface EndpointDeps {
 export class EndpointService {
   constructor(private readonly deps: EndpointDeps) {}
 
-  async add(endpoint: Endpoint): Promise<AppConfig> {
+  async add(endpoint: EndpointDefinition): Promise<AppConfig> {
     const current = this.deps.general.read();
     // id 由调用方给：客户端建的端点自己定 id，而模型引用端点用的就是同一个 id。
     // 重名会让「引用它的模型」指向哪一个变成看谁赢，所以在这里就拒掉。
@@ -38,14 +38,14 @@ export class EndpointService {
     return this.write({ ...current, endpoints: [...current.endpoints, endpoint] });
   }
 
-  async update(id: string, change: Partial<Omit<Endpoint, "id">>): Promise<AppConfig> {
+  async update(id: string, change: Partial<Omit<EndpointDefinition, "id">>): Promise<AppConfig> {
     const current = this.deps.general.read();
     const found = current.endpoints.find((item) => item.id === id);
     if (found === undefined) throw this.notFound(id);
 
     // `id` 不在 `change` 里（入参类型就排掉了）：端点 id 是模型的引用目标，改它等于把所有
     // 指着它的模型一起改指，那不是一次「改个名字」
-    const next: Endpoint = { ...found, ...change };
+    const next: EndpointDefinition = { ...found, ...change };
     return this.write({
       ...current,
       endpoints: current.endpoints.map((item) => (item.id === id ? next : item)),

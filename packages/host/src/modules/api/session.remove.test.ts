@@ -1,8 +1,8 @@
 /**
- * `session.remove`：删掉一段会话（硬删）。
+ * `session.delete`：删掉一段会话（硬删）。
  *
- * 六条验收：删完之后会话行、消息、排队区、通知都没了；素材按引用归零才删；还被另一段会话引用着
- * 的那一份留着；活着的执行体先被杀掉、之后才删行；删成功之后推一条 `session.removed`；不存在的
+ * 六条验收：删完之后会话行、消息、排队区、通知都没了；Asset 按引用归零才删；还被另一段会话引用着
+ * 的那一份留着；活着的 Agent 先被杀掉、之后才删行；删成功之后推一条 `session.removed`；不存在的
  * 会话报 `not_found`、一条事件都不推。
  *
  * `session.removed` 那一条说的是别的客户端：发起删除的那个自己会换屏，同一台机器上另一个连着的
@@ -13,11 +13,11 @@
  * 一批指着一段不存在的会话的通知，谁也不报。全局通知（`sessionId` 为 `null`）不被连坐，与它一起
  * 验。
  *
- * 「先杀后删」那一条问的是次序而不是结果：杀晚一步，那一段的行已经没了，执行体还在往它上面写。
+ * 「先杀后删」那一条问的是次序而不是结果：杀晚一步，那一段的行已经没了，Agent 还在往它上面写。
  *
- * 台架照 `agent.clearInbox.test.ts`：真内存库、真 `SessionService` / `AssetService` / `QuestionRegistry`，
- * 消息、排队区、通知都是真表；执行体与交接只给这一条路用到的那一格（`kill` / `forget`）——
- * 真 `AgentRuntime` 与真交接要起执行体、跑编排，而这些用例要证的是「删完之后少了什么」。
+ * 台架照 `runtime.agent.clearInbox.test.ts`：真内存库、真 `SessionService` / `AssetService` / `QuestionRegistry`，
+ * 消息、排队区、通知都是真表；Agent 与交接只给这一条路用到的那一格（`kill` / `forget`）——
+ * 真 `AgentRuntime` 与真交接要起 Agent、跑编排，而这些用例要证的是「删完之后少了什么」。
  */
 
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -37,13 +37,13 @@ import { assetTable, sessionAssetTable } from "../asset/table.js";
 import type { HostEvent } from "../events.js";
 import type { HandoffService } from "../handoff/service.js";
 import { createTranslator } from "../i18n/index.js";
-import type { Notice } from "../notice/types.js";
+import type { NoticeRecord } from "../notice/types.js";
 import { noticeTable } from "../notice/table.js";
 import { QuestionRegistry } from "../question/registry.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import { workspaceTable } from "../workspace/table.js";
 import type { HostApiDeps } from "./deps.js";
 import { sessionRouter } from "./session.js";
@@ -59,7 +59,7 @@ afterEach(() => {
 });
 
 /**
- * 一个真库加这一条路上的几个域。素材要落到盘上，所以数据根也是真的临时目录：`orphanPath` 那几条
+ * 一个真库加这一条路上的几个域。Asset 要落到盘上，所以数据根也是真的临时目录：`orphanPath` 那几条
  * 断言看的是字节在不在，只看行数看不出「删了行、字节还躺着」。
  */
 function setup() {
@@ -124,7 +124,7 @@ function setup() {
   const router = api.router({ session: sessionRouter(deps, api) });
   const caller = router.createCaller({});
 
-  function newSession(workspaceId = WORKSPACE_ID): Session {
+  function newSession(workspaceId = WORKSPACE_ID): SessionRecord {
     return sessions.create({
       workspaceId,
       name: "1712345678000",
@@ -174,7 +174,7 @@ function inboxEntry(messageId: string, content: string) {
   } as const;
 }
 
-function notice(id: string, sessionId: string | null, createdAt: number): Notice {
+function notice(id: string, sessionId: string | null, createdAt: number): NoticeRecord {
   return {
     id,
     level: "info",
@@ -211,9 +211,9 @@ describe("删一段会话", () => {
     // 全局通知不属于任何一段，哪一段被删都不该连坐
     host.notices.put(notice("n-global", null, 2));
 
-    const removed = await host.caller.session.remove({ sessionId: session.id });
+    const removed = await host.caller.session.delete({ sessionId: session.id });
 
-    // 出参就是「这一次删掉了什么」：两条消息、没有素材跟着归零
+    // 出参就是「这一次删掉了什么」：两条消息、没有 Asset 跟着归零
     expect(removed).toEqual({ messages: 2, assets: 0 });
     expect(host.sessions.get(session.id)).toBeUndefined();
     expect(host.messages.listBySession(session.id)).toEqual([]);
@@ -221,7 +221,7 @@ describe("删一段会话", () => {
     expect(host.notices.list().map((row) => row.id)).toEqual(["n-global"]);
   });
 
-  it("素材按引用归零才删：只被这一段引用的删掉，另一段还引用着的那一份留着", async () => {
+  it("Asset按引用归零才删：只被这一段引用的删掉，另一段还引用着的那一份留着", async () => {
     const host = setup();
     const doomed = host.newSession();
     const kept = host.newSession(OTHER_WORKSPACE_ID);
@@ -240,7 +240,7 @@ describe("删一段会话", () => {
     host.messages.upsertMany(kept.id, [message("m-3", "也引用第一份")]);
     host.assets.link("m-3", [shared.id]);
 
-    const removed = await host.caller.session.remove({ sessionId: doomed.id });
+    const removed = await host.caller.session.delete({ sessionId: doomed.id });
 
     // 引用过两份，跟着归零删掉的只有一份
     expect(removed).toEqual({ messages: 2, assets: 1 });
@@ -252,7 +252,7 @@ describe("删一段会话", () => {
     expect(existsSync(orphanPath)).toBe(false);
   });
 
-  it("活着的执行体先被杀掉，之后才删行", async () => {
+  it("活着的Agent先被杀掉，之后才删行", async () => {
     const host = setup();
     const session = host.newSession();
 
@@ -263,7 +263,7 @@ describe("删一段会话", () => {
       removeRow(id);
     });
 
-    await host.caller.session.remove({ sessionId: session.id });
+    await host.caller.session.delete({ sessionId: session.id });
 
     expect(host.log).toEqual([`kill ${session.id}`, "remove row"]);
   });
@@ -281,7 +281,7 @@ describe("删一段会话", () => {
       blocking: false,
     });
 
-    await host.caller.session.remove({ sessionId: session.id });
+    await host.caller.session.delete({ sessionId: session.id });
 
     // 题没有表，不随会话行被级联掉：等它的人拿到的是「没人答它了」，不是「用户说了不」
     await expect(answer).resolves.toBeUndefined();
@@ -294,7 +294,7 @@ describe("删一段会话", () => {
     const host = setup();
     const session = host.newSession();
 
-    await host.caller.session.remove({ sessionId: session.id });
+    await host.caller.session.delete({ sessionId: session.id });
 
     // 只认这一条：另一个客户端靠它把列表里那一段拿掉，别的账它不记
     const removed = host.pushed.filter((event) => event.type === "session.removed");
@@ -304,7 +304,7 @@ describe("删一段会话", () => {
   it("会话不存在时是 not_found，且一个字都没动", async () => {
     const host = setup();
 
-    const error = await hostErrorOf(host.caller.session.remove({ sessionId: "没有这一段" }));
+    const error = await hostErrorOf(host.caller.session.delete({ sessionId: "没有这一段" }));
 
     // 与 `session.open` 同一句话、同一份 `details`：客户端只认一处文案
     expect(error.code).toBe("not_found");

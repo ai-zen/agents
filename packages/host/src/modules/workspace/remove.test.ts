@@ -1,12 +1,12 @@
 /**
- * 六条验收：删项目连带删掉名下的会话（连消息与 inbox 行）、活着的执行体先被杀掉再删行、
- * 素材只扫这几段会话引用过的那些、项目不存在时是 `not_found`、那几段上挂着的题跟着一起收。
+ * 六条验收：删项目连带删掉名下的会话（连消息与 inbox 行）、活着的 Agent 先被杀掉再删行、
+ * Asset 只扫这几段会话引用过的那些、项目不存在时是 `not_found`、那几段上挂着的题跟着一起收。
  * 第六条是交接那一侧按会话记的两格（「这一段答过不交接、不再问」）跟着一起忘。
  *
  * 第一条与第三条都是「不报错也不工作」的那种错：外键没级联时，界面上只会剩下几段挂在不存在的
- * 项目下的会话；素材没人收时，行与盘上的字节就这么漏着，谁也不报。
+ * 项目下的会话；Asset 没人收时，行与盘上的字节就这么漏着，谁也不报。
  *
- * 第二条的理由是次序而不是结果：杀晚一步，那段会话的行已经没了，执行体还在往它上面写。
+ * 第二条的理由是次序而不是结果：杀晚一步，那段会话的行已经没了，Agent 还在往它上面写。
  *
  * 第五条是题的**第二条**去处（`dev-docs/prd/01-decisions.md` 第 107–111 行：题挂到「被答了」或
  * 「这段会话没了」为止）：题没有表、不随外键级联，所以「这一段没了」这件事只能由删它的人去说。
@@ -37,7 +37,7 @@ import { QuestionRegistry } from "../question/registry.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import { removeWorkspace } from "./remove.js";
 import type { RemoveWorkspaceDeps } from "./remove.js";
 import { WorkspaceService } from "./service.js";
@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 /**
- * 一个真库加这一条路上的五个域。执行体给替身：这些用例问的是次序与连带，不是运行时自己的行为，
+ * 一个真库加这一条路上的五个域。Agent 给替身：这些用例问的是次序与连带，不是运行时自己的行为，
  * 造一个真的 `AgentRuntime` 只会让人以为它也在被验。
  */
 function newHost() {
@@ -129,7 +129,7 @@ function newHost() {
 
 type Host = ReturnType<typeof newHost>;
 
-function newSession(host: Host, workspaceId: string): Session {
+function newSession(host: Host, workspaceId: string): SessionRecord {
   return host.sessions.create({
     workspaceId,
     name: "1712345678000",
@@ -187,14 +187,14 @@ describe("删项目", () => {
     expect(host.inbox.listBySession(second.id)).toEqual([]);
   });
 
-  it("活着的执行体先被杀掉，之后才删行", () => {
+  it("活着的Agent先被杀掉，之后才删行", () => {
     const host = newHost();
     const workspace = host.workspaces.create("项目一", "/tmp/先杀后删");
     const first = newSession(host, workspace.id);
     const second = newSession(host, workspace.id);
 
     // 删行那一刻也记进同一份次序：只断言「被杀过」证明不了次序，而次序错了的话，杀之前的
-    // 这一段时间里执行体还在往一行已经没了的会话上写。
+    // 这一段时间里 Agent 还在往一行已经没了的会话上写。
     const removeRow = host.workspaces.remove.bind(host.workspaces);
     vi.spyOn(host.workspaces, "remove").mockImplementation((id: string) => {
       host.log.push("remove row");
@@ -207,7 +207,7 @@ describe("删项目", () => {
     expect(host.log.slice(2)).toEqual(["remove row"]);
   });
 
-  it("只扫这几段会话引用过的素材：没人引用的行与字节都没了，还有引用的留着", () => {
+  it("只扫这几段会话引用过的Asset：没人引用的行与字节都没了，还有引用的留着", () => {
     const host = newHost();
     const doomed = host.workspaces.create("要删的项目", "/tmp/要删的项目");
     const kept = host.workspaces.create("留着的项目", "/tmp/留着的项目");

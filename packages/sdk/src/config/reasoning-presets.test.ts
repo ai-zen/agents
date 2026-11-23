@@ -94,7 +94,7 @@ describe("ensureReasoningPresets：释放出厂策略", () => {
     const written = await mgr.ensureReasoningPresets();
 
     expect(written).toEqual([]);
-    // 关键：磁盘上那份没被出厂值盖掉 —— 读不出来就动它，等于把用户标了 custom 的条目一起抹了
+    // 关键：磁盘上那份没被出厂值盖掉 —— 读不出来就动它，等于把用户标了 custom 的 InboxEntry 一起抹了
     expect(await fs.readFile(mgr.reasoningPresetsPath, "utf-8")).toBe("{ 不是 json");
     // 没写盘是「按设计不做」，但得有人知道这一次没同步：注入的日志口收到一条 error
     expect(messagesAt(log.records, "error")).toHaveLength(1);

@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import type { AgentNS } from "@ai-zen/agents-core";
 
-import type { Session } from "../session/types.js";
+import type { SessionRecord } from "../session/types.js";
 import type { MessageSearchScope, SearchHit } from "./types.js";
 
 /**
@@ -117,7 +117,7 @@ export function searchTable(db: DatabaseSync) {
      * 按名字搜会话。名字在 `payload` 里，表上没有它的列：它不进索引，一条 `LIKE` 扫全表
      * 就是这个名字该有的规模。
      */
-    sessions(keyword: string, workspaceId: string | undefined, limit: number): Session[] {
+    sessions(keyword: string, workspaceId: string | undefined, limit: number): SessionRecord[] {
       const conditions = ["json_extract(payload, '$.name') LIKE ? ESCAPE '\\'"];
       const params: string[] = [`%${escapeLike(keyword)}%`];
 
@@ -134,7 +134,7 @@ export function searchTable(db: DatabaseSync) {
             LIMIT ?`,
         )
         .all(...params, limit)
-        .map((row) => JSON.parse(String(row.payload)) as Session);
+        .map((row) => JSON.parse(String(row.payload)) as SessionRecord);
     },
   };
 }

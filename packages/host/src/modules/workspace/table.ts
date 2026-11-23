@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import { jsonTable } from "../../infra/json-table.js";
-import type { Workspace } from "./types.js";
+import type { WorkspaceRecord } from "./types.js";
 
 /**
  * 项目表。`cwd` 由库从 `payload` 里算出来，唯一性也由库上的索引把关 ——
@@ -21,13 +21,13 @@ export function workspaceTable(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS workspaces_order ON workspaces (createdAt DESC);
   `);
 
-  const rows = jsonTable<Workspace>(db, "workspaces");
+  const rows = jsonTable<WorkspaceRecord>(db, "workspaces");
 
   return {
     ...rows,
 
     /** 后加的项目排在前面；同一毫秒建的两个用 `id` 定序，否则每次读回来的顺序都可能不同 */
-    list(): Workspace[] {
+    list(): WorkspaceRecord[] {
       return rows.query("ORDER BY createdAt DESC, id");
     },
   };

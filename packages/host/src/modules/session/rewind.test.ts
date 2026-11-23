@@ -1,9 +1,9 @@
 /**
- * 撤回的四条验收：从这一条起连它一起硬删、只认自己说的话、跑着的时候不许撤、素材跟着收。
+ * 撤回的四条验收：从这一条起连它一起硬删、只认自己说的话、跑着的时候不许撤、Asset 跟着收。
  *
  * 三条错法都是「不报错也不工作」：删了库没删记忆（模型下一次请求还看得见自己说过的那半截）、
- * 撤到一条助手的话上（语义上不是「这一句不算我说过」）、跑着的时候从外面 `splice` 记忆
- * （内核正在往同一个数组里写）。第四条漏掉时，没人再引用的素材行与盘上的字节就这么漏着。
+ * 撤到一条 AgentDefinition 的话上（语义上不是「这一句不算我说过」）、跑着的时候从外面 `splice` 记忆
+ * （内核正在往同一个数组里写）。第四条漏掉时，没人再引用的 Asset 行与盘上的字节就这么漏着。
  */
 
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -27,7 +27,7 @@ import { rewindTo } from "./rewind.js";
 import type { RewindDeps } from "./rewind.js";
 import { SessionService } from "./service.js";
 import { sessionTable } from "./table.js";
-import type { Session } from "./types.js";
+import type { SessionRecord } from "./types.js";
 
 const dataRoots: string[] = [];
 
@@ -35,14 +35,14 @@ afterEach(() => {
   for (const dataRoot of dataRoots.splice(0)) rmSync(dataRoot, { recursive: true, force: true });
 });
 
-/** 一个会回话的执行体替身：这条路上只问两件事 —— 它忙不忙、它的记忆是哪一个数组 */
+/** 一个会回话的 Agent 替身：这条路上只问两件事 —— 它忙不忙、它的记忆是哪一个数组 */
 interface FakeAgent {
   state: AgentNS.AgentState;
   messages: AgentNS.Message[];
 }
 
 /**
- * 一个真库加这一段路上的四个域。执行体给替身（只实现 `get`）：这些用例问的是「删了什么、
+ * 一个真库加这一段路上的四个域。Agent 给替身（只实现 `get`）：这些用例问的是「删了什么、
  * 交回去了什么」，造一个真的运行时只会让人以为它也在被验。
  *
  * 总线是真的，只是把推出来的事实记一份：「删掉的每一条都推了一条 `message.removed`」正是
@@ -61,7 +61,7 @@ function newHost() {
     events: createBus<HostEvent>(),
     t,
   });
-  // 消息表先建：素材关联行的外键指着它
+  // 消息表先建：Asset 关联行的外键指着它
   const messages = messageTable(db);
   const assets = new AssetService({
     assets: assetTable(db),
@@ -86,7 +86,7 @@ function newHost() {
 
 type Host = ReturnType<typeof newHost>;
 
-function newSession(host: Host): Session {
+function newSession(host: Host): SessionRecord {
   return host.sessions.create({
     workspaceId: "ws-1",
     name: "1712345678000",
@@ -129,8 +129,11 @@ describe("撤回", () => {
     );
     host.messages.upsertMany(session.id, five);
 
-    // 活着的执行体：记忆是它自己拿着的那个数组（前面还接着助手定义带来的系统提示）
-    const memory = [Message.System("你是助手"), ...host.messages.listBySession(session.id)];
+    // 活着的 Agent：记忆是它自己拿着的那个数组（前面还接着 AgentDefinition 带来的系统提示）
+    const memory = [
+      Message.System("你是AgentDefinition"),
+      ...host.messages.listBySession(session.id),
+    ];
     host.agents.set(session.id, { state: "idle", messages: memory });
 
     const { content } = rewindTo(host.deps, session.id, "m-3");
@@ -153,7 +156,7 @@ describe("撤回", () => {
     ]);
   });
 
-  it("只认自己说的话：撤到一条助手的话上就是 invalid_params，历史一条不少", () => {
+  it("只认自己说的话：撤到一条AgentDefinition的话上就是 invalid_params，历史一条不少", () => {
     const host = newHost();
     const session = newSession(host);
     host.messages.upsertMany(session.id, [
@@ -162,7 +165,7 @@ describe("撤回", () => {
         id: "m-2",
         role: AgentNS.Role.Assistant,
         status: AgentNS.MessageStatus.Completed,
-        content: "助手说的",
+        content: "AgentDefinition说的",
       }),
       said("m-3", "第三句"),
     ]);
@@ -199,7 +202,7 @@ describe("撤回", () => {
     expect(host.pushed).toEqual([]);
   });
 
-  it("素材跟着收：没人再引用的行与字节都没了，还被引用的留着", () => {
+  it("Asset跟着收：没人再引用的行与字节都没了，还被引用的留着", () => {
     const host = newHost();
     const session = newSession(host);
     host.messages.upsertMany(session.id, [

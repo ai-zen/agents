@@ -27,7 +27,7 @@
  *   - 模型来自 `agent`   → 参数取 `AgentDefinition.modelParams`（一直以来的行为）；
  *   - 模型来自 `global`  → 参数**没有**可取的层，只用模型出厂参数。
  *
- * 跨级混合是会真出事的：装配时做的是 `模型出厂参数 + 覆盖` 的浅合并，会话级把模型换掉
+ * 跨级混合是会真出事的：装配时做的是 ` 模型出厂参数 + 覆盖 ` 的浅合并，会话级把模型换掉
  * 之后，**旧模型那套参数会原样发给新模型** —— 例如 `thinking: { type: "disabled" }`
  * 发给一个不接受它的端点，换来的是一句 400。所以「会话级模型 + 定义级参数」这个组合在
  * 解析这一层就被排除掉，而不是留给各调用方各自小心。
@@ -59,7 +59,7 @@ export interface ResolvedModel {
  *
  * 空串按「没配」算（`if (modelId)` 而不是 `!== undefined`）：`modelId: ""` 不是某个模型
  * 的名字，把它当成一档命中，只会在 `createModel` 里变成一句更难懂的
- * `Model "" not found`。协议层已经要求 `modelId` 非空，这里只是让手工改坏的配置
+ * `ModelDefinition "" not found`。协议层已经要求 `modelId` 非空，这里只是让手工改坏的配置
  * 也落到那条**明确的**报错上。
  */
 export function resolveModel(input: ModelResolutionInput): ResolvedModel | null {

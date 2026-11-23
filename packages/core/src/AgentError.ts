@@ -27,7 +27,7 @@ export type AgentErrorCode =
   | "stream-failed"
   /** agent 已经终结（`stop()` / `kill()` 动过）：再等也不会有人来取 */
   | "closed"
-  /** 输入闸暂时关着（`pauseInput()` 之后、`resumeInput()` 之前）：等一等还能投 */
+  /** 输入开关暂时关着（`pauseInput()` 之后、`resumeInput()` 之前）：等一等还能投 */
   | "input_paused";
 
 export class AgentError extends Error {

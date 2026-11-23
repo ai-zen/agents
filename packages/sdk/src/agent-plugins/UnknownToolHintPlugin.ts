@@ -12,7 +12,7 @@ import { McpScopePlugin } from "../scope/plugins/mcp/McpScopePlugin.js";
  *
  * 由调用方显式注册（`agent.use(new UnknownToolHintPlugin({ scope }))`）。
  * 未注册时（或返回 `undefined` 时），core 自己回落到简单文本提示
- * （`未知工具: X，没有找到对应的工具实现。`）。
+ * （` 未知工具: X，没有找到对应的工具实现。`）。
  *
  * 是否"有 MCP 配置"经 `scope.getPluginById(McpScopePlugin.ID)` 查询 MCP 插件获得。
  *

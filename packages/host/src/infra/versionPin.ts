@@ -42,7 +42,7 @@ export function readVersionPin(path: string): VersionPin | undefined {
 /**
  * 写 pin：先写同目录临时文件再 `rename`（`writeTextFile` 做的那件事）。
  *
- * 理由与素材落盘那处相同：启动方式随时可能在读，读到半截文件只会被当成「没有 pin」，
+ * 理由与 Asset 落盘那处相同：启动方式随时可能在读，读到半截文件只会被当成「没有 pin」，
  * 那一次升级就白等了。
  */
 export function writeVersionPin(path: string, pin: VersionPin): void {

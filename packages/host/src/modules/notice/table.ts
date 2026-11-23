@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import { jsonTable } from "../../infra/json-table.js";
-import type { Notice } from "./types.js";
+import type { NoticeRecord } from "./types.js";
 
 /**
  * 通知表。`sessionId` 与 `createdAt` 是生成列：列给的是过滤与排序，JS 一个字节都不写它们。
@@ -23,17 +23,17 @@ export function noticeTable(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS notices_session ON notices (sessionId, createdAt DESC);
   `);
 
-  const rows = jsonTable<Notice>(db, "notices");
+  const rows = jsonTable<NoticeRecord>(db, "notices");
 
   return {
     ...rows,
 
-    list(): Notice[] {
+    list(): NoticeRecord[] {
       return rows.query("ORDER BY createdAt DESC");
     },
 
     /** 那一段的，加上全局的：全局通知不属于任何一段，所以哪一段的界面上都得给 */
-    listBySession(sessionId: string): Notice[] {
+    listBySession(sessionId: string): NoticeRecord[] {
       return rows.query("WHERE sessionId = ? OR sessionId IS NULL ORDER BY createdAt DESC", [
         sessionId,
       ]);
@@ -51,9 +51,9 @@ export function noticeTable(db: DatabaseSync) {
      * 清一条：回删掉的那一行，不存在的 id 回 `undefined`。删与读是同一条语句（`RETURNING`）：
      * 两个客户端同时清同一条时，只有真删掉的那一份拿到这一行。
      */
-    removeOne(id: string): Notice | undefined {
+    removeOne(id: string): NoticeRecord | undefined {
       const row = db.prepare("DELETE FROM notices WHERE id = ? RETURNING payload").get(id);
-      return row === undefined ? undefined : (JSON.parse(String(row.payload)) as Notice);
+      return row === undefined ? undefined : (JSON.parse(String(row.payload)) as NoticeRecord);
     },
 
     deleteExpired(now: number): void {

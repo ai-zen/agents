@@ -100,7 +100,7 @@ function toolEnd(name: string, args: Record<string, unknown> = {}, status = "com
   };
 }
 
-/** 最小 agent 表面：守卫在「这一批带着交接指令」时会关掉它的输出闸 */
+/** 最小 agent 表面：守卫在「这一批带着交接指令」时会关掉它的输出开关 */
 function gateAgent() {
   const agent = {
     isOutputPaused: false,
@@ -151,7 +151,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
     guard.onOuterLoopEnd();
 
     expect(await watch.outcome).toBe("missing");
-    // 指令被取走那一拍闸就关上了（别人的话一条也进不来）
+    // 指令被取走那一拍开关就关上了（别人的话一条也进不来）
     expect((agent as { isOutputPaused: boolean }).isOutputPaused).toBe(true);
   });
 
@@ -197,7 +197,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
 
     expect(overYet).toBe(false);
     expect(guard.armed).toBe(true);
-    // 不是这一趟的批次：闸一下都不动
+    // 不是这一趟的批次：开关一下都不动
     expect(agent.isOutputPaused).toBe(false);
   });
 

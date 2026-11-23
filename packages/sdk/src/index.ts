@@ -2,15 +2,15 @@
 export type {
   PermissionPolicy,
   AgentPermissions,
-  Endpoint,
+  EndpointDefinition,
   EndpointCapabilities,
-  Model,
+  ModelDefinition,
   TokenThresholds,
   ModelParams,
   ReasoningPatch,
   ReasoningPreset,
   ReasoningPresets,
-  ImageModel,
+  ImageModelDefinition,
   AgentDefinition,
   AppConfig,
   ToolEnv,
@@ -22,7 +22,7 @@ export type {
   McpResourceDef,
   McpPromptDef,
   McpServerManifest,
-  McpServerConfig,
+  McpServerDefinition,
   McpConnectionState,
 } from "./types/index.js";
 
@@ -64,7 +64,7 @@ export { UserToolsScopePlugin } from "./scope/plugins/usertools/UserToolsScopePl
 export { SkillsScopePlugin } from "./scope/plugins/skills/SkillsScopePlugin.js";
 export { McpScopePlugin } from "./scope/plugins/mcp/McpScopePlugin.js";
 export { SubAgentsScopePlugin } from "./scope/plugins/subagents/SubAgentsScopePlugin.js";
-// 平级会话：能力来自宿主注入的端口，不给端口就不产出任何工具
+// PeerSession：能力来自宿主注入的端口，不给端口就不产出任何工具
 export { PeerSessionsScopePlugin } from "./scope/plugins/peers/PeerSessionsScopePlugin.js";
 export {
   PEER_SESSION_TOOL_NAMES,
@@ -79,8 +79,8 @@ export type {
   PeerSessionActivity,
   PeerSessionRejectReason,
   PeerSessionCreateInput,
-  PeerSessionSent,
-  PeerSessionSendInput,
+  PeerSessionPosted,
+  PeerSessionPostInput,
   PeerSessionSendRejectReason,
 } from "./scope/plugins/peers/peerSessionTools.js";
 export { allInOne } from "./scope/plugins/allInOne.js";
@@ -151,7 +151,7 @@ export type {
 } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
 export type { CreateAgentOptions } from "./runtime/createAgent.js";
-// 运行时：让执行体活着、让它们互相说话（登记、唤醒、发话）
+// 运行时：让 Agent 活着、让它们互相说话（登记、唤醒、发话）
 export { AgentRuntime } from "./runtime/AgentRuntime.js";
 export type {
   WakeMaterials,
@@ -161,7 +161,7 @@ export type {
   RuntimeFact,
   PostResult,
 } from "./runtime/AgentRuntime.js";
-// 能力容器按目录存活：什么时候造、什么时候拆
+// Scope 按目录存活：什么时候造、什么时候拆
 export { Scopes } from "./runtime/Scopes.js";
 export type {
   ScopesDeps,
@@ -238,7 +238,7 @@ export {
   AsyncExecTool,
   AsyncTimeoutTool,
 } from "./scope/plugins/builtin/index.js";
-// 两个后台工具的名字：一次性执行体手上没有它们（装配期按这份名单剔除）
+// 两个后台工具的名字：一次性 Agent 手上没有它们（装配期按这份名单剔除）
 export {
   ASYNC_TASK_TOOL_NAMES,
   ASYNC_EXEC_TOOL,

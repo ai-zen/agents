@@ -1,9 +1,9 @@
 /**
- * 素材的两件事：把一份字节传上去（`asset.upload`）、按 id 把字节取回来（`asset.get`）。
+ * Asset 的两件事：把一份字节传上去（`asset.upload`）、按 id 把字节取回来（`asset.get`）。
  *
  * ## 判断都在宿主那一侧
  *
- * 一张 20MB 的上限、一条消息几张素材、内容段上的 `__asset_id` 怎么重建 —— 全是宿主的（后者在
+ * 一张 20MB 的上限、一条消息几张 Asset、内容段上的 `__asset_id` 怎么重建 —— 全是宿主的（后者在
  * SDK 的 `AssetTransportPlugin` 里）。客户端这一层只做「把本地文件读成字节」和「把字节交上去」
  * 这两步：同一个上限在两处各判一次，第二处迟早与第一处不一样，而用户看到的是第二处那个数。
  *
@@ -25,7 +25,7 @@ import { basename, extname } from "node:path";
 
 import type { TRPCClient } from "@trpc/client";
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { AppRouter, Asset } from "@ai-zen/agents-host";
+import type { AppRouter, AssetRecord } from "@ai-zen/agents-host";
 
 import { ClientError, fromTRPCError, localError } from "./errors.js";
 
@@ -69,21 +69,24 @@ export interface AssetFailure {
 
 /** 一批内容的上传结果：成了的那些 + 没成的那些（一条都不静默丢） */
 export interface UploadAssetsResult {
-  /** 上传成功的素材行，顺序即 `sources` 里成功的那些的顺序 */
-  assets: Asset[];
+  /** 上传成功的 Asset 行，顺序即 `sources` 里成功的那些的顺序 */
+  assets: AssetRecord[];
   /** 没上传成的，逐条带原因 */
   failures: AssetFailure[];
 }
 
-/** 取回来的一份素材：类型与字节 */
+/** 取回来的一份 Asset：类型与字节 */
 export interface AssetContent {
   mime: string;
   /** 解好码的字节 */
   bytes: Uint8Array;
 }
 
-/** 上传一份内容，回宿主给的素材行。超限、类型不对之类的判断全在宿主那一侧 */
-export async function uploadAsset(client: ContractCaller, source: AssetSource): Promise<Asset> {
+/** 上传一份内容，回宿主给的 Asset 行。超限、类型不对之类的判断全在宿主那一侧 */
+export async function uploadAsset(
+  client: ContractCaller,
+  source: AssetSource,
+): Promise<AssetRecord> {
   const loaded = await load(source);
   try {
     const { asset } = await client.api.asset.upload.mutate({
@@ -108,7 +111,7 @@ export async function uploadAssets(
   client: ContractCaller,
   sources: readonly AssetSource[],
 ): Promise<UploadAssetsResult> {
-  const assets: Asset[] = [];
+  const assets: AssetRecord[] = [];
   const failures: AssetFailure[] = [];
 
   for (const [index, source] of sources.entries()) {
@@ -127,7 +130,7 @@ export async function uploadAssets(
 }
 
 /**
- * 按素材 id 取回内容。
+ * 按 Asset id 取回内容。
  *
  * 宿主找不到这个 id（或行在而文件不在）时报 `not_found`，错误原样往上抛：这一层不猜原因。
  */
@@ -144,7 +147,7 @@ export async function getAsset(
 }
 
 /**
- * 一个内容段引用的素材 id（没有这个扩展字段就是 `null`）。
+ * 一个内容段引用的 Asset id（没有这个扩展字段就是 `null`）。
  *
  * 与宿主那份判断同口径：看的是字段在不在，不是 url 长什么样。空串 / 空白算没写。
  */
