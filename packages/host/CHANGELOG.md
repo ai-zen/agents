@@ -3,7 +3,7 @@
 All notable changes to `@ai-zen/agents-host` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions use SemVer.
 
-## [0.2.0-alpha.0] - 2026-11-23
+## [0.2.0-alpha.1] - 2026-11-23
 
 > Not `0.1.0-alpha.9`: `0.1.0` is already published, and every `0.1.0-alpha.*` sorts below it, so
 > another alpha in that line would be a step backwards. The minor is bumped instead.
@@ -86,6 +86,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions use Sem
   disposing a container kills the sessions living on it, and shutting down kills everything before
   any container is torn down. Nothing upstream ends an agent on the host's behalf — a paused one has
   no timer and no reference count behind it — so each of those three has to do the killing itself.
+
+### Renamed
+
+- **The contract surface says what each path touches.** `agent.*` and `scope.*` became
+  `runtime.agent.*` and `runtime.scope.*` — those need a live object; `config.agents.*` and
+  `config.mcp.*` moved under `config.` — those need nothing but a configuration file; the rest are
+  business domains reading and writing their own rows. Verbs settled on `create` / `update` /
+  `delete` (`add`, `remove`, `save`, `clear`, `clearOne`, `setDefaults`, `setGlobal` and the
+  `setModel` family are gone), and `agent.pause` / `resume` became `pauseOutput` / `resumeOutput`
+  so the path names which of the two switches it moves.
+- **`session.transient` → `runtime.agent.runOnce`.** That path builds no session row and no
+  workspace row; it assembles a one-shot agent in a directory and runs it once. It belongs with the
+  live objects, not with the session rows.
+- Row types carry `Record` (`SessionRecord`, `WorkspaceRecord`, `AssetRecord`, `NoticeRecord`),
+  configuration entries carry `Definition`, and the private helper that persists before enqueueing
+  is called `send()` like its two neighbours.
 
 ## [0.1.0] - 2026-11-09
 

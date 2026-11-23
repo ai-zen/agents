@@ -1,6 +1,6 @@
 # Changelog
 
-## [5.0.0-alpha.2] - 2026-11-23
+## [5.0.0-alpha.3] - 2026-11-23
 
 > The engine was rewritten against `dev-docs/trd/engine.md`, its own requirement doc. Up to `4.5.5`
 > one class carried everything: `run()` was both the public entry point and the inner loop,
@@ -92,10 +92,20 @@
 - **Error text never goes into `content`.** A `role: tool` message is the exception, where the
   text is the result the model is meant to read.
 
+### Renamed
+
+- **`push()` → `send()`, `send()` → `sendAndWait()`.** One word was carrying two behaviours:
+  putting one entry in the inbox and returning, and putting one entry in and waiting for the batch
+  to finish. The second only exists for a one-shot agent, and the name never said so. `send()` now
+  means the first, `sendAndWait()` the second; `runOnce()` is unchanged and still means
+  `sendAndWait` with a close wrapped around it.
+- Translation names are gone from the comments and from this page: the code's own names are used
+  throughout (`Agent`, `InboxEntry`, `isInputPaused` / `isOutputPaused`, `send()`).
+
 ### Removed
 
 - `run()` as a public entry point, and a `send(content)` that appended a message and then drove
-  the loop. Driving the loop is gone; `start()` plus `push()` replaces it.
+  the loop. Driving the loop is gone; `start()` plus `send()` replaces it.
 - `AgentTool`, the eager twin of `AgentToolLazy`.
 - `preventDefault()` / `isPreventDefault` and `allowJsonParseError` on the tool result path.
 - `CodeTool` and `IndexedSearchTool`.

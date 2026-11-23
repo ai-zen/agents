@@ -1,4 +1,4 @@
-## [2.0.0-alpha.1] - 2026-11-23
+## [2.0.0-alpha.2] - 2026-11-23
 
 > Follows `@ai-zen/agents-core` `5.0.0-alpha.2`, and it is a major bump for the same reason the
 > kernel's was one: this package used to be business logic sitting on `send()`. A handoff awaited
@@ -74,6 +74,17 @@
 - Sub-agents are built with `lifetime: "one-shot"`, and every `role: user` message injected from a
   template carries a `source` naming the injecting tool, so a delegated task's history is never
   mistaken for something the user said.
+
+### Renamed
+
+- **`PeerSessionPort.send()` → `post()`**, and `PeerSessionSendInput` / `PeerSessionSent` →
+  `PeerSessionPostInput` / `PeerSessionPosted`. Handing a sentence to another session is the same
+  action `AgentRuntime.post()` performs, and it now carries the same name on both sides; the third
+  of the three sending verbs is settled — `send()` into one's own inbox, `sendAndWait()` into it
+  and wait, `post()` to somebody else.
+- Configuration types carry `Definition` (`ModelDefinition`, `EndpointDefinition`,
+  `ImageModelDefinition`, `McpServerDefinition`), matching `AgentDefinition`; rows carrying a
+  table behind them are named by the host as `…Record`, and `Scope` / `Agent` keep no suffix.
 
 ## [1.1.0] - 2026-11-09
 
