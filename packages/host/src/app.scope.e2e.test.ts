@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentDefinition } from "@ai-zen/agents-sdk";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 

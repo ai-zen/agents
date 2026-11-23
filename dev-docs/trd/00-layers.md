@@ -107,9 +107,9 @@
 
 > 现状：已对着宿主的 tRPC 契约重写 —— 一条 WebSocket 上跑 `TRPCClient<AppRouter>`，失败的码按宿主自己那八个还原。
 
-## 测试替身：`@ai-zen/agents-testing`
+## 假端点：`@ai-zen/fake-llm`
 
-假端点（OpenAI 兼容的流式响应）、假存档、假时钟之类。
+OpenAI 兼容的假端点：交给它一条目标消息，它把那条消息本该到达的那一串 delta 放回来。零依赖（只用 `node:http`），谁的测试都能直接用；仓里所有碰到模型的用例都由它代替真模型。
 
 **判据**：不进产物、不进生产依赖图；生产代码里 import 它就是错。
 

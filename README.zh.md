@@ -92,7 +92,6 @@ console.log(
 | `@ai-zen/agents-host`    | 一个 SQLite 文件里的行与表、连接与凭证、客户端杂项（通知、Asset、提问、搜索）、用户可见文案与语言、单实例的发现文件、命令行                                                                                                 | 不装 agent、不记谁活着、不决定 Scope 什么时候拆、不判配置合不合法、不算 MCP 合并、不管连接与重连 |
 | `@ai-zen/agents-client`  | 到宿主的连接：拉起一台、读发现文件与凭证交付文件、凭证来源、重连                                                                                                                                                            | 不发版（`private: true`，被终端与桌面各捆进自己的产物）；不被 `core` 与 `sdk` import             |
 | `@ai-zen/agents-logger`  | 一个进程一个日志文件，零依赖；`info` / `warn` / `error` 只从一个口出                                                                                                                                                        | 不在装配根之外的地方被创建                                                                       |
-| `@ai-zen/agents-testing` | 几个包共用的测试件，把 `@ai-zen/fake-llm` 转出去，调用点只认一个 import                                                                                                                                                     | 不进生产依赖图                                                                                   |
 | `@ai-zen/fake-llm`       | 一个 OpenAI 兼容的假端点：交给它一条目标消息，它把那条消息本该到达的那一串 delta 放回来                                                                                                                                     | 不连真实的服务方，也不对「模型该答什么」有意见                                                   |
 
 ## 细节
@@ -111,7 +110,6 @@ agents/
 │   ├── host/          @ai-zen/agents-host
 │   ├── client/        @ai-zen/agents-client
 │   ├── logger/        @ai-zen/agents-logger
-│   ├── testing/       @ai-zen/agents-testing
 │   ├── fake-llm/      @ai-zen/fake-llm
 │   ├── test-home/     sdk 跨进程用例用的数据根
 │   └── test-project/  同一批用例用的项目目录与 MCP 服务器

@@ -45,7 +45,6 @@ If a piece of code exists only because the host happens to be there — who is a
 | `@ai-zen/agents-host` | rows and tables in one SQLite file, connections and credentials, client odds and ends (notices, assets, questions, search), user-facing copy and language, the single-instance discovery file, the command line | does not build `Agent`s, does not track what is alive, does not decide when a `Scope` is disposed, does not judge whether the configuration is valid, does not compute the MCP merge, does not manage connecting or reconnecting |
 | `@ai-zen/agents-client` | the connection to a host: launching one, reading the discovery file and the credential delivery file, where credentials come from, reconnecting | never published (`private: true`, bundled by the terminal and the desktop into their own builds); never imported by `core` or `sdk` |
 | `@ai-zen/agents-logger` | one log file per process, zero dependencies; `info` / `warn` / `error` out of one door | is not created outside the assembly root |
-| `@ai-zen/agents-testing` | test fixtures shared by several packages, re-exporting `@ai-zen/fake-llm` so call sites import one thing | never enters the production dependency graph |
 | `@ai-zen/fake-llm` | an OpenAI-compatible fake endpoint: hand it one target message and it streams back the delta sequence that message would have arrived as | connects to no real provider, and has no opinion about what the model should answer |
 
 ## Where to read from here

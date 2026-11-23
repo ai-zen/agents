@@ -22,7 +22,7 @@
   "devDependencies": {
     "@ai-zen/agents-host": "workspace:*",
     "@ai-zen/agents-sdk": "workspace:*",
-    "@ai-zen/agents-testing": "workspace:*",
+    "@ai-zen/fake-llm": "workspace:*",
     "@types/node": "^24.12.2",
     "rimraf": "^6.0.0",
     "typescript": "^7.0.2",

@@ -5,7 +5,7 @@
  * 然后把客户端要做的五件事按顺序走一遍：握手（对令牌 / 错令牌）、建项目与列会话、订阅事件、
  * 传一份 Asset 再取回来、关掉之后调用当场失败。
  *
- * 模型不出网：`@ai-zen/agents-testing` 的假端点回一段流式答复，地址写进 `config.json` 的端点。
+ * 模型不出网：`@ai-zen/fake-llm` 的假端点回一段流式答复，地址写进 `config.json` 的端点。
  * 这样验的是「一句话真的走到了 Agent、它说的话真的从事件流里回来了」，而不是把请求层整个打掉。
  */
 
@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { Message } from "@ai-zen/agents-core";
 import { HostApp } from "@ai-zen/agents-host";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { webSocketUrl, type HostTarget } from "./address.js";

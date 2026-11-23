@@ -117,7 +117,6 @@ the host.
 | `@ai-zen/agents-host`    | Rows and tables in one SQLite file, connections and credentials, client odds and ends (notices, assets, questions, search), user-visible text and language, the single-instance discovery file, the command line                                                                                                                            | Install an agent, keep the register of who is alive, decide when a scope is disposed, judge whether a config is valid, merge MCP configuration, or manage connecting and reconnecting |
 | `@ai-zen/agents-client`  | The connection to a host: launching one, reading the discovery and credential files, credentials, reconnect                                                                                                                                                                                                                                 | Be published (`private: true`, inlined into the terminal and desktop builds); be imported by `core` or `sdk`                                                                          |
 | `@ai-zen/agents-logger`  | One process, one log file, zero dependencies; `info` / `warn` / `error` behind one port                                                                                                                                                                                                                                                     | Be constructed anywhere except the assembly root                                                                                                                                      |
-| `@ai-zen/agents-testing` | Test doubles shared by the packages, re-exporting `@ai-zen/fake-llm` so call sites keep one import                                                                                                                                                                                                                                          | Enter a production dependency graph                                                                                                                                                   |
 | `@ai-zen/fake-llm`       | An OpenAI-compatible fake endpoint: hand it one target message and it streams back the delta sequence that message would have arrived as                                                                                                                                                                                                    | Reach a real provider, or hold any opinion about what a model should answer                                                                                                           |
 
 ## Details
@@ -137,7 +136,6 @@ agents/
 │   ├── host/          @ai-zen/agents-host
 │   ├── client/        @ai-zen/agents-client
 │   ├── logger/        @ai-zen/agents-logger
-│   ├── testing/       @ai-zen/agents-testing
 │   ├── fake-llm/      @ai-zen/fake-llm
 │   ├── test-home/     a data root used by the sdk end-to-end tests
 │   └── test-project/  a project directory and MCP servers used by the same tests

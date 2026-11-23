@@ -479,7 +479,7 @@ npx vitest run       # the suite that depends on nothing outside this repository
 
 Both are run from `packages/sdk`. `npm run test:e2e` runs the cases that need an API key or a real
 MCP server; `npm test` must never need either. The fake endpoint used by the suite lives in
-`@ai-zen/agents-testing` (which re-exports `@ai-zen/fake-llm`).
+`@ai-zen/fake-llm`.
 
 ## License
 

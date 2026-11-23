@@ -14,7 +14,7 @@
  * Scope —— 下面那个「不查项目行」的用例就是这一条的判据。
  *
  * 台架是「真的那一部分尽量真」：真内存库、真 `SessionService` / `WorkspaceService`、**真的能力
- * 容器**（临时目录上现造，工具真的装得上）、真的 OpenAI 兼容端点（`@ai-zen/agents-testing`，
+ * 容器**（临时目录上现造，工具真的装得上）、真的 OpenAI 兼容端点（`@ai-zen/fake-llm`，
  * 一句话真的发出去、真的流回来）。只有 `runtime` 是替身 —— 这条路只用它的 `scopes.for` 一格，
  * 它**不该**走 `wake`（那造的是常驻 Agent），所以那个口给的是一个调用即炸的函数：真被走到，
  * 用例当场红，而不是安静地又建出一段会话。
@@ -33,7 +33,7 @@ import {
   type AgentRuntime,
   type AppConfig,
 } from "@ai-zen/agents-sdk";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createBus } from "../../infra/bus.js";

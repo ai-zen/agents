@@ -6,7 +6,7 @@
  *   2. 事件驱动：没有人 `await`，一条投递也把它从闲推到忙、跑完自己回到闲；
  *   3. 互相说话：一段会话把话寄给另一段，另一边收下、跑完、回一句落回发起方那边。
  *
- * 假的是**模型提供方**（`@ai-zen/agents-testing` 那个 OpenAI 兼容端点）与**库**（这里几张
+ * 假的是**模型提供方**（`@ai-zen/fake-llm` 那个 OpenAI 兼容端点）与**库**（这里几张
  * Map）。凡是这一层真正的接线 —— 容器、定义文件、模型的 client、内核的事件 —— 都是真的。
  */
 
@@ -22,7 +22,7 @@ import {
   type AgentPlugin,
   type Tool,
 } from "@ai-zen/agents-core";
-import { startFakeLlm, type FakeLlmOptions, type FakeLlmRequest } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlmOptions, type FakeLlmRequest } from "@ai-zen/fake-llm";
 import { Scope } from "../scope/Scope.js";
 import { PeerSessionsScopePlugin } from "../scope/plugins/peers/PeerSessionsScopePlugin.js";
 import {

@@ -25,7 +25,7 @@ import {
   POST_MESSAGE_TOOL,
   READ_SESSION_STATUS_TOOL,
 } from "@ai-zen/agents-sdk";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 

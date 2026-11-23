@@ -381,7 +381,7 @@ npm run pretest      # tsc --noEmit over src and the tests
 npx vitest run       # 不依赖本仓之外任何东西的那套用例
 ```
 
-两条命令都在 `packages/sdk` 下跑。`npm run test:e2e` 跑需要 API key 或真的 MCP 服务器的那些用例；`npm test` 绝不能需要这两样。用例所用的假端点在 `@ai-zen/agents-testing` 里（它转发 `@ai-zen/fake-llm`）。
+两条命令都在 `packages/sdk` 下跑。`npm run test:e2e` 跑需要 API key 或真的 MCP 服务器的那些用例；`npm test` 绝不能需要这两样。用例所用的假端点在 `@ai-zen/fake-llm` 里。
 
 ## 许可
 

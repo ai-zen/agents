@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import OpenAI from "openai";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { completeOnce } from "./completeOnce.js";
 
 let llm: FakeLlm | null = null;

@@ -18,10 +18,10 @@ This page answers "why the split is where it is". Which actions and classes live
 | Host | `@ai-zen/agents-host` | Rows and tables, connections and credentials, client odds and ends (notices, assets, questions, search), user-visible text and language, the single-instance discovery file, the command line | Build an Agent, keep the register of what is alive, decide when a Scope is disposed, judge whether a config is valid, merge MCP configuration, manage connecting and reconnecting |
 | Connection layer | `@ai-zen/agents-client` | Launching a host, discovery (the discovery file and the credential delivery file), credential sources, reconnect | Be published (`private: true`); be imported by `core` or `sdk` |
 
-Three more packages sit outside the four layers, each existing for one job: `@ai-zen/agents-logger`
-(one process, one log file, zero dependencies, constructed only at the assembly root),
-`@ai-zen/agents-testing` (test doubles shared by the packages, never in a production dependency
-graph), and `@ai-zen/fake-llm` (an OpenAI-compatible fake endpoint).
+Two more packages sit outside the four layers, each existing for one job: `@ai-zen/agents-logger`
+(one process, one log file, zero dependencies, constructed only at the assembly root) and
+`@ai-zen/fake-llm` (an OpenAI-compatible fake endpoint, used only by tests and never in a
+production dependency graph).
 
 ## The four criteria for the split
 

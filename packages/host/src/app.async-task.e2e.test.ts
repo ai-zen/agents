@@ -24,7 +24,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import { Message, ToolCallContext } from "@ai-zen/agents-core";
 import type { Agent, Tool } from "@ai-zen/agents-core";
 import { ASYNC_EXEC_TOOL } from "@ai-zen/agents-sdk";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 

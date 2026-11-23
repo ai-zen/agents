@@ -17,7 +17,7 @@ outline: deep
 | 宿主 | `@ai-zen/agents-host` | 库与表、连接与凭证、客户端杂项（通知、Asset、提问、搜索）、用户可见文案与语言、单实例与发现文件、命令行 | 装 Agent、记谁活着、决定 Scope 什么时候拆、判配置合不合法、算 MCP 合并、管连接与重连 |
 | 连接层 | `@ai-zen/agents-client` | 拉起一台宿主、发现（发现文件与凭证交付文件）、凭证来源、重连 | 发版（`private: true`）；被 `core` 与 `sdk` import |
 
-另外三个包不在这四层里，各自只为一件事存在：`@ai-zen/agents-logger`（一个进程一个日志文件，零依赖，只由装配根创建）、`@ai-zen/agents-testing`（几个包共用的测试件，不进生产依赖图）、`@ai-zen/fake-llm`（OpenAI 兼容的假端点）。
+另外两个包不在这四层里，各自只为一件事存在：`@ai-zen/agents-logger`（一个进程一个日志文件，零依赖，只由装配根创建）、`@ai-zen/fake-llm`（OpenAI 兼容的假端点，只在用例里用，不进生产依赖图）。
 
 ## 分层的四条判据
 

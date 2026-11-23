@@ -7,7 +7,7 @@
  * `null`，消息与排队区都是空的。
  *
  * 台架与 `session.transient.test.ts` 同一口径：真内存库、真 `SessionService`、真的 OpenAI 兼容
- * 端点（`@ai-zen/agents-testing`）—— 只有 `runtime` 是替身。替身只做一件事：把「有没有人来
+ * 端点（`@ai-zen/fake-llm`）—— 只有 `runtime` 是替身。替身只做一件事：把「有没有人来
  * 唤醒我」记下来，`wake` 真被走到就当场红 —— 建行顺带叫醒 Agent 正是这一刀要拆掉的那一件事。
  */
 
@@ -18,7 +18,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { Message } from "@ai-zen/agents-core";
 import type { AgentDefinition, AgentRuntime, AppConfig } from "@ai-zen/agents-sdk";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createBus } from "../../infra/bus.js";

@@ -16,7 +16,7 @@
  *
  * ## 为什么用假端点而不是真模型
  *
- * 真模型要 key、要网、答复不确定（断言只能写「非空」）。`@ai-zen/agents-testing` 的假端点
+ * 真模型要 key、要网、答复不确定（断言只能写「非空」）。`@ai-zen/fake-llm` 的假端点
  * 顶上之后：答复正文、响应延迟、错误码都由用例指定，请求体被原样记下来 —— 于是断言可以写
  * 等号，还能断言「请求里**没有** `tools` / **没有** `stream`」这种只有从 wire 外面才看得见的事。
  */
@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import OpenAI from "openai";
-import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { startFakeLlm, type FakeLlm } from "@ai-zen/fake-llm";
 import { HandoffAbortedError, HandoffService } from "./HandoffService.js";
 
 /** 交接文档正文（> 400 字节阈值，且带上面板标题，形状与真件一致） */
