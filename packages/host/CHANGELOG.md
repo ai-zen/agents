@@ -3,141 +3,89 @@
 All notable changes to `@ai-zen/agents-host` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions use SemVer.
 
-## [0.1.0-alpha.8] - 2026-11-16
+## [0.2.0-alpha.0] - 2026-11-23
 
-> Follows `@ai-zen/agents-core` 5.0.0-alpha.0. The host had grown a whole notion of "a segment" —
-> a four-state run status, a send status, a delivery receipt that said whether the agent had been
-> woken, and a rule that the database was flushed only once a segment settled. The engine never had
-> that notion; it was invented here to cover for the fact that the host was waiting on a promise.
-
-### Changed
-
-- Persistence follows message events now: `messageAdded` / `messageChanged` / `messageRemoved`,
-  one row at a time. Whoever pushed a message no longer matters — the row appears when the message
-  appears. "Flush once the segment settles" is gone.
-- UI state derives from the engine's three cells plus lifecycle events, not from a host-side run status.
-- Context overflow is recognised from `denied` (structured `detail`), not from an exception name.
-- The pending queue is read live from `inboxPending` instead of being mirrored from notifications:
-  the engine emits nothing when an entry is taken, and a key is taken silently, so a mirror could
-  diverge permanently and could never re-read itself back into agreement.
-- Tools refresh on `onOuterLoopStart`; migration runs on `onIdle`.
-- `source` on messages is a discriminated object; stored as JSON in a new `TEXT` column, with old
-  string values upgraded on read.
-
-### Removed
-
-- `DeliveryReceipt` / `woke`, `RunStatus` four states, `SendStatus`, `ChatAgent` (the local duck-type
-  shim that hid the engine's real surface from the type checker).
-
-### Fixed
-
-- Agents are actually killed when they should be: conversation deleted → `kill`; scope disposed →
-  `killScope`; process shutdown → `disposeAll`. Previously they were only dereferenced, so a paused
-  agent lived until the process died.
-- The hidden cwd message injected at the start of a conversation now carries `source`.
-
-## [0.1.0-alpha.7] - 2026-11-14
-
-> Sub-agent output now crosses the wire. A delegated sub-agent runs inside its own `Agent` in this
-> process; the host only ever told clients "it started" and "it ended". Everything the sub-agent
-> said stayed in memory and was written to the database once, at the end — so a client watching
-> the run got **not one character** until the sub-agent had already finished.
+> Not `0.1.0-alpha.9`: `0.1.0` is already published, and every `0.1.0-alpha.*` sorts below it, so
+> another alpha in that line would be a step backwards. The minor is bumped instead.
 >
-> The old in-process CLI did not have this problem: it held the sub-agent instance and subscribed
-> to its own `chunk-parsed`. That is exactly what this release restores, one process boundary
-> further out.
+> The host became a thin shell. `0.1.0` shipped it as the place where a session's behaviour was
+> decided: it framed its own protocol on the socket, kept a six-state phase machine for the UI, and
+> held every answer the engine could not give. Installing a live agent, keeping the register of who
+> is alive, mirroring their state and deciding when a container is torn down all moved one layer
+> down into `@ai-zen/agents-sdk`. What is left here is storage, connections, credentials and the
+> client's odds and ends — the host now hands the runtime four ports (how to build a container, how
+> to open a session row, what a session is called right now, where to log) and otherwise only reads
+> and writes files, tables and events.
 
 ### Added
 
-- **`message.delta` carries `toolCallId`** when the delta belongs to a sub-agent (`MessageDeltaPayload.toolCallId`,
-  absent = main line). Clients route it to that sub-agent's own view instead of the main transcript.
-- **Sub-agent messages are written while they stream** (same `streamWriteIntervalMs` cadence as the
-  main line), so `message.list { toolCallId }` has content during the run and a mid-run crash no
-  longer loses the whole thing.
-- **`SubAgentSnapshot.messageCount` is live** — it now counts the sub-agent's messages as they
-  appear instead of only at the end.
+- **Three orthogonal calls.** `session.create` writes the row and does nothing else — no agent is
+  woken and nothing is delivered. `agent.wake` fills the one cell "the row exists, its agent does
+  not", and is a no-op when an agent is already alive, because rebuilding would swap out a session
+  that is working. `agent.send` delivers only to an agent that is alive and answers `not_found`
+  otherwise: a delivery neither creates a session nor revives one, and "wake first, then send" is
+  the client's orchestration rather than a fallback here.
+- **`handoff.start` takes a `kind`**: `document` writes the document and changes nothing else about
+  the session (a notice carrying the path is all that appears), while `swap` then replaces the
+  memory and leaves the old one as an ordinary session beside it. `mode` (`self` / `summary`) stays
+  the caller's explicit choice, and omitting `kind` behaves like `swap`, which is what this call did
+  before the field existed. `handoff.cancel` closes the output gate and does not reopen it — a
+  cancelled handoff leaves the session exactly where it was until the user resumes it.
+- **`scope.reload`** — re-read the configuration into every container that already exists, which is
+  what "a change takes effect without killing a session" needs behind it.
+- **`config.setGlobal`** carries the language and the auto-naming switch (`autoTitle`), so both are
+  patched as configuration of the whole process rather than per-connection state. The host has one
+  language, read from the live configuration; a connection does not carry one, so reconnecting
+  cannot change what the host says.
+- **`session.removed`** as a fact of its own, beside `session.changed`: the client that asked for
+  the deletion switches screens by itself, and every other connected client learns that the row is
+  gone instead of inferring it from a list.
+- **One thing per call.** `notice.clearOne` clears one notice by id beside `notice.clear` for a
+  scope; `host.shutdown` stops the process, and asking "are you sure" is the client's step, since
+  only the client knows what the user is doing.
+- **Client odds and ends, each in its own domain**: `question.list` / `question.answer` for the one
+  blocking question a session may be waiting on, `notice` with a scope and a level, `asset.upload` /
+  `asset.get` / `asset.list` for uploaded files, and `search.messages` / `search.sessions`. Each is
+  answered from the host, and none of them is a mirror of something the client already holds.
 
-### 🐛 Fixed
+### Changed
 
-- Sub-agent messages get their id **the first time the host sees them**, and the final row reuses
-  it. Previously the id was assigned at persist time, so a streamed delta and the stored row would
-  have been two different ids — a client would have shown every sub-agent message twice after a
-  reload.
+- **The contract surface is a tRPC router** served over one WebSocket, grouped by domain with each
+  procedure declaring its own input and output: `session` (`list` `create` `open` `rename` `pin`
+  `setAutoHandoff` `setThresholds` `setModel` `setThinkingLevel` `rewind` `remove` `transient`),
+  `agent` (`wake` `send` `pause` `resume` `abort` `kill` `clearInbox`), `workspace`, `asset`,
+  `notice`, `question`, `handoff`, `search`, `scope`, `config`, `mcp`, `agentDefinition`, `host`,
+  and one `events` subscription. The hand-rolled JSON-lines framing, the mandatory `hello`
+  handshake and the six-state generation phase machine are gone with it: the phase was a client
+  concept assembled on the host, and a fact that the client can build out of `agent.status` and the
+  tool events does not need a second home.
+- **The session row carries identity and nothing else** — its id, name and whether that name was
+  automatic, pinned, project, agent, model, thinking level, the two thresholds, the auto-handoff
+  switch, lineage and the two timestamps. Working / idle, the two gates and "is there an agent at
+  all" are read from the live object and pushed as events; none of them is a column, so none of them
+  can go stale while a client is not polling.
+- **A credential is required on every connection, hashed in the database, and checked in the
+  handshake** (`connectionParams` as `{ token }`), never in a query string. A connection that fails
+  the check reaches no procedure and is closed. Revoking affects later connections only. A local
+  instance writes one usable credential to `run/token` so a client on the same machine can connect;
+  a public instance does not. The command line gains `token create` / `token list` /
+  `token revoke`, which open the database, do their work and close it without starting a service.
+- **Failures that cross the wire are a `HostError` with one of eight codes** — `not_found`,
+  `invalid_params`, `conflict`, `busy`, `unsupported`, `config_invalid`, `not_available`,
+  `unauthorized` — carried beside the rendered message and its `details`, so a client branches on a
+  code instead of on a sentence.
 
-## [0.1.0-alpha.6] - 2026-11-14
+### Fixed
 
-> The status bar's blocks move to the client — the third and last step of "界面归界面，事实归宿主".
-> alpha.5 still shipped `conversation.state.statusBlocks`, an assembled copy of eight facts. That
-> copy was only true at the instant `conversation.state` was pulled, and a client only pulls it when
-> it opens a conversation (or changes model, or reloads). So the context percentage, the model
-> name, this turn's token count and the "tools running" indicator **stayed frozen at whatever they
-> were when the conversation was opened** — for the whole session.
->
-> Not a missing refresh: the same facts existed twice. Every one of them was already on the wire
-> individually and already kept live by the client.
-
-### ⚠️ Breaking
-
-- **`conversation.state.statusBlocks` removed**, with `StatusBlock` / `StatusBlockId` /
-  `STATUS_BLOCK_IDS` / `statusBlocksOf` / `StatusBlockInput`. The eight blocks need facts that
-  already have a home in the contract: agent + model + thinking + folder in `ConversationView`,
-  context + thinking + usage in `ConversationState`, tools + sub-agents in `run`.
-- **`ConversationView` gains `agent: { agentId, name, available }`** — the two facts a client
-  cannot derive (the name lives in the agent definition; "available" needs the model / endpoint /
-  key check). `available` is still decided by `AgentService.describe`; `ConversationService` asks
-  for the conclusion through a `describeAgent` port rather than reimplementing the check.
-
-### 🐛 Fixed
-
-- A client that never re-pulls state now sees live facts, because there is no second copy to go
-  stale. The agent block degrades honestly: with the definition gone, `name` / `available` are
-  `null` (say "unknown", do not invent a value).
-
-## [0.1.0-alpha.5] - 2026-11-14
-
-> The capability list is gone. `host.capabilities` existed to tell clients "what this build can
-> do", but the only client that ever read it was the TUI's `/help` — and `/help` already had a
-> local command table. A list that duplicates a list is a list that drifts: the host called it
-> "项目", the CLI called it "工作区". So the method, its 252 copy entries and the `CapabilityView`
-> shape are removed — **63 → 62 methods** — and the CLI's `/help` now costs zero round trips.
->
-> `0.1.0-alpha.4` was published minutes earlier with the identical runtime code but with doc
-> comments that still pointed at the removed method (they land in `dist/*.d.ts`, so they are part
-> of what you read). Use **alpha.5**.
->
-> Ships on `@ai-zen/agents-core@4.6.0-alpha.0` + `@ai-zen/agents-sdk@1.2.0-alpha.2` (both
-> unchanged since the previous alpha, so this release is host-only).
-
-### ⚠️ Breaking
-
-- **`host.capabilities` removed** (63 → 62 methods), together with `hello.capabilities`,
-  `CapabilityView` / `HostCapabilitiesResult` / `MethodDomain`, the `handlers/capabilities.ts`
-  wiring and 252 `capability.*` strings. Nothing depended on it: the CLI's `/help` is local
-  now, the Desktop never called it.
-- **`host.reload` no longer takes `scope`** — the host is the only one who knows what is
-  reloadable, so it decides; `reloadedOf()` is unconditionally `true`.
-- **`StatusBlock.label` removed** — block names are client concepts ("sidebar" is not a host
-  word). The CLI carries its own eight `status.block.*` strings.
-
-### 🧹 Changed
-
-- **i18n now has a consumer rule**: the 33 entries no production code ever emitted are deleted,
-  and a guard test fails the suite if any entry has no reader. PLAN.md §7.5 keeps the 19 cases
-  where the host *should* say something and currently says nothing — those are gaps, not strings.
-- 4 exports with zero references removed, along with the long-dead `localizeCapabilities`.
-- **Doc comments that still described the deleted capability list are gone** — six of them, two
-  of which had drifted onto the *next* field and read as if they documented `defaultLanguage` /
-  `requestStop`.
-- The two real-process cases moved to `test:e2e` (out of the default suite's 759); test fixtures
-  went "one file, one database" with one `db.tx()` table wipe.
-
-## [0.1.0-alpha.1 … 0.1.0-alpha.3] - 2026-11-14
-
-- **`agents-host` bin got its shebang** (alpha.1) — without it `npm i -g` installed a file the
-  shell refuses to execute.
-- **A configuration file that does not parse is reset to factory values** and written back, the
-  broken one kept as `<name>.broken`, plus one warning notice naming the file (D32;
-  alpha.2 / alpha.3). No fallback layers, no throwing upwards.
+- **A refusal at the hard line now says so inside the session.** The guard refuses with one English
+  sentence written for the model and the log, which left the session visibly doing nothing with
+  nothing on screen explaining why. `GuardNoticePlugin` extends that guard without rewriting a line
+  of its judgement and pushes one session-scoped notice (`code: "guard_blocked"`) carrying the
+  numbers; a repeat with the same numbers is not repeated, and a permitted request forgets it.
+- **Agents are killed when they should be**: deleting a session kills its agent before the row goes,
+  disposing a container kills the sessions living on it, and shutting down kills everything before
+  any container is torn down. Nothing upstream ends an agent on the host's behalf — a paused one has
+  no timer and no reference count behind it — so each of those three has to do the killing itself.
 
 ## [0.1.0] - 2026-11-09
 

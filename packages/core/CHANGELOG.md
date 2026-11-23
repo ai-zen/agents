@@ -1,61 +1,105 @@
 # Changelog
 
-## [5.0.0-alpha.1] - 2026-11-16
+## [5.0.0-alpha.2] - 2026-11-23
 
-> Republish only. `5.0.0-alpha.0` went out through `npm publish`, which left
-> `"@ai-zen/agents-testing": "workspace:*"` untouched in the published
-> `devDependencies` — `pnpm publish` is what rewrites the workspace protocol, and this
-> package has no `workspace:` entry under `dependencies` to catch the mistake for us.
+> The engine was rewritten against `dev-docs/trd/engine.md`, its own requirement doc. Up to `4.5.5`
+> one class carried everything: `run()` was both the public entry point and the inner loop,
+> `send()` appended a message and then drove that loop, `abort()` was a flag the loop happened to
+> check, and "is it running" was answered by whichever set of in-flight tasks you looked at.
 >
-> Harmless for consumers (npm ignores a dependency's devDependencies), but anyone who
-> unpacks the tarball and runs `npm install` inside it hits an unsupported protocol. No
-> code changed.
-
-## [5.0.0-alpha.0] - 2026-11-16
-
-> The engine was rewritten against `CORE.md`, its own requirement doc. The old `Agent.ts` carried
-> thirteen responsibilities in one class: `run()` was both the public entry point and the inner
-> loop, `deliver()` decided by itself whether to wake the agent, and "is it running" was answered
-> by a four-state `runStatus` plus a two-state `sendStatus` plus two sets of in-flight tasks.
+> It all had to go for one reason: **waiting cannot observe what you did not cause.** A session can
+> be pushed from idle to busy by any other party — another agent, a timer, an external system. A
+> promise that resolves "when it is idle" then resolves at the end of _someone else's_ work, and
+> once it has resolved you are deaf to everything after it. That is why a resident session has no
+> "deliver and wait" left in it at all, and why every fact is reported as an event instead: an
+> event does not care who caused it.
 >
-> All of that had to go for one reason: **waiting cannot observe what you did not cause.** A
-> conversation can be pushed from idle to busy by any other party — another agent, a timer, an
-> external system. A promise that resolves "when it is idle" then resolves at the end of
-> *someone else's* round, and once it has resolved you are deaf to everything after it.
+> A major bump, because the lifecycle, the state and every event name changed.
 
 ### Added
 
-- Five lifecycle actions: `start` / `stop` (drain, then die) / `abort` (pause) / `resume` / `kill`
-  (hard landing). Death is final; reviving means constructing a new agent.
-- `push(input?)` — synchronous enqueue, throws `closed` afterwards. A bodyless input is a **key**:
-  it wakes the loop without landing a message.
-- `runOnce(input?, { signal })` — start, push, wait, close, die, hand back the messages. Available
-  only to `lifetime: "one-shot"` agents, because that is the only place where waiting has an owner.
-- `lifetime: "resident" | "one-shot"` — not just how long it lives, but what it can take: only a
-  resident agent may hold tools whose results arrive as events later.
-- `AgentError` with three codes (`request-failed` / `stream-failed` / `closed`), the very same
-  instance on both `failed` and `message.error`.
-- `Message.source` — a discriminated `{kind: "user" | "agent" | "system"}` on every user message.
-- `Agent.parent` / `children`, and sub-agent events relayed under the same names with `subAgent`
-  and `via`. `denied` carries structured `detail` next to the human-readable `reason`.
-- `inboxPending` — read the queue without consuming it, so events really are only notifications.
+- **Six lifecycle actions**: `start()` / `stop()` / `pauseOutput()` / `abort()` / `resumeOutput()`
+  / `kill()`. Two orthogonal questions hide behind the word "stop" — whether the agent still has
+  a life afterwards (`stop` / `kill`), and whether in-flight work is cut right now (`pauseOutput`
+  / `abort`). `abort()` always implies "no more taking"; the converse does not hold. `start()`
+  returns a promise that resolves only at death and never rejects.
+- **Two gates beside the outward state**, each with its own switch, its own pair of events and a
+  live read: `isOutputPaused` (nothing is taken from the next batch on, delivery still works)
+  through `pauseOutput()` / `resumeOutput()`, and `isInputPaused` (`push()` throws `input_paused`,
+  the queue and the batch in hand stay untouched) through `pauseInput()` / `resumeInput()`.
+- **`push(input?)`** — synchronous enqueue; throws `closed` once the agent is finished, so a
+  sender learns the delivery failed and can deliver elsewhere. A bodyless input is a **key**: it
+  wakes the loop and lands no message.
+- **`send(input?, { signal })` and `runOnce(input?, { signal })`** — deliver, wait until idle,
+  hand back `messages` (and, for `runOnce()`, close and die). Both refuse anything whose
+  `lifetime` is not `"one-shot"`.
+- **`lifetime: "resident" | "one-shot"`** — not only how long it lives but what it can take: only
+  a resident agent may hold tools whose result arrives as an event later, because a one-shot
+  agent's call stack has returned by then. The assembly step refuses them up front, not on the
+  first result that arrives with nobody to receive it.
+- **`inboxPending` / `inboxSize`** — read the queue without consuming it, so `inboxAdded` /
+  `inboxTaken` / `inboxCleared` stay notifications rather than the only source of truth.
+- **`restore(entries)`** — put stored entries back unchanged: same `createdAt`, no default
+  invented, no `inboxAdded` (the row is already stored). It refuses a one-shot agent, a finished
+  one, and an entry whose shape is incomplete.
+- **`clearInbox()`** — void what is queued and return it, without waking any consumer and without
+  consulting either gate, which is what keeps "clear the queue" working while output is paused.
+- **`AgentError`** — one class, four codes (`request-failed` / `stream-failed` / `closed` /
+  `input_paused`), the same instance on the `failed` event and on `message.error`, plus `toJSON()`
+  and `fromJSON()` so an error read back from storage is still an `AgentError`.
+- **`Message.source`** — a discriminated `{ kind: "user" } | { kind: "agent", label } |
+  { kind: "system", label }` on every `role: user` message, text only, never an agent reference.
+  "The user said this" is therefore one test, `source.kind === "user"`, and a host-injected hidden
+  message can no longer be counted as something the user said.
+- **`subAgents`** — the register of delegations: one entry per tool call, added when the
+  delegation starts, only marked finished when it ends (never removed), cleared at the head of
+  each batch. It takes part in no internal decision; it is what answers "what did this session
+  delegate, and is it still running".
+- **New observation points**: `messageFinished` (this version of a message is final),
+  `turnStarted` / `turnFinished` (one request and the tools it caused, carrying the same assistant
+  placeholder instance at both ends), and `observerFailed` (a subscriber threw).
 
 ### Changed
 
-- Repairing unfinished history moved to the **start** of a round (the only place that looks back).
-  `drop` is now a real delete plus `messageRemoved`; `omit` is left to "invalidated by compaction".
-- State reduced to three cells (`busy` / `idle` / `paused`). Everything else — thinking, streaming,
-  which tools are pending — is read off the live messages.
-- Events renamed to say *what happened* (`state`, `messageAdded`, `delta`, `toolFinished`, …);
-  hooks say *where the seam is*. `on(type, fn)` returns an unsubscribe function.
-- A throwing plugin no longer kills the loop: gate hooks fail closed, everything else fails open,
-  and both report `failed`.
+- **The outer loop is one `for await (const batch of inbox.asTakeAll())`.** The queue is both the
+  inbox and the wake-up signal, so there is no second wake-up mechanism that can forget to fire.
+  The wait on the output gate sits in two places — before entering, and at the tail of every batch
+  — which is what "nothing is taken between batches" means in practice.
+- **`state` is one cell with two values**, `working` / `idle`, decided by the position of the loop
+  and by nothing else: a batch is taken → `working`; that batch is done and the queue is really
+  empty → `idle`. The output gate takes no part in it, so "the batch that arrived while output was
+  paused has finished" and "output is still paused" can both be reported.
+- **Repairing unfinished history moved to the head of the loop**, where it happens once. The
+  judgement uses two things only — a message's `status`, and the pairing between `tool_calls` and
+  tool messages — so an interruption, a failure and a crash look the same. `drop` is a real
+  delete plus `messageRemoved`; `omit` is left to "invalidated by compaction".
+- **Events say what happened, hooks say where the seam is.** `on(type, fn)` returns an unsubscribe
+  function. Only `onInnerLoopStart`, `onToolStart`, `onUnknownTool` and `onSubAgentStart` can
+  refuse, and a returned string is the text the model reads — core wraps it in no wording of its
+  own. `onOuterLoopStart` cannot refuse: the batch has already been taken and a refusal would
+  leave it without an owner.
+- **A throwing plugin no longer kills the loop.** The hooks that can refuse fail closed, every
+  other hook fails open and is treated as not having spoken, and both report `failed`. Previously
+  a plugin that threw left an agent that looked alive and did nothing.
+- **A throwing subscriber is isolated.** `emit` catches it, reports `observerFailed` with the
+  event name, and leaves messages, state and queue untouched: watching is a bypass, and a full
+  disk must not kill the reasoning that was being watched.
+- **`denied` and `failed` are separate facts.** `denied` leaves not one character behind, because
+  `onInnerLoopStart` runs before the assistant placeholder exists; `failed` leaves half an
+  assistant message with `status: "error"`. `denied` also carries a structural `detail` beside the
+  human-readable `reason`, so a consumer can branch on "was this the context guard" without
+  parsing a sentence.
+- **Error text never goes into `content`.** A `role: tool` message is the exception, where the
+  text is the result the model is meant to read.
 
 ### Removed
 
-- `send()` / `deliver()` / `DeliveryReceipt` / `RunStatus` / `SendStatus`.
-- `AgentTool`, `preventDefault()` / `isPreventDefault`, `allowJsonParseError`.
-- Error text is never written into `content` any more.
+- `run()` as a public entry point, and a `send(content)` that appended a message and then drove
+  the loop. Driving the loop is gone; `start()` plus `push()` replaces it.
+- `AgentTool`, the eager twin of `AgentToolLazy`.
+- `preventDefault()` / `isPreventDefault` and `allowJsonParseError` on the tool result path.
+- `CodeTool` and `IndexedSearchTool`.
+- `lastUsage`, a stored copy of usage. Usage is read off a message, never kept beside it.
 
 ## [4.5.5] - 2026-11-09
 

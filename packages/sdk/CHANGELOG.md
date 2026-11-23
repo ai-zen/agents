@@ -1,22 +1,79 @@
-## [2.0.0-alpha.0] - 2026-11-16
+## [2.0.0-alpha.1] - 2026-11-23
 
-> Follows `@ai-zen/agents-core` 5.0.0-alpha.0. Every plugin in this package was written against
-> hooks that no longer exist, so the migration was not mechanical: each one had to pick a new seam
-> and justify it.
+> Follows `@ai-zen/agents-core` `5.0.0-alpha.2`, and it is a major bump for the same reason the
+> kernel's was one: this package used to be business logic sitting on `send()`. A handoff awaited
+> the round it had started, a sub-agent awaited the agent it had built, auto-migration reacted to
+> "this round ended". None of that survives — a resident session has no "deliver and wait" any
+> more, because any other party can push it from idle to busy — so the same behaviour had to be
+> rebuilt on facts instead of promises.
+>
+> Rebuilding it is what split the package in two. The **capability face** is what `1.1.0` already
+> was: `Scope` with its five capability sources behind `allInOne()`, `PermissionEvaluator`, the
+> configuration and definition repositories, model resolution, `createAgent` / `SdkAgent`, handoff.
+> The **runtime** is what the package never had: the thing that keeps those agents alive and lets
+> them talk to each other. The line between the two halves is the line the package is now measured
+> by — the runtime is the only place that knows who is alive, who knows whom, and when to build and
+> when to tear down, and it still imports no host.
+
+### Added
+
+- **`AgentRuntime`** — one resident agent per session, with `wake(sessionId, materials)`
+  (idempotent; concurrent calls share one assembly), `post({ from, to, content })`,
+  `status(sessionId)`, `openPeer({ from, prompt, agentId?, modelId?, label? })`, `kill(sessionId)`,
+  `close()`, `observe(listener)` and the snapshots `get` / `sessionOf` / `aliveOn`. It waits for
+  nobody: a delivery is what wakes a session, and there is no "one run" object to settle. Its facts
+  are a discriminated union — `resident:appeared` / `resident:gone` of its own, `scope:appeared` /
+  `scope:refreshed` / `scope:gone` from the container registry, and every kernel event of every
+  agent unchanged in name and payload with the `sessionId` added.
+- **`Scopes`** — containers live by directory: one per `cwd`, built on first use, shared by every
+  session working there, with `for(cwd)`, `dispose(cwd)`, `refreshAll()` and `disposeAll()`.
+  `dispose()` refuses while a session is still alive on that directory instead of cascading,
+  because a cascade would silently kill sessions that are in the middle of work. No idle timer, no
+  reference counting: "nobody is using it" is not a decidable state.
+- **Four ports** the runtime borrows and never implements: `openScope(cwd, peers)`, `open(input)`
+  (write the session, choose the identity, hand back `WakeMaterials`), `nameOf(sessionId)` and
+  `log`. A session is an opaque `string` here; a cast that fakes an instance of something in this
+  package now means a port is missing.
+- **Peer sessions** — three tools under `scope/plugins/peers/`: `create_session` answers
+  `{ sessionId, label }` at once, `read_session_status` answers working / idle, alive, name and an
+  excerpt of the last thing said, and `post_message` says only that the message was accepted. They
+  implement none of it themselves: `PeerSessionsScopePlugin` takes a `PeerSessionPort` (`create` /
+  `status` / `send`) and without a port it produces no tools at all. `RuntimePeerSessions` is that
+  port, which is why the three tools also work with no host around. A delegated one-shot agent has
+  none of the three: it has no identity to sign a message with and can open nothing that anybody
+  would own.
+- **One level deep, structurally** — an agent that was itself opened as a peer is created with
+  `canOpenPeers: false`, so `create_session` is not among its tools at all and the model cannot even
+  try; `post_message` and `read_session_status` stay, because peers talk both ways. Refusals are
+  structured rather than sentences: `gone` / `dead` for a delivery, `depth_exceeded` /
+  `model_unresolved` for a creation.
+- **`async_exec` / `async_timeout`** — two tools that return at once and report later. The result
+  is delivered back into the same session at low priority, so it never lands inside the batch that
+  is currently running, and whatever is still running is reaped when the agent stops. A one-shot
+  agent gets neither (`ASYNC_TASK_TOOL_NAMES` is stripped when the tools are chosen): its call
+  stack has returned by the time the result arrives.
+- **MCP tasks** — `call_mcp_tool` hands back the task id at once and the server pushes status
+  notifications; a terminal status goes to `McpTaskNoticePort` (`sessionOf` / `deliver`), which the
+  caller implements, while `isTerminalTaskStatus` is the single test for "this task is over". The
+  result itself is fetched by task id with `get_mcp_task_result`; `cancel_mcp_task` cancels it.
+- **`completeOnce`** — one non-streaming call with no tools and no history, the request shape both
+  the handoff summary and auto-naming need. **`lastPromptTokens`** is the read behind the context
+  guard: the last assistant message that carries usage, never a second copy of the count.
 
 ### Changed
 
-- `onUnknownTool` folded into `onToolStart`: an unknown tool now runs the same gate, and whatever
-  the hook returns *is* the tool message the model reads (core no longer wraps it in "tool X was
-  denied: …").
-- `ContextGuardPlugin` refuses by **returning a string** from `onInnerLoopStart` instead of throwing
-  `ContextOverflowError`. Throwing would tear down the whole loop; refusing leaves no placeholder
-  and reports `denied`.
-- `AutoMigratePlugin` moved from `onAfterSend` to `onIdle`: migration is "nothing is moving any more",
-  not "this round ended".
-- `HandoffService` no longer awaits an agent round it cannot own: it pushes the instruction and
-  watches `state`, accepting only an idle that follows a busy.
-- Sub-agents are built with `lifetime: "one-shot"`; injected messages carry `source`.
+- Every plugin was re-seated on the seams the new kernel offers, and each had to justify the seam
+  it picked. `ContextGuardPlugin` refuses by **returning a string** from `onInnerLoopStart` instead
+  of throwing: throwing tears the whole loop down, while refusing leaves no placeholder behind and
+  reports `denied`. `AutoMigratePlugin` moved to `onIdle`, because migration means "nothing is
+  moving any more", not "this round ended".
+- `HandoffService` judges a handoff round by one fact — whether the write to that path happened
+  inside that batch — instead of waiting for the agent to go idle, and there is no timer either: a
+  model that replies "done" without calling the tool is answered by the batch closing. Cancellation
+  surfaces as `HandoffAbortedError` and is never retried with the other writer.
+- Sub-agents are built with `lifetime: "one-shot"`, and every `role: user` message injected from a
+  template carries a `source` naming the injecting tool, so a delegated task's history is never
+  mistaken for something the user said.
 
 ## [1.1.0] - 2026-11-09
 
