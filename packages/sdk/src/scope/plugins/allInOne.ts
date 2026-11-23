@@ -19,8 +19,8 @@ export interface AllInOneOptions {
    */
   logger?: LogSink;
   /**
-   * MCP 任务通知的投递口（可选）：由宿主实现。不给时任务状态只当没收到，
-   * `call_mcp_tool` 的任务参数照旧可用。
+   * MCP 任务终态通知的投递口（可选）：由宿主实现。不给时任务照旧能发起、能取消，
+   * 只是「任务结束了」那条消息没人接。
    */
   mcpTaskNotice?: McpTaskNoticePort;
 }

@@ -1,12 +1,12 @@
 ---
 title: MCP
-description: 配一台 MCP 服务器要知道的事：怎么接上一台、五层配置文件与合并次序、三种传输各自的字段、启用与停用之后发生什么、description 怎么到模型手上、OAuth 字段留着但没实现、五个按需加载工具，以及任务那一套（推状态、按任务 id 拉结果）。
+description: 配一台 MCP 服务器要知道的事：怎么接上一台、五层配置文件与合并次序、三种传输各自的字段、启用与停用之后发生什么、description 怎么到模型手上、OAuth 字段留着但没实现、五个按需加载工具，以及任务（服务器交句柄，结果按任务 id 取）。
 outline: deep
 ---
 
 # MCP
 
-MCP（Model Context Protocol）这一侧全在 `@ai-zen/agents-sdk` 的 `scope/plugins/mcp/` 里，一共四样东西：把五层配置文件合并成一份清单的发现、管连接与断开的 `McpConnectionManager`、把服务器摊成五个工具的那一层，以及任务状态往哪投。
+MCP（Model Context Protocol）这一侧全在 `@ai-zen/agents-sdk` 的 `scope/plugins/mcp/` 里，一共四样东西：把五层配置文件合并成一份清单的发现、管连接与断开的 `McpConnectionManager`、把服务器摊成五个工具的那一层，以及每台服务器上的任务会话。
 
 这一页写给配 MCP 服务器的人：配置在哪儿、怎么写、改完什么时候生效、模型手上那五个工具各要什么参数、任务是什么形状。
 
@@ -118,7 +118,7 @@ MCP 的工具不预先注册 —— 一台服务器有几个工具，要连上�
 | 工具 | 参数 | 干什么 |
 |---|---|---|
 | `load_mcp` | `server`（枚举就是允许的那几台）、`include_manifest`（缺省 `true`） | 连上这台服务器，交回它的清单 `{ tools, resources }`；`include_manifest: false` 时只建连接并回一份摘要 `{ server, connected, tools: 数量, resources: 数量 }`，适用于清单已经在上下文里的情形；已经连着的就续一次期再交回同一份清单 |
-| `call_mcp_tool` | `server`、`tool`、`arguments`、可选 `task` | 调一台已连接服务器上的工具；没连上就回一句「先用 `load_mcp` 连」 |
+| `call_mcp_tool` | `server`、`tool`、`arguments` | 调一台已连接服务器上的工具；没连上就回一句「先用 `load_mcp` 连」 |
 | `read_mcp_resource` | `server`、`uri` | 读一个资源；文本原样回来，图片与二进制按端点能力上传或内联，不丢块 |
 | `get_mcp_task_result` | `server`、`task_id` | 按任务 id 取回一个任务的结果（见下一节） |
 | `cancel_mcp_task` | `server`、`task_id` | 让服务器停掉一个已经发起的任务 |
@@ -131,34 +131,33 @@ MCP 的工具不预先注册 —— 一台服务器有几个工具，要连上�
 
 ## 任务
 
-任务是 MCP 调用里那种耗时长的形状。它不是一个「结果自己回来」的东西，是两件事：状态由服务器推，结果按任务 id 去拉。
+任务是 MCP 调用里那种耗时长的形状：服务器接下调用之后先交一个句柄，结果稍后按 id 取，进度靠反复问。
 
-工具在清单里声明自己怎么对待任务，`execution.taskSupport` 三档：
+谁决定用不用任务，这件事在 2026-07-28 那一版里反过来了：**服务器说了算**，客户端只声明自己接得住。工具在清单里用 `execution.taskSupport` 说明它怎么对待任务，我们按它提一个偏好：
 
-| 档 | 走法 |
+| 档位 | 我们怎么发 |
 |---|---|
-| `forbidden` | 照旧同步调，`task` 参数不起作用 |
-| `optional` | 调用方给 `task: true` 就走任务，否则同步调 |
-| `required` | 一定带任务参数发起（不带，服务器会拒） |
+| `forbidden`（不写这一格也是这档） | 不带任务参数，同步调 |
+| `optional` | 提议成任务，但服务器可以照旧同步跑完 |
+| `required` | 一定提议成任务：不带任务参数服务器会拒 |
 
-没声明这一格的按 `forbidden` 算 —— 规范的缺省。
+偏好只是我们这一侧的话；应答到底是一个结果还是一个句柄，由服务器定。这一层由官方扩展轨道的 `@modelcontextprotocol/ext-tasks` 承担（Beta，目标进核心），我们只包了一层：每条连接一个任务会话，把「当场结果」与「任务句柄」两条路分开。
 
 走任务的那一次，`call_mcp_tool` 立刻交回一个句柄，不在这里等结果：
 
 ```json
-{ "task": true, "taskId": "...", "status": "working", "hint": "..." }
+{ "task": true, "taskId": "...", "hint": "..." }
 ```
 
-状态由服务器推过来（`notifications/tasks/status`）。只有终态才投递 —— `completed` / `failed` / `cancelled` 三格，中间态不是「有事要人动手」，每条都投就是刷屏。投递口是 `McpTaskNoticePort`，由宿主实现：`sessionOf(agent)` 说发起这次调用的 `Agent` 属于哪段会话，`deliver(sessionId, notice)` 把通知放进那段会话的 inbox。投递不创建、也不复活会话：那段已经没人了，这条通知就丢掉并记一行日志。
+终态到了就往发起那次调用所在会话的 inbox 投一条（`completed` / `failed` / `cancelled`）。中间状态不投：那不是「有事要人动手」，每条都投就是刷屏。投递口是 `McpTaskNoticePort`，由宿主实现：`sessionOf(agent)` 说调用方属于哪段会话，`deliver(sessionId, notice)` 把通知放进它的 inbox。投递不创建、不复活会话：那段已经不在就把通知丢掉并留一行日志。
 
-结果本身用任务 id 拉：`get_mcp_task_result`。服务器存下来的就是一次工具调用的结果，所以它走与 `call_mcp_tool` 同一套媒体映射与输出保护。放弃就 `cancel_mcp_task`，回的是任务此刻那一格；取消也是终态，那条通知照旧会到。
+结果本身用任务 id 取：`get_mcp_task_result`。服务器存下来的就是一次工具调用的结果，所以它走与 `call_mcp_tool` 同一套媒体映射与输出保护；任务还没跑完的话这里会等它跑完。放弃就 `cancel_mcp_task`，能不能停下来由服务器说；不管停没停，终态通知照旧会到。
 
-几件边界：
+几条边界：
 
-- 任务 id 只在它自己那台服务器上唯一，所以对应关系按「服务器 + 任务 id」记。
-- 这份对应关系只活在连接管理器里：进程没了就没了 —— 任务本身在服务器那边，谈不上恢复；重连之后服务器再推来的状态也没有会话可投，丢掉就是。连接一断，这台服务器上所有任务的对应关系一起丢掉。
-- 发起调用的若是被派出去的 `SubAgent` 或一次性 `Agent`，`sessionOf` 回 `undefined`：句柄照旧拿得到、结果照旧拉得回来，只是没有那条「任务结束了」的通知 —— 没有一段会话可以回报。
-- 客户端在能力协商里声明 `tasks: { cancel: {} }`：只声明真的会用的那一项，服务器据此判断对面接不接得住任务。
+- 任务 id 只在它自己那台服务器上唯一，所以手里的句柄与服务器的对应关系按「服务器 + 任务 id」记。
+- 这份对应关系只活在进程里：进程没了就没了 —— 任务本身在服务器那边，重启之后再来取结果会拿到一句「没这个任务」。连接一断，这台服务器上的任务会话跟着关。
+- 发起调用的若是被派出去的 `SubAgent` 或一次性 `Agent`，`sessionOf` 回 `undefined`：句柄照旧拿得到、结果照旧拉得回来，只是没有那条「任务结束了」的通知 —— 没有会话可以回报。
 
 ## 往下读
 

@@ -1,6 +1,5 @@
 import { CallbackTool } from "@ai-zen/agents-core";
-import { GetTaskPayloadResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { Task } from "@modelcontextprotocol/sdk/types.js";
+import type { ToolDeclaration } from "@modelcontextprotocol/ext-tasks/client";
 import { fileToContentSection, resolveModelAndEndpoint } from "../../../shared/content-blocks.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../../disclosure.js";
@@ -354,36 +353,12 @@ async function callResultToContent(
 }
 
 /**
- * 拿到句柄时回给模型的那段话。
- *
- * 三件事要一次说全，缺一件模型就会在这里等一个不会自己回来的结果：这是个任务而不是结果、任务
- * id 是什么、结果要自己拿哪一条工具去取（带齐两个参数的形状）。最后一句说清状态到了会有话过来，
- * 那正是「不用在这儿等」的理由。
- */
-function taskHandleText(server: string, task: Task): string {
-  return JSON.stringify({
-    task: true,
-    taskId: task.taskId,
-    status: task.status,
-    ...(task.statusMessage === undefined ? {} : { statusMessage: task.statusMessage }),
-    hint:
-      `This is a TASK, not a result: the server accepted the call and is working on it. ` +
-      `Nothing comes back through this call. Get the result with ${GET_MCP_TASK_RESULT_TOOL} ` +
-      `and the arguments {"server":"${server}","task_id":"${task.taskId}"}; ` +
-      `give it up with ${CANCEL_MCP_TASK_TOOL} and the same two. ` +
-      `When the task ends (completed / failed / cancelled) a message about it arrives in this ` +
-      `session, so there is no need to poll it.`,
-  });
-}
-
-/**
  * 创建 call_mcp_tool 工具。
  * 通过官方 Client.callTool() API 调用 MCP 服务器上的工具。
  *
  * 返回形态：
  *   - 仅文本 → 纯字符串；
- *   - 含媒体 → 内容块数组，按 MCP content 的原始顺序（文本块可能夹在中间）；
- *   - 任务是任务时 → 一段带任务 id 的 JSON，结果不在这条路上回来（见 {@link taskHandleText}）。
+ *   - 含媒体 → 内容块数组，按 MCP content 的原始顺序（文本块可能夹在中间）。
  *
  * env 仅用于读取 maxToolOutput（文本输出保护上限），与内置工具口径一致。
  */
@@ -404,24 +379,13 @@ export function createCallMcpTool(
         "Call a tool exposed by a connected MCP server. Connect the server with load_mcp first. " +
         "Large text output is written to disk and only a head/tail preview is returned; images, " +
         "audio and other media are preserved: uploaded and referenced by file_id when the " +
-        "endpoint supports the Files API, otherwise inlined as base64. " +
-        `Pass task=true to run a long call as a task: the call then returns a task id instead of ` +
-        `a result, and the result is fetched later with ${GET_MCP_TASK_RESULT_TOOL}. Tools that ` +
-        "require a task always run as one, tools that forbid it never do.",
+        "endpoint supports the Files API, otherwise inlined as base64.",
       parameters: {
         type: "object",
         properties: {
           server: { type: "string", description: "MCP server name" },
           tool: { type: "string", description: "Tool name" },
           arguments: { type: "object", description: "Tool arguments" },
-          task: {
-            type: "boolean",
-            description:
-              "Run this call as a task (optional). The call returns a task id at once and the " +
-              "result has to be fetched by that id; when the task ends a message about it arrives " +
-              "in this session. Only tools that allow task execution can do it — for the others " +
-              "this flag makes no difference.",
-          },
         },
         required: ["server", "tool", "arguments"],
         additionalProperties: false,
@@ -439,53 +403,31 @@ export function createCallMcpTool(
       }
 
       const client = mcpManager.getClient(serverName);
-      if (!client) {
+      const bridge = mcpManager.getTaskBridge(serverName);
+      if (!client || !bridge) {
         return `MCP server "${serverName}" client is not available`;
       }
 
       const toolName = input.tool as string;
-      const callArgs = {
-        name: toolName,
-        arguments: input.arguments as Record<string, unknown>,
-      };
-
-      // 三档怎么走：required 一定带任务参数（不带服务器会拒），optional 听调用方那一句，
-      // forbidden 与没声明这一格的忽略它
-      const support = mcpManager.taskSupportOf(serverName, toolName);
-      const asTask = support === "required" || (support === "optional" && input.task === true);
 
       try {
         mcpManager.touch(serverName);
         const media = mediaContextOf(env, ctx);
-
-        if (!asTask) {
-          const result = await client.callTool(callArgs, undefined, { signal: ctx?.signal });
-          return await callResultToContent(result, env, media);
-        }
-
-        // 任务增强：这条流的第一条就是句柄（`taskCreated`），拿到它就返回 —— 不等任务跑完，
-        // 结果也不从这条路上回来
-        const stream = client.experimental.tasks.callToolStream(callArgs, undefined, {
-          task: {},
-          signal: ctx?.signal,
+        // 用不用任务不在这里说：我们只按工具声明的那一档提个偏好，最终由服务器在应答里定
+        const call = await bridge.call({
+          tool: toolName,
+          args: (input.arguments ?? {}) as Record<string, unknown>,
+          ...(declarationOf(mcpManager, serverName, toolName) === undefined
+            ? {}
+            : { declaration: declarationOf(mcpManager, serverName, toolName)! }),
+          ...(ctx?.agent === undefined ? {} : { agent: ctx.agent }),
+          ...(ctx?.signal === undefined ? {} : { signal: ctx.signal }),
         });
-        for await (const message of stream) {
-          switch (message.type) {
-            case "taskCreated":
-              // 记下这个任务是谁发起的：终态通知到了要投回这段会话
-              mcpManager.rememberTask(serverName, message.task.taskId, ctx.agent);
-              return taskHandleText(serverName, message.task);
-            case "result":
-              // 服务器没把它当任务（`optional` 档上它自己跑完了），结果就在这里
-              return await callResultToContent(message.result, env, media);
-            case "error":
-              return `❌ Failed to call "${toolName}": ${message.error.message}`;
-            default:
-              // taskStatus：句柄已经交出去了才会来，这一次调用已经不需要它
-              continue;
-          }
+
+        if (call.kind === "task") {
+          return taskHandleText(serverName, call.taskId);
         }
-        return `❌ Failed to call "${toolName}": the task stream ended without a task or a result`;
+        return await outcomeToContent(call.outcome, env, media);
       } catch (error: any) {
         return `❌ Failed to call "${input.tool}": ${error?.message ?? error}`;
       }
@@ -584,17 +526,71 @@ export function createReadMcpResourceTool(
 }
 
 /**
- * 创建 get_mcp_task_result 工具：按任务 id 去服务器取回结果。
+ * 把一个工具在清单里声明的那一档交成扩展包认的形状。
+ *
+ * 清单来自 `tools/list`，所以这里问的和服务器说的是同一件事，不必再发一次请求。
+ */
+function declarationOf(
+  mcpManager: McpConnectionManager,
+  server: string,
+  tool: string,
+): ToolDeclaration | undefined {
+  const found = mcpManager.getManifest(server)?.tools.find((item) => item.name === tool);
+  if (found === undefined) return undefined;
+  return {
+    name: found.name,
+    ...(found.description === "" ? {} : { description: found.description }),
+    inputSchema: found.inputSchema as ToolDeclaration["inputSchema"],
+    ...(found.execution?.taskSupport === undefined
+      ? {}
+      : { taskSupport: found.execution.taskSupport }),
+  };
+}
+
+/**
+ * 拿到任务句柄时回给模型的那段话。
+ *
+ * 三件事要一次说全，缺一件模型就会在这里等一个不会自己回来的结果：这是个任务而不是结果、任务
+ * id 是什么、结果要自己拿哪一条工具去取（带齐两个参数的形状）。最后一句说清终态到了会有话过来，
+ * 那正是「不用在这儿等」的理由。
+ */
+function taskHandleText(server: string, taskId: string): string {
+  return JSON.stringify({
+    task: true,
+    taskId,
+    hint:
+      `This is a TASK, not a result: the server accepted the call and is working on it. ` +
+      `Nothing comes back through this call. Get the result with ${GET_MCP_TASK_RESULT_TOOL} ` +
+      `and the arguments {"server":"${server}","task_id":"${taskId}"}; ` +
+      `give it up with ${CANCEL_MCP_TASK_TOOL} and the same two. ` +
+      `When the task ends (completed / failed / cancelled) a message about it arrives in this session.`,
+  });
+}
+
+/** 任务的一份终态 → 交给模型的内容 */
+async function outcomeToContent(
+  outcome: { status: string; result?: unknown; error?: { message: string } },
+  env: ToolEnv,
+  media: MediaContext,
+): Promise<AgentNS.MessageContent> {
+  if (outcome.status === "completed") return await callResultToContent(outcome.result, env, media);
+  if (outcome.status === "cancelled") return `❌ The task was cancelled`;
+  return `❌ The task failed: ${outcome.error?.message ?? "no reason given"}`;
+}
+
+/**
+ * 创建 get_mcp_task_result 工具：按任务 id 取回结果。
  *
  * 结果原样交给模型：服务器存下来的就是一次工具调用的结果，与 `call_mcp_tool` 走同一套媒体映射
- * 与输出保护（见 {@link callResultToContent}）。
+ * 与输出保护（见 {@link callResultToContent}）。任务还没跑完时这里会等它跑完 —— 这条工具就是
+ * 「去拿结果」，没有第二种语义。
  */
 export function createGetMcpTaskResultTool(
   mcpManager: McpConnectionManager,
   env: ToolEnv,
   filteredMcps: string[],
 ): CallbackTool {
-  // 与 call_mcp_tool 同一白名单口径（见该工具的说明）
+  // 与 call_mcp_tool 同一白名单口径
   const allowed = new Set(filteredMcps);
   const allowList = filteredMcps.join(", ") || "(none)";
 
@@ -604,8 +600,8 @@ export function createGetMcpTaskResultTool(
       description:
         "Get the result of a task started by call_mcp_tool with a task id. The result is handed " +
         "back as it is (text and media, same output protection as call_mcp_tool). Use it when " +
-        "the session was told that the task ended; if the task has not finished yet the server " +
-        "may hold the call until it does.",
+        "the session was told that the task ended; if the task has not finished yet the call " +
+        "waits for it.",
       parameters: {
         type: "object",
         properties: {
@@ -621,27 +617,19 @@ export function createGetMcpTaskResultTool(
       if (!allowed.has(serverName)) {
         return `❌ MCP server "${serverName}" is not available here. Available servers: ${allowList}`;
       }
-
       if (mcpManager.getState(serverName) !== "connected") {
         return `Call load_mcp to connect "${serverName}" first`;
       }
-
-      const client = mcpManager.getClient(serverName);
-      if (!client) {
+      const bridge = mcpManager.getTaskBridge(serverName);
+      if (bridge === undefined) {
         return `MCP server "${serverName}" client is not available`;
       }
 
       const taskId = String(input.task_id ?? "");
       try {
         mcpManager.touch(serverName);
-        // 载荷的形状由原请求决定（`tasks/result` 返回的就是它的结果类型），所以取宽松的那一格：
-        // 具体怎么解释由 `callResultToContent` 按 content / isError 做
-        const payload = await client.experimental.tasks.getTaskResult(
-          taskId,
-          GetTaskPayloadResultSchema,
-          { signal: ctx?.signal },
-        );
-        return await callResultToContent(payload, env, mediaContextOf(env, ctx));
+        const outcome = await bridge.getResult(taskId);
+        return await outcomeToContent(outcome, env, mediaContextOf(env, ctx));
       } catch (error: any) {
         return `❌ Failed to get the result of task "${taskId}" on "${serverName}": ${error?.message ?? error}`;
       }
@@ -652,14 +640,14 @@ export function createGetMcpTaskResultTool(
 /**
  * 创建 cancel_mcp_task 工具：让服务器停掉一个已经发起的任务。
  *
- * 回给模型的是任务此刻那一格（`tasks/cancel` 的应答就是这个形状）。终态通知照旧会来：
- * 取消也是终态，到了就把那条状态搁进 inbox。
+ * 取消能不能成由服务器说了算，发出去之后终态通知照旧会到；这里只把「已经发出去」这件事回给模型，
+ * 不假装已经停下来了。
  */
 export function createCancelMcpTaskTool(
   mcpManager: McpConnectionManager,
   filteredMcps: string[],
 ): CallbackTool {
-  // 与 call_mcp_tool 同一白名单口径（见该工具的说明）
+  // 与 call_mcp_tool 同一白名单口径
   const allowed = new Set(filteredMcps);
   const allowList = filteredMcps.join(", ") || "(none)";
 
@@ -667,8 +655,8 @@ export function createCancelMcpTaskTool(
     function: {
       name: CANCEL_MCP_TASK_TOOL,
       description:
-        "Cancel a task started by call_mcp_tool. The server stops working on it; a task that " +
-        "already ended cannot be cancelled and the call fails with the reason it gives.",
+        "Cancel a task started by call_mcp_tool. The server decides whether it can stop; a task " +
+        "that already ended cannot be cancelled and the call fails with the reason it gives.",
       parameters: {
         type: "object",
         properties: {
@@ -684,25 +672,19 @@ export function createCancelMcpTaskTool(
       if (!allowed.has(serverName)) {
         return `❌ MCP server "${serverName}" is not available here. Available servers: ${allowList}`;
       }
-
       if (mcpManager.getState(serverName) !== "connected") {
         return `Call load_mcp to connect "${serverName}" first`;
       }
-
-      const client = mcpManager.getClient(serverName);
-      if (!client) {
+      const bridge = mcpManager.getTaskBridge(serverName);
+      if (bridge === undefined) {
         return `MCP server "${serverName}" client is not available`;
       }
 
       const taskId = String(input.task_id ?? "");
       try {
         mcpManager.touch(serverName);
-        const task = await client.experimental.tasks.cancelTask(taskId, { signal: ctx?.signal });
-        return JSON.stringify({
-          taskId: task.taskId,
-          status: task.status,
-          ...(task.statusMessage === undefined ? {} : { statusMessage: task.statusMessage }),
-        });
+        await bridge.cancel(taskId);
+        return JSON.stringify({ taskId, cancelled: true });
       } catch (error: any) {
         return `❌ Failed to cancel task "${taskId}" on "${serverName}": ${error?.message ?? error}`;
       }

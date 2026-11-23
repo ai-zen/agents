@@ -172,8 +172,6 @@ describe("McpScopePlugin.discover — 连接跟着发现结果对账", () => {
     } as unknown as AgentDefinition;
 
     const names = scope.buildTools(definition).map((tool) => tool.function.name);
-    expect(names).toEqual(
-      expect.arrayContaining(["call_mcp_tool", "get_mcp_task_result", "cancel_mcp_task"]),
-    );
+    expect(names).toEqual(expect.arrayContaining(["call_mcp_tool", "read_mcp_resource"]));
   });
 });

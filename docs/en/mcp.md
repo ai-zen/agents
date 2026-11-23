@@ -1,12 +1,12 @@
 ---
 title: MCP
-description: What someone configuring an MCP server needs to know — how to get one server connected, the five configuration files and the merge order, the three transports and their fields, what happens on enable and disable, how a description reaches the model, the OAuth fields that exist without an implementation, the five on-demand tools, and tasks (status pushed, result pulled by task id).
+description: What someone configuring an MCP server needs to know — how to get one server connected, the five configuration files and the merge order, the three transports and their fields, what happens on enable and disable, how a description reaches the model, the OAuth fields that exist without an implementation, the five on-demand tools, and tasks (a handle comes back, the result is fetched by task id).
 outline: deep
 ---
 
 # MCP
 
-Everything on the MCP (Model Context Protocol) side lives in `@ai-zen/agents-sdk`, under `scope/plugins/mcp/`: discovery that merges five configuration files into one list, `McpConnectionManager` for connecting and disconnecting, the layer that turns servers into five tools, and where a task status gets delivered.
+Everything on the MCP (Model Context Protocol) side lives in `@ai-zen/agents-sdk`, under `scope/plugins/mcp/`: discovery that merges five configuration files into one list, `McpConnectionManager` for connecting and disconnecting, the layer that turns servers into five tools, and one task session per server.
 
 This page is for someone configuring MCP servers: where the configuration lives, how to write it, when a change takes effect, what parameters the five tools take, and what shape a task has.
 
@@ -118,7 +118,7 @@ MCP tools are not registered up front — how many tools a server has is only kn
 | Tool | Parameters | What it does |
 |---|---|---|
 | `load_mcp` | `server` (the enum is exactly the allowed servers), `include_manifest` (default `true`) | connect to that server and hand back its manifest `{ tools, resources }`; with `include_manifest: false` it only connects and returns a summary `{ server, connected, tools: count, resources: count }`, for when the manifest is already in context; an already-connected server is renewed once and the same manifest is handed back |
-| `call_mcp_tool` | `server`, `tool`, `arguments`, optional `task` | call a tool on a connected server; if it is not connected, reply "connect with `load_mcp` first" |
+| `call_mcp_tool` | `server`, `tool`, `arguments` | call a tool on a connected server; if it is not connected, reply "connect with `load_mcp` first" |
 | `read_mcp_resource` | `server`, `uri` | read one resource; text comes back as it is, images and binaries are uploaded or inlined according to what the endpoint can do, and no section is dropped |
 | `get_mcp_task_result` | `server`, `task_id` | fetch the result of one task by its id (see the next section) |
 | `cancel_mcp_task` | `server`, `task_id` | ask the server to stop a task already started |
@@ -131,34 +131,33 @@ Text is protected, media is not. When the text of one whole answer adds up to mo
 
 ## Tasks
 
-A task is the long-running shape of an MCP call. It is not a thing whose result comes back on its own; it is two things: the status is pushed by the server, and the result is pulled by task id.
+A task is the long-running shape of an MCP call: the server accepts the call, hands back a handle at once, and the result is fetched later by task id.
 
-A tool declares in its manifest how it treats tasks, `execution.taskSupport`, in three notches:
+Who decides that a call becomes a task was reversed in the 2026-07-28 revision: **the server decides**, the client only declares that it can handle the answer. A tool states how it treats tasks in `execution.taskSupport`, and that is what we turn into a preference:
 
-| Notch | How it goes |
+| Declared | What we send |
 |---|---|
-| `forbidden` | called synchronously as usual; the `task` parameter does nothing |
-| `optional` | the caller passing `task: true` makes it a task, otherwise it is synchronous |
-| `required` | always started with the task parameter (without it the server refuses) |
+| `forbidden` (also the default when the field is absent) | no task parameters, called synchronously |
+| `optional` | we propose a task; the server may still run it through |
+| `required` | we always propose a task — without the task parameters the server refuses |
 
-A tool that does not declare this counts as `forbidden` — the default in the specification.
+A preference is only our side of the conversation; whether the answer is a result or a handle is the server's call. This whole layer sits on the official extension-track package `@modelcontextprotocol/ext-tasks` (Beta, headed for core); we wrap it in one task session per connection and split the immediate result from the task handle.
 
 On a task call, `call_mcp_tool` hands back a handle at once instead of waiting for the result:
 
 ```json
-{ "task": true, "taskId": "...", "status": "working", "hint": "..." }
+{ "task": true, "taskId": "...", "hint": "..." }
 ```
 
-The status is pushed by the server (`notifications/tasks/status`). Only terminal states are delivered — `completed` / `failed` / `cancelled`, the three cells that matter; an intermediate state is not "something needs a person", and delivering each one is a flood. The delivery port is `McpTaskNoticePort`, implemented by the host: `sessionOf(agent)` says which session the `Agent` that made the call belongs to, and `deliver(sessionId, notice)` puts the notice into that session's inbox. Delivery neither creates nor revives a session: if nobody is there any more, the notice is dropped with one log line.
+A terminal state is delivered into the inbox of the session that made the call (`completed` / `failed` / `cancelled`). Intermediate states are not delivered: they are not "something needs a person", and delivering each one is a flood. The delivery port is `McpTaskNoticePort`, implemented by the host: `sessionOf(agent)` says which session the caller belongs to, and `deliver(sessionId, notice)` puts the notice into that session's inbox. Delivery neither creates nor revives a session: if nobody is there any more, the notice is dropped with one log line.
 
-The result itself is pulled by task id: `get_mcp_task_result`. What the server stores is the result of one tool call, so it goes through the same media mapping and the same text protection as `call_mcp_tool`. To give up, `cancel_mcp_task`, which returns the cell the task is in at that moment; a cancellation is also terminal, and its notice arrives as usual.
+The result itself is fetched by task id with `get_mcp_task_result`. What the server stores is the result of one tool call, so it goes through the same media mapping and the same text protection as `call_mcp_tool`; if the task has not finished, the call waits for it. To give up, `cancel_mcp_task` — whether it can stop is the server's call, and the terminal notice arrives either way.
 
-A few boundaries:
+A few edges:
 
-- A task id is unique only on its own server, so the correspondence is kept by "server + task id".
-- That correspondence lives only in the connection manager: when the process goes, it goes — the task itself lives on the server, so there is nothing to restore; and statuses the server pushes after a reconnect have no session to go to and are simply dropped. When a connection drops, every task correspondence on that server goes with it.
-- If the call was made by a delegated `SubAgent` or by a one-shot `Agent`, `sessionOf` returns `undefined`: the handle is still available and the result can still be pulled, there is just no "your task finished" notice — there is no session to report it to.
-- The client declares `tasks: { cancel: {} }` in capability negotiation: only what is actually used is declared, and the server judges from that whether the other side can hold a task.
+- A task id is unique only on its own server, so the handle-to-server correspondence is kept by "server + task id".
+- That correspondence lives only in this process: when the process goes, it goes — the task itself lives on the server, so asking for the result after a restart answers "no such task". When a connection drops, that server's task session is closed with it.
+- When the caller is a dispatched `SubAgent` or a one-shot `Agent`, `sessionOf` returns `undefined`: the handle still comes back and the result can still be fetched, there is just no "the task ended" notice — there is no session to report to.
 
 ## Reading on
 

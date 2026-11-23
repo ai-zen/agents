@@ -101,7 +101,7 @@ const readResourceTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv(
   asTestTool(createReadMcpResourceTool(manager, env, ALL_MCP_IDS()));
 
 function mockManager(overrides?: Record<string, any>): McpConnectionManager {
-  return {
+  const manager: Record<string, any> = {
     connect: vi.fn(),
     disconnect: vi.fn(),
     disconnectAll: vi.fn(),
@@ -109,11 +109,24 @@ function mockManager(overrides?: Record<string, any>): McpConnectionManager {
     getManifest: vi.fn(),
     getClient: vi.fn(),
     touch: vi.fn(),
-    // 缺省：没声明任务档位（= `forbidden`），同步调
-    taskSupportOf: () => "forbidden",
-    rememberTask: vi.fn(),
     ...overrides,
-  } as unknown as McpConnectionManager;
+  };
+  // 任务会话的默认形态：当场给结果，且真的去调那个 mock 的 `callTool` ——
+  // 这样「传了什么参数、有没有透传 signal」那些断言照旧落在 client 那一层。
+  manager.getTaskBridge ??= (name: string) => ({
+    call: async (input: { tool: string; args: Record<string, unknown>; signal?: AbortSignal }) => ({
+      kind: "immediate" as const,
+      outcome: {
+        status: "completed" as const,
+        result: await manager
+          .getClient(name)
+          ?.callTool({ name: input.tool, arguments: input.args }, { signal: input.signal }),
+      },
+    }),
+    getResult: vi.fn(),
+    cancel: vi.fn(),
+  });
+  return manager as unknown as McpConnectionManager;
 }
 
 const mcps: McpServerDefinition[] = [
@@ -354,7 +367,6 @@ describe("createCallMcpTool", () => {
         name: "echo",
         arguments: { message: "hello" },
       },
-      undefined,
       { signal: undefined },
     );
   });
@@ -925,11 +937,9 @@ describe("signal 透传", () => {
     await tool.callback({ server: "github", tool: "echo", arguments: { message: "hi" } }, {
       signal: controller.signal,
     } as any);
-    expect(mockClient.callTool).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "echo" }),
-      undefined,
-      { signal: controller.signal },
-    );
+    expect(mockClient.callTool).toHaveBeenCalledWith(expect.objectContaining({ name: "echo" }), {
+      signal: controller.signal,
+    });
   });
 
   it("read_mcp_resource 将 ctx.signal 透传给 client.readResource 的 options", async () => {

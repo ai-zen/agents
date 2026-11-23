@@ -263,7 +263,7 @@ PeerSession 历史的摘要与消息条数一概不返回：模型只拿到一�
 
 模型那一侧是五个工具：`load_mcp`、`call_mcp_tool`、`read_mcp_resource`、`get_mcp_task_result`、`cancel_mcp_task`。
 
-任务是 MCP 调用里那种长时间运行的形式。工具声明自己支持还是不支持任务（`forbidden` / `optional` / `required`）；一次调用产出任务时，`call_mcp_tool` 立刻交回任务 id，服务器推送状态通知，管理器记住是哪段会话起的这个任务。终态（`completed` / `failed` / `cancelled`，见 `isTerminalTaskStatus`）交给 `McpTaskNoticePort`，由宿主实现：`sessionOf(agent)` 说调用方属于哪段会话，`deliver(sessionId, notice)` 把通知放进它的 inbox。结果本身用任务 id 通过 `get_mcp_task_result` 取。
+任务是 MCP 调用里那种长时间运行的形式。从 2026-07-28 那一版起，一次调用要不要当任务跑由**服务器**决定：工具在清单里声明 `execution.taskSupport`，我们把它变成一个偏好（`forbidden` / `optional` / `required`），但应答是一个结果还是一个句柄，服务器说了算。这一层由官方扩展轨道的 `@modelcontextprotocol/ext-tasks` 承担，`McpTaskBridge` 每条连接包一个任务会话，于是 `call_mcp_tool` 两种形状都能接。句柄交回来之后，终态通过 `McpTaskNoticePort`（`sessionOf` / `deliver`，由宿主实现）投进发起这个任务的那段会话；结果用任务 id 通过 `get_mcp_task_result` 取，`cancel_mcp_task` 让服务器停掉它。
 
 ## 细节
 

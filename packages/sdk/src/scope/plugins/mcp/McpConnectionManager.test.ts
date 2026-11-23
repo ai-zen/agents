@@ -19,8 +19,12 @@ const mockClient = {
   listResources: vi.fn().mockResolvedValue({ resources: [] }),
   listPrompts: vi.fn().mockResolvedValue({ prompts: [] }),
   callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
-  // 建连之后要接任务状态通知（`notifications/tasks/status`）
-  setNotificationHandler: vi.fn(),
+  // 建连之后要裹一层任务会话（`@modelcontextprotocol/ext-tasks`），它摸的是这四格
+  request: vi.fn(),
+  getProtocolEra: vi.fn().mockReturnValue("legacy"),
+  fallbackRequestHandler: undefined,
+  fallbackNotificationHandler: undefined,
+  onclose: undefined,
 };
 
 const mockTransport = {
@@ -53,7 +57,8 @@ describe("McpConnectionManager", () => {
       // transportFactory
       () => mockTransport as any,
       // clientFactory
-      () => mockClient as any,
+      // 每次建连给一份新的：任务会话在 client 外裹的那层适配器是独占的，同一个对象套两次会报
+      () => ({ ...mockClient }) as any,
     );
 
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -76,7 +81,6 @@ describe("McpConnectionManager", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-
   // ---- 状态机 ----
 
   it("初始状态 disconnected", () => {
@@ -252,7 +256,7 @@ describe("生命周期边界（启动即退出 / 断线 / 建连超时）", () =
 
     const manager = new McpConnectionManager(
       () => mockTransport as any,
-      () => mockClient as any,
+      () => ({ ...mockClient }) as any,
     );
 
     const connecting = manager.connect("srv", stdioConfig);
@@ -271,7 +275,7 @@ describe("生命周期边界（启动即退出 / 断线 / 建连超时）", () =
     mockClient.connect.mockResolvedValue(undefined);
     const manager = new McpConnectionManager(
       () => mockTransport as any,
-      () => mockClient as any,
+      () => ({ ...mockClient }) as any,
     );
 
     await manager.connect("srv", stdioConfig);
@@ -290,7 +294,7 @@ describe("生命周期边界（启动即退出 / 断线 / 建连超时）", () =
 
     const manager = new McpConnectionManager(
       () => mockTransport as any,
-      () => mockClient as any,
+      () => ({ ...mockClient }) as any,
     );
 
     await expect(manager.connect("srv", httpConfig, { connectTimeoutMs: 50 })).rejects.toThrow(
@@ -306,7 +310,7 @@ describe("生命周期边界（启动即退出 / 断线 / 建连超时）", () =
 
     const manager = new McpConnectionManager(
       () => mockTransport as any,
-      () => mockClient as any,
+      () => ({ ...mockClient }) as any,
     );
     await manager.connect("srv", stdioConfig);
 

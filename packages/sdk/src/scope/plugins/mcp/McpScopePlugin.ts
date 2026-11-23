@@ -21,7 +21,7 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
  *
  * 渐进式披露：
  *   - `load_mcp`                枚举所有允许的 server（含 include_manifest 开关）
- *   - `call_mcp_tool`           调用已连接 server 的工具（可带任务参数）
+ *   - `call_mcp_tool`           调用已连接 server 的工具（服务器可能把它当任务跑）
  *   - `read_mcp_resource`       读取已连接 server 的资源
  *   - `get_mcp_task_result`     按任务 id 取回一个任务的结果
  *   - `cancel_mcp_task`         取消一个任务
@@ -41,7 +41,7 @@ export class McpScopePlugin implements ScopePlugin {
   private servers: McpServerDefinition[] = [];
 
   /**
-   * @param options.taskNotice 任务通知的投递口（可选）：不给就是任务状态没有人接，其余照常
+   * @param options.taskNotice 任务通知的投递口（可选）：不给就是任务终态没有人接，其余照常
    */
   constructor(options?: { paths?: string[]; logger?: LogSink; taskNotice?: McpTaskNoticePort }) {
     this.paths = options?.paths ?? [];

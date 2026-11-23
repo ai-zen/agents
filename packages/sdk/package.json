@@ -38,11 +38,14 @@
   "license": "MIT",
   "dependencies": {
     "@ai-zen/agents-core": "workspace:^",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/core": "^2.4.0",
+    "@modelcontextprotocol/ext-tasks": "^0.2.3",
     "openai": "^7.5.0"
   },
   "devDependencies": {
     "@ai-zen/fake-llm": "workspace:*",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@types/node": "^24.12.2",
     "dotenv": "^17.4.2",
     "prettier": "^3.9.5",

@@ -459,7 +459,7 @@ export interface McpToolDef {
   inputSchema: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   annotations?: McpAnnotations;
-  /** 任务增强执行 */
+  /** 这个工具怎么对待任务：不声明就是 `forbidden` */
   execution?: {
     taskSupport?: "forbidden" | "optional" | "required";
   };

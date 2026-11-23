@@ -350,13 +350,14 @@ untouched.
 The model side is five tools: `load_mcp`, `call_mcp_tool`, `read_mcp_resource`,
 `get_mcp_task_result`, `cancel_mcp_task`.
 
-Tasks are the long-running shape of an MCP call. A tool declares its task support
-(`forbidden` / `optional` / `required`); when a call produces a task, `call_mcp_tool` returns the task
-id at once, the server pushes status notifications, and the manager remembers which session started
-the task. A terminal status (`completed` / `failed` / `cancelled`, see `isTerminalTaskStatus`) is
-handed to `McpTaskNoticePort`, which the host implements: `sessionOf(agent)` says which session a
-caller belongs to, `deliver(sessionId, notice)` puts the notice in its inbox. The result itself is
-fetched by task id with `get_mcp_task_result`.
+Tasks are the long-running shape of an MCP call, and since the 2026-07-28 revision the server decides
+whether a call becomes one. A tool states its `execution.taskSupport` and that is what we turn into a
+preference (`forbidden` / `optional` / `required`); the answer — a result or a handle — is the
+server's call. The work is done by `@modelcontextprotocol/ext-tasks` (the official extension-track
+package); `McpTaskBridge` wraps one session per connection so `call_mcp_tool` can return either
+shape. When the handle comes back the terminal state is delivered into the session that started the
+task through `McpTaskNoticePort` (`sessionOf` / `deliver`), implemented by the host; the result is
+fetched by task id with `get_mcp_task_result`, and `cancel_mcp_task` asks the server to stop it.
 
 ## Details
 

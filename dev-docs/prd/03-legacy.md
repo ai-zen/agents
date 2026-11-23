@@ -15,7 +15,9 @@
 
 **看与画**：`view_image`（本地路径或网址）、`generate_image`（描述生图；端点只回 base64 时落盘给本地路径）。
 
-**七种按需加载**：`load_skill`、`call_skill_sub_agent`、`load_mcp`、`call_mcp_tool`、`read_mcp_resource`，以及两条取 MCP 任务的（`get_mcp_task_result` 取结果、`cancel_mcp_task` 取消，见 3.3 的任务那一段）。重复加载不是错误（幂等，重复调用跳过）。
+**七种按需加载**：`load_skill`、`call_skill_sub_agent`、`load_mcp`、`call_mcp_tool`、`read_mcp_resource`，以及两条取 MCP 任务的（`get_mcp_task_result` 取结果、`cancel_mcp_task` 取消）。重复加载不是错误（幂等，重复调用跳过）。
+
+> 2026-11-23：两条任务工具一度随 MCP SDK v2 升级删掉，随后按官方扩展轨道重做回来了 —— `@modelcontextprotocol/ext-tasks`（`io.modelcontextprotocol/tasks`，Beta、目标进核心）。语义变了：用不用任务由服务器在应答里定，客户端只按工具声明的 `taskSupport` 提一个偏好，不再由模型在参数里说。
 
 **22 种内置工具无条件注册**，能不能用由各工具自己声明：
 
@@ -60,7 +62,7 @@
 - 服务器**描述要给模型看** —— 它得知道"这个服务器是干什么的"才敢连。
 - **参数按 shell 风格切分成 argv**（引号与转义要认）。
 - **需要登录授权的服务器（OAuth）还没做**：字段留着，配了也连不上，别假装支持。
-- **任务（Tasks）**：服务器可以推状态（`notifications/tasks/status`），结果只能按任务 id 去拉（`tasks/result`）。所以它不是一个「结果自己回来」的东西，是**推状态 + 拉结果**两件事：状态到了就投一条进那段会话的 inbox（来源标成系统，带服务器名与任务 id），执行体被叫起来之后自己去拉。`call_mcp_tool` 因此多一个可选的任务参数，工具面多两条（`get_mcp_task_result` / `cancel_mcp_task`），客户端要在能力协商里声明支持任务增强。`taskSupport` 三档照规范走：`forbidden` 照旧同步调，`optional` 与 `required` 都带任务参数发起。投递照 4.1：不创建、不复活会话，那段已经死了就把通知丢掉并记日志。`[用户]`
+- **任务（Tasks）——已按新扩展重做**：服务器接下调用后交一个句柄，结果按任务 id 取；进度不再靠不请自来的通知，而是客户端反复问（或订阅）。谁决定用不用任务由服务器在应答里定，我们只按工具声明的 `taskSupport` 提偏好。终态（`completed` / `failed` / `cancelled`）投一条进发起那次调用所在会话的 inbox，投递照 4.1：不创建、不复活会话，那段已经死了就把通知丢掉并记日志。
 
 **Skill**：一个目录一份 `SKILL.md`，**四层**优先级（项目两处、用户两处）。能按需加载进上下文；只有标了"支持 subagent"的才能派活。
 

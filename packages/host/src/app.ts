@@ -320,7 +320,7 @@ export class HostApp {
     const onError = (error: unknown, what: string): void => this.log.error(what, { error });
 
     /**
-     * MCP 任务通知的投递口（SDK 定形状、这里实现）。
+     * MCP 任务终态通知的投递口（SDK 定形状、这里实现）。
      *
      * 两半都只有这里答得出来：谁活着问运行时（宿主不留存活表），投不出去那一行日志走宿主日志。
      * 里面的两个函数到真的投的时候才调，那时 `this.runtime` 已经造好了。
@@ -357,7 +357,7 @@ export class HostApp {
             // 也一个服务器都连不上，而且不报错。
             mcpPaths: mcp.paths(cwd),
             logger: this.log,
-            // 任务状态到了就投进发起那次调用的那段会话（丢不丢由这个口判）
+            // 任务终态到了就投进发起那次调用的那段会话（丢不丢由这个口判）
             mcpTaskNotice,
           }),
           // PeerSession 的三个工具：能力不在这里，它们只认这一个端口

@@ -26,7 +26,7 @@ export interface McpTaskNoticeDeps {
  * - **丢**：那段会话已经不在，就把这条通知丢掉并留一行日志。不唤醒、不建行、不留半条 ——
  *   一条服务器推来的通知不该把一段死会话叫起来（`PRD.md` 4.1）。
  *
- * 任务 id 到会话 id 的对应关系不在这里：它活在连接管理器里，进程没了就没了。
+ * 任务 id 到会话 id 的对应关系不在这里：它活在 SDK 的任务会话里，进程没了就没了。
  */
 export function createMcpTaskNoticePort(deps: McpTaskNoticeDeps): McpTaskNoticePort {
   return {
@@ -63,33 +63,15 @@ export function createMcpTaskNoticePort(deps: McpTaskNoticeDeps): McpTaskNoticeP
   };
 }
 
-/**
- * 这条通知在会话里说的那句话。
- *
- * 三件事都得说清：任务 id、终态是什么、结果去哪儿取（工具名与两个参数）。少一件，读这句话的
- * Agent 就会去找一个不存在的地方，或者以为结果会自己回来。
- */
+/** 那一句话本身。用词对齐 `call_mcp_tool` 交回句柄时说的那几句：任务、id、去哪儿取 */
 function noticeText(notice: McpTaskNotice): string {
-  const where = `{"server":"${notice.server}","task_id":"${notice.taskId}"}`;
-  const detail = notice.statusMessage === undefined ? "" : `: ${notice.statusMessage}`;
+  const head = `MCP task ${notice.taskId} on "${notice.server}" ${notice.status}`;
+  const reason = notice.statusMessage === undefined ? "" : `: ${notice.statusMessage}`;
+  if (notice.status !== "completed") return `${head}${reason}.`;
 
-  switch (notice.status) {
-    case "completed":
-      return (
-        `MCP task "${notice.taskId}" on server "${notice.server}" completed. ` +
-        `Its result does not come back by itself: fetch it with ${GET_MCP_TASK_RESULT_TOOL} ` +
-        `and the arguments ${where}.`
-      );
-    case "failed":
-      return (
-        `MCP task "${notice.taskId}" on server "${notice.server}" failed${detail}. ` +
-        `What it ended with can be read with ${GET_MCP_TASK_RESULT_TOOL} and the arguments ${where}.`
-      );
-    case "cancelled":
-      return (
-        `MCP task "${notice.taskId}" on server "${notice.server}" was cancelled${detail}. ` +
-        `Nothing more will happen on the server side; ${GET_MCP_TASK_RESULT_TOOL} with ${where} ` +
-        `answers what it left behind.`
-      );
-  }
+  return (
+    `${head}${reason}. ` +
+    `Get the result with ${GET_MCP_TASK_RESULT_TOOL} and the arguments ` +
+    `{"server":"${notice.server}","task_id":"${notice.taskId}"}.`
+  );
 }
