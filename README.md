@@ -124,7 +124,9 @@ the host.
 ### Package builds
 
 Wired at the root: `pnpm build-core`, `pnpm build-sdk`, `pnpm build-host`, `pnpm build-client`,
-`pnpm build-logger`, `pnpm build-testing`.
+`pnpm build-logger`, `pnpm build-fake-llm`.
+
+`pnpm dev` builds the host and serves it in the foreground against the daily data root (`~/.ai-zen`), so the host's own log lines are in front of you. The CLI is a separate checkout; `cli/package.json`'s `pnpm dev` starts this host as a child process and then starts the CLI against it.
 
 ### Repository layout
 

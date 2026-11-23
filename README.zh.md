@@ -98,7 +98,9 @@ console.log(
 
 ### 构建入口
 
-都在根上：`pnpm build-core`、`pnpm build-sdk`、`pnpm build-host`、`pnpm build-client`、`pnpm build-logger`、`pnpm build-testing`。
+都在根上：`pnpm build-core`、`pnpm build-sdk`、`pnpm build-host`、`pnpm build-client`、`pnpm build-logger`、`pnpm build-fake-llm`。
+
+`pnpm dev` 构建宿主并前台起它，数据根是日常那个（`~/.ai-zen`），宿主的日志就在眼前。CLI 是另一个 checkout：`cli/package.json` 的 `pnpm dev` 把这个宿主当子进程起起来，再起 CLI 连上去。
 
 ### 目录树
 
