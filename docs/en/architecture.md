@@ -13,9 +13,9 @@ This page answers "why the split is where it is". Which actions and classes live
 
 | Layer | Package | Owns | Strictly does not |
 |---|---|---|---|
-| Kernel | `@ai-zen/agents-core` | All the behaviour of one agent: the outer loop that takes entries in batches, the inner loop that sends a request and runs tools, the working and idle states, the two gates with their switches and readers, the lifetime, the event bus, plugin mounting | Sessions and workspaces, storage, network and credentials, language and copy, reading config files, capability discovery |
-| Capability face and runtime | `@ai-zen/agents-sdk` | Capability face: a container per directory holding tools, skills, subagents, MCP servers and the three peer-session tools; three-level model resolution; handoff. Runtime: wake an agent, keep the register of what is alive, post to another session, dispose a container by directory | Storage, connections, credentials, language and user-visible copy, session rows — a session is an opaque identity here |
-| Host | `@ai-zen/agents-host` | Rows and tables, connections and credentials, client odds and ends (notices, assets, questions, search), user-visible text and language, the single-instance discovery file, the command line | Install an agent, keep the register of what is alive, decide when a container is disposed, judge whether a config is valid, merge MCP configuration, manage connecting and reconnecting |
+| Kernel | `@ai-zen/agents-core` | All the behaviour of one Agent: the outer loop that takes InboxEntries in batches, the inner loop that sends a request and runs tools, the two state values, isInputPaused and isOutputPaused with their methods, the lifetime, the event bus, plugin mounting | Sessions and workspaces, storage, network and credentials, language and copy, reading config files, capability discovery |
+| Capability face and runtime | `@ai-zen/agents-sdk` | Capability face: a Scope per directory holding tools, skills, SubAgents, MCP servers and the three PeerSession tools; three-level model resolution; handoff. Runtime: wake an Agent, keep the register of what is alive, post() to another session, dispose a container by directory | Storage, connections, credentials, language and user-visible copy, session rows — a session is an opaque identity here |
+| Host | `@ai-zen/agents-host` | Rows and tables, connections and credentials, client odds and ends (notices, assets, questions, search), user-visible text and language, the single-instance discovery file, the command line | Build an Agent, keep the register of what is alive, decide when a Scope is disposed, judge whether a config is valid, merge MCP configuration, manage connecting and reconnecting |
 | Connection layer | `@ai-zen/agents-client` | Launching a host, discovery (the discovery file and the credential delivery file), credential sources, reconnect | Be published (`private: true`); be imported by `core` or `sdk` |
 
 Three more packages sit outside the four layers, each existing for one job: `@ai-zen/agents-logger`
@@ -44,8 +44,8 @@ wrong and gets fixed first; the host is not allowed to fill the gap.
 | Creation | `new Agent` (history as an argument) | `createAgent` plus the runtime's `wake` | None — it only hands out a new identity |
 | Observation | `on()` emits facts | the runtime forwards them and lets other agents subscribe | subscribe → write rows → push to the wire |
 | Persistence | emits facts, never persists | same as the kernel: facts only | the one write path; it hands the recovery materials to `wake` |
-| Communication | `push()` into the queue | `post()` to another session | relays a client delivery inward without interpreting it |
-| Gates | four switches plus two readers | pass-through | turned into procedures and wire events |
+| Communication | `send()` into the inbox | `post()` to another session | relays what a client sent inward without interpreting it |
+| Switches | `pauseInput()` / `pauseOutput()` plus two readers | pass-through | turned into procedures and wire events |
 | Lifetime | `start` / `stop` / `kill` | `wake` / reclaim | turned into procedures |
 
 All three keep one rule: facts rise from the bottom up, materials come from the top down, and nothing
@@ -57,8 +57,8 @@ database is recovery material" into "the database is the truth".
 
 ## Live objects: four questions and five criteria
 
-A live object is something whose lifetime is bound to the process or to an entity, with no table
-behind it. Today there are two: the agent and the capability container.
+An object whose lifetime is bound to the process or to an entity has no table behind it. Today
+those are the two: `Agent` and `Scope`.
 
 Four questions have to be answered before the code is written:
 
@@ -85,7 +85,7 @@ The five criteria:
    database only when it is gone, and then the database is all there is. Reads happen at recovery,
    writes happen at the event.
 
-Four things do not follow this: rows with a table behind them (sessions, messages, notices, assets),
+Four things do not follow this: rows with a table behind them (SessionRecord, messages, NoticeRecord, AssetRecord),
 one-shot processes (handoff), connections, and questions. None of them has the pair "memory is the
 truth, the database is only recovery material", and each has its own facts.
 
@@ -107,7 +107,7 @@ Facts come in three kinds, and each lands differently:
 
 | Kind | Example | Who persists it |
 |---|---|---|
-| something happened | a new message, a new entry | one row at first appearance |
+| something happened | a new message, a new InboxEntry | one row at first appearance |
 | something changed | a text delta, a structural change, a status flip | the subscriber decides how fine, its throttle window is its own policy |
 | something is final | this version of a message is the last one, a request finished | always written, read-only afterwards |
 
@@ -116,7 +116,7 @@ or write once at the end and lose the text when the process dies.
 
 ## One write path
 
-Writing rows happens in the host only: the kernel and the capability face emit facts and write
+Writing rows happens in the host only: the kernel and the SDK's capability face emit facts and write
 nothing; the host subscribes to those facts, writes at its own cut points, and turns the same batch
 into wire events for clients. A failed write must not hold the push back.
 
@@ -130,7 +130,7 @@ saving their own copy.
 A subscriber that throws is isolated and turned into its own `observerFailed`; the observed object
 keeps running. A full disk does not kill the request that was being watched.
 
-Interception uses hooks, observation uses subscriptions. The hooks that can refuse (the gates that
+Interception uses hooks, observation uses subscriptions. The hooks that can refuse (the four that
 decide whether work may begin) fail closed and return a verdict; every other hook fails open, returns
 nothing and takes part in no decision. The two never share one port: a broken guard that lets work
 through is no guard, and a broken bystander must not change what it is watching.
@@ -140,8 +140,8 @@ subscriber's business; the live object only offers cut points and facts.
 
 ## Reading on
 
-- [Core API](core.md) — the kernel's actions: the inbox, the two loops, the two gates, the event names,
+- [Core API](core.md) — the kernel's actions: the inbox, the two loops, the two switches, the event names,
   the plugin hooks
-- [SDK](sdk.md) — capability containers, model resolution, handoff, the runtime's wake and post
+- [SDK](sdk.md) — Scope, model resolution, handoff, the runtime's wake and post
 - [Deployment](deploy.md) — how the host process exists: instances, ports, credentials, the data root,
   upgrades

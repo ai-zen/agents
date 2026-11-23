@@ -1,6 +1,6 @@
 ---
 title: SDK
-description: The capability face and the runtime — the three-stage pipeline and five capability sources of a capability container, four-dimensional permissions as disclosure, three-level model resolution, handoff's two methods and two strategies, agent plugins, the three peer-session tools, the two background tools, and when a container is disposed.
+description: The capability face and the runtime — the three-stage pipeline and five capability sources of a Scope, four-dimensional permissions as disclosure, three-level model resolution, handoff's two methods and two strategies, the plugins attached to an Agent, the three peer-session tools, the two background tools, and when a container is disposed.
 outline: deep
 ---
 
@@ -8,8 +8,8 @@ outline: deep
 
 `@ai-zen/agents-sdk` is two halves behind one package name.
 
-- The capability face turns the kernel into an agent that can do something: capabilities discovered from disk, a model resolved from configuration, permissions, handoff.
-- The runtime keeps those agents alive and lets them talk to each other: one resident agent per session, facts forwarded outward, `post` from one session to another.
+- The capability face turns the kernel into an `Agent` that can do something: capabilities discovered from disk, a model resolved from configuration, permissions, handoff.
+- The runtime keeps those `Agent`s alive and lets them talk to each other: one resident `Agent` per session, facts forwarded outward, `post()` from one session to another.
 
 The kernel (`@ai-zen/agents-core`) sits underneath both. This page covers what this package adds around it, and the boundary of each addition.
 
@@ -22,232 +22,16 @@ The kernel (`@ai-zen/agents-core`) sits underneath both. This page covers what t
 pnpm add @ai-zen/agents-sdk
 ```
 
-## Layering: what this package does not do
+## How to use
 
-| Not here | Where it lives |
-|---|---|
-| storage, tables, migrations | the host |
-| connections, discovery files, credentials | the host |
-| user-visible copy, languages, i18n | the host |
-| session rows | the host — a session is an opaque identity string here |
-
-The rule the layering is measured by: this package never imports the host. A session is passed around as a `string`; what that session is called is asked from a port, never stored. If a piece of code needs to know "who is alive", "who knows whom", or "when to build and when to tear down", it belongs to the runtime. If it reads or writes files, writes rows, relays events, validates credentials or renders copy, it belongs to the host.
-
-Conversely, an `as unknown as` cast that fakes an instance of something in this package means a port is missing: the port should be declared here and implemented by the caller.
-
-## The four ports the runtime borrows
-
-`AgentRuntime` does none of these four itself, but each of them has to happen somewhere.
-
-| Port | What the caller provides |
-|---|---|
-| `openScope(cwd, peers)` | build a capability container for that directory |
-| `open(input)` | create a session: write the row, choose the identity, hand back `WakeMaterials` |
-| `nameOf(sessionId)` | the session's current name, read from its row; `undefined` = no such session |
-| `log` | a `LogSink`; omit it and nothing is logged |
-
-`WakeMaterials` is everything needed to assemble one agent, given from above: `cwd`, `agentId`, `modelId` / `modelParams`, `lineage`, `history`, the `waiting` entries not taken last time, and the plugins this session wants mounted (optional). None of it is fetched by the runtime itself: the history and the untaken entries exist in storage only the host can read, and the three-level model resolution has exactly one implementation, in `createAgent`.
-
-## Scope: one container per directory
-
-A `Scope` holds the configuration, the working directory, the agent-definition directory, the plugins, and the tools that came out of them. It runs a three-stage pipeline per agent — `discover` → `candidates` → `instantiate` — so what an agent can use is decided when that agent is built, not when each call arrives.
-
-```ts
-const scope = new Scope({ getConfig: () => config.read(), agentsDir, cwd })
-  .use(...allInOne({ toolsPaths, skillsPaths, subAgentsPaths, mcpPaths }));
-await scope.init();
-```
-
-`getConfig` is a port rather than a snapshot: after a configuration change, `refresh()` reads it again instead of rebuilding the container. `use()` must happen before `init()`; after `init()` it throws.
-
-| Member | What it does |
-|---|---|
-| `init()` | reads the configuration once, runs the first discovery, then locks plugin registration |
-| `refresh()` | reads the configuration again and lets every plugin discover again |
-| `dispose()` | disposes the plugins in reverse order (disconnecting MCP servers, for instance) |
-| `filter(definition, options?)` | collects candidate names from every plugin, drops `exclude`, then applies the four permission dimensions |
-| `instantiate(filtered)` | turns names into tool instances, then deduplicates by tool name |
-| `buildTools(definition, options?)` | the two steps in one call |
-
-`filter` is a pure name operation and builds nothing; `exclude` means "this layer must not see that name" (a subagent resolving its own tools excludes itself, which is what keeps delegation from recursing), and it is applied before permissions.
-
-## The five capability sources
-
-`allInOne(options)` returns the five standard plugins in this order — built-in tools, user tools, skills, MCP, sub-agents.
-
-| Plugin | Source |
-|---|---|
-| `BuiltinToolsScopePlugin` | the built-in tool set; each tool declares its own availability (`isAvailable`) |
-| `UserToolsScopePlugin` | tool scripts found on disk |
-| `SkillsScopePlugin` | skill directories, plus the tools that load a skill |
-| `McpScopePlugin` | MCP servers |
-| `SubAgentsScopePlugin` | sub-agent definitions on disk, exposed as one delegation tool each |
-
-When two sources offer a tool of the same name, the later registration stays (`instantiate` deduplicates by tool name, scanning from the end). That is tool-name deduplication, not "the later source beats the earlier one at everything": skills, MCP servers and subagents are each judged on their own dimension, and none of them renames another.
-
-`allInOne` options: `skillsPaths`, `toolsPaths`, `subAgentsPaths`, `mcpPaths`, `logger`, `mcpTaskNotice`. To drop or replace one source, construct the plugins one by one and `use()` them. Without a logger nothing is logged: the four plugins that read disk report "this file could not be read" to it.
-
-## Permissions: four dimensions, and disclosure
-
-Four dimensions, each independent, each `{ allow: [...] }` or `{ deny: [...] }`, with `*` supported. No match means denied; a dimension with no policy at all means denied; with the whole `permissions` object missing, all four deny — allowing by default is a dangerous default.
-
-```json
-{
-  "permissions": {
-    "tools": { "allow": ["*"] },
-    "skills": { "deny": ["deploy"] },
-    "mcps": { "allow": ["github"] },
-    "subagents": { "allow": ["reviewer"] }
-  }
-}
-```
-
-One dimension cannot set both `allow` and `deny`; doing so throws. Matching: `tools` by tool name, `skills` by skill id, `mcps` by server name, `subagents` by the function name of that delegation tool.
-
-Filters are applied to candidate names before instantiation, so a denied capability is not merely refused when called — the model never sees it. What it cannot see, it does not invent and does not keep trying.
-
-`PermissionEvaluator` is the only implementation of that rule: `filter(candidates)` runs all four dimensions at once, `isAllowed(name, dimension)` judges one name, and `match(name, policy)` is the pure rule without an instance.
-
-## Definitions, configuration and models
-
-| Member | What it owns |
-|---|---|
-| `ConfigManager` | `config.json` and the directories beside it: read, write, factory defaults, recovery of a broken file, reasoning presets, factory skills, `mcp.json` |
-| `AgentRepository` | one agent definition per file, `<agentsDir>/<id>.json` |
-| `createAgent(scope, agentId, options)` | one assembled `SdkAgent`: definition read, model resolved, tools built from the filtered candidates |
-| `resolveModel` / `resolveModelParams` | session override > definition > `config.defaultModel`, the only implementation |
-| `createModel` / `createModelFromConfig` | the `OpenAI` client, the model name and the request parameters |
-| `completeOnce` | one non-streaming call with no tools and no history |
-
-Three levels of model resolution, nearer to "this time" first: the session-level override (this session said "use this model"), the model bound to the agent definition, and `config.defaultModel` as the fallback. All three empty means there really is no model, and `createAgent` throws instead of quietly picking a factory model — otherwise the user believes they are on the configured model while the request and the bill land somewhere else.
-
-The resolution produces a value and a level, because the parameters have to follow the level: parameters come from whichever level supplied the model, and levels are never mixed. Once a session switches model, the parameters on the agent definition were written for the old model (they may carry a `thinking` shape only that model accepts), and mixing them in means sending the old parameters to the new model. So a session that switches model carries no parameters at all and lets the model use its own factory defaults.
-
-`createAgent` options:
-
-| Option | What it does |
-|---|---|
-| `modelId` / `modelParams` | the session-level override, and the parameters belonging to that same level |
-| `lifetime` | `"one-shot"` builds an agent that runs once and dies; resident by default |
-| `canOpenPeers` | whether this session may open further peer sessions (see below) |
-| `abortedToolRoundStrategy` / `abortedMessageStrategy` | the two interruption strategies; when omitted they come from `config.json`, and only then from the kernel defaults |
-
-`SdkAgent` is an `Agent` that also carries `scope` and `definition` (the definition as it is in effect, with the resolved model written into it), plus `useModel(modelId, modelParams?)` — change model and parameters in place without killing the agent: memory, queue, both gates and the in-flight request stay untouched, and the next request reads those three fields from the top.
-
-## Handoff: write the document, then change hands
-
-`HandoffService` has two halves: write a handoff document, then decide whether to replace the memory with it.
-
-| Method | What it does |
-|---|---|
-| `handoff(params)` | gives the agent one instruction to write the document, and changes nothing else about the session |
-| `migrate(params)` | writes the document, then computes the new memory and commits it |
-
-Two modes for who writes the document: `self` (the same agent, in its own session — the default) and `summary` (one separate model call over a serialized history, no tools and no original context). There is no automatic transition between them: whichever one was asked for is the one that runs, and failing is failing — switching executors mid-way would make a failed handoff look like a successful one.
-
-Two strategies for the old memory: `omit` (marked `omit: true` and kept, no longer sent to the model — the default) and `prune` (physically removed, leaving only the template messages from the definition).
-
-The memory after the swap is two pieces: the template (the system prompts) and one breakpoint message at the end — `role: system`, `hidden`, carrying only the document path. That shape is computed here; `commitMemory` only decides where it lands: without it the SDK replaces `agent.messages` in place, with it the SDK touches nothing and the caller stores it.
-
-`HandoffGuardPlugin` is the guard for the handoff batch: during it, the only write that passes is the one to the handoff document itself; every other write tool is refused with a sentence the model can read and act on. It also observes whether that write happened (`arm` returns an outcome and a "batch over" promise; `disarm` lets everything through again). It is a guard against mistakes in the workspace, not a sandbox: a shell command can still write files.
-
-Cancellation only honours the `signal` the caller passes in; the service holds no cancel handle of its own. Cancellation surfaces as `HandoffAbortedError`, with no downgrade and no silent retry in the other mode — that would burn one more full request for nothing. `handingOff` says "this service is running one right now", and the auto-migrate plugin steps aside on it, so a handoff cannot trigger an auto-migrate that triggers another handoff.
-
-## Agent plugins
-
-Mounted on an agent, not on the container.
-
-| Plugin | What it does |
-|---|---|
-| `AutoMigratePlugin` | when the agent goes idle it reads the `prompt_tokens` of the last response and calls `migrate()` if that crossed the soft line; it holds the `HandoffService` and `handoffTokens`, and `resolveMode` decides who writes this time |
-| `AutoRefreshToolsPlugin` | refreshes the tool list before each request by default (configurable to once per batch) |
-| `ContextGuardPlugin` | the hard line: a request whose pre-flight usage exceeds `guardTokens` is refused; the handoff request does not get an exemption |
-| `SubAgentGuardInstallerPlugin` | installs the same hard line on subagents — guarding only the main session is not guarding |
-| `HandoffGuardPlugin` | the write guard for the handoff batch |
-| `UnknownToolHintPlugin` | a hint when the model calls a tool that does not exist (mostly useful on the MCP side) |
-| `AssetTransportPlugin` | rebuilds assets into real content for the current model; the copy that goes out is rebuilt for the model actually being sent to |
-
-Both usage lines are absolute values: `handoff` (the soft line — after a response, a `prompt_tokens` above it triggers a handoff) and `guard` (the hard line — before a request, usage above it refuses the request). `guard` should be clearly larger than `handoff`, leaving room for the extra requests a handoff batch needs; to loosen it, change the number, because there is no implicit multiplier.
-
-## Peer sessions
-
-A peer session is another session an agent opens for itself: its own agent, its own context, its own usage, and it stays in the session list afterwards.
-
-The model side is three tools, and they implement nothing themselves.
-
-| Tool | What it does |
-|---|---|
-| `create_session` | open a peer session and return `{ sessionId, label }` at once |
-| `read_session_status` | whether it is working or idle, whether it is alive, its name, an excerpt of its last message |
-| `post_message` | put one message in that session's inbox |
-
-`PeerSessionsScopePlugin` takes a `PeerSessionPort` with three methods — `create` (return as soon as it exists), `status` (read live plus an excerpt of the last line), `send` (deliver without waiting for a result) — and without a port it produces no tools at all. The runtime implements that port (`RuntimePeerSessions`), which is why the three tools also work when no host is around.
-
-A delivery does not look at the relation between the two sessions, and its receipt says only that the message is in the other inbox. Refusals are structured so the model can read them and change plan: `gone` (no such session) and `dead` (the row exists, no agent behind it, so nobody will take it); creating can also be refused with `depth_exceeded` or `model_unresolved`, and a port that enforces a limit can add `too_many_peers`.
-
-Neither an excerpt of a peer's history nor a message count is ever returned: the model gets one short excerpt of the last line, so it does not start treating another session's transcript as its own context.
-
-Preventing nesting is structural, not validated at call time: an agent that was itself opened as a peer is built with `canOpenPeers: false`, so it has no `create_session` on its hands — creating is one level deep and the model cannot even try. `post_message` and `read_session_status` stay, because peers talk both ways. This is enforced with `exclude`, not by editing `permissions` in the definition: the definition file is user-editable configuration, and this rule does not live there.
-
-## The two background tools
-
-Two built-in tools return immediately and report later.
-
-| Tool | What it does |
-|---|---|
-| `async_exec` | run a shell command in the background; its output and exit status are pushed back into the session as a new message |
-| `async_timeout` | a timer; when it fires, a message carrying the task id is pushed back |
-
-Both only deliver: the model has no second tool to "check the result" or "wait for the result", and does not poll. The result comes back through one delivery into the same session, at low priority, so it never lands inside the batch that is currently running. Task ids come from one counter per agent (`async_exec-1`, `async_timeout-2`), and everything still running is reaped when the agent is stopped or killed.
-
-A one-shot agent gets neither of them (`ASYNC_TASK_TOOL_NAMES` is stripped at assembly): the result arrives after its call stack has returned, so there would be nobody to deliver it to. This is the same rule the kernel states for resident versus one-shot, enforced where the tools are chosen.
-
-## Scopes: when a container is disposed
-
-`Scopes` owns the container registry: one container per `cwd`, shared by every session working in that directory.
-
-| Member | What it does |
-|---|---|
-| `for(cwd)` | the container for that directory, built on first use |
-| `dispose(cwd)` | tear it down — refuses while any session is still alive on that directory |
-| `refreshAll()` | let every already-built container re-read the configuration, and report how many were refreshed and which failed |
-| `disposeAll()` | tear down everything, for process shutdown |
-
-There is no idle timer, no reference counting and no automatic collection: a container lives because someone holds it, and it is torn down when someone tears it down. "Nobody is using it" is not a decidable state. Tearing down refuses rather than cascading, because a cascade would silently kill sessions that are in the middle of work.
-
-"Configuration changes take effect immediately" lands here: when the configuration changes, the runtime lets every already-built container read it again, and the container lets every plugin discover again; on the MCP side that reconciles against the definitions, disconnecting removed and changed servers and touching unchanged ones not at all. Directories nobody has used are not included — they have no container, and the next `for` builds one from the new configuration.
-
-## The runtime: wake and post
-
-`AgentRuntime` keeps one resident agent per session and forwards the kernel's facts.
-
-| Member | What it does |
-|---|---|
-| `wake(sessionId, materials)` | assemble, register, start; idempotent, concurrent calls share one assembly |
-| `post({ from, to, content })` | put one sentence in another session's inbox; answers `{ ok: true }` or a reason (`gone` / `dead`) |
-| `status(sessionId)` | whether it is working or idle, whether it is alive, its name, an excerpt of the last thing it said |
-| `openPeer({ from, prompt, agentId?, modelId?, label? })` | open a peer session, wake it, deliver the first prompt, return immediately |
-| `kill(sessionId)` | unregister, kill, report that it is gone |
-| `close()` | kill everything and tear every container down |
-| `observe(listener)` | subscribe to the facts; returns an unsubscribe function |
-| `get(sessionId)` / `sessionOf(agent)` / `aliveOn(cwd)` | the snapshots: which agent, which session, which sessions on that directory |
-| `scopes` / `peerSessions` | the container registry, and the peer-session port this runtime implements |
-
-`post` neither creates nor revives a session: if the target has no agent, the message was not delivered, and the sending side decides what to tell the user. The two refusal reasons must stay apart — `gone` is a session that no longer exists, `dead` is a row that exists with nobody to take the message. Delivery is low priority: a sentence that was posted should not wedge itself between the tool calls of the batch in hand.
-
-Facts are a discriminated union: `resident:appeared` and `resident:gone` (the runtime's own two), `scope:appeared` / `scope:refreshed` / `scope:gone` (from the container registry), and every kernel event of every agent — unchanged in name and payload, with the `sessionId` added.
-
-There is no "wait until it is done" on the runtime: a resident session is never done, it goes from working to idle and can be pushed again at any moment. Nothing in the runtime waits for a caller; a delivery is what wakes a session up. An assembly that fails throws and leaves no register entry — a half-assembled session in the register tells the outside world "it is alive" while it cannot even take a message.
-
-## Example
+Three steps: put the configuration file and the factory entries where they belong (`config.bootstrap()`), build a `Scope` and attach capability sources to it (`Scope(...).use(...allInOne())`), then build an `Agent` from an id (`createAgent`).
 
 ```ts
 import { ConfigManager, DEFAULT_AGENT_ID, Scope, allInOne, createAgent } from "@ai-zen/agents-sdk";
 
 const base = "/path/to/data";
 const config = new ConfigManager(`${base}/config.json`);
-// puts config.json, the default agent definition, mcp.json and the factory skills in place
-// in one call (existing files are never overwritten)
+// puts config.json, the default AgentDefinition, mcp.json and the factory skills in place in one call
 await config.bootstrap();
 
 const scope = new Scope({
@@ -266,7 +50,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.push({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
+agent.send({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
 void agent.start();
 await idle;
 
@@ -275,11 +59,233 @@ agent.stop();
 await scope.dispose();
 ```
 
-The version where two sessions talk to each other is in [Getting Started](getting-started.md): `AgentRuntime` assembles the agents and keeps the register of what is alive, `post` sends one sentence to another session, and the session that was posted to goes from idle to working on its own and back to idle.
+The `Scope` needs two facts: where to read configuration from (`getConfig`), and which directory this container counts as (`cwd`) — capabilities are discovered under that directory. `allInOne()` attaches all five sources at once. Once built, the `Agent` behaves exactly as in the kernel: `send()` to deliver, `start()` to run, wait for `state:idle`, `stop()` to finish, and `dispose()` on the container when done.
+
+For capabilities without the runtime, `Scope` plus `createAgent` is enough — no `AgentRuntime`, no host. That usage is in [Core and Scope alone](scope.md) (the code there was run, including the part where a definition with no `permissions` gets no tools at all).
+
+For two sessions that talk to each other, use `AgentRuntime`: it assembles the `Agent`s, keeps the register of what is alive, and `post()` sends one sentence to another session, which goes from idle to working on its own and back to idle. That one is in [Getting Started](getting-started.md).
+
+## Layering: what this package does not do
+
+| Not here | Where |
+|---|---|
+| database, tables, migrations | the host |
+| connections, discovery files, credentials | the host |
+| user-facing copy, language, i18n | the host |
+| session rows | the host — inside this package a session is an opaque identity string |
+
+The rule for judging the layering: this package never imports the host. Sessions travel as `string`; what a session is called is asked through a port and never stored. Code that needs to know "who is alive", "who knows whom", "when is it assembled, when is it disposed" belongs to the runtime; code that reads and writes files, writes rows, forwards events, verifies credentials or renders copy belongs to the host.
+
+The reverse also holds: an `as unknown as` cast, or a fake instance conjured up to satisfy something in this package, means a port is missing — the port belongs here, implemented by the caller.
+
+## The four ports the runtime borrows
+
+`AgentRuntime` does none of these four things itself, but each one has to be done somewhere.
+
+| Port | What the caller provides |
+|---|---|
+| `openScope(cwd, peers)` | build a `Scope` for that directory |
+| `open(input)` | build a session: write the row, fix the identity, hand back `WakeMaterials` |
+| `nameOf(sessionId)` | the session's current name, read off its row; `undefined` = no such session |
+| `log` | a `LogSink`; nothing is logged without one |
+
+`WakeMaterials` is everything needed to assemble one `Agent`, handed down from above: `cwd`, `agentId`, `modelId` / `modelParams`, `lineage`, `history`, the `waiting` `InboxEntry`s not yet taken last time, and the plugins this session wants (optional). None of it is fetched by the runtime: the copy of the history and of the untaken entries that lives in the database is known only to the host, and three-level model resolution is implemented in exactly one place, `createAgent`.
+
+## Scope: one container per directory
+
+A `Scope` holds the configuration, the working directory, the `AgentDefinition` directory, the plugins, and the tools those plugins produce. It runs a three-stage pipeline for every `Agent` — `discover` → `candidates` → `instantiate` — so what an `Agent` may use is fixed at the moment it is built, not at every call.
+
+```ts
+const scope = new Scope({ getConfig: () => config.read(), agentsDir, cwd })
+  .use(...allInOne({ toolsPaths, skillsPaths, subAgentsPaths, mcpPaths }));
+await scope.init();
+```
+
+`getConfig` is a port, not a snapshot: when the configuration changes, `refresh()` reads it again instead of the container being rebuilt. `use()` has to come before `init()`; calling `use()` after `init()` throws.
+
+| Member | What it does |
+|---|---|
+| `init()` | read the configuration once, run the first discovery, then lock plugin registration |
+| `refresh()` | read the configuration again and make every plugin discover again |
+| `dispose()` | release the plugins in reverse order (disconnecting MCP connections, for instance) |
+| `filter(definition, options?)` | collect the candidate names from every plugin, remove `exclude`, then filter through the four-dimensional permissions |
+| `instantiate(filtered)` | turn names into tool instances, then de-duplicate by tool name |
+| `buildTools(definition, options?)` | the two steps above in one |
+
+`filter` deals in names only and builds no tools; `exclude` means "this layer should not see this name" (a `SubAgent` excluding itself while resolving its own tools, to prevent recursion), and it applies before permissions.
+
+## The five capability sources
+
+`allInOne(options)` returns the five standard plugins in this order — built-in tools, user tools, skills, MCP, `SubAgent`.
+
+| Plugin | Source |
+|---|---|
+| `BuiltinToolsScopePlugin` | the built-in tool set; each tool declares its own availability (`isAvailable`) |
+| `UserToolsScopePlugin` | tool scripts found on disk |
+| `SkillsScopePlugin` | the skills directory, and the tools that load skills |
+| `McpScopePlugin` | MCP servers |
+| `SubAgentsScopePlugin` | `SubAgent` definitions on disk; one definition expands into one delegation tool |
+
+When two sources offer a tool with the same name, the one registered later stays (`instantiate` de-duplicates by tool name, keeping from the back). That is de-duplication of tool names, not "everything from the later source beats the earlier one": skills, MCP servers and `SubAgent`s are each judged in their own dimension, and none of them overwrites another's names.
+
+The `allInOne` options: `skillsPaths`, `toolsPaths`, `subAgentsPaths`, `mcpPaths`, `logger`, `mcpTaskNotice`. To drop or replace one source, build the plugins one by one and `use()` them — that form is also in [Core and Scope alone](scope.md). With no `logger` nothing is logged at all: the four plugins that read disk report "this file could not be read" to it.
+
+## Permissions: four dimensions, and disclosure
+
+Four dimensions, each independent, each either `{ allow: [...] }` or `{ deny: [...] }`, with `*` supported. No match means denied; a dimension with no policy at all means denied; the whole `permissions` missing means all four denied — allowing by default is a dangerous default.
+
+```json
+{
+  "permissions": {
+    "tools": { "allow": ["*"] },
+    "skills": { "deny": ["deploy"] },
+    "mcps": { "allow": ["github"] },
+    "subagents": { "allow": ["reviewer"] }
+  }
+}
+```
+
+`allow` and `deny` cannot both appear in one dimension; writing both throws. Matching: `tools` by tool name, `skills` by skill id, `mcps` by server name, `subagents` by the function name of that delegation tool.
+
+Filtering applies to candidate names before instantiation, so a denied capability is not "held back at call time" — the model never sees it. What it cannot see it will not make up, and will not keep trying.
+
+`PermissionEvaluator` is the only implementation of that rule: `filter(candidates)` runs all four dimensions at once, `isAllowed(name, dimension)` judges one name, and `match(name, policy)` is a pure predicate that needs no instance.
+
+## Definitions, configuration and models
+
+| Member | What it manages |
+|---|---|
+| `ConfigManager` | `config.json` and the directories around it: reading and writing, factory defaults, recovery from a broken file, the reasoning preset table, factory skills, `mcp.json` |
+| `AgentRepository` | one file per `AgentDefinition`, `<agentsDir>/<id>.json` |
+| `createAgent(scope, agentId, options)` | a fully assembled `SdkAgent`: reads the definition, resolves the model, builds tools from the filtered candidates |
+| `resolveModel` / `resolveModelParams` | session-level override > definition > `config.defaultModel`, the only implementation |
+| `createModel` / `createModelFromConfig` | the `OpenAI` client, the model name and the request parameters |
+| `completeOnce` | one non-streaming call with no tools and no history |
+
+Three-level model resolution, the closer to "this one call" the higher the priority: the session-level override (this session said "use this model this time"), the model bound on the `AgentDefinition`, and `config.defaultModel` as the fallback. All three empty means there really is no model, and `createAgent` fails outright rather than quietly picking a factory model — otherwise the user believes the one in the config is in use while the requests and the bill land somewhere else.
+
+Resolution produces a value plus a preset, because the parameters follow the preset: the parameters come from the level the model came from, never mixed across levels. Once a session has switched models, the parameters on its `AgentDefinition` were written for the old model (they may carry a `thinking` shape only the old model understands), and mixing them in sends old parameters to a new model. So a session that switched models carries nothing and lets the model use its own factory parameters.
+
+The `createAgent` options:
+
+| Option | What it does |
+|---|---|
+| `modelId` / `modelParams` | the session-level override, and the parameters that belong to that same level |
+| `lifetime` | `"one-shot"` builds an `Agent` that dies after one run; resident by default |
+| `canOpenPeers` | whether this session may open peer sessions at all (see below) |
+| `abortedToolRoundStrategy` / `abortedMessageStrategy` | the two interruption strategies; when omitted they come from `config.json`, and only then from the kernel default |
+
+`SdkAgent` is an `Agent`, carrying `scope` and `definition` on the side (the definition in effect, with the resolved model written into it), plus `useModel(modelId, modelParams?)` — swap the model and its parameters in place without killing the `Agent`: memory, inbox, the two switches and the request in flight are all untouched, and the next request reads those three cells fresh.
+
+## Handoff: write the document, then change hands
+
+`HandoffService` is two halves: write a handoff document first, then decide whether to replace memory with it.
+
+| Method | What it does |
+|---|---|
+| `handoff(params)` | give the `Agent` an instruction to write that document; nothing else about the session changes |
+| `migrate(params)` | write the document, compute the new memory and commit it |
+
+Who writes it comes in two modes: `self` (the same `Agent`, in its own session — the default) and `summary` (serialise the history and make one separate model call, with no tools and no original session context). There is no automatic transition between them: whichever is asked for is what runs, and failing is reported as failure — switching to another writer would make a failed handoff look like a success.
+
+The old memory is dealt with by one of two strategies: `omit` (mark it `omit: true` and keep it, never sending it to the model again — the default) and `prune` (delete it physically, leaving only the template messages from the definition).
+
+The memory after the swap has exactly two parts: the template (the system prompt messages) and one handoff breakpoint at the end — `role: system`, `hidden`, whose body carries only the document path. That shape is computed inside the SDK; `commitMemory` only decides where it lands: without it the SDK replaces `agent.messages` in place, with it the SDK touches not a byte and the caller persists.
+
+`HandoffGuardPlugin` guards that batch: the only write allowed in it is the handoff document itself, every other write tool is refused, with a sentence the model can understand and act on. It also watches whether that write actually happened (`arm` returns a result and a "this batch is over" promise; after `disarm` everything is allowed again). It protects the working directory from being mangled; it is not a sandbox — shell commands can still write files.
+
+Cancellation recognises only the `signal` the caller passes in: the service holds no cancellation handle of its own. Cancellation surfaces as `HandoffAbortedError`, with no degradation and no quiet re-run in another mode — that would burn a whole extra full request. `handingOff` says "this service is running a handoff right now", and the auto-handoff plugin stands aside accordingly, so a handoff does not trigger an auto handoff that triggers another handoff.
+
+## Plugins attached to an `Agent`
+
+Attached to the `Agent`, not to the container.
+
+| Plugin | What it does |
+|---|---|
+| `AutoMigratePlugin` | on the way to idle, looks at the last answer's `prompt_tokens` and calls `migrate()` if it crossed the soft line; it holds the `HandoffService` and `handoffTokens`, and `resolveMode` decides who writes this time |
+| `AutoRefreshToolsPlugin` | rediscovers capabilities and rebuilds the tool table from what it found; by default before every request, configurable to once per batch |
+| `ContextGuardPlugin` | the hard line: refuse the request when usage before it exceeds `guardTokens`; it does not stand aside for a handoff batch |
+| `SubAgentGuardInstallerPlugin` | installs the same hard line on `SubAgent`s — guarding only the main session guards nothing |
+| `HandoffGuardPlugin` | the write guard for a handoff batch |
+| `UnknownToolHintPlugin` | a hint when the model calls a tool that does not exist (most useful on the MCP side) |
+| `AssetTransportPlugin` | materialises assets for the current model, and rebuilds the copy being sent against the model actually used |
+
+Both usage lines are absolute numbers: `handoff` (soft — hand off once `prompt_tokens` after a response exceeds it) and `guard` (hard — refuse before a request that exceeds it). `guard` should be clearly larger than `handoff`, leaving room for the extra requests of a handoff batch; to loosen it, raise the number — there is no implicit multiplier.
+
+## Peer sessions
+
+A `PeerSession` is another session an `Agent` opens for itself: its own `Agent`, its own context, its own usage, and it stays in the session list afterwards.
+
+On the model side there are three tools, and they implement nothing themselves.
+
+| Tool | What it does |
+|---|---|
+| `create_session` | open a `PeerSession` and return `{ sessionId, label }` at once |
+| `read_session_status` | whether it is working or idle, whether it is still alive, what it is called, a summary of its last message |
+| `post_message` | put one message into that session's inbox |
+
+`PeerSessionsScopePlugin` takes a `PeerSessionPort` with three methods — `create` (returns at once), `status` (reads now plus a summary of the last sentence), `post` (delivers without waiting for a result, the same name and the same meaning as `AgentRuntime.post()`) — and produces no tools at all without the port. The runtime implements exactly this port (`RuntimePeerSessions`), so those three tools work with no host present.
+
+Delivery does not look at the relationship between the two sessions, and the receipt only says the message reached the other side's inbox. Refusals are structured so the model can read them and change tack: `gone` (no such session) and `dead` (the row exists but no `Agent` stands behind it, so nobody will take it); creation can also be refused with `depth_exceeded` and `model_unresolved`, plus `too_many_peers` when the port enforces a limit itself.
+
+Nothing about a `PeerSession`'s history is returned — neither a summary nor a message count: the model gets a short piece of the last sentence only, so it cannot import another session's record as its own context.
+
+Preventing nesting is structural, not checked at call time: an `Agent` that was itself opened as a `PeerSession` gets `canOpenPeers: false` from `createAgent` and therefore has no `create_session` — opening a `PeerSession` is one level deep only, and the model cannot even try. `post_message` and `read_session_status` remain, because peers talk in both directions. The rule lands through `exclude` and does not touch the `permissions` in the definition: that file is configuration the user edits, and this rule does not live there.
+
+## The two background tools
+
+Two built-in tools that return at once and report later.
+
+| Tool | What it does |
+|---|---|
+| `async_exec` | run a shell command in the background; its output and exit status arrive as a new message in this session |
+| `async_timeout` | a timer; when it fires, a message carrying the task id arrives |
+
+Both only deliver: the model holds no second tool to "check the result" or "wait for the result", and does not poll. The result comes back to the same session through one `send()`, at low priority, so it never lands in the batch currently running. The task id comes from a per-`Agent` counter (`async_exec-1`, `async_timeout-2`), and when the `Agent` stops or is killed, everything still running is torn down.
+
+A one-shot `Agent` gets neither (`ASYNC_TASK_TOOL_NAMES` is removed at assembly): by the time the result returns, its call stack is gone and there is nobody to send it to. That is the same rule the kernel states for "resident versus one-shot", applied at the step where tools are chosen.
+
+## Scopes: when a container is disposed
+
+`Scopes` holds the register of `Scope`s: one container per `cwd`, shared by every session in that directory.
+
+| Member | What it does |
+|---|---|
+| `for(cwd)` | the container for that directory, built on first use |
+| `dispose(cwd)` | dispose it — refused while sessions in that directory are still alive |
+| `refreshAll()` | make every container already built read the configuration again; reports how many were refreshed and which were not |
+| `disposeAll()` | dispose everything, for process exit |
+
+There is no idle timer, no reference counting and no automatic collection: a container lives because somebody holds it, and it is disposed when somebody disposes it. "Nobody is using it" is not a decidable state. Disposal refuses rather than taking other things down with it — taking things down with it would quietly kill a session halfway through its work.
+
+"Configuration changes take effect immediately" lands here: when the configuration changes, the runtime makes every container already built read it again, and each container makes its plugins discover again; the MCP side reconciles by definition, disconnecting what was deleted or changed and touching not a byte of what did not change. Directories nobody has used are not among them — they have no container, and the next `for` builds one from the new configuration.
+
+## The runtime: wake and post
+
+`AgentRuntime` keeps one resident `Agent` per session and forwards the kernel's facts outward.
+
+| Member | What it does |
+|---|---|
+| `wake(sessionId, materials)` | assemble, register, start; idempotent, concurrent calls share one assembly |
+| `post({ from, to, content })` | put one sentence into another session's inbox; returns `{ ok: true }` or a reason (`gone` / `dead`) |
+| `status(sessionId)` | whether it is working or idle, whether it is still alive, what it is called, a summary of its last message |
+| `openPeer({ from, prompt, agentId?, modelId?, label? })` | open a `PeerSession`, wake it, hand it the first sentence, return at once |
+| `kill(sessionId)` | unregister, kill, report that it is gone |
+| `close()` | kill everything and dispose every container |
+| `observe(listener)` | subscribe to facts; returns the unsubscribe function |
+| `get(sessionId)` / `sessionOf(agent)` / `aliveOn(cwd)` | snapshots: which `Agent`, which session, which sessions are alive in that directory |
+| `scopes` / `peerSessions` | the `Scope` register, and the `PeerSessionPort` this runtime implements |
+
+`post()` neither creates nor revives a session: if the target has no `Agent`, nothing was delivered, and how to tell the user is the sender's decision. The two refusal reasons must stay apart — `gone` means the session is gone, `dead` means the row is there but nobody is taking. Delivery priority is low: a sentence that arrives from elsewhere should not be slipped between the tool calls of the batch in hand.
+
+Facts are one discriminated union: `resident:appeared` and `resident:gone` (the runtime's own two), `scope:appeared` / `scope:refreshed` / `scope:gone` (from the `Scope` register), plus every kernel event of every `Agent` — names and payloads unchanged, with a `sessionId` added.
+
+There is no "wait until it is done" on the runtime: a resident session is never done, it goes from working to idle and can be sent to again at any moment. Nothing in the runtime waits for a caller; a `send()` is what wakes a session up. An assembly that fails throws and leaves no register entry — a half-assembled session in the register tells the outside world "it is alive" while it cannot even take a message.
 
 ## Reading on
 
-- [Getting Started](getting-started.md) — the smallest agent without a host, and two sessions talking to each other
+- [Getting Started](getting-started.md) — the smallest `Agent` without a host, and two sessions talking to each other
+- [Core and Scope alone](scope.md) — capabilities without the runtime
 - [Architecture](architecture.md) — the four layering tests, the four questions for live objects, the direction of facts and materials
-- [Core API](core.md) — what this package sits on: inbox, the two loops, the two gates, events and hooks
+- [Core API](core.md) — what this package sits on: inbox, the two loops, the two switches, events and hooks
 - [MCP](mcp.md) — where server configuration comes from, how a connection is made, how tools reach the model

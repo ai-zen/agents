@@ -1,6 +1,6 @@
 ---
 title: 快速开始
-description: 从零到第一句发出去：装依赖、跑测试、起一台宿主（agents-host serve 与它的参数）、拿一串凭证（token create 与 run/token）、把客户端连上去，以及不经过宿主的最小 agent（core 与 sdk）。
+description: 从零到第一句发出去：装依赖、跑测试、起一台宿主（agents-host serve 与它的参数）、拿一串凭证（token create 与 run/token）、把客户端连上去，以及不经宿主的两种用法（只用 core；core 加 Scope）。
 outline: deep
 ---
 
@@ -117,7 +117,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.push({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
+agent.send({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
 
 void agent.start();  // resolves only when the agent is dead
 await idle;          // the batch in hand finished
@@ -126,7 +126,7 @@ offFinished();
 console.log(agent.messages.at(-1)?.content);
 ```
 
-再加一层 `@ai-zen/agents-sdk`，就是两段会话互相发话：`AgentRuntime` 装上执行体、留一份「谁活着」的登记，`post` 把一条话寄给另一段会话。被投的那一段自己从闲变成忙、跑完回到闲，投的那一侧不等它。
+再加一层 `@ai-zen/agents-sdk`，就是两段会话互相发话：`AgentRuntime` 装上 `Agent`、留一份「谁活着」的登记，`post()` 把一条话寄给另一段会话。被投的那一段自己从闲变成忙、跑完回到闲，投的那一侧不等它。
 
 ```ts
 import {
@@ -185,11 +185,14 @@ console.log(await runtime.status("helper"));
 await runtime.close();
 ```
 
-这一段里的模型从 `config.json` 解析出来：端点、模型与密钥都写在那个文件里。运行时有四个端口由调用方给 —— 造一个能力容器（`openScope`）、开一段会话（`open`）、现读一段会话此刻叫什么（`nameOf`）、日志 —— 宿主给的就是这四格；把它们换成空实现，这一层的行为一条不变。
+这一段里的模型从 `config.json` 解析出来：端点、模型与密钥都写在那个文件里。运行时有四个端口由调用方给 —— 造一个 `Scope`（`openScope`）、开一段会话（`open`）、现读一段会话此刻叫什么（`nameOf`）、日志 —— 宿主给的就是这四格；把它们换成空实现，这一层的行为一条不变。
+
+要工具、技能、MCP 这些能力，但不要 `AgentRuntime` 时，`Scope` 与 `createAgent` 就够 —— 那份代码在[只用 core 与 Scope](scope.md)。
 
 ## 下一步
 
 - [架构](architecture.md) —— 四层的判据、活物的四问、事件与持久化的落点
-- [Core API](core.md) —— 一个 agent 的 inbox、两个循环、两道闸、插件钩子
-- [SDK](sdk.md) —— 能力容器、模型解析、交接、运行时
+- [Core API](core.md) —— 一个 `Agent` 的 inbox、两个循环、两道开关、插件钩子
+- [SDK](sdk.md) —— `Scope`、模型解析、交接、运行时
+- [只用 core 与 Scope](scope.md) —— 不装 `AgentRuntime`、不碰宿主
 - [部署](deploy.md) —— 本机实例与对外实例、端口三档、凭证、升级

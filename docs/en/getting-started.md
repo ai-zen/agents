@@ -1,6 +1,6 @@
 ---
 title: Getting Started
-description: From zero to the first message out: install and test, start a host (agents-host serve and its options), mint a credential (token create and run/token), connect a client, and a minimal agent that never touches the host (core and sdk).
+description: From zero to the first message out: install and test, start a host (agents-host serve and its options), mint a credential (token create and run/token), connect a client, and two ways to run without a host (core alone, and core plus Scope).
 outline: deep
 ---
 
@@ -138,7 +138,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.push({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
+agent.send({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
 
 void agent.start();  // resolves only when the agent is dead
 await idle;          // the batch in hand finished
@@ -147,8 +147,8 @@ offFinished();
 console.log(agent.messages.at(-1)?.content);
 ```
 
-Adding `@ai-zen/agents-sdk` on top puts two sessions in touch: `AgentRuntime` assembles an agent and
-keeps the register of what is alive, and `post` puts one message in another session's inbox. The
+Adding `@ai-zen/agents-sdk` on top puts two sessions in touch: `AgentRuntime` assembles an `Agent` and
+keeps the register of what is alive, and `post()` puts one message in another session's inbox. The
 receiving session goes from idle to working by that delivery, runs on its own and comes back to idle;
 the posting side does not wait for it.
 
@@ -210,14 +210,18 @@ await runtime.close();
 ```
 
 The model here is resolved from `config.json`, which carries the endpoints, the models and their
-keys. The runtime borrows four ports from the caller — build a capability container (`openScope`),
-open a session (`open`), read what a session is called right now (`nameOf`), log — and the host
-provides exactly these four. Replace them with empty implementations and this layer behaves the same.
+keys. The runtime borrows four ports from the caller — build a `Scope` (`openScope`), open a session
+(`open`), read what a session is called right now (`nameOf`), log — and the host provides exactly
+these four. Replace them with empty implementations and this layer behaves the same.
+
+For tools, skills and MCP without `AgentRuntime`, `Scope` plus `createAgent` is enough — that code is
+in [Core and Scope alone](scope.md).
 
 ## Next
 
 - [Architecture](architecture.md) — the criteria for the four layers, the four questions for live
   objects, where events and persistence land
-- [Core API](core.md) — one agent's inbox, its two loops, its two gates, the plugin hooks
-- [SDK](sdk.md) — scopes, model resolution, handoff, the runtime
+- [Core API](core.md) — one `Agent`'s inbox, its two loops, its two switches, the plugin hooks
+- [SDK](sdk.md) — `Scope`, model resolution, handoff, the runtime
+- [Core and Scope alone](scope.md) — no `AgentRuntime`, no host
 - [Deployment](deploy.md) — local and public instances, the three port levels, credentials, upgrades

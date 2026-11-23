@@ -20,6 +20,7 @@
       { "title": "部署", "path": "zh/deploy.md" },
       { "title": "Core API", "path": "zh/core.md" },
       { "title": "SDK", "path": "zh/sdk.md" },
+      { "title": "只用 core 与 Scope", "path": "zh/scope.md" },
       { "title": "MCP", "path": "zh/mcp.md" }
     ],
     "en": [
@@ -28,6 +29,7 @@
       { "title": "Deployment", "path": "en/deploy.md" },
       { "title": "Core API", "path": "en/core.md" },
       { "title": "SDK", "path": "en/sdk.md" },
+      { "title": "Core and Scope alone", "path": "en/scope.md" },
       { "title": "MCP", "path": "en/mcp.md" }
     ]
   }
