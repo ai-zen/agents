@@ -10,6 +10,7 @@
  * | 其余端点 + 图片 | `image_url` + base64 data URL |
  * | 其余端点 + 非图片 | `file` 块 + `file_data`（base64 data URL） |
  * | 图片且模型不是视觉模型（`vision !== true`） | 退化为 `text`，只给路径提示 |
+ * | 图片任一边超过 {@link MAX_IMAGE_EDGE} | 抛错（不把超大图丢给端点） |
  * | 内联体积超过上限且无法上传 | 抛错（不静默塞进请求体） |
  *
  * 本模块只负责**选路**与**上传这一个 HTTP 动作**：需要 `file_id` 时每次调用都真上传，
@@ -28,9 +29,16 @@ import type {
   ToolEnvDeps,
   UploadFn,
 } from "../types/index.js";
+import { imageSizeOf } from "./imageSize.js";
 
 /** 上传函数类型（定义在 types，此处再导出方便既有引用） */
 export type { UploadFn };
+
+/** 图片任意一边的上限（像素）。超过它就不发，让调用方缩完再来 */
+export const MAX_IMAGE_EDGE = 8192;
+
+/** 读图片头时最多看这么多字节：四个格式的宽高都在这之内（JPEG 要跳过前面的 APPn 段） */
+const IMAGE_HEAD_BYTES = 256 * 1024;
 
 /** 扩展名 → MIME。图片走视觉通道，其余走 `file` 块 */
 export const MIME_BY_EXT: Record<string, string> = {
@@ -259,8 +267,21 @@ export async function fileToContentSection(
     return bytes;
   };
 
-  const isImage = mime.startsWith("image/");
+  /**
+   * 看尺寸用的那几个字节。
+   *
+   * 四个格式的宽高都在文件头部，所以 base64 来源只解前 {@link IMAGE_HEAD_BYTES} 字节对应的那一段
+   * —— 一张 20 MiB 的图不该为了读 24 个字节先整张解码。解不出尺寸时 `imageSizeOf` 返回
+   * `undefined`，调用方按「不知道」放过。
+   */
+  const headBytes = (): Uint8Array => {
+    if (bytes) return bytes.subarray(0, IMAGE_HEAD_BYTES);
+    // base64 每 4 个字符对 3 个字节，多取一点保证够
+    const chars = Math.min((base64 ?? "").length, Math.ceil((IMAGE_HEAD_BYTES * 4) / 3));
+    return new Uint8Array(Buffer.from((base64 ?? "").slice(0, chars), "base64"));
+  };
 
+  const isImage = mime.startsWith("image/");
   // ---- 3. 模型看不见图：退化为文本提示 ----
   // 判定口径与 `ViewImageTool.isAvailable` 一致：只有 `vision === true` 才算视觉模型，
   // 缺省视为不支持（模型未提供 model 时不做判断，交给调用方）。
@@ -276,6 +297,19 @@ export async function fileToContentSection(
       bytes: byteLength,
       warning: "The current model does not support image input; degraded to a text hint",
     };
+  }
+
+  // ---- 3.5 图片的宽高有上限：超了就不发 ----
+  // 只在真要发图的时候判：非视觉模型那一条上面已经退化成一句提示，图根本不出门。
+  // 读头只要前几十字节；base64 来源也只解这一小段，不必把整张图解码。
+  if (isImage) {
+    const size = imageSizeOf(headBytes());
+    if (size !== undefined && (size.width > MAX_IMAGE_EDGE || size.height > MAX_IMAGE_EDGE)) {
+      throw new Error(
+        `Image ${size.width}×${size.height} exceeds the ${MAX_IMAGE_EDGE} px limit on either side ` +
+          `("${absPath ?? filename}"); scale it down and pass it again`,
+      );
+    }
   }
 
   // ---- 4. 端点支持 Files API：上传（每次调用都真上传），失败原样抛 ----

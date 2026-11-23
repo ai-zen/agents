@@ -320,3 +320,88 @@ describe("默认上传实现（真 HTTP，不注入 upload）", () => {
     }
   });
 });
+
+// ---- 图片的宽高上限：8192 ----
+
+/** 只造 PNG 头（签名 + IHDR），够读宽高 */
+function pngHeader(width: number, height: number): Buffer {
+  const out = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(out, 0);
+  out.writeUInt32BE(13, 8);
+  out.write("IHDR", 12, "ascii");
+  out.writeUInt32BE(width, 16);
+  out.writeUInt32BE(height, 20);
+  return out;
+}
+
+/** 只造 JPEG 头（SOI + SOF0） */
+function jpegHeader(width: number, height: number): Buffer {
+  const out = Buffer.alloc(21);
+  out.writeUInt16BE(0xffd8, 0);
+  out.writeUInt16BE(0xffc0, 2);
+  out.writeUInt16BE(0x0011, 4);
+  out.writeUInt8(0x08, 6);
+  out.writeUInt16BE(height, 7);
+  out.writeUInt16BE(width, 9);
+  out.writeUInt8(0x03, 11);
+  return out;
+}
+
+describe("fileToContentSection：图片宽高的上限", () => {
+  it("本地文件超了：抛错并说清尺寸与上限", async () => {
+    const file = await tmpImage();
+    await fs.writeFile(file, pngHeader(9000, 100));
+
+    await expect(
+      fileToContentSection({ source: { path: file }, endpoint: openai }),
+    ).rejects.toThrow(/Image 9000×100 exceeds the 8192 px limit on either side/);
+  });
+
+  it("base64 来源（MCP 那条路）一样挡：尺寸从解出来的头里读", async () => {
+    await expect(
+      fileToContentSection({
+        source: {
+          base64: jpegHeader(100, 9000).toString("base64"),
+          mime: "image/jpeg",
+          filename: "mcp-media-1.jpg",
+        },
+        endpoint: openai,
+      }),
+    ).rejects.toThrow(/Image 100×9000 exceeds the 8192 px limit/);
+  });
+
+  it("正好 8192 放过：边界按「超过」算", async () => {
+    const file = await tmpImage();
+    await fs.writeFile(file, pngHeader(8192, 8192));
+
+    const r = await fileToContentSection({ source: { path: file }, endpoint: openai });
+    expect(r.transport).toBe("inline");
+    expect((r.section as any).type).toBe("image_url");
+  });
+
+  it("非视觉模型收到超大图：退化成一句提示，不抛错（图本来就不发）", async () => {
+    const file = await tmpImage();
+    await fs.writeFile(file, pngHeader(9000, 100));
+    const textOnly = {
+      id: "text-only",
+      name: "T",
+      endpointId: "openai",
+      vision: false,
+    } as ModelDefinition;
+
+    const r = await fileToContentSection({
+      source: { path: file },
+      endpoint: openai,
+      model: textOnly,
+    });
+    expect(r.transport).toBe("text");
+  });
+
+  it("头认不出来就放过：这层不当安全边界", async () => {
+    const file = await tmpImage();
+    await fs.writeFile(file, Buffer.from("not really a png"));
+
+    const r = await fileToContentSection({ source: { path: file }, endpoint: openai });
+    expect(r.transport).toBe("inline");
+  });
+});
