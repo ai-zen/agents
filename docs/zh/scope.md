@@ -92,7 +92,7 @@ const idle = new Promise<void>((resolve) => {
 });
 
 void agent.start(); // 只在Agent死的时候 resolve，不能在这里 await
-runtime.agent.send({ content: "在吗", priority: "low", source: { kind: "user" } });
+runtime.agent.send("在吗");
 await idle;
 agent.stop();
 ```

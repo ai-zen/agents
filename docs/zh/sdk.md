@@ -50,7 +50,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.send({ content: "What is a Scope?", priority: "low", source: { kind: "user" } });
+agent.send("What is a Scope?");
 void agent.start();
 await idle;
 

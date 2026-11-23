@@ -46,7 +46,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.send({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
+agent.send("What does this package do?");
 
 void agent.start();  // resolves only when the agent is dead
 await idle;          // the batch in hand finished
@@ -122,6 +122,8 @@ console.log(agent.messages.at(-1)?.content);
 | `runOnce(input?, { signal })` | 起、`sendAndWait`、关门、等到死透，交回 `messages` | 等 |
 
 `runOnce()` 不是第七个方法：它就是 `sendAndWait` 外面套一层收尾，而 `sendAndWait` 又是 `start` + `send` + 等闲的复合。跑完之后这个 `Agent` 就没了。
+
+三个入口的 `input` 都有三种写法：一句话（`send("看一下这个")`）、一组内容块（多模态，不必再包一层）、或者一个信封（`{ content, priority, source }`，`messageId` 与 `createdAt` 由 core 补）。前两种是「有人现在说了一句」，缺省优先级 `high`、来源 `{ kind: "user" }`；要别的取值（异步结果用 `system` + `low`，另一段会话寄来的话用 `agent` + `low`）就给信封。不给 `input` = 拧钥匙。
 
 `sendAndWait()` 与 `runOnce()` 拒掉一切 `lifetime` 不是 `"one-shot"` 的 `Agent`。`runOnce()` 还拒已经 `start()` 过的 `Agent`，也拒 `messages` 为空且没有正文的调用 —— 没燃料的钥匙发出去是一个空请求。这几件都是调用方代码写错了，所以抛裸 `Error` 而不是 `AgentError`：那几个码是给会落到 `message.error`、会被从存储里读回来的失败用的。
 

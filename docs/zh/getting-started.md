@@ -117,7 +117,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.send({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
+agent.send("What does this package do?");
 
 void agent.start();  // resolves only when the agent is dead
 await idle;          // the batch in hand finished

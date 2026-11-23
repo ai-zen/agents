@@ -46,7 +46,7 @@ const idle = new Promise<void>((resolve) => {
   });
 });
 
-agent.send({ content: "What does this package do?", priority: "low", source: { kind: "user" } });
+agent.send("What does this package do?");
 
 void agent.start();  // resolves only when the agent is dead
 await idle;          // the batch in hand finished
@@ -122,6 +122,8 @@ There is no "send one in, then wait for it to go idle" on a resident `Agent`. `s
 | `runOnce(input?, { signal })` | start, `sendAndWait`, close, wait until dead, hand back `messages` | yes |
 
 `runOnce()` is not a seventh method: it is `sendAndWait` with a cleanup wrapped around it, and `sendAndWait` itself is `start` + `send` + wait-for-idle. When it returns, that `Agent` is gone.
+
+The `input` of all three takes three shapes: one sentence (`send("look at this")`), an array of content sections (multimodal, no extra envelope needed), or an envelope (`{ content, priority, source }`, with `messageId` and `createdAt` filled in by the core). The first two mean "someone just said something": the default priority is `high` and the default source is `{ kind: "user" }`. Anything else — an async result (`system` + `low`), a message from another session (`agent` + `low`) — passes the envelope. No `input` at all turns the key.
 
 `sendAndWait()` and `runOnce()` refuse any `Agent` whose `lifetime` is not `"one-shot"`. `runOnce()` also refuses an `Agent` that has already been `start()`ed, and refuses a call whose `messages` are empty and whose input carries no content — a key with no fuel makes an empty request. Both are the caller's code being wrong, so they throw a plain `Error` rather than an `AgentError`: those codes are for failures that land on `message.error` and get read back from storage.
 

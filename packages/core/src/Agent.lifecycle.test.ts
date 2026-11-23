@@ -792,6 +792,21 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
     await agent.start();
   });
 
+  it("直接给一句话：不必拼信封，也不触发「没有燃料」那一判", async () => {
+    const { client, create } = createMockClient([textStream("收到")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds(), lifetime: "one-shot" });
+
+    const messages = await agent.sendAndWait("看这句话");
+
+    expect(create).toHaveBeenCalledTimes(1);
+    // 那句话原样进了历史（发出去的请求里），答复跟在它后面
+    expect(messages[0]!.content).toBe("看这句话");
+    expect(messages.at(-1)!.content).toBe("收到");
+
+    agent.kill();
+    await agent.start();
+  });
+
   it("没有燃料就抛裸 Error（与 runOnce 同一个判据）", async () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds(), lifetime: "one-shot" });
@@ -1487,5 +1502,50 @@ describe("Agent 恢复：把旧InboxEntry原样放回", () => {
 
     healthy.kill();
     void oneShot.start();
+  });
+});
+
+describe("send 的三种写法", () => {
+  /** 投一句，把落到队列里的那一条取回来看 */
+  function entryOf(input: AgentNS.InboxInput | undefined): any {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    const added: any[] = [];
+    agent.on("inboxAdded", (payload) => added.push(payload));
+    agent.send(input);
+    agent.kill();
+    return added[0]?.entry;
+  }
+
+  it("一句话：正文就是它，缺省是「有人现在说了一句」（high + user）", () => {
+    const entry = entryOf("看一下这个");
+    expect(entry.content).toBe("看一下这个");
+    expect(entry.priority).toBe("high");
+    expect(entry.source).toEqual({ kind: "user" });
+    expect(typeof entry.messageId).toBe("string");
+  });
+
+  it("一组内容块：原样进队列（多模态不必再包一层信封）", () => {
+    const blocks: AgentNS.MessageContent = [
+      { type: "text", text: "这两张" },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+    ];
+    expect(entryOf(blocks).content).toEqual(blocks);
+  });
+
+  it("信封：优先级与来源照给的算，不被缺省盖掉", () => {
+    const entry = entryOf({
+      content: "系统说",
+      priority: "low",
+      source: { kind: "system", label: "cron" },
+    });
+    expect(entry.priority).toBe("low");
+    expect(entry.source).toEqual({ kind: "system", label: "cron" });
+  });
+
+  it("什么都不给仍是拧钥匙：没有正文、优先级 low", () => {
+    const entry = entryOf(undefined);
+    expect(entry.content).toBeUndefined();
+    expect(entry.priority).toBe("low");
   });
 });

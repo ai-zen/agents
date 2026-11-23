@@ -417,6 +417,47 @@ function toInboxEntry(
 }
 
 /**
+ * 投递入参 → `toInboxEntry` 要的那份字段。
+ *
+ * 三种写法走同一条路：一句话、一组内容块、一个信封（要指定优先级与来源时）。裸内容补的缺省是
+ * 「有人现在说了一句」—— 优先级 `high`（内循环在工具跑完那个边界就能取走，不打断正在吐的
+ * 回答），来源 `{ kind: "user" }`，与宿主把用户原话投进来时的取值逐格一致。
+ *
+ * 别的来源本来就得说清自己是谁（异步结果 `system` + `low`、另一段会话寄来的话 `agent` +
+ * `low`），那些调用方继续给信封 —— 它们要的正是因为不是「有人现在说了一句」。
+ */
+function inboxFieldsOf(
+  input: AgentNS.InboxInput | undefined,
+  newMessageId: () => string,
+): Parameters<typeof toInboxEntry>[0] {
+  const createdAt = new Date().toISOString();
+
+  // 什么都不给 = 拧钥匙
+  if (input === undefined) return { createdAt, priority: "low" };
+
+  // 裸内容：一句话，或者一组内容块
+  if (typeof input === "string" || Array.isArray(input)) {
+    return {
+      messageId: newMessageId(),
+      createdAt,
+      priority: "high",
+      source: { kind: "user" },
+      content: input,
+    };
+  }
+
+  // 信封（包括显式不给正文的拧钥匙写法）
+  if (input.content === undefined) return { createdAt, priority: "low" };
+  return {
+    messageId: input.messageId ?? newMessageId(),
+    createdAt,
+    priority: input.priority,
+    source: input.source,
+    content: input.content,
+  };
+}
+
+/**
  * 能拒的钩子：返回 string 就是判决（这次不跑），**只有它们短路**后面的插件。
  *
  * 它们崩了还要**fail-closed** —— 坏的护栏放行等于没有护栏；
@@ -932,6 +973,9 @@ export class Agent extends AgentContext {
    * `isDone` 才分得出是哪一种）。队列不认识 agent 的码，这边也不去猜队列的内部状态。
    *
    * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把它叫起来，不写进 messages 任何消息。
+   *
+   * `input` 可以是一句话、一组内容块，或者一个完整信封（`{ content, priority, source }`）：
+   * 前两种是「有人现在说了一句」，优先级与来源用缺省（`high` + `user`）；要别的取值就给信封。
    */
   send(input?: AgentNS.InboxInput): void {
     // 一次性 agent 只有一条因果链：发起它的那一次投递。之后关收，
@@ -943,17 +987,7 @@ export class Agent extends AgentContext {
       this.fed = true;
     }
 
-    const entry: AgentNS.InboxEntry = toInboxEntry(
-      input?.content === undefined
-        ? { createdAt: new Date().toISOString(), priority: "low" }
-        : {
-            messageId: input.messageId ?? this.newMessageId(),
-            createdAt: new Date().toISOString(),
-            priority: input.priority,
-            source: input.source,
-            content: input.content,
-          },
-    );
+    const entry: AgentNS.InboxEntry = toInboxEntry(inboxFieldsOf(input, () => this.newMessageId()));
 
     try {
       this.inbox.push(entry);
@@ -1051,7 +1085,10 @@ export class Agent extends AgentContext {
         `sendAndWait() 只能用在 lifetime 为 "one-shot" 的 agent 上：常驻会话没有「等到跑完」这回事，那边只有 send()`,
       );
     }
-    if (input?.content === undefined && this.messages.length === 0) {
+    // 有没有燃料：裸内容（一句话 / 一组内容块）算有，信封则看它的 `content`
+    const hasContent =
+      typeof input === "string" || Array.isArray(input) || input?.content !== undefined;
+    if (!hasContent && this.messages.length === 0) {
       throw new Error("sendAndWait() 时 messages 是空的：没有燃料，拧钥匙只会发一个空请求");
     }
 

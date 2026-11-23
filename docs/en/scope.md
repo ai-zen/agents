@@ -92,7 +92,7 @@ const idle = new Promise<void>((resolve) => {
 });
 
 void agent.start(); // resolves only when the agent dies; it cannot be awaited here
-runtime.agent.send({ content: "Are you there?", priority: "low", source: { kind: "user" } });
+runtime.agent.send("Are you there?");
 await idle;
 agent.stop();
 ```

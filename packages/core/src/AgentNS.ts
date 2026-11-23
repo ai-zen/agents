@@ -173,8 +173,19 @@ export namespace AgentNS {
 
   export type InboxEntry = InboxEntryWithContent | InboxKey;
 
-  /** 投递入参：带正文的（`messageId` / `createdAt` 由 core 补），或者什么都不给 = 拧钥匙 */
+  /**
+   * 投递入参。三种写法：
+   *
+   * - **一句话**：`send("看一下这个")`；
+   * - **一组内容块**：`send([{ type: "text", … }, { type: "image_url", … }])`（多模态）；
+   * - **信封**：要指定优先级与来源时给全 `{ content, priority, source }`（`messageId` /
+   *   `createdAt` 由 core 补）；什么都不给（或者 `content` 显式为空）= 拧钥匙。
+   *
+   * 裸内容补的缺省是「有人现在说了一句」：优先级 `high`、来源 `{ kind: "user" }`。别的来源
+   * （异步结果、系统通知、另一段会话寄来的话）本来就得说清自己是谁，它们继续给信封。
+   */
   export type InboxInput =
+    | MessageContent
     | (Omit<InboxEntryWithContent, "messageId" | "createdAt"> & { messageId?: string })
     | { content?: undefined };
 
