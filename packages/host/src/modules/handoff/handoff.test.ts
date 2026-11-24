@@ -361,6 +361,7 @@ function setup(dbFile = ":memory:") {
     questions,
     runtime: fake.runtime,
     messages,
+    inbox,
     notices,
     seen,
     errors,
@@ -854,6 +855,74 @@ describe("交接期间不落库", () => {
     messageAdded(session.id, agent, "m-2", "收口之后说的");
 
     expect(messages.get("m-2")?.content).toBe("收口之后说的");
+    expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * 换手那一趟丢弃的消息里，从排队区来的那几条要把 `inbox` 表里那一行一起删掉。
+ *
+ * `inboxTaken` 那一格的判据是「这条消息在库里吗」（写库失败过的话得留着，重启时再落一次），
+ * 而换手这一批是**故意**不写 —— 判据在那里永远不成立。行留着，下次唤醒时 `materialsFor` 会照
+ * 「它的消息不在历史里」把它当成还没处理的话交给 `restore()`，于是那条指令自己再跑一趟：交接
+ * 文档被重写一遍、一次全量输入白烧。这一幕实际发生过（宿主重启后十几秒，agent 自发重写了一遍
+ * 交接文档，还盖掉了上一次那份）。
+ */
+describe("换手那一趟丢弃的排队条目", () => {
+  /** 排队区那一行：形状照 `send` 落库的那一份（身份就是 `messageId`） */
+  function queue(
+    inbox: ReturnType<typeof inboxTable>,
+    sessionId: string,
+    messageId: string,
+    content: string,
+  ): void {
+    inbox.insert(sessionId, {
+      messageId,
+      createdAt: new Date().toISOString(),
+      priority: "low",
+      source: { kind: "system", label: "handoff" },
+      content,
+    });
+  }
+
+  /** 那条 InboxEntry 落成的 user 消息（id 就是排队行的主键） */
+  function fromQueue(id: string, content: string): AgentNS.Message {
+    return new Message({
+      id,
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content,
+      source: { kind: "system", label: "handoff" },
+    });
+  }
+
+  it("换手期间取走的那一条：行在丢弃那一刻就删掉，不会留到下次唤醒", async () => {
+    const { handoff, handoffs, sessions, messages, inbox, errors, wake, reportMessage } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+
+    queue(inbox, session.id, "m-handoff", "写交接文档");
+    handoff.start(session.id, { kind: "swap" });
+    reportMessage(session.id, agent, fromQueue("m-handoff", "写交接文档"));
+
+    // 这一批一条都不进库（换手那一档的抑制），但排队区那一行不能留着
+    expect(messages.get("m-handoff")).toBeUndefined();
+    expect(inbox.listBySession(session.id)).toEqual([]);
+    expect(handoffs.runs[0].method).toBe("migrate");
+    expect(errors).toEqual([]);
+  });
+
+  it("不在换手时落库的那一条：行不动（删行归 `inboxTaken`）", async () => {
+    const { sessions, messages, inbox, errors, wake, reportMessage } = setup();
+    const session = sessions.create(input);
+    const agent = wake(session.id);
+
+    queue(inbox, session.id, "m-1", "这句话还在队里");
+    reportMessage(session.id, agent, fromQueue("m-1", "这句话还在队里"));
+
+    // 消息进了库，行也还在（那一条此刻确实还排着）；它由 `inboxTaken` 在取走时删
+    expect(messages.get("m-1")?.content).toBe("这句话还在队里");
+    expect(inbox.listBySession(session.id).map((entry) => entry.messageId)).toEqual(["m-1"]);
     expect(errors).toEqual([]);
   });
 });

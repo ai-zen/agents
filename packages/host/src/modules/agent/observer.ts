@@ -370,10 +370,20 @@ export class HostObserver {
    *
    * 判在写之前、而推送在写之后：两半共用一个入口，拆开写就会有人只给其中一半加这道判断。
    *
+   * **不落库的这批里有一种要单独处置**：从排队区取出来的那几条。它们已经不在队列里了（`inbox`
+   * 表是队列的影子），而它们所属的那一代记忆马上要被换掉 —— 这一行若不在这里删掉，下次唤醒时
+   * `materialsFor` 会照「它的消息不在历史里」把它当成还没处理的话原样放回队列，于是那条指令自己
+   * 又跑一趟（交接文档被重写、一次全量输入白烧）。`inboxTaken` 那条路删的是「已经进了库」的，
+   * 而这一批**故意**没进库，判据在那边永远不成立 —— 丢弃与删行因此必须是同一个动作，
+   * 见 {@link dropQueuedRow}。
+   *
    * `linkAssets` 只有 `delta` 给 `false`（那一处正文还在长，见 `delta` 分支的注释）。
    */
   private writeMessage(sessionId: string, message: AgentNS.Message, linkAssets = true): void {
-    if (this.deps.suppressesPersist(sessionId)) return;
+    if (this.deps.suppressesPersist(sessionId)) {
+      this.dropQueuedRow(message);
+      return;
+    }
     try {
       this.deps.messages.upsert(sessionId, message);
     } catch (error) {
@@ -384,6 +394,29 @@ export class HostObserver {
     // 行真的写进去了才登记引用：`session_assets.messageId` 是指向 `messages` 的外键，
     // 反过来写会撞外键，而那时库里已经有一条「没有引用」的消息行。
     if (linkAssets) this.linkAssets(message);
+  }
+
+  /**
+   * 被丢弃的那批消息里，如果有一条是从排队区来的，就把它在 `inbox` 表里的行一并删掉。
+   *
+   * 为什么不交给 `inboxTaken` 那一格：那里的判据是「这条消息在库里吗」（写库失败过的话得留着，
+   * 重启时再落一次），而这一批是**故意**不写 —— 判据在那里永远不成立，行就会一直留着，
+   * 下一次唤醒被 `restore()` 放回队列，等于让那一条指令自己再跑一趟。
+   *
+   * 只对 user 消息动手：`inbox` 表拿 `messageId` 当主键，而只有 InboxEntry 落成的 user 消息才带
+   * 那个 id（`inboxEntryMessage` 用的就是 `entry.messageId`）。交接回合里的助手消息与工具结果本来
+   * 就不在排队区 —— 一回合上百条，逐条去删只是空转。
+   *
+   * 删不掉不算这次丢弃失败：交给 `onError`（与别处删行走同一个出口），那条消息反正已经不落库了，
+   * 最坏结果是下次唤醒多跑一趟，不该让它冒成一次写库失败。
+   */
+  private dropQueuedRow(message: AgentNS.Message): void {
+    if (message.role !== AgentNS.Role.User) return;
+    try {
+      this.deps.inbox.deleteMany([message.id]);
+    } catch (error) {
+      this.deps.onError(error, "inbox-delete");
+    }
   }
 
   /**
