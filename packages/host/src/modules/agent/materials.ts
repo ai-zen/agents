@@ -157,6 +157,21 @@ export function hostPlugins(
   model: ModelDefinition,
 ): AgentPlugin[] {
   /**
+   * 生效模型**当下**那一条（每次现读配置）。
+   *
+   * 为什么不能直接用装配时传进来那个 `model` 对象：它是那一刻的**快照**。用户改阈值走的是
+   * `config.models.update`（或 `/config` 里那一屏），改完**不重建 Agent**（`PRD.md` 4.7 的
+   * 「改完当场生效」）—— 于是快照里的阈值会一直停在旧值：撞了硬线、把阈值调高、再发一句，
+   * 护栏仍旧按旧阈值拒，而拒的那条通知又因为「同一对数字」被去重吞掉 —— 用户看到的就是
+   * 「撞线之后调了阈值，再发什么也不动了」。
+   *
+   * 配置里那一条没了（被删）就退回快照：删模型本身有别的收尾（默认项改指、会话换模型），
+   * 这里只负责「还在的时候读到的是新的」。
+   */
+  const liveModel = (): ModelDefinition =>
+    deps.config.read().models.find((item) => item.id === model.id) ?? model;
+
+  /**
    * 硬线阈值：会话行上的 `guardThreshold` 优先，否则生效模型的 `tokenThresholds.guard`。
    *
    * 一次性会话没有行，所以它这一格永远是模型上那一条 —— 不是「跳过判断」，而是「没有更近的
@@ -165,7 +180,7 @@ export function hostPlugins(
   const guardThreshold = {
     get guardTokens(): number {
       const fromSession = session === null ? undefined : deps.sessions.get(session.id);
-      return fromSession?.guardThreshold ?? model.tokenThresholds.guard;
+      return fromSession?.guardThreshold ?? liveModel().tokenThresholds.guard;
     },
   };
 
@@ -178,8 +193,11 @@ export function hostPlugins(
     plugins.push(
       new AutoMigratePlugin({
         service: deps.handoff.automatic(session),
+        // 与硬线同一个口径：模型上那一条每次现读（见 `liveModel`）
         get handoffTokens(): number {
-          return deps.sessions.get(session.id)?.handoffThreshold ?? model.tokenThresholds.handoff;
+          return (
+            deps.sessions.get(session.id)?.handoffThreshold ?? liveModel().tokenThresholds.handoff
+          );
         },
         resolveMode: () => deps.handoff.automaticMode(session.id),
         // 开关只在这两拍开：关开关那一半在 SDK 的 `HandoffGuardPlugin`，开开关只有宿主知道什么时候该开

@@ -63,6 +63,8 @@ const MODEL = {
 };
 
 function newHost() {
+  /** 配置里那一条模型的可改副本（改它就是「用户在 /config 里改了阈值」） */
+  const model = { ...MODEL, tokenThresholds: { ...MODEL.tokenThresholds } };
   const db = openDatabase(":memory:");
   workspaceTable(db).put({ id: "ws-1", name: "项目一", cwd: "/tmp/ws-1", createdAt: 1 });
   const t = createTranslator(() => "zh");
@@ -89,7 +91,8 @@ function newHost() {
       }),
     } as unknown as MaterialsDeps["definitions"],
     config: {
-      read: () => ({ defaultModel: "model-1", models: [MODEL] }) as unknown as AppConfig,
+      // 每次现读：`model` 是可改的那一份 —— 「改配置里的阈值」这条用例靠它模拟 `config.models.update`
+      read: () => ({ defaultModel: "model-1", models: [model] }) as unknown as AppConfig,
     } as unknown as MaterialsDeps["config"],
     messages: messageTable(db),
     inbox: inboxTable(db),
@@ -104,7 +107,7 @@ function newHost() {
     onError: () => {},
   } as MaterialsDeps;
 
-  return { deps, sessions, notices };
+  return { deps, sessions, notices, model };
 }
 
 /** 一条带用量的 AgentDefinition 消息：护栏只从消息上读用量 */
@@ -166,6 +169,34 @@ describe("装到Agent上的插件", () => {
 
     // 反过来也验一次：阈值调小到 300，同一颗插件立刻按新值拒
     host.sessions.update(session.id, { guardThreshold: 300 });
+    await expect(guard.onInnerLoopStart(innerLoopCtx(agent))).resolves.toEqual(expect.any(String));
+  });
+
+  /**
+   * 改的是**配置里**那条模型（`/config` 里改阈值），不是会话行。
+   *
+   * 这条钉住一个真出过的问题：装配时传进来的 `model` 是那一刻的**快照**，阈值若从它身上读，
+   * 用户把阈值调高之后同一颗护栏仍按旧数拒 —— 而且拒的那条通知因为「同一对数字」被去重吞掉，
+   * 屏上一点反应都没有（「撞线之后调了阈值，再发什么也不动了」）。
+   */
+  it("改配置里的阈值也当场生效（不重建 Agent）：撞线后调高，同一颗护栏立刻放行", async () => {
+    const host = newHost();
+    const session: SessionRecord = host.sessions.create(input);
+    const materials = await materialsFor(host.deps, session);
+    const guard = pluginOf(materials, ContextGuardPlugin);
+    const agent = fakeAgent(500);
+
+    // 模型上那条硬线是 400：500 超线，拒
+    await expect(guard.onInnerLoopStart(innerLoopCtx(agent))).resolves.toEqual(expect.any(String));
+
+    // 用户在 /config 里把它调到 800（写的是配置里那条模型，会话行那一格始终是 null）
+    host.model.tokenThresholds = { handoff: 100, guard: 800 };
+
+    // 同一颗插件、同一个 Agent：不再超线
+    await expect(guard.onInnerLoopStart(innerLoopCtx(agent))).resolves.toBeUndefined();
+
+    // 再调回来也一样：现读的是配置，不是打开会话那一刻的快照
+    host.model.tokenThresholds = { handoff: 100, guard: 200 };
     await expect(guard.onInnerLoopStart(innerLoopCtx(agent))).resolves.toEqual(expect.any(String));
   });
 });
