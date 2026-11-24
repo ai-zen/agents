@@ -165,6 +165,18 @@ export interface ModelDefinition {
   reasoningPreset?: string;
   /** 是否支持图片输入；`view_image` 与本地图片退化为文本提示的判定都看它 */
   vision?: boolean;
+  /**
+   * 是不是它所在端点的**首要模型**（一个端点最多一条）。
+   *
+   * 语义：首次配置只要选服务商（端点）、不必再挑模型 —— 客户端拿这一位把「填完密钥之后该把
+   * 哪个模型设成默认」这件事问出来。与 `reasoningPreset` 同一套口径：**跨客户端共享的应用层
+   * 元数据，SDK 不解释**（既不影响请求参数，也不影响运行行为），只保证它能随模型配置一起
+   * 读写与出厂同步。
+   *
+   * 缺省（或不写）= 不是首要模型；同一端点上出现多条 `primary` 时以清单里靠前的那条为准
+   * （`normalize.ts` 的收敛规则）。用户自建模型可以标它，自建端点也可以不标。
+   */
+  primary?: boolean;
   description?: string;
   version?: number;
   /**

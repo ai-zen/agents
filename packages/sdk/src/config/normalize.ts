@@ -12,7 +12,9 @@
  * - `AppConfig.abortedMessageStrategy` / `abortedToolRoundStrategy`：缺失或非法 → 出厂默认
  *   （见 `normalizeAbortStrategies`）；
  * - `EndpointDefinition.capabilities`：整块缺失 → 同 id 出厂端点的能力位
- *   （见 `normalizeEndpointCapabilities`）。
+ *   （见 `normalizeEndpointCapabilities`）；
+ * - `ModelDefinition.primary`：一个端点最多一条，多出来的往后几条去掉
+ *   （见 `normalizePrimaryModels`）。
  *
  * ## `defaultModel` 在这里不出现，是有意的
  *
@@ -106,6 +108,11 @@ export function normalizeConfig(config: AppConfig): { config: AppConfig; changed
     endpoints: (config.endpoints ?? []).map((endpoint) => ({ ...endpoint })),
   } as AppConfig;
 
+  const primaries = normalizePrimaryModels(next.models);
+  if (primaries.changed) {
+    next.models = primaries.models;
+    changed = true;
+  }
   if (normalizeAbortStrategies(next)) changed = true;
   if (normalizeEndpointCapabilities(next)) changed = true;
 
@@ -177,4 +184,40 @@ export function normalizeEndpointCapabilities(config: AppConfig): boolean {
     changed = true;
   }
   return changed;
+}
+
+/**
+ * 收敛「一个端点最多一条首要模型」（`ModelDefinition.primary`）。
+ *
+ * ## 为什么需要收敛
+ *
+ * 这一位是客户端用来说「首启只选服务商时，该把这个端点的哪个模型设成默认」的。两条 `primary`
+ * 同时成立时这件事**没有答案** —— 而它不该以「看谁运气好地排在前面」这种形式在客户端各自
+ * 决定一遍：两处实现会把同一个配置读出两个结果。所以规则定在这里，一处实现：
+ *
+ * - 按清单顺序，**每个端点第一条** `primary: true` 生效；
+ * - 同一端点上后面那些 `primary` 被去掉（只去这一位，模型本身一字不动）；
+ * - 一条都没有端点 → 不补。补哪一条都是替用户挑模型，而「没有首要模型」是合法状态
+ *   （用户自建端点常常如此），客户端那时应当退化为「让用户自己选」（CLI 是 `/model`）。
+ *
+ * 入参对象不被就地修改：要改的那条换成浅拷贝，其余原样返回（与同文件其它 normalize 一致）。
+ */
+export function normalizePrimaryModels(models: readonly ModelDefinition[]): {
+  models: ModelDefinition[];
+  changed: boolean;
+} {
+  const seen = new Set<string>();
+  let changed = false;
+  const next = models.map((model) => {
+    if (model.primary !== true) return model;
+    if (!seen.has(model.endpointId)) {
+      seen.add(model.endpointId);
+      return model;
+    }
+    changed = true;
+    const copy = { ...model };
+    delete copy.primary;
+    return copy;
+  });
+  return { models: next, changed };
 }

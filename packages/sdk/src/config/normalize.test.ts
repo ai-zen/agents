@@ -4,7 +4,9 @@ import {
   DEFAULT_HANDOFF_THRESHOLD,
   normalizeConfig,
   normalizeModelThresholds,
+  normalizePrimaryModels,
 } from "./normalize.js";
+import { DEFAULT_APP_CONFIG } from "./constants.js";
 
 /** 一个模型（只填用例关心的那几格，其余走 type assertion） */
 function model(fields: Record<string, unknown> = {}): ModelDefinition {
@@ -242,5 +244,61 @@ describe("normalizeEndpointCapabilities：补齐端点缺失的能力位", () =>
     const original = endpoint({});
     normalizeConfig(configOf([original]));
     expect(original.capabilities).toBeUndefined();
+  });
+});
+
+describe("normalizePrimaryModels：一个端点最多一条首要模型", () => {
+  const at = (id: string, endpointId: string, primary?: boolean): ModelDefinition =>
+    model({ id, endpointId, ...(primary === undefined ? {} : { primary }) });
+
+  it("同端点两条 primary → 只留清单里靠前的那条", () => {
+    const { models, changed } = normalizePrimaryModels([
+      at("a", "e1", true),
+      at("b", "e1", true),
+      at("c", "e2", true),
+    ]);
+    expect(changed).toBe(true);
+    expect(models[0]!.primary).toBe(true);
+    expect(models[1]!.primary).toBeUndefined();
+    // 另一个端点的那条不受影响
+    expect(models[2]!.primary).toBe(true);
+  });
+
+  it("一条 primary 都没有 → 不补（那是合法状态，客户端退化为让用户选）", () => {
+    const { models, changed } = normalizePrimaryModels([at("a", "e1"), at("b", "e1")]);
+    expect(changed).toBe(false);
+    expect(models.every((item) => item.primary === undefined)).toBe(true);
+  });
+
+  it("不把副作用浇到调用方手里的旧对象上", () => {
+    const first = at("a", "e1", true);
+    const second = at("b", "e1", true);
+    normalizePrimaryModels([first, second]);
+    expect(second.primary).toBe(true);
+  });
+
+  it("出厂清单每个端点最多一条首要模型", () => {
+    const primaries = (DEFAULT_APP_CONFIG.models ?? []).filter((item) => item.primary === true);
+    // 每个出厂端点都该有一条首要模型（首启只选服务商时就靠它落模型）
+    for (const endpoint of DEFAULT_APP_CONFIG.endpoints ?? []) {
+      const count = primaries.filter((item) => item.endpointId === endpoint.id).length;
+      expect(count, `${endpoint.id} 的首要模型条数`).toBe(1);
+    }
+  });
+
+  it("normalizeConfig 会带上这条收敛（幂等）", () => {
+    const config = {
+      endpoints: [],
+      models: [
+        model({ id: "a", endpointId: "e", primary: true, tokenThresholds: { handoff: 1, guard: 2 } }),
+        model({ id: "b", endpointId: "e", primary: true, tokenThresholds: { handoff: 1, guard: 2 } }),
+      ],
+      abortedMessageStrategy: "keep",
+      abortedToolRoundStrategy: "fill",
+    } as unknown as AppConfig;
+    const first = normalizeConfig(config);
+    expect(first.changed).toBe(true);
+    expect(first.config.models[1]!.primary).toBeUndefined();
+    expect(normalizeConfig(first.config).changed).toBe(false);
   });
 });

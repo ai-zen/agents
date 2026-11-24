@@ -220,6 +220,8 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     name: "Qwen4 Max",
     endpointId: OPENCODE_GO_ID,
     modelName: "qwen4-max",
+    // 本端点的首要模型：首启只选服务商时落的就是它（见 `ModelDefinition.primary`）
+    primary: true,
     contextWindow: 1000000,
     maxOutputTokens: 262144,
     tokenThresholds: { handoff: 250000, guard: 375000 },
