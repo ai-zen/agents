@@ -37,6 +37,14 @@ export type HandoffMode = "self" | "summary";
 export type MigrationStrategy = "omit" | "prune";
 
 /**
+ * 接手那一代读到的那条指令的来源标签。
+ *
+ * 与 {@link HANDOFF_SOURCE_LABEL}（交接指令）**分开**：守卫按后者认「这一批带着交接指令」并据此关
+ * 输出开关，而这条是换完记忆之后才投的「去读文档」，两者混成一个标签会让守卫在错的时机动手。
+ */
+export const HANDOFF_RESUME_SOURCE_LABEL = "handoff-resume";
+
+/**
  * 交接被调用方取消（`AbortSignal` 触发）。
  *
  * 单独成类型而不是复用 `Error`，原因有两个：
@@ -392,6 +400,24 @@ export class HandoffService {
   }
 
   /**
+   * 接手那一代的那条指令：**去读交接文档，然后接着干**。
+   *
+   * 断点消息（{@link createPostMessages}）里只有路径 —— 不带全文（读的钱由需要细节的一方付）。
+   * 于是「谁来读」必须有人开口，否则那条路径在上下文里就是一句死话：模型看得见它，但没有任何
+   * 理由去打开它。
+   *
+   * 位置：{@link migrate} 落完记忆之后投进队列（`source.kind = "system"`，标签见
+   * {@link HANDOFF_RESUME_SOURCE_LABEL}）。投递不打断任何东西 —— 那一刻上一任已经把活交完了。
+   */
+  static createResumeInstruction(handoffPath: string): string {
+    return [
+      "The handoff is complete: this session's memory was replaced, and the previous memory is now a separate archived session.",
+      `Read the handoff document at ${handoffPath} with the read tool before doing anything else.`,
+      "Then continue the work from where it left off. Do not restate the document; reply with a short statement of what you are picking up and what you will do next.",
+    ].join("\n");
+  }
+
+  /**
    * 交接断点消息：换完记忆之后，接手的那一代看到的那一条。
    *
    * 形状是死的（`PRD.md` 3.6 / 4.5、`PLAN.md` §5.3）：`role: system` + `hidden`（不给人看，
@@ -476,6 +502,9 @@ export class HandoffService {
         // 外部使用者那一路：原地换（`CORE.md` §12：已经交出去的数组不许换引用）
         ctx.agent.messages.splice(0, ctx.agent.messages.length, ...memory);
       }
+
+      // 记忆落定之后才叫下一任去读文档：早一步投，它读到的还是要换掉的那一份
+      this.pushResumeInstruction(ctx.agent, ctx.handoffPath);
 
       // 换记忆就是这一拍落下：叫完之后记忆已经是新的那一份
       await this.onMigrated?.(ctx);
@@ -866,6 +895,28 @@ export class HandoffService {
     } finally {
       stopWatchingFailures();
       guard.disarm();
+    }
+  }
+
+  /**
+   * 换完记忆之后，投一条「去读文档」给接手的那一代。
+   *
+   * 投不进去不算这次交接失败：记忆已经换好了，这一段真正要做的都做完了 —— 队列关门只可能是
+   * 「这一段在这期间没了」，那种情况下没人会去读那份文档。记一行日志，不往上抛。
+   */
+  private pushResumeInstruction(agent: SdkAgent, handoffPath: string): void {
+    try {
+      agent.send({
+        content: HandoffService.createResumeInstruction(handoffPath),
+        // 高：这是「现在就该做」的事，与用户说的一句话同类（`Agent.landHigh` 只在工具边界取 high）
+        priority: "high",
+        source: { kind: "system", label: HANDOFF_RESUME_SOURCE_LABEL },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `[handoff] the memory was swapped but the "read the document" instruction could not be delivered to agent ${agent.id}; dropped`,
+        error,
+      );
     }
   }
 

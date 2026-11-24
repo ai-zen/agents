@@ -4,7 +4,11 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentError, Agent, AgentNS, CallbackTool } from "@ai-zen/agents-core";
-import { HandoffAbortedError, HandoffService } from "./HandoffService.js";
+import {
+  HANDOFF_RESUME_SOURCE_LABEL,
+  HandoffAbortedError,
+  HandoffService,
+} from "./HandoffService.js";
 import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
 import { FALLBACK_HANDOFF_TEMPLATE } from "../config/factory-skills.js";
 
@@ -235,12 +239,25 @@ class FakeAgent {
 
   // ---- 投递 ----
 
+  /** 换完记忆之后那条「去读文档」的指令（它们留在队列里，不进记忆，见 `send`） */
+  resumeInstructions: Array<{ content: string; priority: string; label: string }> = [];
+
   send(entry: any): void {
     if (this.closed) {
       throw new AgentError("closed", "往已经关了的 agent 投递");
     }
     const content = entry.content as string;
     this.sent.push(content);
+    // 「去读文档」那条只记下来、不落进记忆：这些用例验的是**记忆长什么样**（模板 + 断点），
+    // 而那条指令在真 core 里要等下一批才被取走（宿主那边还压着输出开关）。
+    if (entry.source?.label === HANDOFF_RESUME_SOURCE_LABEL) {
+      this.resumeInstructions.push({
+        content,
+        priority: entry.priority,
+        label: entry.source.label,
+      });
+      return;
+    }
     // 真 core：一批开头先落 user 消息，再进内循环
     this.messages.push({ role: "user", content, source: entry.source });
     const batch = [{ ...entry, createdAt: new Date().toISOString() }];
@@ -854,6 +871,51 @@ describe("migrate", () => {
     // 正文只带路径
     expect(breakpoint.content).toBe(ctx.handoffPath);
     expect(breakpoint.omit).toBeFalsy();
+  });
+
+  /**
+   * 换完记忆之后必须有人叫下一任去读那份文档。
+   *
+   * 断点消息里只有路径（不带全文：读的钱由需要细节的一方付），所以「谁去读」得有人开口 —— 否则
+   * 那条路径在上下文里就是一句死话：模型看得见，但没有任何理由去打开它。
+   */
+  it("换完记忆之后投一条「去读文档」的指令：正文带路径、来源是 resume、优先级高", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = selfAgent();
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    expect(agent.resumeInstructions).toHaveLength(1);
+    const [instruction] = agent.resumeInstructions;
+    expect(instruction!.content).toContain(ctx.handoffPath);
+    expect(instruction!.content).toContain("Read the handoff document");
+    expect(instruction!.label).toBe(HANDOFF_RESUME_SOURCE_LABEL);
+    // 高：这是「现在就该做」的事（与用户说的一句话同类，工具边界就能取走）
+    expect(instruction!.priority).toBe("high");
+    // 那条指令不进记忆：记忆仍然是「模板 + 断点」
+    expect(agent.messages).toHaveLength(2);
+    expect(agent.messages.at(-1)!.content).toBe(ctx.handoffPath);
+  });
+
+  it("只写文档那一档（`handoff()`）不投那条指令：记忆没换，没人要读", async () => {
+    const { service } = await makeService();
+    const agent = selfAgent();
+
+    await service.handoff({ agent: asAgent(agent) });
+
+    expect(agent.resumeInstructions).toEqual([]);
+  });
+
+  it("交接失败（没写出可用文档）不投那条指令：记忆没换，没人要读", async () => {
+    const { service } = await makeService();
+    // 写出来了但不到 400 字节 —— 算没写出可用的文档（PRD 3.6 / 4.5）
+    const agent = new FakeAgent({ onSend: writeScript("too short") });
+
+    await expect(service.migrate({ agent: asAgent(agent) })).rejects.toThrow(
+      /no usable handoff document/,
+    );
+
+    expect(agent.resumeInstructions).toEqual([]);
   });
 
   it("omit（默认）：历史标 omit，模板与断点不标", async () => {

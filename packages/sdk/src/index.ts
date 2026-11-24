@@ -182,7 +182,11 @@ export { McpConnectionManager } from "./scope/plugins/mcp/McpConnectionManager.j
 export type { McpConnectOptions } from "./scope/plugins/mcp/McpConnectionManager.js";
 export { SdkCallbackTool } from "./scope/plugins/builtin/SdkCallbackTool.js";
 export type { SdkCallbackToolOptions } from "./scope/plugins/builtin/SdkCallbackTool.js";
-export { HandoffAbortedError, HandoffService } from "./runtime/HandoffService.js";
+export {
+  HandoffAbortedError,
+  HandoffService,
+  HANDOFF_RESUME_SOURCE_LABEL,
+} from "./runtime/HandoffService.js";
 export type {
   HandoffContext,
   HandoffFact,
