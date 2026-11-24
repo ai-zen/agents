@@ -107,7 +107,10 @@ export type HandoffKind = "document" | "swap";
 
 /** `start` 的那两格：谁去写、写不写换手 */
 export interface HandoffStartOptions {
-  /** 执行者。不给时这一格不往下传，由 SDK 的默认值定（见 `start`） */
+  /**
+   * 执行者。不给时进 `start` 就不往下传、由 SDK 的默认值定，而进 {@link HandoffService.startAsked}
+   * 会先问一次（手动那条路的形状）。
+   */
   readonly mode?: HandoffMode;
   /**
    * 这一档。不给就是 `swap`：「交接」这个动作本来指的就是「写文档 + 换手」，只写文档是分出来的
@@ -203,18 +206,97 @@ export class HandoffService {
    * 一开跑就撞上 `runSelfHandoff` 的第一句（会话不收件就不投递）—— 那一趟直接是失败，用户在
    * 通知里只会看到一句「会话不收件」。
    *
-   * 四条判据的顺序不能换。没有活 Agent 时其余三格都无从谈起；已经在这一趟里的那一段，它自己
-   * 正在写文档、输出开关也是关着的 —— 把这一条排到后面，用户拿到的就是 `working` 或
-   * `output_paused`，而真实原因是「已经在交接了」。
+   * 四条判据见 {@link assertStartable}（顺序不能换）。
    *
    * `mode` 是调用方显式挑的执行者（自交接 / 独立摘要）：给了就用它跑这一趟。不给时这一格不往下
-   * 传，执行者由 SDK 那一侧的默认值定（`createSdkHandoff` 没建 `mode` 时为 `self`）—— 与这一格
-   * 加进来之前的每一趟一致。
+   * 传，执行者由 SDK 那一侧的默认值定（`createSdkHandoff` 没建 `mode` 时为 `self`）—— 手动那条
+   * 路上「不给」意味着先问一次，那一格在 {@link startAsked}，不在这里。
    *
    * `kind` 是这一档走哪两个 SDK 方法（见 {@link HandoffKind}）。两档的四条判据、交接态、取消口
    * 完全一样，分岔只在后台那一趟的最后一步。
    */
   start(sessionId: string, options: HandoffStartOptions = {}): void {
+    const { session, agent } = this.assertStartable(sessionId);
+    const handoffDir = this.handoffDir(session);
+    const kind = options.kind ?? "swap";
+    const signal = this.enter(sessionId, kind);
+    void this.run({
+      sessionId,
+      agent,
+      handoffDir,
+      signal,
+      mode: options.mode,
+      kind,
+    });
+  }
+
+  /**
+   * 手动那条路：**没给执行者就先问一次**，答完再开跑（{@link askHandoffMode}）。
+   *
+   * 与 {@link start} 分成两条，是因为这一条要**等**（等人答），而那一格是同步的：进交接态、把
+   * 真跑的那一趟交给后台。所以调用方（`handoff.start` 那条 procedure）叫它是「不等结果地叫起来」
+   * —— 题一出来那条 RPC 就该回去，否则界面上按一下回车要等用户点完选项才见到回执。
+   *
+   * 与阈值那条（{@link automaticMode}）共用同一道题：手动敲命令与撞线是两件事，但「用哪种方式
+   * 交接」只有一个答案，两处各写一份题就会各说一套措辞。
+   *
+   * 判据在**问之前**先跑一遍：能问的必须是真能交的，别让人答完才被告知「还在回答」。
+   */
+  async startAsked(sessionId: string, options: HandoffStartOptions = {}): Promise<void> {
+    // 显式挑了执行者就不问：选择题只是「没指定时」的那一问
+    if (options.mode !== undefined) {
+      this.start(sessionId, options);
+      return;
+    }
+
+    // 这条路没有人在等结果（题一出来那条 RPC 就回去了），所以判据的拒绝只能收成一条通知 ——
+    // 让它在后台炸成一个没人接的 rejection，用户看到的就是「敲了命令，什么都没发生」
+    try {
+      this.assertStartable(sessionId);
+    } catch (error) {
+      this.noticeNotStarted(sessionId, error);
+      return;
+    }
+
+    const value = await this.askHandoffMode(sessionId);
+    // 不交接、或没人答它了（`undefined`）：什么都不做，也不记成「这一段不再问」—— 那一条是
+    // 阈值那条路的处置策略，手动这一趟的「不交接」就是这一次不交
+    if (value !== "self" && value !== "summary") return;
+
+    try {
+      this.start(sessionId, { ...options, mode: value });
+    } catch (error) {
+      // 问的这段时间里状态可能变了（这一段开始了别的交接、被硬杀、被删掉）：`start` 那四条判据
+      // 再判一遍，判不过就落在这一格
+      this.noticeNotStarted(sessionId, error);
+    }
+  }
+
+  /** 「交接没开起来」那一条通知（判据拒了、或开跑那一刻状态已经变了） */
+  private noticeNotStarted(sessionId: string, error: unknown): void {
+    this.deps.notices.push({
+      level: "error",
+      code: "handoff_failed",
+      sessionId,
+      durationMs: null,
+      message: this.deps.t("交接没有开始：{reason}", {
+        reason: error instanceof Error ? error.message : String(error),
+      }),
+    });
+  }
+
+  /**
+   * 交接的四条判据，过了才往下走。
+   *
+   * 顺序不能换。没有活 Agent 时其余三格都无从谈起；已经在这一趟里的那一段，它自己正在写文档、
+   * 输出开关也是关着的 —— 把这一条排到后面，用户拿到的就是 `working` 或 `output_paused`，而真实
+   * 原因是「已经在交接了」。
+   *
+   * 两条路（{@link start} 直接开跑、{@link startAsked} 问之前先判）共用它：判据只有一份，多写
+   * 一遍就一定会有一条路少判一格。`handoff.start` 那条 procedure 也会先调它一次 —— 题还没出，
+   * 这一段跑不了就当场拒，客户端拿得到理由。
+   */
+  assertStartable(sessionId: string): { session: SessionRecord; agent: SdkAgent } {
     const session = this.deps.sessions.get(sessionId);
     if (session === undefined) {
       throw new HostError(
@@ -257,17 +339,7 @@ export class HandoffService {
       );
     }
 
-    const handoffDir = this.handoffDir(session);
-    const kind = options.kind ?? "swap";
-    const signal = this.enter(sessionId, kind);
-    void this.run({
-      sessionId,
-      agent,
-      handoffDir,
-      signal,
-      mode: options.mode,
-      kind,
-    });
+    return { session, agent };
   }
 
   /**
@@ -438,23 +510,19 @@ export class HandoffService {
    *
    * 四条分支，顺序就是下面这几条（顺序本身就是口径）：
    *   1. 会话行不在 → `null`（这一段没了，没什么可交的）；
-   *   2. 开着自动交接（PeerSession 默认开，或用户自己打开）→ `"self"`，**不问**；
+   *   2. 开着自动交接（平级会话默认开，或用户自己打开）→ `"self"`，**不问**；
    *   3. 这一段答过「不交接」→ `null`，**不再问**；
-   *   4. 否则问一道三选题，等一个答复。
+   *   4. 否则出那道题（{@link askHandoffMode}），等一个答复。
    *
-   * 判据只有开关，**与有没有客户端连着无关**：题只活在内存里，客户端断开再连回来照样看得到它，
+   * 判据只有**开关那一格**，与「谁建的」无关：开着自己交班、关着问一次。开关的初值才跟谁建的
+   * 有关（用户建的默认关、平级会话默认开），那是建会话那一侧的事。
+   *
+   * 判据也**与有没有客户端连着无关**：题只活在内存里，客户端断开再连回来照样看得到它，
    * 进程没了才没 —— 没有客户端照样问，题挂着等人答。不拿「有没有人在场」替用户做「要不要交接」
    * 的决定。
    *
-   * 第 4 条问出去的那道题**一段上只挂一道**（{@link asking}）：撞线是可能连着来的，而用户没答时
-   * 后来的人等的是同一道，不再新问一道 —— 同一段上摞着两道一模一样的题是缺陷，不是「只问一次」
-   * 的口径。
-   *
-   * 题是 `blocking: false`：PRD 原话是「题挂着时不挡发送」——要不要因为一道没答的题把发送按住是
-   * 客户端的事，它手上就有那道题，而宿主只知道有这么一道题（`blocking` 仍进载荷）。
-   *
    * 答复是 `undefined` 的意思是「没人答它了」（那段没了、或被 `forget` 掉），不是「用户说了不」——
-   * 按默认执行者走。
+   * 这一趟不迁移，但也不记成「这一段不再问」。
    *
    * 这个方法是被 `AutoMigratePlugin` 的 `resolveMode` 调的，那个类型本来就允许 `Promise`
    * （`AutoMigrateModeResolver`），所以这里等用户答复就是等这一趟，不阻塞别的。
@@ -465,17 +533,42 @@ export class HandoffService {
     if (session.autoHandoff === true) return "self";
     if (this.declined.has(sessionId)) return null;
 
-    // 同一段上同时只该有一道待答的题：已经有一道在等，就等**同一道**。撞线是可能连着来的（用户
-    // 不答、接着说，agent 又闲下来又撞上软线），每撞一次问一道，同一段上就叠着两道一模一样的题。
+    const value = await this.askHandoffMode(sessionId);
+    if (value === "self" || value === "summary") return value;
+    if (value === "no") {
+      // 答不要就记成这段的处理策略：开关关掉、这一段不再问（答案不持久化，重启之后还会问一次）
+      this.declined.add(sessionId);
+      this.deps.sessions.update(sessionId, { autoHandoff: false });
+    }
+    // `undefined`（没人答它了）与「不交接」都是 `null`：这一趟不迁移
+    return null;
+  }
+
+  /**
+   * 出那道交接三选题（自交接 / 独立交接 / 不交接），等一个答复。
+   *
+   * **手动与阈值两条路共用这一份**：一条是用户敲了命令，一条是撞线了，两件事不一样，但「用哪种
+   * 方式交接」只有一个答案 —— 各写一份题，用户看到的就是两套措辞、两个形状。
+   *
+   * 同一段上**只挂一道**（{@link asking}）：撞线是可能连着来的，用户没答时后来的人等的是同一道，
+   * 不再新问一道 —— 同一段上摞着两道一模一样的题是缺陷，不是「只问一次」的口径。
+   *
+   * 题是 `blocking: false`：PRD 原话是「题挂着时不挡发送」——要不要因为一道没答的题把发送按住是
+   * 客户端的事，它手上就有那道题，而宿主只知道有这么一道题（`blocking` 仍进载荷）。
+   *
+   * 返回值是宿主看得懂的那四种原样：`self` / `summary` / `no` / `undefined`（没人答它了）。怎么
+   * 处置是调用方的事 —— 「不交接」在阈值那条路上要记成这一段不再问，在手动那条路上只是这一次不交。
+   */
+  private async askHandoffMode(sessionId: string): Promise<string | undefined> {
     let answer = this.asking.get(sessionId);
     if (answer === undefined) {
       const asked = this.deps.questions.askAwaitable({
         sessionId,
-        message: this.deps.t("这段会话装不下时，用哪种方式交接？"),
+        message: this.deps.t("用哪种方式交接？"),
         choices: [
           { value: "self", label: this.deps.t("自交接：在这段会话里接着写交接文档") },
           { value: "summary", label: this.deps.t("独立交接：另起一次调用写交接文档") },
-          { value: "no", label: this.deps.t("不交接：接着聊，撞上硬线为止") },
+          { value: "no", label: this.deps.t("不交接：保持现状") },
         ],
         // 题挂着不挡发送：按不按发送是客户端拿着这一格自己决定的事
         blocking: false,
@@ -491,15 +584,7 @@ export class HandoffService {
       });
     }
 
-    const value = await answer;
-    if (value === "self" || value === "summary") return value;
-    if (value === "no") {
-      // 答不要就记成这段的处理策略：开关关掉、这一段不再问（答案不持久化，重启之后还会问一次）
-      this.declined.add(sessionId);
-      this.deps.sessions.update(sessionId, { autoHandoff: false });
-    }
-    // `undefined`（没人答它了）与「不交接」都是 `null`：这一趟不迁移
-    return null;
+    return answer;
   }
 
   /**

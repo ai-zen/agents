@@ -472,6 +472,116 @@ describe("交接的执行者", () => {
   });
 });
 
+describe("手动那条路：没给执行者就先问一次", () => {
+  /**
+   * 手动敲命令与阈值撞线是两件事，但「用哪种方式交接」只有一个答案 —— 所以手动这一条也出那道题
+   * （与 `automaticMode` 是**同一份**题、同一套文案）。这一组用例钉住四件事：
+   *
+   * - 没给 `mode` 就出题，且**出题那一刻还没开跑**（等人答）；
+   * - 答什么就用什么跑；
+   * - 答「不交接」就什么都不做，且**不**记成「这一段不再问」—— 那是阈值那条路的处置策略；
+   * - 显式给了 `mode` 就不问：选择器只是「没指定时」的那一问。
+   */
+  it("没给 `mode`：先出三选题，答 self 才开跑", async () => {
+    const { handoff, handoffs, sessions, questions, wake } = setup();
+    const session = sessions.create(input);
+    wake(session.id);
+
+    const asked = handoff.startAsked(session.id);
+
+    // 题出来了，而这三种方式一个都还没开始：交接态没置、SDK 一次都没调
+    const question = questions.list(session.id)[0];
+    expect(question).toBeDefined();
+    expect(question.choices.map((choice) => choice.value)).toEqual(["self", "summary", "no"]);
+    expect(question.blocking).toBe(false);
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+    expect(handoffs.runs).toHaveLength(0);
+
+    questions.answer(question.id, "self");
+    await asked;
+
+    expect(handoffs.runs).toHaveLength(1);
+    expect(handoffs.runs[0].mode).toBe("self");
+    expect(handoff.isHandingOff(session.id)).toBe(true);
+  });
+
+  it("答「独立交接」就按 summary 跑", async () => {
+    const { handoff, handoffs, sessions, questions, wake } = setup();
+    const session = sessions.create(input);
+    wake(session.id);
+
+    const asked = handoff.startAsked(session.id, { kind: "document" });
+    questions.answer(questions.list(session.id)[0].id, "summary");
+    await asked;
+
+    expect(handoffs.runs[0].mode).toBe("summary");
+    // `kind` 照传：只写文档那一档是调用方开口说的，问题只问「谁去写」
+    expect(handoffs.runs[0].method).toBe("handoff");
+  });
+
+  it("答「不交接」：什么都不做，也不记成「这一段不再问」", async () => {
+    const { handoff, handoffs, sessions, questions, wake } = setup();
+    const session = sessions.create(input);
+    wake(session.id);
+
+    const asked = handoff.startAsked(session.id);
+    questions.answer(questions.list(session.id)[0].id, "no");
+    await asked;
+
+    expect(handoffs.runs).toHaveLength(0);
+    expect(handoff.isHandingOff(session.id)).toBe(false);
+    // 「不再问」是阈值那条路的处置策略（`automaticMode` 答 `no` 时把开关写成 false）；
+    // 手动这一趟的「不交接」只是这一次不交 —— 下一次敲命令照样问
+    expect(sessions.get(session.id)?.autoHandoff).toBe(false);
+    void handoff.startAsked(session.id);
+    expect(questions.list(session.id)).toHaveLength(1);
+  });
+
+  it("显式给了 `mode`：不问，直接开跑", async () => {
+    const { handoff, handoffs, sessions, questions, wake } = setup();
+    const session = sessions.create(input);
+    wake(session.id);
+
+    handoff.startAsked(session.id, { mode: "self" });
+
+    expect(questions.list(session.id)).toEqual([]);
+    expect(handoffs.runs).toHaveLength(1);
+    expect(handoffs.runs[0].mode).toBe("self");
+  });
+
+  it("判据在问之前：这一段跑不了就先拦住，一道题都不出（后台那条路只能收成通知）", async () => {
+    const { handoff, sessions, questions, notices } = setup();
+    // 没 `wake`：这一段没有活 Agent，交接根本无从谈起
+    const session = sessions.create(input);
+
+    // 不等结果地叫起来时，判据的拒绝只能收成一条通知 —— 变成没人接的 rejection 就是
+    // 「敲了命令，什么都没发生」
+    await handoff.startAsked(session.id);
+
+    expect(questions.list(session.id)).toEqual([]);
+    expect(notices.listBySession(session.id).at(-1)?.message).toContain("交接没有开始：");
+  });
+
+  it("与阈值那条共用同一道题：题挂着时，手动敲命令等的是同一句", async () => {
+    const { handoff, sessions, questions, wake } = setup();
+    const session = sessions.create(input);
+    wake(session.id);
+
+    // 撞线先问出去一道（自动交接关着）
+    const auto = handoff.automaticMode(session.id);
+    expect(questions.list(session.id)).toHaveLength(1);
+
+    // 用户不等答复，直接敲了交接命令：不再新问一道
+    const manual = handoff.startAsked(session.id);
+    expect(questions.list(session.id)).toHaveLength(1);
+
+    questions.answer(questions.list(session.id)[0].id, "summary");
+    await expect(auto).resolves.toBe("summary");
+    await manual;
+    expect(handoff.isHandingOff(session.id)).toBe(true);
+  });
+});
+
 describe("后台那一趟失败", () => {
   /**
    * 失败不开开关是这整件事最贵的错：开关关着就没人取走，界面上只表现为「它不理我」，而这段时间投进

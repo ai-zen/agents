@@ -103,4 +103,11 @@ export const en: Record<string, string> = {
   "只能撤回到自己说过的话之前：assistant 那条消息与工具结果不是这个意思":
     "You can only rewind to before something you said yourself; replies and tool results are not yours to unsend",
   "这段会话还在跑，等它停下来再撤回": "This session is still running; rewind once it stops",
+  "用哪种方式交接？": "How should the handoff be written?",
+  "自交接：在这段会话里接着写交接文档":
+    "Self-handoff: continue in this session and write the handoff document there",
+  "独立交接：另起一次调用写交接文档":
+    "Independent handoff: write the handoff document in a separate call",
+  "不交接：保持现状": "No handoff: leave things as they are",
+  "交接没有开始：{reason}": "The handoff did not start: {reason}",
 };

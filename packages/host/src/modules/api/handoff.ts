@@ -38,8 +38,11 @@ export function handoffRouter(deps: HostApiDeps, api: Trpc) {
      * 了」，收口看 `session.handoff` 那一对事件，做不成有一条失败通知。
      *
      * `mode` 是调用方显式挑的执行者，与「申请这个、拿回来那个」的降级不是一回事：独立摘要
-     * （另起一个一次性 Agent 去写）本来就由用户说了算，所以它进的是入参，不是宿主自己的裁决。
-     * 不给时这一格不往下传，执行者由 SDK 的默认值定 —— 与这一格加进来之前的每一趟一致。
+     * （另起一个一次性 Agent 去写）本来就由用户说了算。
+     *
+     * **不给 `mode` 就先问一次**（{@link HandoffService.startAsked}）：手动两条命令都不再自带一
+     * 套三选一，出题只有宿主这一处 —— 与阈值撞线时那一道是**同一份题、同一套文案**。题一出来这一
+     * 条就回去：用户点完选项之后那一趟才真正开跑，回执等的是「开始了」，不是「人选完了」。
      *
      * `kind` 分两档：只写文档那一档做完之后会话里什么都没变（记忆、存档会话、Agent 身份都不动），
      * 只多一条带路径的通知；换手那一档把旧记忆变成另一段存档会话。
@@ -54,7 +57,14 @@ export function handoffRouter(deps: HostApiDeps, api: Trpc) {
       )
       .output(sessionIdResult)
       .mutation(({ input }) => {
-        deps.handoff.start(input.sessionId, { mode: input.mode, kind: input.kind });
+        if (input.mode === undefined) {
+          // 判据先在**请求里**判一遍：这一段跑不了（还在回答 / 已经在交接 / 没有活 Agent）就当场
+          // 拒，题还没出，客户端拿得到理由。之后那一趟不等结果 —— 等人答是界面上的事
+          deps.handoff.assertStartable(input.sessionId);
+          void deps.handoff.startAsked(input.sessionId, { kind: input.kind });
+        } else {
+          deps.handoff.start(input.sessionId, { mode: input.mode, kind: input.kind });
+        }
         return { sessionId: input.sessionId };
       }),
 
