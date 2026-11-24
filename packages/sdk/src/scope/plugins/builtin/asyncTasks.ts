@@ -107,7 +107,14 @@ export function trackTimer(agent: Agent, timer: NodeJS.Timeout, log?: LogSink): 
  * 投递不创建、也不复活会话：那段会话已经没有 Agent、或者队列已经关门时，`push` 抛错，
  * 这条结果就此丢掉并记一行日志。不抛给谁、不重试、不留下来等。
  *
- * 优先级取低：结果不该插进那段会话手上那一批的工具调用之间，它排在队尾，那一批跑完就取到。
+ * ## 优先级取高
+ *
+ * 这条结果是「手上这一批还没跑完就该知道的事」，而等它的一方十有八九正卡在轮询上
+ *（`sleep`、`async_timeout`、反复 `get_mcp_task_result`）。内循环只在**工具跑完那个边界**
+ * 取一次件（`Agent.landHigh`，只认 high），取低的话那一批永远不会结束 —— 模型一直在调工具，
+ * 结果就一直递不进去，最后是「最多 16 秒的异步任务被一串 sleep 堵到永不返回」。
+ *
+ * 高优先级不打断正在吐的回答：取走只发生在两次请求之间，不进工具调用序列的中间。
  */
 export function deliverAsyncResult(input: {
   agent: Agent;
@@ -120,7 +127,7 @@ export function deliverAsyncResult(input: {
   const log = input.log ?? SILENT_LOG;
 
   try {
-    agent.send({ content, priority: "low", source: { kind: "system", label } });
+    agent.send({ content, priority: "high", source: { kind: "system", label } });
   } catch (error) {
     log.warn(`[${label}] result could not be delivered to agent ${agent.id}; dropped`, { error });
   }

@@ -63,6 +63,9 @@ describe("AsyncTimeoutTool", () => {
     // 到点之前什么都没投回来
     expect(agent.inboxPending).toHaveLength(0);
     await until(() => agent.inboxPending.length === 1, 5000);
+    // 高优先级：到点这一条要在下一个工具边界就被看见 —— 等定时器的会话正是「没事可做、
+    // 只调 sleep」的那一段，取低它就永远等不到（那一批永远不结束）
+    expect(agent.inboxPending[0]?.priority).toBe("high");
 
     void agent.start();
     await until(() => agent.messages.length === 1, 5000);

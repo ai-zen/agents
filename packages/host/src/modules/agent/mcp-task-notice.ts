@@ -42,7 +42,10 @@ export function createMcpTaskNoticePort(deps: McpTaskNoticeDeps): McpTaskNoticeP
       }
 
       const entry = {
-        priority: "low" as const,
+        // 高：这条通知说的是「你等的那个任务有结论了」，而等它的一方常常正在轮询
+        //（`sleep` / `get_mcp_task_result`）。取低就永远等不到 —— 内循环只在工具边界取 high
+        //（`Agent.landHigh`），那一批不结束，这条就一直不被看见。与 `deliverAsyncResult` 同一个理由。
+        priority: "high" as const,
         source: { kind: "system" as const, label: `mcp:${notice.server}` },
         content: noticeText(notice),
       };

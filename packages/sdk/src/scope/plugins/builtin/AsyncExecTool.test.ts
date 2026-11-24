@@ -89,6 +89,9 @@ describe("AsyncExecTool", () => {
 
     // 先确认它确实是从队列进来的（不是工具直接写消息）
     await until(() => agent.inboxPending.length === 1, 10_000);
+    // 高优先级：结果要在**下一个工具边界**就被看见。取低的话，等它的那一方只要还在调工具
+    //（`sleep` 轮询是最常见的那种），那一批就永远不结束，结果永远递不进去
+    expect(agent.inboxPending[0]?.priority).toBe("high");
     const messages = await waitForDelivered(agent);
 
     expect(messages).toHaveLength(1);
