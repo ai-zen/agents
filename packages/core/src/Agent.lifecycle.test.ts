@@ -1549,3 +1549,73 @@ describe("send 的三种写法", () => {
     expect(entry.priority).toBe("low");
   });
 });
+
+/**
+ * 修历史那一步（`repair()`）会把崩溃留下的半截回答按策略改判 —— 改判**要报出去**。
+ *
+ * 症状：进程意外退出后重启，库里那条 assistant 停在 `writing`；装载时归一成 `aborted`（这一条
+ * 报了 `messageChanged`，客户端于是给它挂上「不进上下文」的标记）；用户发下一句，`repair()`
+ * 按 `keep` 把它改回 `completed` —— 从前这一步一声不响，客户端就一直挂着那个标记，而库里与
+ * 内存里它早就 `completed` 了。
+ */
+describe("修历史：改判的那几条要报 messageChanged", () => {
+  /** 崩溃留下的半截：`aborted` + 已经吐出来的一段正文 */
+  function partial(): AgentNS.Message {
+    return new Message({
+      id: "m-partial",
+      role: AgentNS.Role.Assistant,
+      status: AgentNS.MessageStatus.Aborted,
+      content: "已经吐出来的半截",
+    });
+  }
+
+  it("keep：半截回答改回 completed，并补报一条 messageChanged", async () => {
+    const { client } = createMockClient([textStream("接着说完了")]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      messages: [partial()],
+      abortedMessageStrategy: "keep",
+    });
+
+    const changed: AgentNS.Message[] = [];
+    agent.on("messageChanged", ({ message }) => changed.push(message));
+
+    void agent.start();
+    agent.send(user("继续"));
+    await settled(agent);
+
+    const report = changed.find((message) => message.id === "m-partial");
+    expect(report?.status).toBe(AgentNS.MessageStatus.Completed);
+    // 三处同一份：内存里那条就是被改回来的那一份，且没有被删
+    expect(agent.messages.some((message) => message.id === "m-partial")).toBe(true);
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("drop：半截回答真删并报 messageRemoved（本来就有，钉住不变）", async () => {
+    const { client } = createMockClient([textStream("接着说完了")]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      messages: [partial()],
+      abortedMessageStrategy: "drop",
+    });
+
+    const removed: string[] = [];
+    agent.on("messageRemoved", ({ message }) => removed.push(message.id));
+
+    void agent.start();
+    agent.send(user("继续"));
+    await settled(agent);
+
+    expect(removed).toEqual(["m-partial"]);
+    expect(agent.messages.some((message) => message.id === "m-partial")).toBe(false);
+
+    agent.stop();
+    await agent.start();
+  });
+});

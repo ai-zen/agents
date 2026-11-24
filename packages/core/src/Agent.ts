@@ -458,6 +458,16 @@ function inboxFieldsOf(
 }
 
 /**
+ * 一条消息「会不会进上下文」的那两格（`status` / `omit`）。
+ *
+ * {@link Agent.repair} 靠它认出「这次修历史把哪几条改判了」：两条 reconcile 都是**就地**改
+ * （`aborted` → `completed`、`omit` 抹掉），改完就分不出原样，所以修之前先记一份。
+ */
+function markOf(message: AgentNS.Message): string {
+  return `${message.status ?? ""}|${message.omit === true ? "1" : "0"}`;
+}
+
+/**
  * 能拒的钩子：返回 string 就是判决（这次不跑），**只有它们短路**后面的插件。
  *
  * 它们崩了还要**fail-closed** —— 坏的护栏放行等于没有护栏；
@@ -1286,8 +1296,22 @@ export class Agent extends AgentContext {
    *
    * 判定依据只有两样：消息的 `status`，以及 `tool_calls` 与 tool 消息的配对关系。
    * **不需要知道原因** —— 中断、出错、崩溃三种来路，落到这一步看到的是同一份脏数据。
+   *
+   * ## 改了状态的那几条要报 `messageChanged`
+   *
+   * `keep` / `fill` 两条策略都是**就地改状态**（`aborted` → `completed`、`omit` 抹掉）：
+   * 一条事件都不发的话，客户端手上还是装载时那一版（`writing` → 归一后的 `aborted`），于是
+   * 「进程崩了、重启后发一句」这条路上，界面上那半截回答会一直挂着「不进上下文」的标记，而库里
+   * 与内存里它已经是 `completed` —— 三处各说各话。删掉的那几条本来就有 `messageRemoved`，
+   * 只有「留下但要改判」这一种从前是无声的。
+   *
+   * 报的是 `messageChanged`（客户端整条替换），不是 `messageFinished`：后者只落库、不推事件
+   * （见宿主的观察者那一格）。
    */
   private repair(): void {
+    // 只为了回答「哪几条被改判了」：reconcile 那两条是就地改，改完就分不出原样
+    const before = new Map(this.messages.map((m) => [m, markOf(m)]));
+
     const removed = [
       ...reconcileAbortedToolRounds(
         this.messages,
@@ -1297,6 +1321,12 @@ export class Agent extends AgentContext {
       ...reconcileAbortedMessages(this.messages, this.abortedMessageStrategy),
     ];
     for (const message of removed) this.emit("messageRemoved", { agent: this, message });
+
+    for (const message of this.messages) {
+      if (before.get(message) !== undefined && before.get(message) !== markOf(message)) {
+        this.touch(message);
+      }
+    }
 
     // 修完再**整段扫一遍**：`keep` 策略是就地改状态（`aborted` → `completed`）、不经过上面任何
     // 一条正常路 —— 这里是那个唯一的例外口。已经报过的由 {@link settle} 的 WeakSet 挡掉，
