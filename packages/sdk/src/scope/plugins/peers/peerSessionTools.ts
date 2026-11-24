@@ -297,25 +297,24 @@ function createSessionTool(port: PeerSessionPort): Tool {
               "starts from an empty context and cannot see this session.",
           },
           agentId: {
-            type: "string",
+            type: ["string", "null"],
             description:
-              "Agent (by id) that runs the new session (optional, defaults to the agent of this " +
-              "session)",
+              "Agent (by id) that runs the new session (null means the agent of this session)",
           },
           modelId: {
-            type: "string",
+            type: ["string", "null"],
             description:
-              "Model id for the new session (optional, defaults to the usual resolution: session " +
+              "Model id for the new session (null means the usual resolution: session " +
               "> agent definition > global default)",
           },
           label: {
-            type: "string",
+            type: ["string", "null"],
             description:
-              'Short readable name for this session (optional, e.g. "run the tests"). It is what ' +
+              'Short readable name for this session (null means no label, e.g. "run the tests"). It is what ' +
               "read_session_status shows and what I use to refer to it later.",
           },
         },
-        required: ["prompt"],
+        required: ["prompt", "agentId", "modelId", "label"],
         additionalProperties: false,
       },
     },

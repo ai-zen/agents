@@ -29,13 +29,13 @@ export class EditTool extends SdkCallbackTool {
           description: "Replacement text",
         },
         isReplaceAll: {
-          type: "boolean",
+          type: ["boolean", "null"],
           description:
-            "Whether to replace all matches (default false, only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
+            "Whether to replace all matches (null means false: only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
           default: false,
         },
       },
-      required: ["path", "oldText", "newText"],
+      required: ["path", "oldText", "newText", "isReplaceAll"],
       additionalProperties: false,
     },
   };

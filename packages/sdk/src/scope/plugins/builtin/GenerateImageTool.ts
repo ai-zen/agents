@@ -56,23 +56,23 @@ export class GenerateImageTool extends SdkCallbackTool {
             "Text description of the desired image; describe the subject, style, composition and other details",
         },
         model: {
-          type: "string",
+          type: ["string", "null"],
           description:
-            "Image model ID. Defaults to the configured default image model; if the given model does not exist, this tool returns the list of currently available models.",
+            "Image model ID. null means the configured default image model; if the given model does not exist, this tool returns the list of currently available models.",
         },
         size: {
-          type: "string",
+          type: ["string", "null"],
           description:
-            "Image size. Defaults to the model default size. cogview series: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440. glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728.",
+            "Image size. null means the model default size. cogview series: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440. glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728.",
         },
         quality: {
-          type: "string",
+          type: ["string", "null"],
           description:
-            "Image quality. hd: fine (about 20 seconds), standard: fast (about 5-10 seconds)",
-          enum: ["hd", "standard"],
+            "Image quality. hd: fine (about 20 seconds), standard: fast (about 5-10 seconds); null means the model default",
+          enum: ["hd", "standard", null],
         },
       },
-      required: ["prompt"],
+      required: ["prompt", "model", "size", "quality"],
       additionalProperties: false,
     },
   };

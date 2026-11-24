@@ -78,6 +78,32 @@ describe("ReadTool", () => {
     }
   });
 
+  it("range 不是四个数字时当没给（读全文）", async () => {
+    const tool = new ReadTool(makeEnv());
+    const filePath = tmpFile("line0\nline1");
+    try {
+      // 严格模式下正确写法是 null；模型也可能给空数组、半截数组、带 null 的数组
+      for (const range of [null, [], [0], [0, 0, null, -1], [0, 0, 1]]) {
+        const result = await tool.call({ path: filePath, range: range as unknown as number[] });
+        expect(result).toBe("line0\nline1");
+      }
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("range 什么都没选到时说清该怎么办，而不是交一个空串", async () => {
+    const tool = new ReadTool(makeEnv());
+    const filePath = tmpFile("line0\nline1");
+    try {
+      const result = (await tool.call({ path: filePath, range: [1, 0, 0, -1] })) as string;
+      expect(result).toContain("selected nothing");
+      expect(result).toContain("range: null");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
   it("range 按行列范围读取（0-based，-1 表末位）", async () => {
     const tool = new ReadTool(makeEnv());
     const filePath = tmpFile("line0\nline1\nline2\nline3");

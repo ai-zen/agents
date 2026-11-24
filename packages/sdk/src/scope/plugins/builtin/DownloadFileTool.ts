@@ -20,9 +20,9 @@ export class DownloadFileTool extends SdkCallbackTool {
           description: "URL to download the file from",
         },
         outputPath: {
-          type: "string",
+          type: ["string", "null"],
           description:
-            "Save path (optional). May be a directory or a full file path. If omitted, the file is saved to the current working directory with the file name inferred from the URL.",
+            "Save path. May be a directory or a full file path. If null, the file is saved to the current working directory with the file name inferred from the URL.",
         },
         timeout: {
           type: "number",
@@ -30,7 +30,7 @@ export class DownloadFileTool extends SdkCallbackTool {
             "Timeout in milliseconds (required). The download is aborted on timeout. Large files need a larger value.",
         },
       },
-      required: ["url", "timeout"],
+      required: ["url", "outputPath", "timeout"],
       additionalProperties: false,
     },
   };

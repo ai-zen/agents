@@ -274,9 +274,8 @@ describe("formatHistory 的产物（逐字节回归）", () => {
         '{"role":"assistant","content":"好的","tool_calls":[' +
         '{"index":0,"id":"call-1","type":"function","function":{"name":"f","arguments":"{}"}}],' +
         '"reasoning_content":"想一下"},' +
-        '{"role":"tool","content":"结果","tool_call_id":"call-1","name":"f"},' +
-        '{"role":"function","content":"老函数结果","function_call":{"name":"g","arguments":"{}"},' +
-        '"name":"g"},' +
+        '{"role":"tool","content":"结果","tool_call_id":"call-1"},' +
+        '{"role":"function","content":"老函数结果","function_call":{"name":"g","arguments":"{}"}},' +
         '{"role":"user","content":[{"type":"text","text":"无状态"}]}]',
     );
   });

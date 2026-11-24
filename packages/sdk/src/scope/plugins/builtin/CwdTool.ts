@@ -10,6 +10,7 @@ export class CwdTool extends SdkCallbackTool {
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   };
 

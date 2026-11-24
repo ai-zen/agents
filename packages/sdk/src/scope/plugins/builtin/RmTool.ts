@@ -15,11 +15,11 @@ export class RmTool extends SdkCallbackTool {
           description: "File or directory path",
         },
         recursive: {
-          type: "boolean",
-          description: "Whether to delete subdirectories recursively",
+          type: ["boolean", "null"],
+          description: "Whether to delete subdirectories recursively (null means false)",
         },
       },
-      required: ["path"],
+      required: ["path", "recursive"],
       additionalProperties: false,
     },
   };

@@ -15,11 +15,11 @@ export class MkdirTool extends SdkCallbackTool {
           description: "Directory path",
         },
         recursive: {
-          type: "boolean",
-          description: "Whether to create parent directories recursively",
+          type: ["boolean", "null"],
+          description: "Whether to create parent directories recursively (null means false)",
         },
       },
-      required: ["path"],
+      required: ["path", "recursive"],
       additionalProperties: false,
     },
   };

@@ -151,10 +151,13 @@ describe("createLoadMcpTool", () => {
     expect(tool.function.name).toBe("load_mcp");
     expect((tool.function.parameters.properties as any).server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
-    // 披露开关：可选参数，默认 true
-    expect((tool.function.parameters.properties as any).include_manifest.type).toBe("boolean");
+    // 披露开关：默认 true；严格模式下「可选」写作「必填但可为 null」
+    expect((tool.function.parameters.properties as any).include_manifest.type).toEqual([
+      "boolean",
+      "null",
+    ]);
     expect((tool.function.parameters.properties as any).include_manifest.default).toBe(true);
-    expect(tool.function.parameters.required).not.toContain("include_manifest");
+    expect(tool.function.parameters.required).toContain("include_manifest");
     // description 透传进参数描述，供 LLM 参考（对齐 load_skill）
     const serverDesc = (tool.function.parameters.properties as any).server.description as string;
     expect(serverDesc).toContain("github: GitHub file and repository tools");
@@ -324,6 +327,57 @@ describe("createCallMcpTool", () => {
     expect(tool.function.parameters.required).toContain("server");
     expect(tool.function.parameters.required).toContain("tool");
     expect(tool.function.parameters.required).toContain("arguments");
+    // 严格模式里没有「任意键的对象」：参数入口是一串 JSON 文本
+    expect((tool.function.parameters.properties as any).arguments.type).toBe("string");
+  });
+
+  it("arguments 传 JSON 文本：解开之后交给服务器", async () => {
+    const mockClient = {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = callMcpTool(manager, makeEnv());
+    await tool.callback({ server: "github", tool: "echo", arguments: '{"message":"hello"}' });
+    expect(mockClient.callTool).toHaveBeenCalledWith(
+      { name: "echo", arguments: { message: "hello" } },
+      { signal: undefined },
+    );
+  });
+
+  it("arguments 不是合法 JSON：把原因交回给模型，不调服务器", async () => {
+    const mockClient = { callTool: vi.fn() };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = callMcpTool(manager, makeEnv());
+    const result = (await tool.callback({
+      server: "github",
+      tool: "echo",
+      arguments: "{message: hello}",
+    })) as string;
+    expect(result).toContain("not valid JSON");
+    expect(result).toContain("JSON object string");
+    expect(mockClient.callTool).not.toHaveBeenCalled();
+  });
+
+  it("arguments 是空串或 {}，两者都当没有参数", async () => {
+    const mockClient = {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = callMcpTool(manager, makeEnv());
+    await tool.callback({ server: "github", tool: "echo", arguments: "" });
+    await tool.callback({ server: "github", tool: "echo", arguments: "{}" });
+    for (const call of mockClient.callTool.mock.calls) {
+      expect(call[0].arguments).toEqual({});
+    }
   });
 
   it("服务器未连接时提示先 load_mcp", async () => {

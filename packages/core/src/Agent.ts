@@ -1798,7 +1798,13 @@ export class Agent extends AgentContext {
     return formatContentSection(section);
   }
 
-  /** 按白名单重排一份历史（只留模型认识的字段，`__` 开头的键不在白名单里，跟着一起没了） */
+  /**
+   * 按白名单重排一份历史（只留模型认识的字段，`__` 开头的键不在白名单里，跟着一起没了）。
+   *
+   * `name` 不在白名单里：工具结果靠 `tool_call_id` 指明是哪一条，名字是多余的；而有些服务方
+   * （anthropic、google 的翻译层）见到工具消息带 `name` 直接 400
+   *（“cannot preserve named conversation participants”）。
+   */
   formatHistory() {
     return this.messages
       .filter(
@@ -1813,7 +1819,6 @@ export class Agent extends AgentContext {
         tool_calls: message.tool_calls?.length ? message.tool_calls : undefined,
         tool_call_id: message.tool_call_id ?? undefined,
         reasoning_content: message.reasoning_content ?? undefined,
-        name: message.name ?? undefined,
       }));
   }
 }

@@ -40,13 +40,13 @@ export class BatchEditTool extends SdkCallbackTool {
                 description: "Replacement text",
               },
               isReplaceAll: {
-                type: "boolean",
+                type: ["boolean", "null"],
                 description:
-                  "Whether to replace all matches (by default only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
+                  "Whether to replace all matches (null means false: only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
                 default: false,
               },
             },
-            required: ["oldText", "newText"],
+            required: ["oldText", "newText", "isReplaceAll"],
             additionalProperties: false,
           },
         },

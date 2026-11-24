@@ -59,13 +59,13 @@ export function createLoadMcpTool(
             ...(param.enum ? { enum: param.enum } : {}),
           },
           include_manifest: {
-            type: "boolean",
+            type: ["boolean", "null"],
             description:
-              "Whether to return the server's full capability manifest (tools and resources). Optional, defaults to true. If the manifest is already in your context (for example it was loaded earlier in this session but the connection was dropped after a process restart), set it to false to only establish the connection and return a summary, saving context tokens",
+              "Whether to return the server's full capability manifest (tools and resources). null means true. If the manifest is already in your context (for example it was loaded earlier in this session but the connection was dropped after a process restart), set it to false to only establish the connection and return a summary, saving context tokens",
             default: true,
           },
         },
-        required: ["server"],
+        required: ["server", "include_manifest"],
         additionalProperties: false,
       },
     },
@@ -353,6 +353,35 @@ async function callResultToContent(
 }
 
 /**
+ * 模型给的 `arguments` → 交出去的参数对象。
+ *
+ * 严格模式里没法声明「任意键的对象」（每一层对象都要求 `additionalProperties: false`），
+ * 所以 MCP 这套参数的入口是一串 JSON 文本，这里把它解开。解不开就把原因交回给模型，
+ * 而不是把坏 JSON 或空对象转给服务器 —— 后者会让模型以为工具真的收不到参数。
+ */
+function parseToolArguments(raw: unknown): Record<string, unknown> | string {
+  if (raw === undefined || raw === null || raw === "") return {};
+  // 兼容旧形状：早期是对象，用户自己拼出来的历史里可能还留着
+  if (typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw !== "string") {
+    return `❌ call_mcp_tool: arguments must be a JSON object string, got: ${JSON.stringify(raw)}`;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error: any) {
+    return (
+      `❌ call_mcp_tool: arguments is not valid JSON (${error?.message ?? error}); ` +
+      `expected a JSON object string such as {"key":"value"}`
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return `❌ call_mcp_tool: arguments must be a JSON object string, got: ${raw}`;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
  * 创建 call_mcp_tool 工具。
  * 通过官方 Client.callTool() API 调用 MCP 服务器上的工具。
  *
@@ -385,7 +414,12 @@ export function createCallMcpTool(
         properties: {
           server: { type: "string", description: "MCP server name" },
           tool: { type: "string", description: "Tool name" },
-          arguments: { type: "object", description: "Tool arguments" },
+          arguments: {
+            type: "string",
+            description:
+              'Tool arguments as a JSON object string, e.g. "{\\"path\\":\\"/tmp\\"}". ' +
+              'Pass "{}" when the tool takes no arguments.',
+          },
         },
         required: ["server", "tool", "arguments"],
         additionalProperties: false,
@@ -410,13 +444,16 @@ export function createCallMcpTool(
 
       const toolName = input.tool as string;
 
+      const args = parseToolArguments(input.arguments);
+      if (typeof args === "string") return args;
+
       try {
         mcpManager.touch(serverName);
         const media = mediaContextOf(env, ctx);
         // 用不用任务不在这里说：我们只按工具声明的那一档提个偏好，最终由服务器在应答里定
         const call = await bridge.call({
           tool: toolName,
-          args: (input.arguments ?? {}) as Record<string, unknown>,
+          args,
           ...(declarationOf(mcpManager, serverName, toolName) === undefined
             ? {}
             : { declaration: declarationOf(mcpManager, serverName, toolName)! }),

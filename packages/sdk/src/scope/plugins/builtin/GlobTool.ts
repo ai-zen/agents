@@ -14,23 +14,23 @@ export class GlobTool extends SdkCallbackTool {
       type: "object",
       properties: {
         path: {
-          type: "string",
-          description: "glob cwd",
+          type: ["string", "null"],
+          description: "glob cwd (null means the current working directory)",
         },
         pattern: {
           type: "string",
           description: "glob pattern",
         },
         exclude: {
-          type: "array",
+          type: ["array", "null"],
           description:
-            'Glob patterns to exclude. When omitted, defaults to ["**/node_modules/**"]; pass an explicit list to override.',
+            'Glob patterns to exclude. When null, defaults to ["**/node_modules/**"]; pass an explicit list to override.',
           items: {
             type: "string",
           },
         },
       },
-      required: ["pattern"],
+      required: ["pattern", "path", "exclude"],
       additionalProperties: false,
     },
   };

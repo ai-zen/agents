@@ -44,13 +44,13 @@ export class InspectFileTool extends SdkCallbackTool {
           description: "File path",
         },
         withColCountMap: {
-          type: "boolean",
+          type: ["boolean", "null"],
           description:
-            "Whether to return a per-line column count map (object: line index → column count, line index is 0-based). Default false. When there are many lines the map may be too large; in that case only the overview fields are returned.",
+            "Whether to return a per-line column count map (object: line index → column count, line index is 0-based). null means false. When there are many lines the map may be too large; in that case only the overview fields are returned.",
           default: false,
         },
       },
-      required: ["path"],
+      required: ["path", "withColCountMap"],
       additionalProperties: false,
     },
   };

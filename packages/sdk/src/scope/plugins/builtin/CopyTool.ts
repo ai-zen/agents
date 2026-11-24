@@ -19,12 +19,12 @@ export class CopyTool extends SdkCallbackTool {
           description: "Destination path",
         },
         recursive: {
-          type: "boolean",
+          type: ["boolean", "null"],
           description:
-            "Whether to copy directories recursively; must be true when copying a directory",
+            "Whether to copy directories recursively; must be true when copying a directory (null means false)",
         },
       },
-      required: ["src", "dest"],
+      required: ["src", "dest", "recursive"],
       additionalProperties: false,
     },
   };

@@ -41,36 +41,48 @@ export class FindTextTool extends SdkCallbackTool {
           description: "glob pattern",
         },
         text: {
-          type: "string",
-          description: "Text to search for (mutually exclusive with regex)",
+          type: ["string", "null"],
+          description:
+            "Text to search for (mutually exclusive with regex; pass null when using regex)",
         },
         regex: {
-          type: "string",
-          description: "Regular expression (mutually exclusive with text, e.g. \\bconst\\s+\\w+)",
+          type: ["string", "null"],
+          description:
+            "Regular expression (mutually exclusive with text, e.g. \\bconst\\s+\\w+; pass null when using text)",
         },
         exclude: {
-          type: "array",
+          type: ["array", "null"],
           description:
-            'Array of glob patterns to exclude. When omitted, defaults to ["**/node_modules/**"]; pass an explicit list to override.',
+            'Array of glob patterns to exclude. When null, defaults to ["**/node_modules/**"]; pass an explicit list to override.',
           items: {
             type: "string",
           },
         },
         maxMatches: {
-          type: "number",
-          description: "Maximum total matches (default 200)",
+          type: ["number", "null"],
+          description: "Maximum total matches (null means 200)",
         },
         maxFileSize: {
-          type: "number",
+          type: ["number", "null"],
           description:
-            "Maximum file size in bytes; larger files are skipped (default 307200, i.e. 300KB)",
+            "Maximum file size in bytes; larger files are skipped (null means 307200, i.e. 300KB)",
         },
         maxLineLength: {
-          type: "number",
-          description: "Truncation length for line content and matched substrings (default 200)",
+          type: ["number", "null"],
+          description: "Truncation length for line content and matched substrings (null means 200)",
         },
       },
-      required: ["path", "pattern"],
+      required: [
+        "path",
+        "pattern",
+        "text",
+        "regex",
+        "exclude",
+        "maxMatches",
+        "maxFileSize",
+        "maxLineLength",
+      ],
+      additionalProperties: false,
     },
   };
 

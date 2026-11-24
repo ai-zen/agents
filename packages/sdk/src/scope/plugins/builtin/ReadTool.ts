@@ -16,16 +16,16 @@ export class ReadTool extends SdkCallbackTool {
           description: "File path",
         },
         range: {
-          type: "array",
+          type: ["array", "null"],
           description:
             "Read range [startLine, startCol, endLine, endCol]; rows and columns are 0-based, -1 means the last position. " +
-            "For example, [0, 0, 100, -1] reads from line 0, column 0 through the last column of line 100; omit it to read the whole file.",
+            "For example, [0, 0, 100, -1] reads from line 0, column 0 through the last column of line 100; null reads the whole file.",
           items: {
             type: "number",
           },
         },
       },
-      required: ["path"],
+      required: ["path", "range"],
       additionalProperties: false,
     },
   };
@@ -34,7 +34,7 @@ export class ReadTool extends SdkCallbackTool {
     super({ env });
   }
 
-  async call(input: { path: string; range?: number[] }): Promise<string> {
+  async call(input: { path: string; range?: number[] | null }): Promise<string> {
     try {
       const filePath = this.resolve(input.path);
       const stats = await fsp.stat(filePath);
@@ -43,7 +43,17 @@ export class ReadTool extends SdkCallbackTool {
         throw new Error(`File too large to read: ${stats.size} bytes`);
       }
       const content = await fsp.readFile(filePath, "utf-8");
-      const output = input.range ? sliceByRange(content, input.range) : content;
+      const range = normalizeRange(input.range);
+      const output = range === undefined ? content : sliceByRange(content, range);
+
+      // 给了 range 却什么都没选到（模型把可选参数写成了 `[]` 或四个 0）时，直接说清怎么办
+      if (range !== undefined && output === "" && content.length > 0) {
+        return (
+          `Range ${JSON.stringify(range)} selected nothing from this file ` +
+          `(${countLines(content)} lines, ${content.length} characters). ` +
+          `Pass range: null to read the whole file.`
+        );
+      }
 
       // 输出保护：本次返回内容超过上限时只警告、不落盘，并提示用 range 分批读取
       const limit = this.env.config.maxToolOutput ?? DEFAULT_MAX_TOOL_OUTPUT;
@@ -60,6 +70,21 @@ export class ReadTool extends SdkCallbackTool {
       return error?.message;
     }
   }
+}
+
+/**
+ * 把模型给的 `range` 归一成「四个数字」或 `undefined`（= 读全文）。
+ *
+ * 严格模式下可选参数是「必填但可为 null」，模型应当传 `null`；但实际会见到 `[]`、`[0, 0]`、
+ * 带 `null` 的数组这些写法 —— 它们都该当「没给」，而不是切片切出来一串空的。
+ */
+function normalizeRange(range: unknown): number[] | undefined {
+  if (range === null || range === undefined) return undefined;
+  if (!Array.isArray(range) || range.length === 0) return undefined;
+  if (!range.every((value) => typeof value === "number" && Number.isFinite(value))) {
+    return undefined;
+  }
+  return range.slice(0, 4) as number[];
 }
 
 /**

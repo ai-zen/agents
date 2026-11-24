@@ -16,16 +16,16 @@ export class SpawnTool extends SdkCallbackTool {
           description: "Command to execute (including arguments)",
         },
         cwd: {
-          type: "string",
-          description: "Working directory (optional, defaults to the current working directory)",
+          type: ["string", "null"],
+          description: "Working directory (null means the current working directory)",
         },
         detached: {
-          type: "boolean",
+          type: ["boolean", "null"],
           description:
-            "Whether to fully detach from the current process group (optional, defaults to false). When true, the spawned program keeps running even after the current Agent process exits. Use it for daemons or GUI programs that must run independently.",
+            "Whether to fully detach from the current process group (null means false). When true, the spawned program keeps running even after the current Agent process exits. Use it for daemons or GUI programs that must run independently.",
         },
       },
-      required: ["command"],
+      required: ["command", "cwd", "detached"],
       additionalProperties: false,
     },
   };

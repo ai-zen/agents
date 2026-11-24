@@ -15,7 +15,7 @@ describe("SpawnTool", () => {
     expect(params.properties).toHaveProperty("command");
     expect(params.properties).toHaveProperty("cwd");
     expect(params.properties).toHaveProperty("detached");
-    expect(params.required).toEqual(["command"]);
+    expect(params.required).toEqual(["command", "cwd", "detached"]);
   });
 
   it("异步启动 echo 命令，只报告已启动", async () => {

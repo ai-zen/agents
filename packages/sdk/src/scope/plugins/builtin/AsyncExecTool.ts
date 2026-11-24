@@ -26,17 +26,17 @@ export class AsyncExecTool extends SdkCallbackTool {
           description: "Command to execute (parsed and run by the shell, same as exec)",
         },
         cwd: {
-          type: "string",
-          description: "Working directory (optional, defaults to the current working directory)",
+          type: ["string", "null"],
+          description: "Working directory (null means the current working directory)",
         },
         timeout: {
-          type: "number",
+          type: ["number", "null"],
           description:
-            "Timeout in milliseconds (optional). When it fires the whole process group is killed, and " +
-            "the pushed result says the command was killed by the timeout.",
+            "Timeout in milliseconds (null means no timeout). When it fires the whole process group is " +
+            "killed, and the pushed result says the command was killed by the timeout.",
         },
       },
-      required: ["command"],
+      required: ["command", "cwd", "timeout"],
       additionalProperties: false,
     },
   };
@@ -53,7 +53,8 @@ export class AsyncExecTool extends SdkCallbackTool {
     if (!agent) throw new Error(`${ASYNC_EXEC_TOOL} must be called by an agent`);
 
     const command = input.command;
-    const timeout = input.timeout;
+    // 严格模式下的「可选」是「必填但可以是 null」：null 当没传（下面那条判空专门认它）
+    const timeout = input.timeout ?? undefined;
 
     if (
       timeout !== undefined &&

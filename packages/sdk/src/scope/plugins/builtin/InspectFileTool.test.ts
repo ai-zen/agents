@@ -31,7 +31,8 @@ describe("InspectFileTool", () => {
     expect(tool.function.description).toContain("structural overview");
     const params = tool.function.parameters as any;
     expect(params.properties.withColCountMap.default).toBe(false);
-    expect(params.required).toEqual(["path"]);
+    // 严格模式：所有声明的属性都要进 required，可选的靠「类型带 null」表达
+    expect(params.required).toEqual(["path", "withColCountMap"]);
   });
 
   it("返回概况：行数、字符数、最长行、平均列数、行尾类型", async () => {

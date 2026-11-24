@@ -57,8 +57,10 @@ describe("AsyncExecTool", () => {
     const params = tool.function.parameters as Record<string, unknown>;
     expect(params.properties).toHaveProperty("cwd");
     expect(params.properties).toHaveProperty("timeout");
-    // 只有 command 必填：`cwd` 与 `timeout` 都是可选的
-    expect(params.required).toEqual(["command"]);
+    // 严格模式下「可选」是「必填但可为 null」：三个都在 required 里，cwd / timeout 的类型带上 null
+    expect(params.required).toEqual(["command", "cwd", "timeout"]);
+    expect((params.properties as any).cwd.type).toEqual(["string", "null"]);
+    expect((params.properties as any).timeout.type).toEqual(["number", "null"]);
   });
 
   it("立刻返回：调用点不等人，只给一句话与一个任务 id", async () => {
@@ -206,5 +208,19 @@ describe("AsyncExecTool", () => {
     await expect(
       tool.call({ command: "echo hi", timeout: 0 }, callContext(agent, "async_exec", {})),
     ).rejects.toThrow(/timeout/);
+  });
+
+  it("timeout 是 null（严格模式下「不传」的形状）时不报错，当没给", async () => {
+    const tool = new AsyncExecTool(makeEnv());
+    const agent = makeAgent();
+    // 模型按 schema 传 null 时不能落进「非正数」那条判空
+    const result = await tool.call(
+      { command: "echo hi", timeout: null as unknown as number },
+      callContext(agent, "async_exec", {}),
+    );
+    const body = JSON.parse(result as string);
+    expect(body.started).toBe(true);
+    // null 当没给：结果里不出现 timeout 这一格
+    expect(body.timeout).toBeUndefined();
   });
 });
