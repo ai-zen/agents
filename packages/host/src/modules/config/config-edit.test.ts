@@ -539,6 +539,56 @@ describe("配置面：默认项", () => {
   });
 });
 
+/**
+ * 改过的模型必须活过**下一次启动**。
+ *
+ * `ensureDefaultConfig()` 每次启动都跑一遍出厂同步（`syncManagedModels`），而那条规则是
+ * 「没标 `custom: true` 的一律整条换成出厂定义」。所以写入这一侧必须把用户改过的那一条转成
+ * 自有 —— 否则表现就是「改完当场生效、重启之后全变回出厂值」，而且界面上一点线索都没有。
+ */
+describe("配置面：改过的模型要活过下一次启动", () => {
+  it("改出厂模型的阈值 → 那一条转为自有，出厂同步之后新值还在", async () => {
+    // 用出厂那一套端点 + 其中一条模型：模型指的端点必须真在配置里（`assertWritable` 会查）
+    const factoryModel = DEFAULT_APP_CONFIG.models[0]!;
+    const host = await newHost({
+      config: {
+        ...CONFIG,
+        endpoints: [...(DEFAULT_APP_CONFIG.endpoints ?? []), ...CONFIG.endpoints],
+        models: [{ ...factoryModel }],
+        defaultModel: factoryModel.id,
+        defaultMigrationModel: factoryModel.id,
+        namingModel: factoryModel.id,
+      },
+    });
+
+    await host.caller.config.models.update({
+      id: factoryModel.id,
+      change: { tokenThresholds: { handoff: 400_000, guard: 800_000 } },
+    });
+
+    // 当场（内存 + 磁盘）都是新值
+    expect(await onDisk()).toMatchObject({
+      models: [{ id: factoryModel.id, tokenThresholds: { handoff: 400_000, guard: 800_000 } }],
+    });
+
+    // 下一次启动那一步（出厂同步）之后仍然是新值 —— 这一条才是用户看得见的那个行为
+    const booted = await new ConfigManager(configPath).ensureDefaultConfig();
+    expect(booted.models.find((item) => item.id === factoryModel.id)?.tokenThresholds).toEqual({
+      handoff: 400_000,
+      guard: 800_000,
+    });
+  });
+
+  it("新建的模型同样转为自有：出厂清单里没有它，同步不该把它丢掉", async () => {
+    const host = await newHost();
+
+    await host.caller.config.models.create({ model: model("mine", "ep-a") });
+
+    const booted = await new ConfigManager(configPath).ensureDefaultConfig();
+    expect(booted.models.some((item) => item.id === "mine")).toBe(true);
+  });
+});
+
 describe("配置面：恢复出厂", () => {
   /** 出厂那一条模型 / 图模，拷一份当「用户把它改过、还标了自建」的样子 */
   function modifiedFactoryModel(): ModelDefinition {

@@ -32,8 +32,11 @@ export class ModelService {
       );
     }
 
-    await this.assertWritable(model, current);
-    return this.write({ ...current, models: [...current.models, model] });
+    // 新建的就是**用户自有**的：不打这一位，下次启动的出厂同步（`syncManagedModels`）
+    // 会把它当成「出厂清单里已经没有的那一条」直接丢掉 —— 用户刚加的模型一夜之间没了
+    const next: ModelDefinition = { ...model, custom: true };
+    await this.assertWritable(next, current);
+    return this.write({ ...current, models: [...current.models, next] });
   }
 
   async update(id: string, change: Partial<Omit<ModelDefinition, "id">>): Promise<AppConfig> {
@@ -41,7 +44,20 @@ export class ModelService {
     const found = current.models.find((model) => model.id === id);
     if (found === undefined) throw this.notFound(id);
 
-    const next: ModelDefinition = { ...found, ...change };
+    /**
+     * 改过的那一条从**出厂托管**转成**用户自有**（`prd/03-legacy.md` 3.4 / PRD F-F3）。
+     *
+     * 不转的后果是「改完当场生效、下次启动又变回去」：`syncManagedModels` 只保留 `custom === true`
+     * 的条目，其余一律替换成出厂定义 —— 用户把阈值从 400K 调到 600K、把特性开关打开，重启之后
+     * 全被抹回出厂值，而且界面上看不出是为什么。
+     *
+     * 调用方显式给了 `custom` 就听它的（`models.reset` 走的是另一条路，它自己置 `false`）。
+     */
+    const next: ModelDefinition = {
+      ...found,
+      ...change,
+      custom: change.custom ?? true,
+    };
     await this.assertWritable(next, current);
     return this.write({
       ...current,
