@@ -48,7 +48,7 @@ export async function runRound(
     );
   });
 
-  agent.send({ content, priority: "low", source: { kind: "user" } });
+  agent.send({ content, priority: "high", source: { kind: "user" } });
   await idle;
   return agent.messages;
 }

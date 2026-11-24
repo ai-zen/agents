@@ -114,8 +114,9 @@ export function agentRunOnceProcedure(deps: HostApiDeps, api: Trpc) {
       const messages = await agent.runOnce(
         {
           content: input.content,
-          // 低：没有第二个触发方在等它，「插进手上那一批中间」没有意义
-          priority: "low",
+          // 高：这一段只有这一个触发方，取高取低在这一条路上行为相同（队列是空的），但口径要统一 ——
+          // 内部投给模型看的话一律 high，`low` 留给将来的外部通知（QQ、Email 那种「回不回随你」的信）
+          priority: "high",
           source: { kind: "user" },
           messageId: input.messageId,
         },

@@ -322,8 +322,13 @@ export class AgentRuntime {
    * 决定怎么跟用户说。两条拒绝原因要分得开 —— `gone` 是这段会话不在了（行都没了），`dead`
    * 是行还在、只是没人取走。判据只有宿主答得出，所以问 `nameOf`。
    *
-   * 优先级是 `low`：寄来的话不该插进对方手上那一批的工具调用之间。对方这一批跑完再取它，
-   * 顺序是它自己队列的顺序。**投递不承诺任何未来** —— 收下了就是收下了。
+   * 优先级取高：这是「另一段会话对我说的话」，与用户敲的一句同属一类 —— 内循环在**工具跑完
+   * 那个边界**就会取它（`Agent.landHigh`，只认 high），于是对方在等我这边干活时不会被我这一批
+   * 工具调用拖住（低优先级只在外循环取件那一刻才被看见：我这一批不结束，它就一直递不进来）。
+   *
+   * 只有**将来的外部通知**（QQ、Email 这类真正的「来信」，回不回、什么时候回都无所谓）才该用
+   * `low`：安静地排在队尾，等这一批干完再说。宿主与 SDK 内部现在没有一处用 `low` 投递给模型看
+   * 的话 —— 唯一的例外是交接那条指令，理由写在 `HandoffService.pushAndWatch` 上。
    */
   async post(input: {
     from: string;
@@ -340,7 +345,7 @@ export class AgentRuntime {
     const label = await this.labelOf(input.from);
     target.agent.send({
       content: input.content,
-      priority: "low",
+      priority: "high",
       source: { kind: "agent", label },
     });
     return { ok: true };

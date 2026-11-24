@@ -875,6 +875,17 @@ export class HandoffService {
    * core 只有投递（`CORE.md` §1：常驻会话只 `push`，不看返回值），所以这里投完就等钩子报回来的
    * 事实，不去问状态。关门之后 `push` 抛 `AgentError("closed")` —— 那是调用方违约，不接，
    * 让它一路走到 {@link runSelfHandoff} 的 catch（那里原样再往上交）。
+   *
+   * ## 为什么这一条是全仓唯一还用 `low` 的
+   *
+   * 不是客气，是**功能**：交接要靠 `HandoffGuardPlugin.onOuterLoopStart` 在指令被取走那一拍关掉
+   * 输出开关（换记忆之前落进来的话会跟着新记忆一起活着）。那个钩子只在**外循环**取件时跑，而
+   * 内循环那个取走点（`Agent.landHigh`，只认 high）不派发它。取 high 的话，只要调用 `start()`
+   * 与这次投递之间有谁把这一段推成「在干活」（`start()` 的四条判据只判那一刻），指令就会在内循环
+   * 里被取走 —— 守卫不装、开关不关、整趟交接在没有护栏的情况下换掉记忆。
+   *
+   * 取 low 还有另一半好处：对方真在忙时，这一条会等它这一批跑完再被取走，交接于是永远从
+   * 「闲着」那一刻开始。
    */
   private async pushAndWatch(
     agent: SdkAgent,
@@ -886,6 +897,7 @@ export class HandoffService {
     void agent.start();
     agent.send({
       content,
+      // 全仓唯一该取 low 的内部投递：理由见方法注释（外循环取件才派发 `onOuterLoopStart`）
       priority: "low",
       // 这条指令是**宿主侧**（`/handoff` 命令、自动迁移）注入的，不是用户说的话 ——
       // 按「谁注入谁填」给它一个 system 来源（`CORE.md` §3）
