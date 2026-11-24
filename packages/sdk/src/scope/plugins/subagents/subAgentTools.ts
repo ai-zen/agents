@@ -3,6 +3,7 @@ import type { Tool, AgentNS } from "@ai-zen/agents-core";
 import type OpenAI from "openai";
 import type { AgentDefinition } from "../../../types/index.js";
 import type { Scope } from "../../Scope.js";
+import { newProviderSessionId } from "../../../shared/clientInfo.js";
 import { createModel } from "../../../runtime/createModel.js";
 import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
 import { ASYNC_TASK_TOOL_NAMES } from "../builtin/asyncTasks.js";
@@ -29,18 +30,33 @@ export function createSubAgentTool(def: AgentDefinition, scope: Scope): Tool {
     },
     messages: def.messages as unknown as AgentNS.Message[],
     buildAgent: (_parsedArgs: any, ctx: ToolCallContext): Agent => {
-      // 模型解析：SubAgent 可指定独立模型，否则复用父 Agent 的模型
+      // 模型解析：SubAgent 可指定独立模型，否则跟父 Agent 用同一个模型。
+      //
+      // 两条路都自己建 client，哪怕模型相同 —— 因为出网标识要另起一个：子 Agent 带的是自己的
+      // 上下文（自己的历史、自己的工具），拿父那一串去报自己的请求，服务方的路由与前缀缓存都会
+      // 指错地方。建一份同模型的 client 只是内存对象，不发请求。
+      const parent = ctx.agent;
+      const parentDefinition = (parent as { definition?: AgentDefinition }).definition;
+      const modelId = def.modelId ?? parentDefinition?.modelId;
+
       let client: OpenAI;
       let model: string;
       let modelConfig: Record<string, unknown> | undefined;
-      if (def.modelId) {
-        // SubAgent 可声明自己的模型与参数覆盖（与主 Agent 同一套规则：直接合并）
-        const m = createModel(scope, def.modelId, def.modelParams);
+      if (modelId !== undefined) {
+        // 自己的模型声明优先；没有就用父那一个，参数跟父的「生效值」走（`modelConfig` 是
+        // 定义参数与会话级覆盖合并后的那一份，不重新拿定义算一遍）
+        const m = createModel(
+          scope,
+          modelId,
+          def.modelId === undefined ? parent.modelConfig : def.modelParams,
+          { providerSessionId: newProviderSessionId() },
+        );
         client = m.client;
         model = m.model;
         modelConfig = m.modelConfig;
       } else {
-        const parent = ctx.agent;
+        // 走到这儿说明父 Agent 不是 sdk 造的那种（拿裸 core `Agent` 当父）：问不到模型 id，
+        // 只能复用它的 client，出网标识也就跟着父那串
         if (!parent) {
           throw new Error(
             `SubAgent "${selfName}" does not specify a modelId, and the parent Agent has no reusable model`,

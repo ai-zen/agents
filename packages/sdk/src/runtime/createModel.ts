@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { Scope } from "../scope/Scope.js";
-import type { AppConfig, ModelParams } from "../types/index.js";
+import type { AppConfig, EndpointDefinition, ModelParams } from "../types/index.js";
+import { CLIENT_USER_AGENT } from "../shared/clientInfo.js";
 
 /**
  * Agent 模型装配结果：openai SDK client + 模型名 + 模型参数。
@@ -46,8 +47,13 @@ function mergeParams(
  * 的请求去起一套能力发现，代价与收益完全不成比例。两条路共用同一份「模型 → 端点 → client」
  * 解析，否则「Agent 用的端点」与「辅助请求用的端点」迟早是两份会漂的事实。
  */
-export function createModel(scope: Scope, modelId: string, overrides?: ModelParams): AgentModel {
-  return createModelFromConfig(scope.config, modelId, overrides);
+export function createModel(
+  scope: Scope,
+  modelId: string,
+  overrides?: ModelParams,
+  options?: { providerSessionId?: string },
+): AgentModel {
+  return createModelFromConfig(scope.config, modelId, overrides, options);
 }
 
 /**
@@ -60,6 +66,7 @@ export function createModelFromConfig(
   config: AppConfig,
   modelId: string,
   overrides?: ModelParams,
+  options?: { providerSessionId?: string },
 ): AgentModel {
   const modelConfig = config.models.find((m) => m.id === modelId);
   if (!modelConfig) throw new Error(`Model "${modelId}" not found`);
@@ -74,6 +81,13 @@ export function createModelFromConfig(
   const client = new OpenAI({
     apiKey: endpointConfig.apiKey,
     baseURL: endpointConfig.baseUrl,
+    defaultHeaders: {
+      // 自称：有些服务方要求客户端用自己的名字，而不是通用 SDK 的名字
+      "User-Agent": CLIENT_USER_AGENT,
+      // 端点声明了「上下文标识放哪个头」就填上；`headers` 里同名的（用户显式写的）盖在后面
+      ...providerSessionHeaderOf(endpointConfig, options?.providerSessionId),
+      ...endpointConfig.headers,
+    },
   });
 
   // 发送给 API 的模型名：modelName > id
@@ -84,4 +98,18 @@ export function createModelFromConfig(
     model: apiModelName,
     modelConfig: mergeParams(modelConfig.defaultParams, overrides),
   };
+}
+
+/**
+ * 端点声明了「上下文标识放哪个头」、并且这次有一个 ref 时，交出那一格。
+ *
+ * 为什么要端点说一声才带：服务方认的头名各不相同，写死一个只对一家有效、对其余的是噪音。
+ * 没声明就返回空对象，请求一个字节都不变。
+ */
+function providerSessionHeaderOf(
+  endpoint: EndpointDefinition | null | undefined,
+  providerSessionId: string | undefined,
+): Record<string, string> {
+  if (endpoint?.providerSessionHeader === undefined || providerSessionId === undefined) return {};
+  return { [endpoint.providerSessionHeader]: providerSessionId };
 }

@@ -45,6 +45,7 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
       method: request.method ?? "",
       path: request.url ?? "",
       body: parsed,
+      headers: request.headers,
       aborted: false,
     };
     requests.push(record);

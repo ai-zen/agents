@@ -15,6 +15,13 @@ export interface FakeLlmRequest {
   /** 解析后的请求体（`messages` / `stream` / `stream_options` 都在里面） */
   body: any;
   /**
+   * 请求头原样（键名已转小写）。
+   *
+   * 有些东西只能从头里看出来：客户端怎么自称（`user-agent`）、有没有带服务方要的会话头。
+   * 契约里的其它字段都是 body 侧，这些没有第二处可证。
+   */
+  headers: Record<string, string | string[] | undefined>;
+  /**
    * 客户端在响应写完之前就挂断了（= 它取消了这次请求）。
    *
    * 这是「取消信号真的抵达了 socket」的唯一外部证据：只看「最后抛了取消错」不够，

@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
+import { CLIENT_NAME, CLIENT_VERSION } from "../../../shared/clientInfo.js";
 import type {
   McpServerDefinition,
   McpServerManifest,
@@ -206,7 +207,7 @@ export class McpConnectionManager {
     const transport = this.createTransport(config);
     const client = this._clientFactory
       ? this._clientFactory()
-      : new Client({ name: "ai-zen-agents", version: "0.1.0" });
+      : new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
 
     await client.connect(transport);
 

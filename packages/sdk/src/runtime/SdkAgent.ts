@@ -43,12 +43,20 @@ export class SdkAgent extends Agent {
   /** Agent 定义（模型解析生效之后的那一份：`modelId` 是**实际在用**的模型） */
   readonly definition: AgentDefinition;
 
+  /** 出网标识：换模型时要带同一个（见构造函数里那一格） */
+  private readonly providerSessionId?: string;
+
   constructor(params: {
     scope: Scope;
     definition: AgentDefinition;
     client: OpenAI;
     model: string;
     modelConfig?: Record<string, unknown>;
+    /**
+     * 出网标识（一个活 Agent 一个）：换模型时重新建 client 要带上同一个，否则换一次模型
+     * 服务方那边就像换了一段上下文，前缀缓存从头攒。
+     */
+    providerSessionId?: string;
     messages?: AgentNS.Message[];
     tools?: Tool[];
     /** 工具轮次被中断时的归一策略（core 默认 `fill`） */
@@ -78,6 +86,7 @@ export class SdkAgent extends Agent {
     });
     this.scope = params.scope;
     this.definition = params.definition;
+    this.providerSessionId = params.providerSessionId;
   }
 
   /**
@@ -88,7 +97,11 @@ export class SdkAgent extends Agent {
    * —— 运行期读 `definition.modelId` 的地方（状态栏、上下文阈值）看到的是同一个模型。
    */
   useModel(modelId: string, modelParams?: ModelParams): void {
-    const { client, model, modelConfig } = createModel(this.scope, modelId, modelParams);
+    const { client, model, modelConfig } = createModel(this.scope, modelId, modelParams, {
+      ...(this.providerSessionId === undefined
+        ? {}
+        : { providerSessionId: this.providerSessionId }),
+    });
 
     // 三格一起换：只换其中一两格，下一次请求就会拿新模型名配旧端点、或者带着上一个模型的
     // 参数发出去 —— 而请求体是在发请求那一刻从这三格拼出来的。

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
+import { startFakeLlm } from "@ai-zen/fake-llm";
 import { createAgent } from "./createAgent.js";
 import { AgentRepository } from "../crud/AgentRepository.js";
 import { Scope } from "../scope/Scope.js";
@@ -449,5 +450,155 @@ describe("createAgent", () => {
     expect(names).toContain(READ_SESSION_STATUS_TOOL);
     // 它是常驻 Agent：两个后台工具的结果有人收，照旧在
     for (const name of ASYNC_TASK_TOOL_NAMES) expect(names).toContain(name);
+  });
+});
+
+describe("出网标识：createAgent 的 providerSessionId", () => {
+  it("给的 ref 出现在端点声明的那个头里；两个 agent 各带各的", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const scope = await makeScope({
+        config: {
+          endpoints: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              baseUrl: llm.baseUrl,
+              apiKey: "sk-xxx",
+              providerSessionHeader: "x-opencode-session",
+            },
+          ],
+        },
+      });
+      await writeAgentFile("writer");
+
+      for (const ref of ["sess-1", "sess-2"]) {
+        const agent = await createAgent(scope, "writer", {
+          lifetime: "one-shot",
+          providerSessionId: ref,
+        });
+        await agent.runOnce("hi");
+      }
+
+      expect(llm.requests.map((r) => r.headers["x-opencode-session"])).toEqual([
+        "sess-1",
+        "sess-2",
+      ]);
+      await scope.dispose();
+    } finally {
+      await llm.close();
+    }
+  });
+
+  it("不给 ref：自己造一个，两个 agent 不相同", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const scope = await makeScope({
+        config: {
+          endpoints: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              baseUrl: llm.baseUrl,
+              apiKey: "sk-xxx",
+              providerSessionHeader: "x-opencode-session",
+            },
+          ],
+        },
+      });
+      await writeAgentFile("writer");
+
+      for (let i = 0; i < 2; i += 1) {
+        const agent = await createAgent(scope, "writer", { lifetime: "one-shot" });
+        await agent.runOnce("hi");
+      }
+
+      const seen = llm.requests.map((r) => r.headers["x-opencode-session"]);
+      expect(seen[0]).toMatch(/^az-/);
+      expect(seen[1]).toMatch(/^az-/);
+      expect(seen[0]).not.toBe(seen[1]);
+      await scope.dispose();
+    } finally {
+      await llm.close();
+    }
+  });
+});
+
+describe("出网标识：派出去的 SubAgent 用自己的", () => {
+  /**
+   * 跑一趟委派，交回三次请求各自带的标识。
+   *
+   * 三次固定是：父要工具 → 子 Agent 自己答 → 父收尾。
+   */
+  async function delegateOnce(options: { withOwnModel: boolean }): Promise<unknown[]> {
+    const llm = await startFakeLlm({
+      reply: [
+        {
+          tool_calls: [
+            {
+              id: "call-1",
+              type: "function",
+              function: { name: "report", arguments: JSON.stringify({ task: "查一下" }) },
+            },
+          ],
+        },
+        "子 Agent 答完了",
+        "收到",
+      ],
+    });
+    try {
+      // 子 Agent 的定义要在 `scope.init()` 之前落盘：发现是在 init 里做的
+      await writeSubAgent("helper", "report");
+      if (options.withOwnModel) {
+        const subFile = join(dir, "sub-agents", "helper.json");
+        const subDef = JSON.parse(await fs.readFile(subFile, "utf8")) as AgentDefinition;
+        await fs.writeFile(subFile, JSON.stringify({ ...subDef, modelId: "gpt4" }, null, 2));
+      }
+      await writeAgentFile("writer");
+
+      const scope = await makeScope({
+        subAgentsPaths: [join(dir, "sub-agents")],
+        config: {
+          endpoints: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              baseUrl: llm.baseUrl,
+              apiKey: "sk-xxx",
+              providerSessionHeader: "x-opencode-session",
+            },
+          ],
+        },
+      });
+      const agent = await createAgent(scope, "writer", {
+        lifetime: "one-shot",
+        providerSessionId: "sess-p",
+      });
+      await agent.runOnce("开始");
+
+      const seen = llm.requests.map((r) => r.headers["x-opencode-session"]);
+      await scope.dispose();
+      return seen;
+    } finally {
+      await llm.close();
+    }
+  }
+
+  it("子 Agent 声明了自己的 modelId：用自己的标识", async () => {
+    const seen = await delegateOnce({ withOwnModel: true });
+    expect(seen).toHaveLength(3);
+    expect(seen[0]).toBe("sess-p");
+    expect(seen[1]).toMatch(/^az-/);
+    expect(seen[1]).not.toBe("sess-p");
+    // 回到父 Agent：还是父那一串（上下文没变）
+    expect(seen[2]).toBe("sess-p");
+  });
+
+  it("子 Agent 跟父用同一个模型：也另建一份 client，标识同样是自己的", async () => {
+    const seen = await delegateOnce({ withOwnModel: false });
+    expect(seen).toHaveLength(3);
+    expect(seen[1]).toMatch(/^az-/);
+    expect(seen[1]).not.toBe("sess-p");
+    expect(seen[2]).toBe("sess-p");
   });
 });

@@ -93,6 +93,25 @@ export interface EndpointDefinition {
   /** 明文存储：文件权限 600 由用户保证 */
   apiKey: string;
   description?: string;
+  /**
+   * 把这一段上下文的标识放进哪个请求头（可选）。
+   *
+   * 有些服务方靠一个稳定的会话标识做流量路由与 prompt 前缀缓存，且要求它出现在指定头里
+   * （OpenCode Go 就要 `x-opencode-session`，不带直接 400）。写了这一格，我们对这个端点的每个
+   * 请求都会把当前的 `providerSessionId` 填进这个头；没写就一个字节都不多带。
+   *
+   * 与 `headers` 的关系：`headers` 里写了同名的键，以那里为准（那是用户显式设的值）。
+   */
+  providerSessionHeader?: string;
+  /**
+   * 每次请求都带上的自定义头（可选）。
+   *
+   * 有些 OpenAI 兼容的服务方靠请求头认人、或者要求带一个会话标识。这类头没有别处可写 —— 它们
+   * 不是凭证（不进 `apiKey`），也不是某个模型独有（不归模型表），所以挂在端点这一级。
+   *
+   * 与 `Authorization` 的关系：`apiKey` 仍然管鉴权，这里给的是额外的那几格；同名时以这里为准。
+   */
+  headers?: Record<string, string>;
   /** 能力声明（缺省视为无特殊能力） */
   capabilities?: EndpointCapabilities;
 }

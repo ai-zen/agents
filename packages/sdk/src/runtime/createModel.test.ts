@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { startFakeLlm } from "@ai-zen/fake-llm";
 import { createModel, createModelFromConfig } from "./createModel.js";
+import { CLIENT_USER_AGENT } from "../shared/clientInfo.js";
 import type { AppConfig } from "../types/index.js";
 import type { Scope } from "../scope/Scope.js";
 
@@ -197,5 +199,190 @@ describe("createModelFromConfig：没有 Scope 的那条路", () => {
       endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://x/v1", apiKey: "" }],
     };
     expect(() => createModelFromConfig(noKey, "gpt4")).toThrow("API key");
+  });
+});
+
+describe("createModel：出网请求的头", () => {
+  it("默认带自己的 User-Agent；端点配的 headers 一起上去，同名时以配置为准", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const config: AppConfig = {
+        endpoints: [
+          {
+            id: "oc",
+            name: "OpenCode Go",
+            baseUrl: llm.baseUrl,
+            apiKey: "k",
+            headers: { "x-opencode-session": "sess-1", "user-agent": "custom/9" },
+          },
+        ],
+        models: [
+          { id: "m", name: "M", endpointId: "oc", modelName: "fake-model", tokenThresholds: {} },
+        ] as AppConfig["models"],
+      };
+
+      const { client } = createModelFromConfig(config, "m");
+      await client.chat.completions.create({
+        model: "fake-model",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      const headers = llm.requests[0]!.headers;
+      expect(headers["x-opencode-session"]).toBe("sess-1");
+      // 配置里写了 user-agent：盖掉我们自己的那个
+      expect(headers["user-agent"]).toBe("custom/9");
+    } finally {
+      await llm.close();
+    }
+  });
+
+  it("没配 headers 时只带我们自己的 User-Agent", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const config: AppConfig = {
+        endpoints: [{ id: "o", name: "O", baseUrl: llm.baseUrl, apiKey: "k" }],
+        models: [
+          { id: "m", name: "M", endpointId: "o", modelName: "fake-model", tokenThresholds: {} },
+        ] as AppConfig["models"],
+      };
+
+      const { client } = createModelFromConfig(config, "m");
+      await client.chat.completions.create({
+        model: "fake-model",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      expect(llm.requests[0]!.headers["user-agent"]).toBe(CLIENT_USER_AGENT);
+    } finally {
+      await llm.close();
+    }
+  });
+});
+
+describe("createModel：服务方那侧的会话标识（providerSessionId）", () => {
+  it("端点声明了 providerSessionHeader：把 ref 填进那个头", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const config: AppConfig = {
+        endpoints: [
+          {
+            id: "oc",
+            name: "OpenCode Go",
+            baseUrl: llm.baseUrl,
+            apiKey: "k",
+            providerSessionHeader: "x-opencode-session",
+          },
+        ],
+        models: [
+          { id: "m", name: "M", endpointId: "oc", modelName: "fake-model", tokenThresholds: {} },
+        ] as AppConfig["models"],
+      };
+
+      const { client } = createModelFromConfig(config, "m", undefined, {
+        providerSessionId: "sess-42",
+      });
+      await client.chat.completions.create({
+        model: "fake-model",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      expect(llm.requests[0]!.headers["x-opencode-session"]).toBe("sess-42");
+    } finally {
+      await llm.close();
+    }
+  });
+
+  it("两个 agent 两个 ref：各带各的", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const config: AppConfig = {
+        endpoints: [
+          {
+            id: "oc",
+            name: "OpenCode Go",
+            baseUrl: llm.baseUrl,
+            apiKey: "k",
+            providerSessionHeader: "x-opencode-session",
+          },
+        ],
+        models: [
+          { id: "m", name: "M", endpointId: "oc", modelName: "fake-model", tokenThresholds: {} },
+        ] as AppConfig["models"],
+      };
+
+      for (const ref of ["sess-a", "sess-b"]) {
+        const { client } = createModelFromConfig(config, "m", undefined, {
+          providerSessionId: ref,
+        });
+        await client.chat.completions.create({
+          model: "fake-model",
+          messages: [{ role: "user", content: "hi" }],
+        });
+      }
+
+      expect(llm.requests.map((r) => r.headers["x-opencode-session"])).toEqual([
+        "sess-a",
+        "sess-b",
+      ]);
+    } finally {
+      await llm.close();
+    }
+  });
+
+  it("端点没声明 providerSessionHeader：有 ref 也不带这个头", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const config: AppConfig = {
+        endpoints: [{ id: "o", name: "O", baseUrl: llm.baseUrl, apiKey: "k" }],
+        models: [
+          { id: "m", name: "M", endpointId: "o", modelName: "fake-model", tokenThresholds: {} },
+        ] as AppConfig["models"],
+      };
+
+      const { client } = createModelFromConfig(config, "m", undefined, {
+        providerSessionId: "sess-x",
+      });
+      await client.chat.completions.create({
+        model: "fake-model",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      expect(llm.requests[0]!.headers["x-opencode-session"]).toBeUndefined();
+    } finally {
+      await llm.close();
+    }
+  });
+
+  it("端点没声明 providerSessionHeader 却手写了同名 headers：照配置带（用户显式写的赢）", async () => {
+    const llm = await startFakeLlm({ reply: "ok" });
+    try {
+      const config: AppConfig = {
+        endpoints: [
+          {
+            id: "o",
+            name: "O",
+            baseUrl: llm.baseUrl,
+            apiKey: "k",
+            providerSessionHeader: "x-opencode-session",
+            headers: { "x-opencode-session": "hand-written" },
+          },
+        ],
+        models: [
+          { id: "m", name: "M", endpointId: "o", modelName: "fake-model", tokenThresholds: {} },
+        ] as AppConfig["models"],
+      };
+
+      const { client } = createModelFromConfig(config, "m", undefined, {
+        providerSessionId: "sess-x",
+      });
+      await client.chat.completions.create({
+        model: "fake-model",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      expect(llm.requests[0]!.headers["x-opencode-session"]).toBe("hand-written");
+    } finally {
+      await llm.close();
+    }
   });
 });

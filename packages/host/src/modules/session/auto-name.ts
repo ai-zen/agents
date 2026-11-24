@@ -5,6 +5,7 @@ import {
   type AgentRuntime,
   type AppConfig,
 } from "@ai-zen/agents-sdk";
+import type { createModelFromConfig } from "@ai-zen/agents-sdk";
 
 import type { GeneralConfig } from "../config/general.js";
 import type { Translator } from "../i18n/index.js";
@@ -34,7 +35,12 @@ export interface AutoNamerDeps {
    * 按配置造一次请求要的客户端（SDK 的 `createModelFromConfig`）。从外面递进来是为了让用例数得清
    * 调用次数：起没起名只有一个可观察的后果，就是有没有发那次请求。
    */
-  readonly createModel: (config: AppConfig, modelId: string) => AgentModel;
+  readonly createModel: (
+    config: AppConfig,
+    modelId: string,
+    overrides?: Parameters<typeof createModelFromConfig>[2],
+    options?: Parameters<typeof createModelFromConfig>[3],
+  ) => AgentModel;
   /** 失败那条路上唯一的用户出口：名字没换成，得有一句话说明（见 `reportFailure`） */
   readonly notices: NoticeService;
   /** 用户可见的那句话在产生处渲染（见 `reportFailure`） */
@@ -118,7 +124,11 @@ export class AutoNamer {
     const prompt = promptFor(messages);
     if (prompt.length === 0) return;
 
-    const { client, model, modelConfig } = this.deps.createModel(config, modelId);
+    // 起名也是这段会话的事：出网标识带会话 id，与它的 Agent 用同一串 —— 服务方那边看到的是同一段
+    // 上下文的附带请求，能命中同一份前缀缓存
+    const { client, model, modelConfig } = this.deps.createModel(config, modelId, undefined, {
+      providerSessionId: sessionId,
+    });
     const answer = await completeOnce({
       client,
       model,

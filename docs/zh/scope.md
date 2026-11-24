@@ -31,15 +31,36 @@ await scope.init();
 
 // 一次性：跑一句、等到闲、关门，交回这一次跑出来的消息
 const agent = await createAgent(scope, "writer", { lifetime: "one-shot" });
-const messages = await agent.runOnce({
-  content: "在吗",
-  priority: "low",
-  source: { kind: "user" },
-});
+const messages = await agent.runOnce("在吗");
 console.log(messages.at(-1)?.content);
 
 await scope.dispose();
 ```
+
+端点那几格：`baseUrl` 与 `apiKey` 是必需的；`capabilities` 声明端点会什么（比如 `filesApi`）；`headers` 是
+每次请求都带上的自定义头；`providerSessionHeader` 说「把会话标识放进哪个头」。
+
+有些服务方靠一个稳定的会话标识做流量路由与 prompt 前缀缓存，还要求它出现在指定的头里。那种情况下
+用 `providerSessionHeader`，我们每个请求自动把当前 Agent 的 `providerSessionId` 填进去（一个活的
+Agent 一个，子 Agent 各自一份）：
+
+```ts
+endpoints: [
+  {
+    id: "opencode-go",
+    name: "OpenCode Go",
+    baseUrl: "https://opencode.ai/inference/go/v1",
+    apiKey: "...",
+    providerSessionHeader: "x-opencode-session", // 不带这个头直接 400
+  },
+];
+```
+
+主 Agent 用它所在会话的 id（重启后仍是同一串，缓存能跨重启复用），因此起名那次辅助请求也带同一串。
+写死了 `headers` 里同名的键时以那里为准。
+
+我们出网时会带自己的 `User-Agent`（`ai-zen-agents/<版本>`），不冒充通用 SDK；`headers` 里写了同名
+的键就以这里为准。
 
 `<agentsDir>/writer.json` 是一份定义：
 

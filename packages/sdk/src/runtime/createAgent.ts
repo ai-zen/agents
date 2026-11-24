@@ -3,6 +3,7 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
+import { newProviderSessionId } from "../shared/clientInfo.js";
 import {
   CREATE_SESSION_TOOL,
   PEER_SESSION_TOOL_NAMES,
@@ -55,6 +56,16 @@ export interface CreateAgentOptions {
    * 吃一次投递，跑完就死，`send` / `runOnce` 才有意义。缺省仍是常驻 —— 那是能力更大的那个。
    */
   lifetime?: AgentNS.AgentLifetime;
+  /**
+   * 出网时用来标识这一段上下文的 id（可选）。
+   *
+   * 服务方拿它做流量路由与前缀缓存，所以口径是「一个活的 Agent 一个」：同一段上下文发同一串
+   * 请求才能命中同一份缓存。宿主给会话 id（重启后不变），派生出来的 Agent 各自是自己的 id。
+   *
+   * 不给就由 {@link newProviderSessionId} 造一个。sdk 不解释这个值，也不拿它去查任何东西 —— 它只出现
+   * 在端点声明的那个请求头里（`EndpointDefinition.providerSessionHeader`）。
+   */
+  providerSessionId?: string;
   /**
    * 这一段能不能再开 PeerSession（缺省能）。
    *
@@ -135,7 +146,13 @@ export async function createAgent(
     agentModelParams: definition.modelParams,
   });
 
-  const { client, model, modelConfig } = createModel(scope, resolved.modelId, params);
+  // 出网标识：一个活 Agent 一个。调用方给了就用它（宿主给会话 id，重启后不变，缓存能跨重启
+  // 复用）；没给就自己造一个 —— 派出去的 SubAgent、一次性调用都属于这种，它们有自己的上下文。
+  const providerSessionId = options.providerSessionId ?? newProviderSessionId();
+
+  const { client, model, modelConfig } = createModel(scope, resolved.modelId, params, {
+    providerSessionId,
+  });
 
   const tools = scope.buildTools(definition, {
     exclude: {
@@ -166,6 +183,7 @@ export async function createAgent(
     client,
     model,
     modelConfig,
+    providerSessionId,
     // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用：
     // 运行时的消息数组是可变的，直接传模板进去会让 append() 反向污染 Agent 定义 ——
     // 模板被塞进完整历史之后，prune / omit 与「开一段新会话」都会带着旧历史。

@@ -31,15 +31,37 @@ await scope.init();
 
 // One-shot: run one message, wait for idle, close, hand back what this run produced
 const agent = await createAgent(scope, "writer", { lifetime: "one-shot" });
-const messages = await agent.runOnce({
-  content: "Are you there?",
-  priority: "low",
-  source: { kind: "user" },
-});
+const messages = await agent.runOnce("Are you there?");
 console.log(messages.at(-1)?.content);
 
 await scope.dispose();
 ```
+
+About the endpoint fields: `baseUrl` and `apiKey` are required; `capabilities` states what the endpoint
+can do (e.g. `filesApi`); `headers` are extra headers sent with every request; `providerSessionHeader`
+names the header that carries the session identifier.
+
+Some providers route traffic and match prompt caches by a stable session identifier, and require it in a
+specific header. That is what `providerSessionHeader` is for: every request then carries the current
+Agent's `providerSessionId` (one per live Agent, each SubAgent its own):
+
+```ts
+endpoints: [
+  {
+    id: "opencode-go",
+    name: "OpenCode Go",
+    baseUrl: "https://opencode.ai/inference/go/v1",
+    apiKey: "...",
+    providerSessionHeader: "x-opencode-session", // without it the answer is 400
+  },
+];
+```
+
+The main Agent uses its session's id (the same string across restarts, so the cache survives), and the
+auxiliary naming request carries the same one. A hand-written key of the same name in `headers` wins.
+
+Outgoing requests carry our own `User-Agent` (`ai-zen-agents/<version>`) rather than pretending to be a
+generic SDK; a same-named key in `headers` wins over it.
 
 `<agentsDir>/writer.json` is one definition:
 
