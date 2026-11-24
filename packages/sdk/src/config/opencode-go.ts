@@ -31,7 +31,7 @@
  * - `contextWindow`：官方 `limit.context`（真实窗口）；
  * - `maxOutputTokens`：官方 `limit.output`；
  * - `vision`：`modalities.input` 里有没有 `image/*`；
- * - `tokenThresholds`：按窗口的两条比例线（handoff 25%、guard 37.5%，与出厂其余模型同一个口径）。
+ * - `tokenThresholds`：按窗口的两条比例线（handoff 40%、guard 80%，与出厂其余模型同一个口径）。
  *   **这两条线不是窗口**：一个是「什么时候该交接」的产品取值，一个是「什么时候不许再发」；
  *   窗口本身记在 `contextWindow` 里，两者不要互相推导；
  * - `description`：官方 `description`。
@@ -74,7 +74,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "deepseek-v4.1-flash",
     contextWindow: 1000000,
     maxOutputTokens: 384000,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description:
       "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
@@ -86,7 +86,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "deepseek-v4-pro",
     contextWindow: 1000000,
     maxOutputTokens: 384000,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     description: "Flagship DeepSeek model for coding, reasoning, and agentic work",
   },
   {
@@ -96,7 +96,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "glm-5.3",
     contextWindow: 1000000,
     maxOutputTokens: 131072,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     description: "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
   },
   {
@@ -106,7 +106,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "glm-5.3-flash",
     contextWindow: 1000000,
     maxOutputTokens: 131072,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description: "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
   },
@@ -117,7 +117,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "grok-4.7",
     contextWindow: 500000,
     maxOutputTokens: 500000,
-    tokenThresholds: { handoff: 125000, guard: 187500 },
+    tokenThresholds: { handoff: 200000, guard: 400000 },
     vision: true,
     description:
       "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
@@ -129,7 +129,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "kimi-k2.7-code",
     contextWindow: 262144,
     maxOutputTokens: 262144,
-    tokenThresholds: { handoff: 65536, guard: 98304 },
+    tokenThresholds: { handoff: 105000, guard: 210000 },
     vision: true,
     description:
       "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking",
@@ -141,7 +141,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "kimi-k3",
     contextWindow: 1048576,
     maxOutputTokens: 1048576,
-    tokenThresholds: { handoff: 262144, guard: 393216 },
+    tokenThresholds: { handoff: 419000, guard: 839000 },
     vision: true,
     description:
       "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
@@ -153,7 +153,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "kimi-k3.1-pro",
     contextWindow: 1048576,
     maxOutputTokens: 1048576,
-    tokenThresholds: { handoff: 262144, guard: 393216 },
+    tokenThresholds: { handoff: 419000, guard: 839000 },
     vision: true,
     description:
       "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
@@ -165,7 +165,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "minimax-m3",
     contextWindow: 1000000,
     maxOutputTokens: 131072,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description: "MiniMax multimodal coding model for long-context reasoning and agent tasks",
   },
@@ -176,7 +176,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "minimax-m3.1-flash",
     contextWindow: 1000000,
     maxOutputTokens: 512000,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description:
       "Frontier multimodal coding model with 1M context window and tunable thinking depth",
@@ -188,7 +188,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "qwen3.7-plus",
     contextWindow: 1000000,
     maxOutputTokens: 65536,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description: "Multimodal reasoning model for visual analysis, planning, and tool use",
   },
@@ -199,7 +199,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "qwen3.8-flash",
     contextWindow: 1000000,
     maxOutputTokens: 131072,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description: "Qwen vision-language model for visual reasoning, documents, and agent tasks",
   },
@@ -210,7 +210,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "qwen3.8-max",
     contextWindow: 1000000,
     maxOutputTokens: 131072,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description:
       "2.4-trillion-parameter multimodal flagship for coding, professional work, and long-horizon agentic workflows",
@@ -224,7 +224,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     primary: true,
     contextWindow: 1000000,
     maxOutputTokens: 262144,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description:
       "Flagship multimodal model for coding, office productivity, frontend design, and complex agentic tasks",
@@ -236,7 +236,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "longcat-2.5",
     contextWindow: 1000000,
     maxOutputTokens: 262144,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     description:
       "Meituan's multimodal reasoning model for long-horizon coding and agent tasks, with visual understanding and a 1M-token context window",
   },
@@ -247,7 +247,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "step-5-preview",
     contextWindow: 1000000,
     maxOutputTokens: 65536,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description:
       "StepFun's next-generation flagship base model for coding and professional knowledge work, with native text, image, and video input and a 1M-token context window",
@@ -259,7 +259,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "gpt-5.6-luna",
     contextWindow: 1050000,
     maxOutputTokens: 128000,
-    tokenThresholds: { handoff: 262500, guard: 393750 },
+    tokenThresholds: { handoff: 420000, guard: 840000 },
     vision: true,
     description: "Cost-efficient GPT-5.6 model for fast, high-volume workloads",
   },
@@ -270,7 +270,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "gpt-6-luna",
     contextWindow: 1050000,
     maxOutputTokens: 128000,
-    tokenThresholds: { handoff: 262500, guard: 393750 },
+    tokenThresholds: { handoff: 420000, guard: 840000 },
     vision: true,
     description: "OpenAI's most efficient model for focused, high-volume tasks",
   },
@@ -281,7 +281,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     modelName: "claude-haiku-5-5",
     contextWindow: 1000000,
     maxOutputTokens: 128000,
-    tokenThresholds: { handoff: 250000, guard: 375000 },
+    tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
     description:
       "Fast Claude model for responsive assistance, classification, and lightweight agents",

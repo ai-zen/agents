@@ -132,10 +132,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   // 标了 `custom: true` 的 InboxEntry 视为用户自有，原样保留。实现见
   // ConfigManager.syncManagedModels。
   //
-  // tokenThresholds 的两条线都与模型的真实上下文窗口无关：
-  //   handoff（软线，交接触发）与 guard（硬线，请求前强行阻断）。
-  // 出厂取值：窗口 ≥1M 的模型统一 handoff=250K / guard=375K（约窗口的 25% / 37.5%），
-  // glm-4.7-flash 窗口仅 200K，取 handoff=100K / guard=150K。
+  // tokenThresholds 的两条线：handoff（软线，交接触发）与 guard（硬线，请求前强行阻断）。
+  // 出厂口径是**窗口的 40% / 80%**：40% 处开始劝交接（留足换手的余量），80% 处不许再发
+  // （硬线之后必须换模型 / 调阈值 / 新开一段）。窗口 ≥1M 的模型统一 400K / 800K，
+  // glm-4.7-flash 窗口 200K，取 80K / 160K。
   //
   // reasoningPreset：应用层元数据，**SDK 不解释**（既不参与请求参数生成，也不影响运行行为）。
   // 它由客户端（如 CLI）自己定义含义：指向哪张思考档位表、`/think` 能选哪几档。
@@ -149,7 +149,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GPT-6 Astra",
       endpointId: "openai",
       modelName: "gpt-6-astra",
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
@@ -163,7 +163,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       modelName: "gpt-6.1-sol",
       // 本端点的首要模型：首启只选服务商时落的就是它（见 `ModelDefinition.primary`）
       primary: true,
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
@@ -175,7 +175,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GPT-6 Luna",
       endpointId: "openai",
       modelName: "gpt-6-luna",
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
@@ -189,7 +189,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       endpointId: "bigmodelcn",
       modelName: "glm-5.3",
       primary: true,
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       reasoningPreset: "zhipu-5.3",
       description:
@@ -200,7 +200,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GLM-5.3-Flash",
       endpointId: "bigmodelcn",
       modelName: "glm-5.3-flash",
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       vision: true,
       reasoningPreset: "zhipu-5.3",
@@ -211,7 +211,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GLM-5.3-FlashX",
       endpointId: "bigmodelcn",
       modelName: "glm-5.3-flashx",
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       vision: true,
       reasoningPreset: "zhipu-5.3",
@@ -223,7 +223,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       endpointId: "bigmodelcn",
       modelName: "glm-4.7-flash",
       // 该模型真实窗口仅 200K，阈值下调至 100K（约窗口的 50%），留足 response 空间
-      tokenThresholds: { handoff: 100_000, guard: 150_000 },
+      tokenThresholds: { handoff: 80_000, guard: 160_000 },
       defaultParams: {},
       description: "Zhipu free text model: 200K context, suited for lightweight tasks",
     },
@@ -234,7 +234,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       endpointId: "deepseek",
       modelName: "deepseek-flash",
       primary: true,
-      tokenThresholds: { handoff: 250_000, guard: 375_000 },
+      tokenThresholds: { handoff: 400_000, guard: 800_000 },
       defaultParams: { thinking: { type: "enabled" } },
       vision: true,
       reasoningPreset: "deepseek",

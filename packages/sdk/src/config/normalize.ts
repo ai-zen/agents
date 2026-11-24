@@ -42,8 +42,13 @@ const TOKEN_THRESHOLDS_KEY = "tokenThresholds";
  */
 export const DEFAULT_HANDOFF_THRESHOLD = 128_000;
 
-/** 缺 `guard` 时按 `handoff` 的这个倍数补：硬线在软线的 1.5 倍处（护栏的出厂口径） */
-const GUARD_RATIO = 1.5;
+/**
+ * 缺 `guard` 时按 `handoff` 的这个倍数补。
+ *
+ * 与出厂口径同一套比例：handoff = 窗口的 40%、guard = 窗口的 80%，所以硬线恒在软线的 **2 倍**
+ * 处。窗口未知时（老配置 / 自建模型只写了一条线），这是唯一还能守住的换算。
+ */
+const GUARD_RATIO = 2;
 
 /** 阈值只认正整数：0、负数、小数、非数字一律视为「这一格没填」 */
 function toPositiveInt(value: unknown): number | undefined {

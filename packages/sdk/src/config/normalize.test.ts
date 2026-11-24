@@ -19,11 +19,12 @@ function raw(value: ModelDefinition): Record<string, unknown> {
 
 const FACTORY_THRESHOLDS = {
   handoff: DEFAULT_HANDOFF_THRESHOLD,
-  guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+  // 与出厂口径同一个比例：handoff 40% / guard 80% → 硬线是软线的 2 倍
+  guard: DEFAULT_HANDOFF_THRESHOLD * 2,
 };
 
 describe("normalizeModelThresholds：缺阈值补出厂值", () => {
-  it("两条都缺 → 补 handoff 出厂值与 1.5 倍的 guard", () => {
+  it("两条都缺 → 补 handoff 出厂值与 2 倍的 guard（与 40% / 80% 同一口径）", () => {
     const { model: next, changed } = normalizeModelThresholds(model());
     expect(changed).toBe(true);
     expect(raw(next).tokenThresholds).toEqual(FACTORY_THRESHOLDS);
@@ -36,12 +37,12 @@ describe("normalizeModelThresholds：缺阈值补出厂值", () => {
     expect(next).toBe(source);
   });
 
-  it("有 handoff 但缺 guard → 按 1.5 倍补齐 guard", () => {
+  it("有 handoff 但缺 guard → 按 2 倍补齐 guard", () => {
     const { model: next, changed } = normalizeModelThresholds(
       model({ tokenThresholds: { handoff: 200_000 } }),
     );
     expect(changed).toBe(true);
-    expect(raw(next).tokenThresholds).toEqual({ handoff: 200_000, guard: 300_000 });
+    expect(raw(next).tokenThresholds).toEqual({ handoff: 200_000, guard: 400_000 });
   });
 
   it("只有 guard → handoff 补出厂值，guard 是用户的数、不动", () => {
