@@ -15,6 +15,15 @@ export interface Question {
   /** 产生时按当前语言渲染好的成品句 */
   readonly message: string;
   readonly choices: readonly Choice[];
+  /**
+   * 「面板被关掉」等于给哪个值（Esc / Ctrl+C）。
+   *
+   * **不填就不填**：关掉面板不作答，题继续挂在表里等人答（替用户选一个等于替他决定）。
+   *
+   * 必须由**出题的那一方**填，因为只有它知道这几个候选里哪个是退路。客户端不许按位置猜 ——
+   * 把某个列表的第 1 项或最后一项当兜底值是禁止的（`AGENTS.md` 的「禁止隐式兜底」）。
+   */
+  readonly cancelValue?: string;
   /** 挡住这段会话继续跑，缺省就是挡 */
   readonly blocking: boolean;
   readonly createdAt: number;

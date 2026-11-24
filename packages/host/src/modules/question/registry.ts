@@ -14,6 +14,8 @@ export interface AskInput {
   readonly sessionId: string;
   readonly message: string;
   readonly choices: readonly Choice[];
+  /** 「面板被关掉」等于给哪个值（见 `Question.cancelValue`）。不给就是不作答 */
+  readonly cancelValue?: string;
   /** 不给就是挡着 */
   readonly blocking?: boolean;
 }
@@ -142,6 +144,9 @@ export class QuestionRegistry {
       sessionId: input.sessionId,
       message: input.message,
       choices: input.choices,
+      // 透传而不是补一个缺省：这一格是「关掉面板等于选哪一项」，只有出题的那一方知道，
+      // 客户端不许按位置猜（`AGENTS.md` 的「禁止隐式兜底」）
+      ...(input.cancelValue === undefined ? {} : { cancelValue: input.cancelValue }),
       // 缺省挡着：题就是为「停下来问」而造的，不挡的那一种是调用方显式说出来的
       blocking: input.blocking ?? true,
       createdAt: Date.now(),

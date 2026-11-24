@@ -570,6 +570,10 @@ export class HandoffService {
           { value: "summary", label: this.deps.t("独立交接：另起一次调用写交接文档") },
           { value: "no", label: this.deps.t("不交接：保持现状") },
         ],
+        // 关掉面板（Esc / Ctrl+C）= 选「不交接」：这一题没有“不作答”这个去处——题一挂着，这一段
+        // 就一直等在它上面（自动那条路也不再问第二次）。哪个值是退路只有出题的人知道，所以由这里
+        // 声明，客户端不按位置猜（`AGENTS.md` 的「禁止隐式兜底」）
+        cancelValue: "no",
         // 题挂着不挡发送：按不按发送是客户端拿着这一格自己决定的事
         blocking: false,
       }).answer;

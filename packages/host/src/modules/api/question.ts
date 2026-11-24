@@ -14,6 +14,8 @@ const questionSchema = z.object({
   sessionId: z.string(),
   message: z.string(),
   choices: z.array(choiceSchema).readonly(),
+  // 「面板被关掉」等于哪个值：由出题的那一方声明，不是客户端按位置猜的（没声明就没有这一格）
+  cancelValue: z.string().optional(),
   blocking: z.boolean(),
   createdAt: z.number(),
 });

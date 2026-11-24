@@ -8,6 +8,9 @@
  * 后两条（`askAwaitable`）钉住「等」这件事：答了要解出那个 value，「题没被答就没了」要解出
  * `undefined` —— 后者不是「用户说了不」，而是一条真实的死路：调用方拿着 `undefined` 就得按默认
  * 执行者走，两道意思在同一个值上汇合就不行。
+ *
+ * 最后一条钉住「关掉面板等于什么」那一格是**透传**而不是补缺省：补一个候选上去，客户端就会把
+ * 一个它没被告诉过的语义当成真的。
  */
 
 import { describe, expect, it } from "vitest";
@@ -126,5 +129,25 @@ describe("提问", () => {
 
     await expect(answer).resolves.toBe("self");
     expect(questions.get(question.id)).toBeUndefined();
+  });
+
+  it("`cancelValue` 原样透传；没给就没有这一格（不补缺省）", () => {
+    const questions = createRegistry();
+
+    const withCancel = questions.ask({
+      sessionId: "s-1",
+      message: "这段会话要用哪种方式交接",
+      choices: HANDOFF,
+      cancelValue: "decline",
+    });
+    expect(withCancel.cancelValue).toBe("decline");
+
+    // 没给就是没给：补一个候选当缺省是禁止的（`AGENTS.md` 的「禁止隐式兜底」）
+    const without = questions.ask({
+      sessionId: "s-1",
+      message: "这段会话要用哪种方式交接",
+      choices: HANDOFF,
+    });
+    expect(Object.hasOwn(without, "cancelValue")).toBe(false);
   });
 });

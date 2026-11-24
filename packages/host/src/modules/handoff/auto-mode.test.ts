@@ -95,6 +95,9 @@ describe("越线那一刻问不问", () => {
     expect(question).toBeDefined();
     // 三选题：自交接 / 独立交接 / 不交接，没有「不答 / 绕过 / 关掉」这种旁路
     expect(question.choices.map((choice) => choice.value)).toEqual(["self", "summary", "no"]);
+    // 关掉面板（Esc / Ctrl+C）= 选「不交接」：这一题由出题的人指明退路，客户端不按位置猜
+    // （题一挂着，这一段就一直等在它上面，自动那条路也不再问第二次）
+    expect(question.cancelValue).toBe("no");
     // 题挂着时不挡发送：按不按发送是客户端拿着 `blocking` 自己决定的事（PRD 原话）
     expect(question.blocking).toBe(false);
 
