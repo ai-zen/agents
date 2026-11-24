@@ -291,8 +291,18 @@ describe("normalizePrimaryModels：一个端点最多一条首要模型", () => 
     const config = {
       endpoints: [],
       models: [
-        model({ id: "a", endpointId: "e", primary: true, tokenThresholds: { handoff: 1, guard: 2 } }),
-        model({ id: "b", endpointId: "e", primary: true, tokenThresholds: { handoff: 1, guard: 2 } }),
+        model({
+          id: "a",
+          endpointId: "e",
+          primary: true,
+          tokenThresholds: { handoff: 1, guard: 2 },
+        }),
+        model({
+          id: "b",
+          endpointId: "e",
+          primary: true,
+          tokenThresholds: { handoff: 1, guard: 2 },
+        }),
       ],
       abortedMessageStrategy: "keep",
       abortedToolRoundStrategy: "fill",
