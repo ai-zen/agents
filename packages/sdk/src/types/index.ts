@@ -145,6 +145,15 @@ export interface ModelDefinition {
   modelName?: string;
   /** 上下文用量阈值（交接软线 + 阻断硬线）。**不是**模型的真实上下文窗口。 */
   tokenThresholds: TokenThresholds;
+  /**
+   * 模型的真实上下文窗口（官方清单里的 `limit.context`，单位 token）。
+   *
+   * 与 `tokenThresholds` 是两件事：那两条线是「什么时候该交接 / 什么时候不许再发」的产品取值，
+   * 这里是对方声明的物理上限。只作事实记录，运行期不拿它算阈值。
+   */
+  contextWindow?: number;
+  /** 单次响应最多能出多少 token（官方清单里的 `limit.output`） */
+  maxOutputTokens?: number;
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
   /**
    * 思考策略名，引用 `reasoning-presets.json` 里的键。

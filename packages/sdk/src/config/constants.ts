@@ -1,5 +1,6 @@
 import { Message } from "@ai-zen/agents-core";
 import type { AgentDefinition, AppConfig } from "../types/index.js";
+import { OPENCODE_GO_ENDPOINT, OPENCODE_GO_MODELS } from "./opencode-go.js";
 
 // ---------------------------------------------------------------------------
 // 默认 Agent
@@ -118,6 +119,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       // 判断依据是能力位而非端点 id，用户自建端点只要声明即可享受上传。
       capabilities: { filesApi: true },
     },
+    // 订阅式的端点：模型清单在 `opencode-go.ts` 里（19 条，按官方 `/models` 生成，能跑通的才收）
+    OPENCODE_GO_ENDPOINT,
   ],
   // 模型清单（2026-10-03 依据各厂商官方来源核对）：
   //   OpenAI   → openai.com 发布公告 / API 目录（platform 文档站对脚本有访问限制）
@@ -234,6 +237,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       description:
         "DeepSeek flagship (2026-09-10): 552B MoE asymmetric architecture, native multimodal, 1M context",
     },
+    // ---------- OpenCode Go（订阅式，36 条按官方 /models 生成） ----------
+    ...OPENCODE_GO_MODELS,
   ],
   imageModels: [
     {
