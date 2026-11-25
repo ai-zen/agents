@@ -82,7 +82,7 @@ src/
     connection/       客户端连接（活：语言、凭证、上传）
     asset/            素材
     credential/       宿主访问令牌
-    question/         提问（活，不落库）
+    question/         表单（活，不落库）
     handoff/          交接
     search/           全文检索
     notice/           通知

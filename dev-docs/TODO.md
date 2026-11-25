@@ -33,66 +33,17 @@
 5. **不做 `search_tools` 式的工具定义按需加载。** 现在的渐进披露是按组给的（一个 MCP 服务器
    一组、整组一起出现或一起不给），内聚性比「按关键词搜出一把散装工具」好。
 
-## 2.（调研）MCP Elicitation：调用中途问用户
+## 2.（已收口）MCP Elicitation：调用中途问用户
 
-**现在是什么行为**：出题、等答复只有宿主内部一套（`host/src/modules/question/registry.ts` 的
-`Question` / `AskInput` / `cancelValue`，交接三选一在用，面板关掉等于选退路）。MCP 的工具调用是
-纯 request/response（`call_mcp_tool` 一直等到结果回来），服务器中途要一句用户输入没有通道。
+**做掉了（2026-11-25）**：题整体换成表单（形状照抄 spec 的 `requestedSchema`，作答三态），MCP 那侧接上了：
 
-### 调研结果（2026-11-25，spec 2026-07-28 + 已装的 `@modelcontextprotocol/client@2.4.0`）
+- 建连声明 `capabilities.elicitation.form`；注册 `elicitation/create` 处理器（`McpConnectionManager`）。
+- 「这次调属于哪段会话」那本账在 `scope/plugins/mcp/elicitation.ts`，`call_mcp_tool` 压栈、处理器读栈顶。
+- 宿主按会话装 `McpElicitationPlugin`，`ask` 直接落到 `QuestionRegistry` —— 与交接那道题同一张题板。
 
-**它是协议本身的一部分（不是扩展）**，两种模式：
+**已知的两道口子（写在这里，免得当 bug 查）**：
 
-- **form**：`message` + `requestedSchema`（**扁平对象**；属性只能是 string / number(integer) /
-  boolean / 单选 enum，数组只能是多选 enum；字符串可带 `format: email|uri|date|date-time`，
-  每格可带 title / description / default）。
-- **url**：给一个外部链接，敏感信息不进客户端（spec 明确：表单不许问密码/API key/令牌/支付凭证）。
-- 答复三态：`{ action: "accept" | "decline" | "cancel", content? }`（accept 带数据；decline 是
-  显式拒绝；cancel 是关掉面板 / 按 Esc / 页面打不开）。
+1. **`url` 模式没做**（也没声明）：要「显示域名 + 征得同意 + 打开浏览器」，TUI 没那个交互面。服务器就不该发。
+2. **跨会话不过并行**：MCP 客户端按工作目录共享，并行调用时栈顶是最近那一次，没有任何客户端可见的信息能把它们分开（同段会话内的并行不受影响）。
 
-**最关键的一条（好消息）**：2026-07-28 era 里服务器不是“推一条服务端请求”，而是让
-`tools/call` 回一个 `InputRequiredResult`（`resultType: "input_required"`）；**SDK 默认会自动
-履行** —— 它拿我们通过 `setRequestHandler(ElicitRequestSchema, …)` 注册的处理器收集答案，
-再用 `inputResponses` + 原样的 `requestState` 重发那次调用（`inputRequired.autoFulfill`，
-最多 `maxRounds` 轮），`client.callTool()` 依然只返回普通结果。
-
-所以**不需要在 `call_mcp_tool` 里写重试胶水**；capability 那格也不用自己往每个请求塞
-`_meta`（现代 era 下 SDK 自动附带）。真正要做的只有三件：
-
-1. `Client` 构造时声明 `capabilities: { elicitation: { form: {} } }`（只声明 form；没声明的模式
-   服务器不该发）；
-2. 注册 `elicitation/create` 的处理器，把它翻译成宿主的一道题；
-3. 面板能画表单。
-
-**真正的硬骨头：我们的 MCP 客户端是按 Scope 共享的，而题必须挂在某一段会话下。**
-`setRequestHandler` 的处理器拿不到 `ToolCallContext`（不知道是哪个 agent / 哪段会话调的）——
-得由 `McpTaskBridge` 那一层在发起调用时记一份“当前这次调用属于谁”，处理器再去取。
-这是这一条里唯一需要设计的地方。
-
-**与现有 `Question` 的对齐**：三态几乎一一对应 —— `accept` → 带一个值作答；`decline` → 选“不同意”
-那一项；`cancel` → 面板关掉（我们那边是「不作答，题继续挂着」，正好是 spec 的 cancel）。
-`cancelValue` 那格可以指向“拒绝”，于是 Esc 与 decline 在体验上合一。
-
-**对不上的地方**：`Question` 是「一句话 + 若干单选」，而 form 是「扁平 schema + 多字段」。
-单选 enum 那一种可以 1:1 映射；string / number / boolean / 多选 enum 需要面板支持输入字段 ——
-目前 TUI 的问题面板只画选项。
-
-**其它已知边界**：
-
-- **一次性 Agent**（子 agent、`runOnce`、`/ask` 那条）手上没有出题通道 —— 它们调 MCP 工具时
-  遇到 elicitation 只能 decline。
-- **url 模式空白**：TUI 没有浏览器，也没有“显示域名 + 征求同意 + 打开”的先例（`mcp-oauth` 只是
-  凭据目录，没有授权流）。先不声明 url，服务器就不该发。
-- **交接期间不许出题**、输出暂停这些既有判据得在处理器里再过一遍（那一侧已有现成的判据）。
-- **超时**：spec 没给客户端定数；用户不答（cancel）之后服务器怎么回是它的事，我们只负责把
-  cancel 交回去。
-
-### 三档做法
-
-| 档 | 内容 | 代价 |
-|---|---|---|
-| 甲（先做这个） | 只 form、**先只支持单选 enum 那一种**（直接当一道 `Question`）+ “谁在调”的上下文 | 一次能力声明 + 一个处理器 + `McpTaskBridge` 里记一份调用上下文 |
-| 乙 | form 全量（字符/数字/布尔/多选） | 要新做 TUI 的多字段表单 |
-| 丙 | url 模式 | 要新做“显示域名 + 同意 + 打开浏览器”的交互形状 |
-
-**未决**：要不要做、做到哪一档；甲里的“调用上下文”放在 `McpTaskBridge` 还是另起一层。
+**剩下的（真机上验）**：拿一个真的会 elicitation 的服务器跑一遍 —— 目前只有单元层（处理器四个去处 + 记账那本账）。

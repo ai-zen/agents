@@ -16,7 +16,7 @@
 | `Scope` | 按目录存活，持有 MCP 连接、插件与工具；与 `Workspace` 1:1 | 能力容器、上下文、环境、沙箱 |
 | `Asset` | 上传的文件：库里的行 + 磁盘上的字节 | 素材、附件、图片、文件 |
 | `Handoff` | 上下文装不下时换取新记忆的动作 | 迁移、归档、压缩（压缩是它的实现手段之一） |
-| `Question` | 宿主向用户发问并等待回答的进程内对象，不落库 | 询问、弹窗、确认框 |
+| `FormRequest` | 宿主向用户发来的一张表（`requestedSchema`，照抄 MCP elicitation），并等一个三态答复；不落库，只活在内存里 | 询问、弹窗、确认框 |
 | `Notice` | 一条短消息，落库，有寿命 | 提示、toast |
 | `runtime.agent.send` | 宿主的一条 procedure：把一条内容放进那段 `Session` 的 `Agent` 的 `inbox`。不唤醒它，也不等它跑完 | 递话、投递、发送 |
 | `Agent.send()` | 把一条内容放进自己的 `inbox` 就返回，不等它跑 | 递话、投递、push |
