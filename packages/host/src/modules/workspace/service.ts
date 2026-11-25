@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 import { HostError } from "../../infra/errors.js";
 import type { Translator } from "../i18n/index.js";
@@ -7,6 +7,21 @@ import type { WorkspaceRecord } from "./types.js";
 
 /** `SQLITE_CONSTRAINT_UNIQUE`：`node:sqlite` 只报这个数，没有具名的错误类型 */
 const UNIQUE_VIOLATION = 2067;
+
+/**
+ * 一个目录的默认项目名：**目录自己的名字**。
+ *
+ * 为什么不用创建时刻那一串毫秒：项目在列表里、在 `/ws` 的候选里、在提示语里都是拿名字认的，
+ * 一串毫秒对人来说等于没有名字 —— 而「这个目录叫什么」是它手上现成的事实。
+ *
+ * 根目录那种 `basename` 给空串的地方（`/`、`C:\`）取归一化后的整条路径：那不是兜底，是这一格
+ * 在这类路径上的唯一取值 —— 根目录没有「名字」这回事，它只有路径。
+ */
+export function defaultWorkspaceName(cwd: string): string {
+  const absolute = resolve(cwd);
+  const name = basename(absolute);
+  return name === "" ? absolute : name;
+}
 
 export interface WorkspaceDeps {
   readonly workspaces: ReturnType<typeof workspaceTable>;

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { listMentionFiles } from "../workspace/mentions.js";
 import { removeWorkspace } from "../workspace/remove.js";
+import { defaultWorkspaceName } from "../workspace/service.js";
 import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
 
@@ -29,14 +30,15 @@ export function workspaceRouter(deps: HostApiDeps, api: Trpc) {
      * 建一个项目。`cwd` 的归一化在 `WorkspaceService.create` 里做，这一层不再做一遍：
      * 两处各做一次，第二处就得处理「第一处的结果再进来一次」这种不存在的处境。
      *
-     * 名字没给就取创建时刻那一串毫秒，这一格由宿主定、不让客户端传：那一串毫秒只有宿主在创建
-     * 那一刻拿得到，由客户端给就是每条客户端各拿自己的时钟算一遍，同一个动作会落出不同的名字。
+     * 名字没给就取**那个目录自己的名字**（{@link defaultWorkspaceName}）：项目是「哪个目录」，
+     * 它叫什么最自然的就是目录叫什么。这一格由宿主定、不让客户端传 —— 客户端手里那个路径可能
+     * 还没归一化（远端宿主上的 `/srv/proj` 在一台 Windows 客户端上会被切成另一串字符串）。
      */
     create: api.procedure
       .input(z.object({ cwd: z.string().min(1), name: z.string().optional() }))
       .output(z.object({ workspace: workspaceSchema }))
       .mutation(({ input }) => ({
-        workspace: deps.workspaces.create(input.name ?? String(Date.now()), input.cwd),
+        workspace: deps.workspaces.create(input.name ?? defaultWorkspaceName(input.cwd), input.cwd),
       })),
 
     /**
