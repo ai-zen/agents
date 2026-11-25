@@ -4,11 +4,8 @@ import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
 import { newProviderSessionId } from "../shared/clientInfo.js";
-import {
-  CREATE_SESSION_TOOL,
-  PEER_SESSION_TOOL_NAMES,
-} from "../scope/plugins/peers/peerSessionTools.js";
-import { ASYNC_TASK_TOOL_NAMES } from "../scope/plugins/builtin/asyncTasks.js";
+import { CREATE_SESSION_TOOL } from "../scope/plugins/peers/peerSessionTools.js";
+import { ONE_SHOT_WITHHELD_TOOL_NAMES } from "../scope/plugins/oneShotTools.js";
 import { resolveModel, resolveModelParams } from "./resolveModel.js";
 import type { AgentDefinition, ModelParams } from "../types/index.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
@@ -160,13 +157,10 @@ export async function createAgent(
       // PeerSession 那三个工具是会话级能力，谁手上没有哪一个，判据都是「它是不是一段能自己开平级
       // 会话的会话」。下面两支各自排掉哪些，理由不同：
       //
-      // - 一次性 Agent 手上什么都没有（第一处是 `subAgentTools.ts` 给 subagent 的 exclude，那边
-      //   的判据是「被派出去的」，这边的判据是「一次性的」，结论一样）：它不是一段会话的 Agent
-      //   —— 没有可以署名的身份（`post_message` 要写「来自哪一段会话」，它会把发起方标签算成
-      //   agentId 那串字符串），也开不出有人认领的新会话（`create_session` 必然回
-      //   `depth_exceeded`）；而 `async_exec` / `async_timeout` 的结果在将来某个时刻才回来，
-      //   那时它的调用栈已经退了，推回来的那条没有收件人。这些工具在它手上只有必错的路，而每一条
-      //   必错的路都要烧一次模型调用去走 —— 不如一开始就不给。
+      // - 一次性 Agent 手上什么都没有：名单与理由都在 `scope/plugins/oneShotTools.ts`（那边是
+      //   唯一一份 —— 定义式 subagent、技能 subagent、这条 `runOnce` 的路都从它取，免得再漏第
+      //   四处）。这些工具在它手上只有必错的路，而每一条必错的路都要烧一次模型调用去走 ——
+      //   不如一开始就不给。
       // - 别人开出来的那一段会话（`canOpenPeers: false`）只排 `create_session`：再开一层就是
       //   套娃；投递与问状态那两个照旧留着，平级之间是双向说话的。两个后台工具也照旧留着
       //   —— 它是常驻 Agent，结果有人收。
@@ -212,7 +206,7 @@ export async function createAgent(
  */
 function excludedTools(options: CreateAgentOptions): string[] | undefined {
   if (options.lifetime === "one-shot") {
-    return [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES];
+    return [...ONE_SHOT_WITHHELD_TOOL_NAMES];
   }
   if (options.canOpenPeers === false) return [CREATE_SESSION_TOOL];
   return undefined;

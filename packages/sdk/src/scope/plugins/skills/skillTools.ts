@@ -8,7 +8,7 @@ import {
 import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
-import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
+import { withoutOneShotWithheld } from "../oneShotTools.js";
 import type { LogSink } from "../../../shared/logger.js";
 import { promises as fs } from "node:fs";
 
@@ -169,13 +169,14 @@ export function createCallSkillSubAgentTool(
 
       // 沿用父 Agent 的工具能力（不做权限过滤），剔除自身以防自递归
       const parentAgent = ctx.agent;
-      // 一并排掉 PeerSession 那三个工具：它们是会话级能力，父会话的 Agent 可以有，被派出去的 Agent
-      // 不该有 —— 委派出来的 Agent 不属于任何一段会话，没有可以署名的身份（发话要写「来自哪
-      // 一段会话」），也开不出有人认领的新会话，留着这三个只会在调用时必错。
-      const peerSessionToolNames = new Set<string>(PEER_SESSION_TOOL_NAMES);
-      const tools = parentAgent.tools.filter(
-        (t) =>
-          t.function.name !== "call_skill_sub_agent" && !peerSessionToolNames.has(t.function.name),
+      // 但这一个 Agent 是**一次性**的（`lifetime` 在下面），父手上那些只有在常驻 Agent 上才成立
+      // 的工具就不跟着继承：PeerSession 三件与 `async_*` 都在 `../oneShotTools.js` 那份名单里
+      // ── 尤其是后台任务：它的结果由 inbox 在将来某个时刻投回来，而那时 `runOnce()` 已经返回、
+      // 这个 Agent 已经 stop 并关收，`send` 直接抛 closed（结果丢掉），`onStop` 上的清点还会把
+      // 还没结束的后台命令 kill 掉。这条路上原先只剔 PeerSession 三件，`async_exec` /
+      // `async_timeout` 就这么漏了进来。
+      const tools = withoutOneShotWithheld(parentAgent.tools).filter(
+        (t) => t.function.name !== "call_skill_sub_agent",
       );
 
       return new Agent({

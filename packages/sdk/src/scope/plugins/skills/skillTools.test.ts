@@ -6,6 +6,7 @@ import { Agent, AgentToolLazy, CallbackTool, Message, ToolCallContext } from "@a
 import { createLoadSkillTool, createCallSkillSubAgentTool } from "./skillTools.js";
 import type { SkillInfo } from "./discover.js";
 import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
+import { ASYNC_TASK_TOOL_NAMES } from "../builtin/asyncTasks.js";
 
 let tmpDir: string;
 let skillDirs: string[];
@@ -138,8 +139,19 @@ describe("createCallSkillSubAgentTool", () => {
     return { chat: { completions: { create: vi.fn(async () => stream) } } } as any;
   }
 
+  /** 一个只有名字的假工具（“父手上有这件工具”只要名字就够） */
+  const namedTool = (name: string) =>
+    new CallbackTool({
+      function: {
+        name,
+        description: `${name} 的描述`,
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      callback: () => "ok",
+    });
+
   /** 宿主 Agent：带 read 工具，并挂载被测工具（模拟 Scope.instantiate 的结果） */
-  function buildHost(tool: AgentToolLazy) {
+  function buildHost(tool: AgentToolLazy, extraTools: CallbackTool[] = []) {
     const readFileTool = new CallbackTool({
       function: {
         name: "read",
@@ -152,7 +164,7 @@ describe("createCallSkillSubAgentTool", () => {
       client: createMockClient(),
       model: "gpt-4",
       messages: [Message.System("父 Agent")],
-      tools: [readFileTool, tool],
+      tools: [readFileTool, ...extraTools, tool],
     });
   }
 
@@ -215,7 +227,12 @@ describe("createCallSkillSubAgentTool", () => {
       subAgent: true,
     });
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
-    const host = buildHost(tool);
+    // 父手上还有后台任务与会话级能力：这两类在一次性 Agent 身上只有必错的路
+    const host = buildHost(tool, [
+      namedTool(ASYNC_TASK_TOOL_NAMES[0]),
+      namedTool(ASYNC_TASK_TOOL_NAMES[1]),
+      namedTool(PEER_SESSION_TOOL_NAMES[0]),
+    ]);
 
     let captured: Agent | undefined;
     host.use({
@@ -235,6 +252,11 @@ describe("createCallSkillSubAgentTool", () => {
     expect(captured).toBeDefined();
     // 沿用父 Agent 工具能力，但剔除 call_skill_sub_agent 防自递归
     expect(captured!.tools.map((t) => t.function.name)).toEqual(["read"]);
+    // 而 `async_*` 与会话级那几件一件都不能带：这个 Agent 是一次性的，结果回来时它已经关收
+    const names = captured!.tools.map((t) => t.function.name);
+    for (const name of [...ASYNC_TASK_TOOL_NAMES, ...PEER_SESSION_TOOL_NAMES]) {
+      expect(names).not.toContain(name);
+    }
     // 初始消息来自 SKILL.md 与 task 参数
     expect(String(captured!.messages[0].content)).toContain("Git operations guide");
     expect(captured!.messages[1].content).toBe("commit these changes");

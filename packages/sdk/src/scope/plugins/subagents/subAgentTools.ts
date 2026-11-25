@@ -5,8 +5,7 @@ import type { AgentDefinition } from "../../../types/index.js";
 import type { Scope } from "../../Scope.js";
 import { newProviderSessionId } from "../../../shared/clientInfo.js";
 import { createModel } from "../../../runtime/createModel.js";
-import { PEER_SESSION_TOOL_NAMES } from "../peers/peerSessionTools.js";
-import { ASYNC_TASK_TOOL_NAMES } from "../builtin/asyncTasks.js";
+import { ONE_SHOT_WITHHELD_TOOL_NAMES } from "../oneShotTools.js";
 
 /**
  * 创建 SubAgent 工具（AgentToolLazy）。
@@ -71,15 +70,12 @@ export function createSubAgentTool(def: AgentDefinition, scope: Scope): Tool {
       const subFiltered = scope.filter(def, {
         exclude: {
           subagents: def.function?.name ? [def.function.name] : undefined,
-          // PeerSession 那三个工具是会话级能力，被派出去的 Agent 手上不该有：它不属于任何一段
-          // 会话 —— 没有可以署名的身份（发话要写「来自哪一段会话」），也开不出有人认领的新
-          // 会话，所以这三个工具在它手上只有必错的路（发话在端口层直接抛，创建被判
-          // depth_exceeded）。取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的
+          // 被派出去的是个一次性 Agent：会话级能力（PeerSession 三件）与后台任务（`async_*`）
+          // 在它手上只有必错的路，名单与理由都在 `../oneShotTools.js`（那一份也管着另外两条路，
+          // 免得再漏第四处）。取 exclude 而不动定义里的 permissions：定义文件是用户可编辑的
           // 配置，这条规矩不长在那儿；而 filter 先按 exclude 剔除、再按权限过滤，定义写
           // `allow: ["*"]` 也照样剔得掉。
-          //
-          // 两个后台工具同理：被派出去的是个一次性 Agent，结果回来时它的调用栈已经退了。
-          tools: [...PEER_SESSION_TOOL_NAMES, ...ASYNC_TASK_TOOL_NAMES],
+          tools: [...ONE_SHOT_WITHHELD_TOOL_NAMES],
         },
       });
       const tools = scope.instantiate(subFiltered);
