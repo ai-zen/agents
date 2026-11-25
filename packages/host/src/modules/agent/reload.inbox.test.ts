@@ -167,6 +167,7 @@ function newHost() {
     onError: () => {},
     suppressesPersist: () => false,
     isReloading: (sessionId) => reloads.covers(sessionId),
+    touchSession: () => {},
   });
   observer.attach(runtime as never);
 

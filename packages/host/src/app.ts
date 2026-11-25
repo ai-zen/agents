@@ -482,6 +482,8 @@ export class HostApp {
       // 消息落不落库：换手那一档在交接期间不落；交接态会在一个 Agent 的寿命里变几次，所以传函数不传值
       suppressesPersist: (sessionId) => handoff.suppressesPersist(sessionId),
       isReloading: (sessionId) => reloads.covers(sessionId),
+      // 一批活开始 = 这一段刚动过：`/sessions` 按 `updatedAt` 排序，就靠这一格跟着活动走
+      touchSession: (sessionId) => sessions.touch(sessionId),
     });
     this.detachObserver = this.observer.attach(this.runtime);
 

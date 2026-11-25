@@ -139,6 +139,7 @@ function setup(answer: () => Promise<string> = async () => "把宿主的交接�
     suppressesPersist: () => false,
     // 起名这条路上没有重装：窗口永远是关的
     isReloading: () => false,
+    touchSession: () => {},
   });
 
   const listeners: Array<(fact: RuntimeFact) => void> = [];

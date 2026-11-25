@@ -27,6 +27,13 @@ export interface HostObserverDeps {
   readonly suppressesPersist: (sessionId: string) => boolean;
   /** 这段会话此刻是否在重装（`ReloadWindow`）。同样传函数：窗口由重装那条路开关 */
   readonly isReloading: (sessionId: string) => boolean;
+  /**
+   * 记一次「这一段刚动过」（把会话行的 `updatedAt` 推到此刻）。列表的排序读的就是那一格。
+   *
+   * 传方法而不是 `SessionService`：观察者只干这一件事，把整个服务递进来就等于给它开了
+   * 改会话行的口子。
+   */
+  readonly touchSession: (sessionId: string) => void;
 }
 
 /**
@@ -231,6 +238,10 @@ export class HostObserver {
         this.emitEvent(this.statusEvent(fact.sessionId, fact.agent));
         return;
       case "state:working":
+        // 这一段开始干活 = 它刚动过：把会话行上的 `updatedAt` 推一下，`/sessions` 就按它排。
+        // 挂在这一拍而不是每条消息上：一轮下来的消息可能有上百条（流式一片一条），这里一批只
+        // 来一次。
+        this.deps.touchSession(fact.sessionId);
         this.emitEvent(this.statusEvent(fact.sessionId, fact.agent));
         return;
 

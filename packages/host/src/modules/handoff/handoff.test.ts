@@ -316,6 +316,7 @@ function setup(dbFile = ":memory:") {
     suppressesPersist: (id) => handoff.suppressesPersist(id),
     // 交接这条路不重装：窗口永远是关的
     isReloading: () => false,
+    touchSession: () => {},
   }).attach(fake.runtime);
 
   /** 造一个活着的 Agent，并把它放进运行时那张登记表（`get` 取到的就是它） */

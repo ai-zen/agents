@@ -118,17 +118,25 @@ describe("会话行", () => {
     expect(service.get("s-old")?.updatedAt).toBeGreaterThan(1);
   });
 
-  it("置顶的会话排到前面，其余仍按创建时间倒序", async () => {
+  it("置顶的会话排到前面，其余按最后动过的时刻倒序（不是创建时刻）", async () => {
     const service = newService();
     const older = service.create(input);
     // `createdAt` 是毫秒：不隔开就分不出先后，倒序这条断言会变成掷骰子。
     await new Promise((resolve) => setTimeout(resolve, 2));
     const newer = service.create(input);
 
+    // 刚建出来时谁后建谁在前面
     expect(service.list("ws-1")).toEqual([newer, older]);
 
-    const pinned = service.update(older.id, { pinned: true });
-    expect(service.list("ws-1")).toEqual([pinned, newer]);
+    // 老的那一段又动了一次（`touch` 就是运行时在每一批活开始时干的事）：它排到最前面，
+    // 哪怕它是先建的 —— 列表要回答的是「哪一段最近动过」
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    service.touch(older.id);
+    expect(service.list("ws-1").map((session) => session.id)).toEqual([older.id, newer.id]);
+
+    // 置顶仍然压过一切
+    const pinned = service.update(newer.id, { pinned: true });
+    expect(service.list("ws-1")).toEqual([pinned, service.get(older.id)]);
   });
 });
 

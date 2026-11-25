@@ -71,6 +71,20 @@ export class SessionService {
     return next;
   }
 
+  /**
+   * 记一次「这一段刚动过」：把 `updatedAt` 推到此刻，别的格子一个字不动。
+   *
+   * `/sessions` 的排序读的就是这一格（`table.ts`），所以一次活动之后这一段就排到前面。
+   * 挂在**一批活的开始**上而不是每条消息上：一轮下来消息可能有上百条，而「最近动过」这件事
+   * 一轮只需要说一次。
+   *
+   * 行不在了就什么都不做：调用方是运行时的事实流，那一段可能刚被删掉，而这里没有要记的活动。
+   */
+  touch(id: string): void {
+    if (this.deps.sessions.get(id) === undefined) return;
+    this.update(id, {});
+  }
+
   /** 换模型必须清掉 `thinkingLevel`：档位是模型的参数，把一家的 thinking 参数带到另一家会被直接拒 */
   setModel(id: string, modelId: string | null): SessionRecord {
     return this.update(id, { modelId, thinkingLevel: null });

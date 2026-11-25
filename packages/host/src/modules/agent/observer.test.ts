@@ -92,6 +92,7 @@ function setup() {
     onError: (error, what) => errors.push({ error, what }),
     suppressesPersist: () => false,
     isReloading: () => reloading,
+    touchSession: () => {},
   });
   observer.attach({
     observe: (listener: (fact: RuntimeFact) => void) => {

@@ -129,6 +129,7 @@ function setup() {
     suppressesPersist: () => false,
     // 这条路上没有重装：窗口永远是关的（重装那一支由 `reload.inbox.test.ts` 验）
     isReloading: () => false,
+    touchSession: () => {},
   }).attach(runtime);
 
   /**
