@@ -14,6 +14,7 @@ import { openDatabase } from "../../infra/db.js";
 import { HostError } from "../../infra/errors.js";
 import { createTranslator } from "../i18n/index.js";
 import { sessionTable } from "../session/table.js";
+import type { SessionRecord } from "../session/types.js";
 import { WorkspaceService } from "./service.js";
 import { workspaceTable } from "./table.js";
 
@@ -56,11 +57,11 @@ describe("项目行", () => {
     workspaces.put({ id: "w-1", name: "一", cwd: "/tmp/w-1", createdAt: 1 });
     workspaces.put({ id: "w-2", name: "二", cwd: "/tmp/w-2", createdAt: 1 });
 
-    const session = (id: string, workspaceId: string) => ({
+    const session = (id: string, workspaceId: string): SessionRecord => ({
       id,
       workspaceId,
       name: "1712345678000",
-      nameIsAuto: true,
+      nameSource: "default",
       pinned: false,
       agentId: "agent-1",
       modelId: "model-1",

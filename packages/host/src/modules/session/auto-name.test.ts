@@ -6,7 +6,7 @@
  * 判掉，下一次闲下来用户自己起的名字就被换掉了；把「恰好一条」判成「有用户消息就行」，答过好几
  * 句的名字还会接着变。所以每一条都带正例 —— 一个从不发请求的实现也能让反例的断言全绿。
  *
- * 另外两条说的是写回与失败：成功之后会话行上的名字换了、`nameIsAuto` 仍然是真；失败推一条会话内
+ * 另外两条说的是写回与失败：成功之后会话行上的名字换了、`nameSource` 记成 `auto`；失败推一条会话内
  * 通知，而这一段照旧接着收消息（起名是一次额外请求，它不是这一段的活）。
  *
  * 模型不出网：请求那一条路注入一个假的客户端，它只做一件真客户端也做的事 —— 把请求记下来，
@@ -58,7 +58,7 @@ const input: NewSession = {
   name: CREATED_AT_NAME,
   agentId: "agent-1",
   modelId: "naming-1",
-  nameIsAuto: true,
+  nameSource: "default",
   autoHandoff: false,
   lineage: null,
 };
@@ -237,7 +237,7 @@ describe("起名：名字还归自动", () => {
   it("用户改过名的不跑", async () => {
     const { namer, sessions, messages, requests } = setup();
 
-    const renamed = sessions.create({ ...input, name: "我自己起的名字", nameIsAuto: false });
+    const renamed = sessions.create({ ...input, name: "我自己起的名字", nameSource: "user" });
     messages.upsertMany(renamed.id, [
       userMessage("m-1", "帮我把宿主的交接写出来"),
       assistantMessage("m-2", "先把状态机那一格定下来"),
@@ -248,7 +248,7 @@ describe("起名：名字还归自动", () => {
     expect(requests).toHaveLength(0);
     expect(sessions.get(renamed.id)).toMatchObject({
       name: "我自己起的名字",
-      nameIsAuto: false,
+      nameSource: "user",
     });
   });
 });
@@ -282,7 +282,7 @@ describe("起名：开关", () => {
 });
 
 describe("起名：写回", () => {
-  it("闲下来那一刻起名，名字换了而 nameIsAuto 仍为真", async () => {
+  it("闲下来那一刻起名，名字换了而 nameSource 记成 auto", async () => {
     const { sessions, messages, requests, emit } = setup();
 
     const naming = sessions.create(input);
@@ -303,9 +303,12 @@ describe("起名：写回", () => {
     await vi.waitFor(() => expect(sessions.get(naming.id)?.name).toBe("把宿主的交接写出来"), {
       interval: 5,
     });
-    // 自动起的名字还能被下一个名字换掉，所以这一格仍是真；`updatedAt` 换新说明走的是会话行那条
+    // 自动起的名字还能被下一个名字换掉，所以这一格仍是 `auto`；`updatedAt` 换新说明走的是会话行那条
     // 更新路径
-    expect(sessions.get(naming.id)).toMatchObject({ name: "把宿主的交接写出来", nameIsAuto: true });
+    expect(sessions.get(naming.id)).toMatchObject({
+      name: "把宿主的交接写出来",
+      nameSource: "auto",
+    });
     expect(sessions.get(naming.id)?.updatedAt).toBeGreaterThanOrEqual(createdAt ?? 0);
   });
 });
@@ -351,7 +354,7 @@ describe("起名：失败", () => {
     expect(errors.length).toBeGreaterThan(0);
 
     // 名字与那一格都没动：失败不是「换了个名字」
-    expect(sessions.get(naming.id)).toMatchObject({ name: CREATED_AT_NAME, nameIsAuto: true });
+    expect(sessions.get(naming.id)).toMatchObject({ name: CREATED_AT_NAME, nameSource: "default" });
 
     // 这一段照旧接着收消息：起名失败之后落进来的那条一样进库
     emit({ type: "messageAdded", sessionId: naming.id, message: next });

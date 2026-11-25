@@ -90,7 +90,7 @@ function newSession(host: Host): SessionRecord {
   return host.sessions.create({
     workspaceId: "ws-1",
     name: "1712345678000",
-    nameIsAuto: false,
+    nameSource: "user",
     agentId: "agent-1",
     modelId: "model-1",
     autoHandoff: false,

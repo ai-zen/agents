@@ -38,7 +38,7 @@ const input: NewSession = {
   name: "1712345678000",
   agentId: "agent-1",
   modelId: "model-1",
-  nameIsAuto: true,
+  nameSource: "default",
   autoHandoff: false,
   lineage: null,
 };

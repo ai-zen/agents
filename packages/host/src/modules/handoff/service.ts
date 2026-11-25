@@ -453,10 +453,10 @@ export class HandoffService {
     const archived: SessionRecord = {
       id: crypto.randomUUID(),
       workspaceId: session.workspaceId,
-      name: this.deps.t("已存档_{name}", { name: session.name }),
-      // 名字是这里给的，不是自动起的：置真会让自动命名在下一次变闲时把它换成别的名字，
-      // 那一段于是不再叫「已存档_…」
-      nameIsAuto: false,
+      // 名字沿用原会话的：名字里不烘展示文本。存档这件事由 `nameSource` 说 —— 前缀是按当时
+      // 界面语言渲染的，语言一换库里那些旧名字就跟不上，而列表里两行同名时也说不清哪行是存档
+      name: session.name,
+      nameSource: "handoff",
       pinned: false,
       agentId: session.agentId,
       modelId: session.modelId,

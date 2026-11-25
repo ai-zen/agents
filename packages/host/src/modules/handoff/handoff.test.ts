@@ -64,7 +64,7 @@ const input: NewSession = {
   name: "1712345678000",
   agentId: "agent-1",
   modelId: "model-1",
-  nameIsAuto: true,
+  nameSource: "default",
   autoHandoff: false,
   lineage: null,
 };
@@ -770,11 +770,11 @@ describe("两档", () => {
     handoffs.runs[0].succeedWithMemory([prompt, breakpoint]);
     await settle();
 
-    // 原会话换成新记忆，旧的那一份成了另一段会话
+    // 原会话换成新记忆，旧的那一份成了另一段会话：名字沿用原会话的，存档这件事由 `nameSource` 说
     expect(messages.listBySession(session.id).map((item) => item.id)).toEqual([breakpoint.id]);
-    expect(sessions.list(input.workspaceId).map((item) => item.name)).toContain(
-      `已存档_${session.name}`,
-    );
+    const archived = sessions.list(input.workspaceId).find((item) => item.id !== session.id);
+    expect(archived?.name).toBe(session.name);
+    expect(archived?.nameSource).toBe("handoff");
     // 换手那一档不推「文档写到哪」那一句：它要说的是记忆换了，而窗口里看得见
     expect(notices.listBySession(session.id)).toEqual([]);
   });

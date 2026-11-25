@@ -28,8 +28,9 @@ export interface CreateSessionInput {
  * 兜底）：解析不出就在这里失败，不落一条指不到模型的半成品行 —— 行上的 `modelId` 从这一刻起
  * 就是事实。
  *
- * 名字是创建时刻那一串时刻串。自动命名的判据是「只有一条用户消息」，刚建出来的这一段一条
- * 都没有，所以它不会被触发。
+ * 名字是创建时刻那一串时刻串，它的来源记 `default`：客户端把这种名字显示成「新会话 · 时刻」，
+ * 而不是把库里那个 ISO 串直接上屏。自动命名的判据是「只有一条用户消息」，刚建出来的这一段
+ * 一条都没有，所以它不会被触发。
  */
 export async function createSession(
   deps: CreateSessionDeps,
@@ -54,7 +55,8 @@ export async function createSession(
   return deps.sessions.create({
     workspaceId: input.workspaceId,
     name: new Date().toISOString(),
-    nameIsAuto: true,
+    // 占位名：客户端把它显示成「新会话 · 时刻」，自动起名可以覆盖它
+    nameSource: "default",
     agentId: input.agentId,
     modelId: model.modelId,
     // 人建的会话默认不自动交接；它也不属于任何别的会话

@@ -345,7 +345,7 @@ describe("平级会话：工具从容器里出来，话真的投到了对面", (
     // 项目跟着开出它的那一段会话走，不是跟着客户端手里那个项目走
     expect(peer!.workspaceId).toBe(workspaceId);
     expect(peer!.name).toBe(PEER_LABEL);
-    expect(peer!.nameIsAuto).toBe(false);
+    expect(peer!.nameSource).toBe("user");
     // 另一个项目里一行都没有多出来
     expect(
       await client.query<SessionRecord[]>("session.list", { workspaceId: otherWorkspaceId }),

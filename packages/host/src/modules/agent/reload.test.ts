@@ -125,7 +125,7 @@ function newSession(host: Host, agentId: string): SessionRecord {
   return host.sessions.create({
     workspaceId: host.workspace.id,
     name: "1712345678000",
-    nameIsAuto: true,
+    nameSource: "default",
     agentId,
     modelId: "model-1",
     autoHandoff: false,

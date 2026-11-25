@@ -4,7 +4,7 @@
  * 这一份验的是**客户端调得动、落库落成了什么**：前四样直接写行（Agent 根本不读它们，改完当场
  * 生效），后两样写行之外还要在活着的 Agent 上就地刷新（`SdkAgent.useModel`）。
  *
- * 每一条的错法都是「不报错也不工作」：名字改完 `nameIsAuto` 还是真（下一次自动起名会把它盖掉）、
+ * 每一条的错法都是「不报错也不工作」：名字改完 `nameSource` 还是 `default`（下一次自动起名会把它盖掉）、
  * 换模型没清档位（把一家的 thinking 参数带到另一家，端点直接 400）、阈值只有一个数进了库
  * （另一个还是旧值）、换模型只改了库没改 Agent（界面写着 A、请求发给 B）。
  *
@@ -142,7 +142,7 @@ function newSession(host: Host): SessionRecord {
     workspaceId: "ws-1",
     name: "1712345678000",
     // 自动起的名字：这一格是本文件第一条的那个判据
-    nameIsAuto: true,
+    nameSource: "default",
     agentId: "agent-1",
     // 会话行上写出模型：三级解析的第一级就是它
     modelId: "model-plain",
@@ -174,7 +174,7 @@ async function hostErrorOf(call: Promise<unknown>): Promise<HostError> {
 }
 
 describe("会话上可改的那几样", () => {
-  it("改名：写进库里，且 `nameIsAuto` 变成假 —— 从此不再自动改名", async () => {
+  it("改名：写进库里，且 `nameSource` 变成 `user` —— 从此不再自动改名", async () => {
     const host = newHost();
     const session = newSession(host);
 
@@ -186,10 +186,10 @@ describe("会话上可改的那几样", () => {
     expect(renamed).toEqual({
       ...session,
       name: "自己起的名字",
-      nameIsAuto: false,
+      nameSource: "user",
       updatedAt: expect.any(Number),
     });
-    // 落库的那一份与返回的那一份是同一个事实：自动起名只碰 `nameIsAuto` 还是真的行
+    // 落库的那一份与返回的那一份是同一个事实：自动起名只碰 `default` / `auto` 那两格
     expect(host.sessions.get(session.id)).toEqual(renamed);
   });
 

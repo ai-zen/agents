@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import { jsonTable } from "../../infra/json-table.js";
-import type { SessionRecord } from "./types.js";
+import type { SessionNameSource, SessionRecord } from "./types.js";
 
 /**
  * 会话表。排序与过滤用到的四列由库从 `payload` 里算出来，JS 一个字节都不写。
@@ -38,15 +38,33 @@ export function sessionTable(db: DatabaseSync) {
 
   const rows = jsonTable<SessionRecord>(db, "sessions");
 
+  /**
+   * 老行没有 `nameSource`：这一格是后加的，当时写下的行没记名字从哪儿来。读的时候补上
+   * `legacy` —— 它不是猜一个来源，意思是「不知道」，显示上按「原样显示名字」处理。
+   * 下一次写这一行时（改名、置顶、`touch`）旧行自然换成了带这一格的新形状。
+   */
+  const withNameSource = (row: SessionRecord): SessionRecord => {
+    const source = (row as { nameSource?: SessionNameSource }).nameSource;
+    return source === undefined ? { ...row, nameSource: "legacy" } : row;
+  };
+
+  const read = (clause: string, params: string[] = []): SessionRecord[] =>
+    rows.query(clause, params).map(withNameSource);
+
   return {
     ...rows,
 
+    get(id: string): SessionRecord | undefined {
+      const row = rows.get(id);
+      return row === undefined ? undefined : withNameSource(row);
+    },
+
     listByWorkspace(workspaceId: string): SessionRecord[] {
-      return rows.query(`WHERE workspaceId = ? ${ORDER}`, [workspaceId]);
+      return read(`WHERE workspaceId = ? ${ORDER}`, [workspaceId]);
     },
 
     list(): SessionRecord[] {
-      return rows.query(ORDER);
+      return read(ORDER);
     },
   };
 }

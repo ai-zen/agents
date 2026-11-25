@@ -36,7 +36,7 @@ function newHost() {
       id,
       workspaceId: "ws-1",
       name: id,
-      nameIsAuto: true,
+      nameSource: "default",
       pinned: false,
       agentId: "agent-1",
       modelId: "model-1",

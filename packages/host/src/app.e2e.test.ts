@@ -451,7 +451,7 @@ describe("宿主跑起来", () => {
       workspaceId,
       agentId: "default",
       modelId: "local-model",
-      nameIsAuto: true,
+      nameSource: "default",
     });
     expect(created.session.name).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     const listed = await client.query<SessionRecord[]>("session.list", { workspaceId });
@@ -1470,14 +1470,14 @@ describe("自动起名", () => {
     return rows.find((row) => row.id === sessionId);
   }
 
-  it("第一次答完之后名字换成模型给的那一个，nameIsAuto 仍为真", async () => {
+  it("第一次答完之后名字换成模型给的那一个，nameSource 记成 auto", async () => {
     const sessionId = await say("帮我把宿主的交接写出来");
 
     await vi.waitFor(
       async () => {
         const rows = await client.query<SessionRecord[]>("session.list", { workspaceId });
-        // 名字换了，而那一格仍然归自动：下一个名字还能换掉它
-        expect(rowOf(rows, sessionId)).toMatchObject({ name: TITLE, nameIsAuto: true });
+        // 名字换了，而那一格仍然归自动（`auto`）：下一个名字还能换掉它
+        expect(rowOf(rows, sessionId)).toMatchObject({ name: TITLE, nameSource: "auto" });
       },
       { timeout: 30_000, interval: 50 },
     );

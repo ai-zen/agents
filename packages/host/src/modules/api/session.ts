@@ -22,7 +22,8 @@ const sessionSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
   name: z.string(),
-  nameIsAuto: z.boolean(),
+  /** 名字从哪儿来（`default` / `auto` / `user` / `handoff` / `legacy`）—— 形状只有 `session/types.ts` 一处 */
+  nameSource: z.enum(["default", "auto", "user", "handoff", "legacy"]),
   pinned: z.boolean(),
   agentId: z.string(),
   modelId: z.string().nullable(),
@@ -138,14 +139,14 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * 改名。行不存在时是 `not_found` —— `deps.sessions.update` 抛的就是那一条（带 id、带
      * `entity: "session"`），这一层不另判一次。
      *
-     * `nameIsAuto: false` 是「人改过之后就不再自动改它」：自动命名只碰那一格还是真的行，
-     * 不置 false，用户刚改的名字下一次变闲就会被模型起的名字盖掉。
+     * `nameSource: "user"` 是「人改过之后就不再自动改它」：自动命名只碰 `default` / `auto`
+     * 那两格。这一格不置的话，用户刚改的名字下一次变闲就会被模型起的名字盖掉。
      */
     rename: api.procedure
       .input(sessionIdInput.extend({ name: z.string() }))
       .output(sessionResult)
       .mutation(({ input }) => ({
-        session: deps.sessions.update(input.sessionId, { name: input.name, nameIsAuto: false }),
+        session: deps.sessions.update(input.sessionId, { name: input.name, nameSource: "user" }),
       })),
 
     /** 置顶。排序在库里（`pinned DESC, createdAt DESC`），所以写进去之后列表顺序当场就变 */

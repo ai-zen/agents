@@ -162,7 +162,7 @@ describe("session.create：只写一行", () => {
       workspaceId: WORKSPACE_ID,
       agentId: AGENT_ID,
       modelId: MODEL_ID,
-      nameIsAuto: true,
+      nameSource: "default",
       pinned: false,
       thinkingLevel: null,
       autoHandoff: false,

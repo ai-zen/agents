@@ -36,7 +36,7 @@ import { noticeTable } from "../notice/table.js";
 import { NoticeService } from "../notice/service.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
-import type { SessionRecord } from "../session/types.js";
+import type { NewSession, SessionRecord } from "../session/types.js";
 import { workspaceTable } from "../workspace/table.js";
 import { WorkspaceService } from "../workspace/service.js";
 import { materialsFor } from "./materials.js";
@@ -44,12 +44,12 @@ import type { MaterialsDeps } from "./materials.js";
 import { inboxTable } from "./inbox.js";
 import { messageTable } from "../session/messages.js";
 
-const input = {
+const input: NewSession = {
   workspaceId: "ws-1",
   name: "1712345678000",
   agentId: "agent-1",
   modelId: "model-1",
-  nameIsAuto: true,
+  nameSource: "default",
   autoHandoff: false,
   lineage: null,
 };

@@ -29,7 +29,7 @@ function newSearch() {
     id: "s-1",
     workspaceId: "ws-1",
     name: "改配色",
-    nameIsAuto: true,
+    nameSource: "default",
     pinned: false,
     agentId: "agent-1",
     modelId: "model-1",

@@ -27,7 +27,7 @@ export class SessionService {
       id: crypto.randomUUID(),
       workspaceId: input.workspaceId,
       name: input.name,
-      nameIsAuto: input.nameIsAuto,
+      nameSource: input.nameSource,
       pinned: false,
       agentId: input.agentId,
       modelId: input.modelId,

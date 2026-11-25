@@ -220,7 +220,7 @@ describe("重装前后排队区对得上", () => {
     const session = host.sessions.create({
       workspaceId: host.workspace.id,
       name: "1712345678000",
-      nameIsAuto: true,
+      nameSource: "default",
       agentId: "agent-1",
       modelId: "model-1",
       autoHandoff: false,
@@ -253,7 +253,7 @@ describe("重装前后排队区对得上", () => {
     const session = host.sessions.create({
       workspaceId: host.workspace.id,
       name: "1712345678001",
-      nameIsAuto: true,
+      nameSource: "default",
       agentId: "agent-1",
       modelId: "model-1",
       autoHandoff: false,

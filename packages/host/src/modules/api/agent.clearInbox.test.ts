@@ -147,7 +147,7 @@ function setup() {
     return sessions.create({
       workspaceId: WORKSPACE_ID,
       name: "1712345678000",
-      nameIsAuto: true,
+      nameSource: "default",
       agentId: "agent-1",
       modelId: "model-1",
       autoHandoff: false,

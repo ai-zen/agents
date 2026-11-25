@@ -86,7 +86,7 @@ function setup() {
   const session: SessionRecord = sessions.create({
     workspaceId: "ws-1",
     name: "1712345678000",
-    nameIsAuto: true,
+    nameSource: "default",
     agentId: "agent-1",
     modelId: "model-1",
     autoHandoff: false,

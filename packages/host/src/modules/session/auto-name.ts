@@ -12,6 +12,7 @@ import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
 import type { messageTable } from "./messages.js";
 import type { SessionService } from "./service.js";
+import type { SessionNameSource } from "./types.js";
 
 /** 交给模型的正文上限：够看出在聊什么，又不至于把整段历史发一遍 */
 const PROMPT_CHARS = 2000;
@@ -54,7 +55,8 @@ export interface AutoNamerDeps {
  *
  * 四条判据，缺一条都不发那次请求，顺序就是它们在这里出现的顺序：
  * 1. 这一段闲下来了 —— 由 {@link watch} 接在运行时的事实流上，只有 `state:idle` 那一拍进得来；
- * 2. 名字还归自动 —— 会话行上的 `nameIsAuto` 是真；
+ * 2. 名字还归自动 —— 会话行上的 `nameSource` 是 `default`（建行时的占位名）或 `auto`（上一次自动
+ *    起的）；用户改过（`user`）、交接存档（`handoff`）与老行（`legacy`）都不碰；
  * 3. 第一次答完 —— 这段记忆里由用户本人说的话恰好一条；
  * 4. 开关开着 —— 配置里的 `autoTitle` 不是 `false`（缺省按开着算）。
  *
@@ -64,7 +66,7 @@ export interface AutoNamerDeps {
  * 配置在动手之前现读，装配那一刻读到的那一份不留在实例上：用户改完这个开关，下一次闲下来就按
  * 新值判，不必重建 Agent。
  *
- * 写回时 `nameIsAuto` 仍然是真：自动起的名字还能被下一个名字换掉。不会一直换下去靠的正是第 3 条
+ * 写回时 `nameSource` 仍是 `auto`：自动起的名字还能被下一个名字换掉。不会一直换下去靠的正是第 3 条
  * —— 用户说的第二句话进来之后就不止一条，此后不再进来。交接把旧记忆整段搬去存档会话之后，这一
  * 段这边只剩系统提示与断点，第 3 条重新成立，于是新记忆也能有自己的名字。
  */
@@ -105,7 +107,7 @@ export class AutoNamer {
   private async rename(sessionId: string): Promise<void> {
     const session = this.deps.sessions.get(sessionId);
     // 会话可能刚被删掉：这是挂在「闲下来」上的后台动作，没有东西可改名时沉默
-    if (session === undefined || !session.nameIsAuto) return;
+    if (session === undefined || !canAutoName(session.nameSource)) return;
 
     const messages = this.deps.messages.listBySession(sessionId);
     // 第一次答完：用户本人说的话恰好一条。答过第二句就有两条，此后不再改名 —— 它挡的是「每一次
@@ -142,9 +144,9 @@ export class AutoNamer {
 
     // 这一次请求要几秒：期间用户可能自己改过名，写回之前按库里的现读值再判一次
     const latest = this.deps.sessions.get(sessionId);
-    if (latest === undefined || !latest.nameIsAuto) return;
+    if (latest === undefined || !canAutoName(latest.nameSource)) return;
 
-    this.deps.sessions.update(sessionId, { name, nameIsAuto: true });
+    this.deps.sessions.update(sessionId, { name, nameSource: "auto" });
   }
 
   /**
@@ -206,6 +208,17 @@ function textOf(content: AgentNS.MessageContent | undefined): string {
     .map((section) => (section.type === "text" ? section.text : ""))
     .filter((text) => text.length > 0)
     .join("\n");
+}
+
+/**
+ * 这一个名字还归自动起名管吗。
+ *
+ * 只有两格算：`default`（建行时的占位名，还没人给它起过）与 `auto`（上一次自动起的，还能再换
+ * 一个）。`user` 是用户自己写的，`handoff` 是存档那一段，`legacy` 是这一格出现之前的老行 ——
+ * 这三种名字不是「待定」，而是已经有人认领了。
+ */
+function canAutoName(source: SessionNameSource): boolean {
+  return source === "default" || source === "auto";
 }
 
 /**

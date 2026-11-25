@@ -31,7 +31,7 @@ function newDatabase() {
     id: "s-1",
     workspaceId: "ws-1",
     name: "1712345678000",
-    nameIsAuto: true,
+    nameSource: "default",
     pinned: false,
     agentId: "agent-1",
     modelId: "model-1",

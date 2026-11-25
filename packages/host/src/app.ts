@@ -405,10 +405,10 @@ export class HostApp {
 
         const session = sessions.create({
           workspaceId: opener.workspaceId,
-          // 名字是模型给的那一个；没给就先用一个时刻串顶上（与「自动起的名字」同一套，
+          // 名字是模型给的那一个；没给就先用一个时刻串顶上（算「建行时的占位名」，
           // 此后由自动命名或用户改名接管）
           name: input.label ?? new Date().toISOString(),
-          nameIsAuto: input.label === undefined,
+          nameSource: input.label === undefined ? "default" : "user",
           agentId: input.agentId,
           modelId: resolved.modelId,
           // PeerSession 默认自动交接：撞线自己交班、不问（`dev-docs/prd/01-decisions.md` 第 45 行：
