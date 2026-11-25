@@ -7,12 +7,13 @@ import {
 } from "@ai-zen/agents-sdk";
 import type { createModelFromConfig } from "@ai-zen/agents-sdk";
 
+import { HostError } from "../../infra/errors.js";
 import type { GeneralConfig } from "../config/general.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
 import type { messageTable } from "./messages.js";
 import type { SessionService } from "./service.js";
-import type { SessionNameSource } from "./types.js";
+import type { SessionNameSource, SessionRecord } from "./types.js";
 
 /** 交给模型的正文上限：够看出在聊什么，又不至于把整段历史发一遍 */
 const PROMPT_CHARS = 2000;
@@ -115,22 +116,93 @@ export class AutoNamer {
     const fromUser = messages.filter((message) => message.source?.kind === "user");
     if (fromUser.length !== 1) return;
 
-    const config = this.deps.config.read();
     // 关掉这一格就不发那次请求。只认 `false`：老配置里没有这一格，用户的意图是按出厂的样子跑，
     // 而不是关掉一个他不知道的功能
-    if (config.autoTitle === false) return;
+    if (this.deps.config.read().autoTitle === false) return;
+
     // 两格都指不到模型就是「不该起名」，不是一次失败
-    const modelId = config.namingModel ?? config.defaultModel;
+    const modelId = this.modelIdFor();
     if (modelId === undefined) return;
 
+    const name = await this.propose(sessionId, modelId);
+    if (name === null) return;
+
+    // 这一次请求要几秒：期间用户可能自己改过名，写回之前按库里的现读值再判一次
+    const latest = this.deps.sessions.get(sessionId);
+    if (latest === undefined || !canAutoName(latest.nameSource)) return;
+
+    this.deps.sessions.update(sessionId, { name, nameSource: "auto" });
+  }
+
+  /**
+   * 用户点名要一个名字（`session.autoTitle`，CLI 的 `/title`）。
+   *
+   * 与自动那一条是**同一套取名字的动作**（同一段指令、同一个上限、同一种收拾），差在判据上：
+   * 那两条「是不是该自己动手」的判据（名字还归自动、用户说的话恰好一条）在这条路上被**用户的
+   * 那一次调用**代替了 —— 内容多长、名字原来归谁，都不影响他点这一下。`autoTitle` 那一格也
+   * 不作为门：那是「别自己动手」的开关，而这一次是用户自己动的手。
+   *
+   * 不能代替的一件：**得有模型**。没有就抛 `config_invalid` —— 那是用户能去改的东西（配一个
+   * `namingModel` 或 `defaultModel`），不该像自动那条那样沉默。
+   *
+   * 返回写回之后的会话行与「到底换成了没有」：「模型没给出能用的名字」不是错误，名字原样留着，
+   * 由调用方说那一句。
+   */
+  async nameOnDemand(sessionId: string): Promise<{ session: SessionRecord; named: boolean }> {
+    const session = this.deps.sessions.get(sessionId);
+    if (session === undefined) {
+      throw new HostError(
+        "not_found",
+        this.deps.t("找不到 id 为 {sessionId} 的会话", { sessionId }),
+        { entity: "session", sessionId },
+      );
+    }
+
+    const modelId = this.modelIdFor();
+    if (modelId === undefined) {
+      throw new HostError(
+        "config_invalid",
+        this.deps.t("没有可用的起名模型：配置里既没有 namingModel 也没有 defaultModel"),
+      );
+    }
+
+    const name = await this.propose(sessionId, modelId);
+    if (name === null) {
+      // 名字一个字都没换：交回库里现读的那一行，调用方按 `named: false` 说那一句
+      return { session: this.deps.sessions.get(sessionId) ?? session, named: false };
+    }
+
+    return {
+      session: this.deps.sessions.update(sessionId, { name, nameSource: "auto" }),
+      named: true,
+    };
+  }
+
+  /** 两格都指不到模型时是 `undefined` —— 那是「不该起名」，不是一次失败 */
+  private modelIdFor(): string | undefined {
+    const config = this.deps.config.read();
+    return config.namingModel ?? config.defaultModel;
+  }
+
+  /**
+   * 问模型要一个名字，收拾成一行能上屏的；要不到（没内容、模型没给出能用的）就是 `null`。
+   *
+   * 只做「发一次请求 + 收拾」这一件事：该不该发由两条路各自的判据决定。
+   */
+  private async propose(sessionId: string, modelId: string): Promise<string | null> {
+    const messages = this.deps.messages.listBySession(sessionId);
     const prompt = promptFor(messages);
-    if (prompt.length === 0) return;
+    // 一句话都没有：没有内容可起名
+    if (prompt.length === 0) return null;
 
     // 起名也是这段会话的事：出网标识带会话 id，与它的 Agent 用同一串 —— 服务方那边看到的是同一段
     // 上下文的附带请求，能命中同一份前缀缓存
-    const { client, model, modelConfig } = this.deps.createModel(config, modelId, undefined, {
-      providerSessionId: sessionId,
-    });
+    const { client, model, modelConfig } = this.deps.createModel(
+      this.deps.config.read(),
+      modelId,
+      undefined,
+      { providerSessionId: sessionId },
+    );
     const answer = await completeOnce({
       client,
       model,
@@ -139,14 +211,8 @@ export class AutoNamer {
       user: prompt,
     });
     const name = nameFrom(answer);
-    // 模型给了个空串（或只有引号、标点）：同样保持原名
-    if (name.length === 0) return;
-
-    // 这一次请求要几秒：期间用户可能自己改过名，写回之前按库里的现读值再判一次
-    const latest = this.deps.sessions.get(sessionId);
-    if (latest === undefined || !canAutoName(latest.nameSource)) return;
-
-    this.deps.sessions.update(sessionId, { name, nameSource: "auto" });
+    // 模型给了个空串（或只有引号、标点）：名字原样留着
+    return name.length === 0 ? null : name;
   }
 
   /**
@@ -227,7 +293,8 @@ function canAutoName(source: SessionNameSource): boolean {
  */
 function nameFrom(answer: string): string {
   const line = answer.split(/\r?\n/).find((text) => text.trim().length > 0) ?? "";
-  return line
+  const raw = line.trim();
+  return raw
     .replace(/^\s*(?:title|name|标题)\s*[:：]\s*/i, "")
     .replace(/^["'“”「」『』]+|["'“”「」『』]+$/g, "")
     .replace(/\s+/g, " ")

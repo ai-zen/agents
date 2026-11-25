@@ -17,6 +17,7 @@ import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
 import type { QuestionRegistry } from "../question/registry.js";
 import type { SearchService } from "../search/service.js";
+import type { AutoNamer } from "../session/auto-name.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { UpdateService } from "../update/service.js";
@@ -33,6 +34,8 @@ import type { WorkspaceService } from "../workspace/service.js";
  */
 export interface HostApiDeps {
   readonly sessions: SessionService;
+  /** 起名那一件事（自动那一条与用户点名的 `session.autoTitle` 共用同一套） */
+  readonly autoNamer: AutoNamer;
   readonly workspaces: WorkspaceService;
   readonly runtime: AgentRuntime;
   readonly definitions: AgentDefinitionService;

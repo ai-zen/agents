@@ -66,6 +66,8 @@ export const en: Record<string, string> = {
   "交接文档已写到 {path}": "The handoff document is at {path}",
   "这一段会话自动起名失败，名字还是创建时的那一个":
     "Automatic naming failed for this session; the name is still the one from creation time",
+  "没有可用的起名模型：配置里既没有 namingModel 也没有 defaultModel":
+    "No model available for naming: the config has neither namingModel nor defaultModel",
   "这一次请求没有发出去：上一次请求的输入用了 {used} tokens，超过了防护阈值 {guard}。换模型、调高防护阈值或者新开一段会话之后可以接着试。":
     "This request was not sent: the previous request's input used {used} tokens, above the guard threshold of {guard}. Switch the model, raise the guard threshold, or start a new session, then try again.",
   "配置里没有 id 为 {modelId} 的模型": 'The config has no model "{modelId}"',

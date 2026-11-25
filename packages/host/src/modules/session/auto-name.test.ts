@@ -71,7 +71,10 @@ const silent = { info: () => {}, warn: () => {}, error: () => {} };
  * 假运行时只做一件事：把用例发出来的事实交给订阅者（真的那一个还会把 Agent 的事件转发上来）。
  * 观察者与自动起名按装配根那个次序挂在它上面 —— 观察者在前，起名读到的记忆才是刚写进去的那份。
  */
-function setup(answer: () => Promise<string> = async () => "把宿主的交接写出来") {
+function setup(
+  answer: () => Promise<string> = async () => "把宿主的交接写出来",
+  appConfig: AppConfig = config,
+) {
   const db = openDatabase(":memory:");
   workspaceTable(db).put({ id: "ws-1", name: "项目一", cwd: "/tmp/ws-1", createdAt: 1 });
 
@@ -87,7 +90,7 @@ function setup(answer: () => Promise<string> = async () => "把宿主的交接�
   // 落了什么
   const general = new GeneralConfig({
     config: { write: async () => {} } as unknown as ConfigManager,
-    current: config,
+    current: appConfig,
     events: createBus<ConfigEvent>(),
   });
 
@@ -359,5 +362,73 @@ describe("起名：失败", () => {
     // 这一段照旧接着收消息：起名失败之后落进来的那条一样进库
     emit({ type: "messageAdded", sessionId: naming.id, message: next });
     expect(messages.listBySession(naming.id).map((message) => message.id)).toContain("m-3");
+  });
+});
+
+/**
+ * 用户点名要一个名字（`session.autoTitle` / CLI 的 `/title`）。
+ *
+ * 与自动那条的差别全在判据上：内容多长、名字原来归谁、`autoTitle` 那一格，三条都不拦；
+ * 唯一不放过的是「没有模型可用」—— 那是用户能去改的东西，不该像自动那条一样沉默。
+ */
+describe("起名：用户点名（nameOnDemand）", () => {
+  it("内容多长、名字原来归谁，都照做；写回的来源是 auto", async () => {
+    const { namer, sessions, messages } = setup(async () => "交接状态机");
+    const session = sessions.create({ ...input, name: "我自己起的", nameSource: "user" });
+    messages.upsertMany(session.id, [
+      userMessage("m-1", "第一句"),
+      assistantMessage("m-2", "答一"),
+      userMessage("m-3", "第二句"),
+      assistantMessage("m-4", "答二"),
+    ]);
+
+    const result = await namer.nameOnDemand(session.id);
+
+    expect(result.named).toBe(true);
+    expect(result.session.name).toBe("交接状态机");
+    // 名字确实是模型起的：来源记 auto（`user` 只记用户自己写的那一次）
+    expect(result.session.nameSource).toBe("auto");
+    expect(sessions.get(session.id)?.name).toBe("交接状态机");
+  });
+
+  it("模型没给出能用的名字：名字原样，named 为假（不是失败）", async () => {
+    const { namer, sessions, messages, errors } = setup(async () => '  ""  ');
+    const session = sessions.create(input);
+    messages.upsertMany(session.id, [userMessage("m-1", "第一句")]);
+
+    const result = await namer.nameOnDemand(session.id);
+
+    expect(result.named).toBe(false);
+    expect(result.session.name).toBe(CREATED_AT_NAME);
+    expect(sessions.get(session.id)?.name).toBe(CREATED_AT_NAME);
+    // 这不是一次事故：日志与通知那两条都不该动
+    expect(errors).toEqual([]);
+  });
+
+  it("没有可用的起名模型：抛 config_invalid（这一格用户能去改）", async () => {
+    const { namer, sessions, messages } = setup(async () => "不该被问到", {
+      endpoints: [{ id: "ep-1", name: "ep-1", baseUrl: "https://ep-1.example/v1", apiKey: "key" }],
+      models: [],
+    });
+    const session = sessions.create(input);
+    messages.upsertMany(session.id, [userMessage("m-1", "第一句")]);
+
+    await expect(namer.nameOnDemand(session.id)).rejects.toMatchObject({ code: "config_invalid" });
+  });
+
+  it("一段话都没有：不去打扰模型，名字原样", async () => {
+    const { namer, sessions, requests } = setup();
+    const session = sessions.create(input);
+
+    const result = await namer.nameOnDemand(session.id);
+
+    expect(result.named).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("会话不在了：抛 not_found", async () => {
+    const { namer } = setup();
+
+    await expect(namer.nameOnDemand("sess-gone")).rejects.toMatchObject({ code: "not_found" });
   });
 });

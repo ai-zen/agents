@@ -494,7 +494,7 @@ export class HostApp {
      * 判据（名字还归自动、用户说的话恰好一条、开关开着）全部在 `AutoNamer` 那一处，这里只负责
      * 把它接上 —— 装配根不替任何一条判据说第二句。
      */
-    this.detachAutoNamer = new AutoNamer({
+    const autoNamer = new AutoNamer({
       sessions,
       messages,
       config: this.general,
@@ -503,7 +503,8 @@ export class HostApp {
       notices,
       t,
       onError,
-    }).watch(this.runtime);
+    });
+    this.detachAutoNamer = autoNamer.watch(this.runtime);
 
     // 配置面改完之后，运行期要知道。没有这一条，用户在界面上停掉一个 MCP 服务器、
     // 运行期照旧连着它，直到进程重启——「启停即时生效」就不成立。
@@ -528,6 +529,7 @@ export class HostApp {
 
     const api: HostApiDeps = {
       sessions,
+      autoNamer,
       workspaces,
       runtime: this.runtime,
       definitions,

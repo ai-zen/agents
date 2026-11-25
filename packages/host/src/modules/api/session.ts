@@ -149,7 +149,22 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
         session: deps.sessions.update(input.sessionId, { name: input.name, nameSource: "user" }),
       })),
 
-    /** 置顶。排序在库里（`pinned DESC, createdAt DESC`），所以写进去之后列表顺序当场就变 */
+    /**
+     * 让模型给这一段起个名字（CLI 的 `/title`）：用户点名要的那一次请求。
+     *
+     * 与「第一次答完自己起一个」是同一套动作（`AutoNamer` 那一处），差在判据只有这一条 ——
+     * 用户点了。所以内容多长、名字原来归谁都不影响；`autoTitle` 关着也不拦（那是「别自己动手」
+     * 的开关）。写回的来源记 `auto`：名字确实是模型起的。
+     *
+     * `named: false` = 模型没给出能用的名字，名字原样留着 —— 那不是错误，是一条要说得出口的结果
+     * （所以走回执而不抛错）。没有模型可用才是错的（`config_invalid`），那是用户能去改的东西。
+     */
+    autoTitle: api.procedure
+      .input(sessionIdInput)
+      .output(z.object({ session: sessionSchema, named: z.boolean() }))
+      .mutation(({ input }) => deps.autoNamer.nameOnDemand(input.sessionId)),
+
+    /** 置顶。排序在库里（`pinned DESC, updatedAt DESC`），所以写进去之后列表顺序当场就变 */
     pin: api.procedure
       .input(sessionIdInput.extend({ pinned: z.boolean() }))
       .output(sessionResult)
