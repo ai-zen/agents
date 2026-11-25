@@ -14,16 +14,14 @@ export class AsyncExecTool extends SdkCallbackTool {
       "over the moment it returns. The system will notify you when the command ends (it exits, its " +
       "timeout fires, or it fails to start) by pushing that command's output and exit status back into " +
       "this session as a new message; that notification is the only way the result arrives. So do not " +
-      "wait and do not poll: nothing comes back while the command is still running, and there is no " +
-      "tool that checks a background task. Use exec when the result must be in hand before the next " +
-      "step; use async_exec for long commands (builds, test suites, scripts) whose result is worth " +
-      "coming back to.",
+      "wait and do not poll: nothing comes back while the command is still running. Use it for long " +
+      "commands (builds, test suites, scripts) whose result is worth coming back to.",
     parameters: {
       type: "object",
       properties: {
         command: {
           type: "string",
-          description: "Command to execute (parsed and run by the shell, same as exec)",
+          description: "Command to execute (parsed and run by the shell)",
         },
         cwd: {
           type: ["string", "null"],

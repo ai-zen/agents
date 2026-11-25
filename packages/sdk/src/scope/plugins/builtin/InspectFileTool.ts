@@ -35,7 +35,7 @@ export class InspectFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "inspect_file",
     description:
-      "Inspect a file's structural overview: total lines, total characters, the longest line's column count and its line index, average column count, and line ending type (LF/CRLF/mixed). Optionally returns a per-line column count map. Useful for sizing up a file before reading it, so you can decide which range to read. Streaming scan only, not subject to the 300KB read threshold of read.",
+      "Inspect a file's structural overview: total lines, total characters, the longest line's column count and its line index, average column count, and line ending type (LF/CRLF/mixed). Optionally returns a per-line column count map. Useful for sizing up a file before deciding which range is worth fetching: this is a streaming scan only, it never loads the whole file into memory and has no size limit.",
     parameters: {
       type: "object",
       properties: {

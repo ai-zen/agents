@@ -14,8 +14,8 @@ export class BatchEditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "batch_edit",
     description: [
-      "Edit text in a file in batches. Prefer this tool when making edits to a file.",
-      "Submit all changes to the same file in a single call (the replacements array) instead of calling edit in parallel multiple times — parallel edits to the same file overwrite each other.",
+      "Edit text in a file in batches, applying many replacements in one call.",
+      "Submit all changes to the same file in a single call (the replacements array) — parallel edits to the same file overwrite each other.",
       "Replacements are applied in order, each on the result of the previous one: a later oldText is matched against the content already produced by the earlier replacements.",
     ].join("\n"),
     parameters: {

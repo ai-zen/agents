@@ -405,7 +405,7 @@ export function createCallMcpTool(
     function: {
       name: "call_mcp_tool",
       description:
-        "Call a tool exposed by a connected MCP server. Connect the server with load_mcp first. " +
+        "Call a tool exposed by a connected MCP server. " +
         "Large text output is written to disk and only a head/tail preview is returned; images, " +
         "audio and other media are preserved: uploaded and referenced by file_id when the " +
         "endpoint supports the Files API, otherwise inlined as base64.",
@@ -635,10 +635,10 @@ export function createGetMcpTaskResultTool(
     function: {
       name: GET_MCP_TASK_RESULT_TOOL,
       description:
-        "Get the result of a task started by call_mcp_tool with a task id. The result is handed " +
-        "back as it is (text and media, same output protection as call_mcp_tool). Use it when " +
-        "the session was told that the task ended; if the task has not finished yet the call " +
-        "waits for it.",
+        "Get the result of an MCP task by task id. The result is handed back as it is (text and " +
+        "media, with the same output protection: large text is written to disk and only a head/tail " +
+        "preview is returned; images and other media are never dropped). Use it when the session was " +
+        "told that the task ended; if the task has not finished yet the call waits for it.",
       parameters: {
         type: "object",
         properties: {
@@ -692,7 +692,7 @@ export function createCancelMcpTaskTool(
     function: {
       name: CANCEL_MCP_TASK_TOOL,
       description:
-        "Cancel a task started by call_mcp_tool. The server decides whether it can stop; a task " +
+        "Cancel a running MCP task by task id. The server decides whether it can stop; a task " +
         "that already ended cannot be cancelled and the call fails with the reason it gives.",
       parameters: {
         type: "object",

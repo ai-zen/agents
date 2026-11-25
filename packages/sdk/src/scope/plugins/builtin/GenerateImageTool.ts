@@ -46,7 +46,7 @@ export class GenerateImageTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "generate_image",
     description:
-      "Generate an image from a text description and return a list of image URLs (JSON). To inspect the image content, use the view_image tool (pass the image URL); to save it locally, use download_file.",
+      "Generate an image from a text description and return a list of image URLs (JSON).",
     parameters: {
       type: "object",
       properties: {

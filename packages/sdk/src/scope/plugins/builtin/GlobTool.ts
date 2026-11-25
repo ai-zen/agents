@@ -9,7 +9,7 @@ export class GlobTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "glob",
     description:
-      "Recursively scan for and find files using a glob pattern. This is the preferred tool for file system searches, far better than a plain 'ls' listing. Prefer this tool when you need to find files of a specific type, walk a directory tree, or exclude specific files.",
+      "Recursively scan for and find files using a glob pattern. Prefer this tool when you need to find files of a specific type, walk a directory tree, or exclude specific files.",
     parameters: {
       type: "object",
       properties: {

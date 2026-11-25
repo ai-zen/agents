@@ -30,13 +30,14 @@ describe("EditTool", () => {
     expect(tool.function.description).toContain("Edit text in a file");
   });
 
-  it("描述里禁止并行编辑同一文件，并指向 batch_edit", () => {
+  it("描述里禁止并行编辑同一文件", () => {
     const tool = new EditTool(makeEnv());
     const description = tool.function.description ?? "";
     expect(description).toContain("never edit the same file in parallel");
-    expect(description).toContain("batch_edit");
     // 不同文件允许并行，别把限制写得过头
     expect(description).toContain("different files");
+    // 描述只说这一个工具自己：不点名别的工具（批量改是另一件工具的事）
+    expect(description).not.toContain("batch_edit");
   });
 
   it("isReplaceAll 默认值为 false", () => {

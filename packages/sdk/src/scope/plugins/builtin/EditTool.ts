@@ -11,7 +11,7 @@ export class EditTool extends SdkCallbackTool {
       "Edit text in a file, supporting exact replacement or replacing all matches.",
       "",
       "Concurrency limit (important): never edit the same file in parallel. Do not issue multiple edit calls for the same path within one reply — each call reads the old content and writes it back, so the later write overwrites the earlier one, losing changes or corrupting the file.",
-      "To apply multiple changes to one file, use batch_edit instead and submit all replacements in a single call. Only edit different files in parallel.",
+      "Only edit different files in parallel.",
     ].join("\n"),
     parameters: {
       type: "object",

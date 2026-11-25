@@ -18,8 +18,7 @@ export class ExecTool extends SdkCallbackTool {
         },
         timeout: {
           type: "number",
-          description:
-            "Timeout in milliseconds (required). The process is killed on timeout. For long-running commands, prefer async_exec, which returns immediately and pushes the result back into this session.",
+          description: "Timeout in milliseconds (required). The process is killed on timeout.",
         },
       },
       required: ["command", "timeout"],

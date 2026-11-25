@@ -30,11 +30,11 @@ describe("BatchEditTool", () => {
     expect(tool.function.description).toContain("Edit text in a file in batches");
   });
 
-  it("描述里提示：同一文件的多处修改一次提交，勿并行调用 edit", () => {
+  it("描述里提示：同一文件的多处修改一次提交，勿并行", () => {
     const tool = new BatchEditTool(makeEnv());
     const description = tool.function.description ?? "";
     expect(description).toContain("single call");
-    expect(description).toContain("in parallel");
+    expect(description).toContain("parallel edits");
   });
 
   it("描述里提示：替换按顺序级联（后一条作用于前一条的结果）", () => {
