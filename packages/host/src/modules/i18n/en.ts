@@ -54,6 +54,8 @@ export const en: Record<string, string> = {
     "One image may be up to 4MB ({max} bytes); this one is {bytes} bytes. Over the limit is an error, the bytes are not truncated",
   "找不到 id 为 {credentialId} 的凭证": 'Cannot find the credential "{credentialId}"',
   "找不到 id 为 {questionId} 的题": 'Cannot find the question "{questionId}"',
+  "题 {questionId} 的答案不合这张表：{reason}":
+    'The answer to question "{questionId}" does not fit its form: {reason}',
   "题 {questionId} 的候选项里没有 {value}": 'The question "{questionId}" has no choice "{value}"',
   "会话 {sessionId} 正在交接": 'Session "{sessionId}" is being handed off',
   "会话 {sessionId} 没有运行中的 Agent，无法交接":

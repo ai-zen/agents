@@ -258,10 +258,13 @@ describe("删项目", () => {
     const { answer } = host.questions.askAwaitable({
       sessionId: session.id,
       message: "这段会话装不下时，用哪种方式交接？",
-      choices: [
-        { value: "self", label: "自交接" },
-        { value: "no", label: "不交接" },
-      ],
+      requestedSchema: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["self", "no"], enumNames: ["自交接", "不交接"] },
+        },
+        required: ["mode"],
+      },
       blocking: false,
     });
 
@@ -279,7 +282,10 @@ describe("删项目", () => {
 
     // 先答一次「不交接」：这一段被记进「不再问」那一格，再撞线一道题都不出
     const asked = host.handoff.automaticMode(session.id);
-    host.questions.answer(host.questions.list(session.id)[0].id, "no");
+    host.questions.answer(host.questions.list(session.id)[0].id, {
+      action: "accept",
+      content: { mode: "no" },
+    });
     await expect(asked).resolves.toBeNull();
     await expect(host.handoff.automaticMode(session.id)).resolves.toBeNull();
     expect(host.questions.list(session.id)).toEqual([]);
@@ -294,7 +300,7 @@ describe("删项目", () => {
     const reopened = host.handoff.automaticMode(session.id);
     const question = host.questions.list(session.id)[0];
     expect(question).toBeDefined();
-    host.questions.answer(question.id, "self");
+    host.questions.answer(question.id, { action: "accept", content: { mode: "self" } });
     await expect(reopened).resolves.toBe("self");
   });
 });

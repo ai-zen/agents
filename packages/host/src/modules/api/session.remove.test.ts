@@ -274,10 +274,13 @@ describe("删一段会话", () => {
     const { answer } = host.questions.askAwaitable({
       sessionId: session.id,
       message: "这段会话装不下时，用哪种方式交接？",
-      choices: [
-        { value: "self", label: "自交接" },
-        { value: "no", label: "不交接" },
-      ],
+      requestedSchema: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["self", "no"], enumNames: ["自交接", "不交接"] },
+        },
+        required: ["mode"],
+      },
       blocking: false,
     });
 

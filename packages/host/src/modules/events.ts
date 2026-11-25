@@ -1,7 +1,7 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 
 import type { NoticeRecord } from "./notice/types.js";
-import type { Question } from "./question/types.js";
+import type { FormAnswer, FormRequest } from "./question/types.js";
 import type { SessionRecord } from "./session/types.js";
 
 /**
@@ -78,14 +78,17 @@ export type HostEvent =
   | {
       readonly type: "question.asked";
       readonly sessionId: string;
-      readonly question: Question;
+      readonly question: FormRequest;
     }
   /**
    * 答了就没了，所以这条只带 `questionId`，不重复整道题：客户端据此把那一块收起来。
+   *
+   * 答案本身也一并带上：接上外部服务器之后，那份答案要原样交回去（`accept` / `decline` /
+   * `cancel` 三态），而订阅方也需要知道“用户到底答了什么”。
    */
   | {
       readonly type: "question.answered";
       readonly sessionId: string;
       readonly questionId: string;
-      readonly value: string;
+      readonly answer: FormAnswer;
     };

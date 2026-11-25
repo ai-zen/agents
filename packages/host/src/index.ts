@@ -23,7 +23,13 @@ export { CredentialService } from "./modules/credential/service.js";
 export { NoticeService } from "./modules/notice/service.js";
 export type { NoticeRecord, NoticeLevel } from "./modules/notice/types.js";
 export { QuestionRegistry } from "./modules/question/registry.js";
-export type { Choice, Question } from "./modules/question/types.js";
+export type {
+  FormAction,
+  FormAnswer,
+  FormField,
+  FormRequest,
+  FormSchema,
+} from "./modules/question/types.js";
 export { inboxTable } from "./modules/agent/inbox.js";
 export { AgentDefinitionService } from "./modules/config/agents.js";
 export type { AgentDefinitionDeps } from "./modules/config/agents.js";

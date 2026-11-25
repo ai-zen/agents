@@ -25,6 +25,7 @@ import { openDatabase } from "../../infra/db.js";
 import type { HostEvent } from "../events.js";
 import { createTranslator } from "../i18n/index.js";
 import { QuestionRegistry } from "../question/registry.js";
+import type { FormRequest } from "../question/types.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
@@ -77,6 +78,29 @@ function newSession(host: Host, autoHandoff: boolean): SessionRecord {
   return host.sessions.create({ ...input, autoHandoff });
 }
 
+/** 一个字段的候选（收窄到单选枚举那一种；类型不对就是没这一格） */
+function enumOf(question: FormRequest, field: string): readonly string[] | undefined {
+  const found = question.requestedSchema.properties[field];
+  return found !== undefined && found.type === "string" ? found.enum : undefined;
+}
+
+/** 交接那道题：一个单选枚举字段 */
+const HANDOFF_FORM = {
+  type: "object",
+  properties: {
+    mode: {
+      type: "string",
+      title: "用哪种方式交接？",
+      enum: ["self", "summary", "no"],
+      enumNames: ["自交接", "独立交接", "不交接"],
+    },
+  },
+  required: ["mode"],
+} as const;
+
+/** 一次「选了某一个」的作答 */
+const pick = (mode: string) => ({ action: "accept" as const, content: { mode } });
+
 describe("越线那一刻问不问", () => {
   it("开着自动交接就直接自交接，不问：一道题都不出", async () => {
     const host = newHost();
@@ -94,22 +118,35 @@ describe("越线那一刻问不问", () => {
     const question = host.questions.list(session.id)[0];
     expect(question).toBeDefined();
     // 三选题：自交接 / 独立交接 / 不交接，没有「不答 / 绕过 / 关掉」这种旁路
-    expect(question.choices.map((choice) => choice.value)).toEqual(["self", "summary", "no"]);
-    // 关掉面板（Esc / Ctrl+C）= 选「不交接」：这一题由出题的人指明退路，客户端不按位置猜
-    // （题一挂着，这一段就一直等在它上面，自动那条路也不再问第二次）
-    expect(question.cancelValue).toBe("no");
+    expect(enumOf(question, "mode")).toEqual(["self", "summary", "no"]);
     // 题挂着时不挡发送：按不按发送是客户端拿着 `blocking` 自己决定的事（PRD 原话）
     expect(question.blocking).toBe(false);
 
-    host.questions.answer(question.id, "self");
+    host.questions.answer(question.id, pick("self"));
     await expect(asked).resolves.toBe("self");
     expect(host.questions.list(session.id)).toEqual([]);
 
     // 同一段上再越一次线：又问一道，这次答「独立交接」
     const askedAgain = host.handoff.automaticMode(session.id);
     const second = host.questions.list(session.id)[0];
-    host.questions.answer(second.id, "summary");
+    host.questions.answer(second.id, pick("summary"));
     await expect(askedAgain).resolves.toBe("summary");
+  });
+
+  /**
+   * 关掉面板（Esc / Ctrl+C）在新形状里是 `cancel` —— 这一题由出题的人把它解释成「不交接」：
+   * 题一挂着，这一段就一直等在它上面（自动那条路也不再问第二次），所以没有「不作答」这个去处。
+   */
+  it("关掉面板（cancel）= 不交接：回 null、开关写成 false", async () => {
+    const host = newHost();
+    const session = newSession(host, false);
+
+    const asked = host.handoff.automaticMode(session.id);
+    const question = host.questions.list(session.id)[0];
+    host.questions.answer(question.id, { action: "cancel" });
+
+    await expect(asked).resolves.toBeNull();
+    expect(host.sessions.get(session.id)?.autoHandoff).toBe(false);
   });
 
   it("答不交接：回 null、开关写成 false，第二次直接回 null 不再问", async () => {
@@ -118,7 +155,7 @@ describe("越线那一刻问不问", () => {
 
     const asked = host.handoff.automaticMode(session.id);
     const question = host.questions.list(session.id)[0];
-    host.questions.answer(question.id, "no");
+    host.questions.answer(question.id, pick("no"));
 
     await expect(asked).resolves.toBeNull();
     // 「答不要就记成这段的处理策略」：开关落在会话行上
@@ -139,11 +176,11 @@ describe("越线那一刻问不问", () => {
     // 回默认执行者就是宿主替用户决定了「要不要交接」
     const question = host.questions.list(session.id)[0];
     expect(question).toBeDefined();
-    expect(question.choices.map((choice) => choice.value)).toEqual(["self", "summary", "no"]);
+    expect(enumOf(question, "mode")).toEqual(["self", "summary", "no"]);
 
     // 题没被答就一直挂着；答了才往下走
     expect(host.questions.list(session.id)).toHaveLength(1);
-    host.questions.answer(question.id, "summary");
+    host.questions.answer(question.id, pick("summary"));
     await expect(asked).resolves.toBe("summary");
   });
 
@@ -175,7 +212,7 @@ describe("越线那一刻问不问", () => {
     // 同一段上只有一道题：两道一模一样的题是一处缺陷，不是「只问一次」的口径
     expect(host.questions.list(session.id)).toHaveLength(1);
 
-    host.questions.answer(host.questions.list(session.id)[0].id, "summary");
+    host.questions.answer(host.questions.list(session.id)[0].id, pick("summary"));
     // 两道等的是同一句：答复一写进 messages，两处拿到的是同一个值
     await expect(first).resolves.toBe("summary");
     await expect(second).resolves.toBe("summary");
@@ -184,7 +221,7 @@ describe("越线那一刻问不问", () => {
     // 答复到手那一格已摘掉：下一次撞线问的是一道新题（不是永远在等那个已经结束的答复）
     const third = host.handoff.automaticMode(session.id);
     expect(host.questions.list(session.id)).toHaveLength(1);
-    host.questions.answer(host.questions.list(session.id)[0].id, "self");
+    host.questions.answer(host.questions.list(session.id)[0].id, pick("self"));
     await expect(third).resolves.toBe("self");
   });
 

@@ -18,11 +18,28 @@ import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
 import type { QuestionRegistry } from "../question/registry.js";
+import type { FormAnswer } from "../question/types.js";
 import { replaceMemory } from "../session/memory.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { SessionRecord } from "../session/types.js";
 import type { WorkspaceService } from "../workspace/service.js";
+
+/**
+ * 一次作答 → 交接看得懂的那四种原样：`self` / `summary` / `no` / `undefined`（没人答它了）。
+ *
+ * 拒绝与关掉都算「不交接」：这一题没有“不作答”这个去处 —— 题一挂着，这一段就一直等在它上面
+ * （自动那条路也不再问第二次）。三态里的 `decline` 与 `cancel` 在这里落到同一个去处，是这一题的
+ * 口径，不是通用的。
+ *
+ * `content.mode` 那一格不再判一次：登记表已经按表校验过 enum（`QuestionRegistry.answer` 的
+ * `normalize`），走到这里的值只能是那三个之一。
+ */
+function handoffModeOf(answer: FormAnswer | undefined): HandoffMode | "no" | undefined {
+  if (answer === undefined) return undefined;
+  if (answer.action !== "accept") return "no";
+  return answer.content?.mode as HandoffMode;
+}
 
 /**
  * 一趟交接交给 SDK 的那几格。
@@ -190,7 +207,7 @@ export class HandoffService {
    * 与 `declined` 一样只在内存里：题只做实时（`dev-docs/prd/01-decisions.md` 第 107–111 行）。
    * 答复到手（含 `undefined`：那一段没了、或题被收掉）就把这一格摘掉，下一道题才有位置。
    */
-  private readonly asking = new Map<string, Promise<string | undefined>>();
+  private readonly asking = new Map<string, Promise<HandoffMode | "no" | undefined>>();
 
   constructor(private readonly deps: HandoffDeps) {}
 
@@ -559,24 +576,35 @@ export class HandoffService {
    * 返回值是宿主看得懂的那四种原样：`self` / `summary` / `no` / `undefined`（没人答它了）。怎么
    * 处置是调用方的事 —— 「不交接」在阈值那条路上要记成这一段不再问，在手动那条路上只是这一次不交。
    */
-  private async askHandoffMode(sessionId: string): Promise<string | undefined> {
+  private async askHandoffMode(sessionId: string): Promise<HandoffMode | "no" | undefined> {
     let answer = this.asking.get(sessionId);
     if (answer === undefined) {
-      const asked = this.deps.questions.askAwaitable({
-        sessionId,
-        message: this.deps.t("用哪种方式交接？"),
-        choices: [
-          { value: "self", label: this.deps.t("自交接：在这段会话里接着写交接文档") },
-          { value: "summary", label: this.deps.t("独立交接：另起一次调用写交接文档") },
-          { value: "no", label: this.deps.t("不交接：保持现状") },
-        ],
-        // 关掉面板（Esc / Ctrl+C）= 选「不交接」：这一题没有“不作答”这个去处——题一挂着，这一段
-        // 就一直等在它上面（自动那条路也不再问第二次）。哪个值是退路只有出题的人知道，所以由这里
-        // 声明，客户端不按位置猜（`AGENTS.md` 的「禁止隐式兜底」）
-        cancelValue: "no",
-        // 题挂着不挡发送：按不按发送是客户端拿着这一格自己决定的事
-        blocking: false,
-      }).answer;
+      const asked = this.deps.questions
+        .askAwaitable({
+          sessionId,
+          message: this.deps.t("用哪种方式交接？"),
+          // 一个单选枚举字段 —— 题就是一张表单（形状见 `question/types.ts`），三选一只是它最常见的
+          // 那一格。候选顺序即展示顺序
+          requestedSchema: {
+            type: "object",
+            properties: {
+              mode: {
+                type: "string",
+                title: this.deps.t("用哪种方式交接？"),
+                enum: ["self", "summary", "no"],
+                enumNames: [
+                  this.deps.t("自交接：在这段会话里接着写交接文档"),
+                  this.deps.t("独立交接：另起一次调用写交接文档"),
+                  this.deps.t("不交接：保持现状"),
+                ],
+              },
+            },
+            required: ["mode"],
+          },
+          // 题挂着不挡发送：按不按发送是客户端拿着这一格自己决定的事
+          blocking: false,
+        })
+        .answer.then(handoffModeOf);
 
       answer = asked;
       this.asking.set(sessionId, asked);

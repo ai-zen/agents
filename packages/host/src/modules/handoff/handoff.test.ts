@@ -51,6 +51,7 @@ import { createTranslator } from "../i18n/index.js";
 import { NoticeService } from "../notice/service.js";
 import { noticeTable } from "../notice/table.js";
 import { QuestionRegistry } from "../question/registry.js";
+import type { FormRequest } from "../question/types.js";
 import { messageTable } from "../session/messages.js";
 import { SessionService } from "../session/service.js";
 import { sessionTable } from "../session/table.js";
@@ -392,6 +393,29 @@ function message(id: string, text: string): AgentNS.Message {
   });
 }
 
+/** 一个字段的候选（收窄到单选枚举那一种；类型不对就是没这一格） */
+function enumOf(question: FormRequest, field: string): readonly string[] | undefined {
+  const found = question.requestedSchema.properties[field];
+  return found !== undefined && found.type === "string" ? found.enum : undefined;
+}
+
+/** 交接那道题：一个单选枚举字段 */
+const HANDOFF_FORM = {
+  type: "object",
+  properties: {
+    mode: {
+      type: "string",
+      title: "用哪种方式交接？",
+      enum: ["self", "summary", "no"],
+      enumNames: ["自交接", "独立交接", "不交接"],
+    },
+  },
+  required: ["mode"],
+} as const;
+
+/** 一次「选了某一个」的作答 */
+const pick = (mode: string) => ({ action: "accept" as const, content: { mode } });
+
 describe("交接态", () => {
   it("只落在进入的那一段上；`start` 不碰开关、收口开、取消关；事件一进一出", async () => {
     const { handoff, handoffs, sessions, runtime, seen, wake, cwd } = setup();
@@ -493,12 +517,12 @@ describe("手动那条路：没给执行者就先问一次", () => {
     // 题出来了，而这三种方式一个都还没开始：交接态没置、SDK 一次都没调
     const question = questions.list(session.id)[0];
     expect(question).toBeDefined();
-    expect(question.choices.map((choice) => choice.value)).toEqual(["self", "summary", "no"]);
+    expect(enumOf(question, "mode")).toEqual(["self", "summary", "no"]);
     expect(question.blocking).toBe(false);
     expect(handoff.isHandingOff(session.id)).toBe(false);
     expect(handoffs.runs).toHaveLength(0);
 
-    questions.answer(question.id, "self");
+    questions.answer(question.id, pick("self"));
     await asked;
 
     expect(handoffs.runs).toHaveLength(1);
@@ -512,7 +536,7 @@ describe("手动那条路：没给执行者就先问一次", () => {
     wake(session.id);
 
     const asked = handoff.startAsked(session.id, { kind: "document" });
-    questions.answer(questions.list(session.id)[0].id, "summary");
+    questions.answer(questions.list(session.id)[0].id, pick("summary"));
     await asked;
 
     expect(handoffs.runs[0].mode).toBe("summary");
@@ -526,7 +550,7 @@ describe("手动那条路：没给执行者就先问一次", () => {
     wake(session.id);
 
     const asked = handoff.startAsked(session.id);
-    questions.answer(questions.list(session.id)[0].id, "no");
+    questions.answer(questions.list(session.id)[0].id, pick("no"));
     await asked;
 
     expect(handoffs.runs).toHaveLength(0);
@@ -576,7 +600,7 @@ describe("手动那条路：没给执行者就先问一次", () => {
     const manual = handoff.startAsked(session.id);
     expect(questions.list(session.id)).toHaveLength(1);
 
-    questions.answer(questions.list(session.id)[0].id, "summary");
+    questions.answer(questions.list(session.id)[0].id, pick("summary"));
     await expect(auto).resolves.toBe("summary");
     await manual;
     expect(handoff.isHandingOff(session.id)).toBe(true);
