@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { McpConnectionManager } from "./McpConnectionManager.js";
+import { currentElicitationOwner, withElicitationOwner } from "./elicitation.js";
 import type { McpServerDefinition } from "../../../types/index.js";
 
 // 纯 mock 对象，不涉及 vi.mock
@@ -25,6 +26,8 @@ const mockClient = {
   // 技能扩展那一套（`SkillsClient`）读这两格：协商到的协议版本决定结果信封的形状，
   // `_walkPages` 是它翻页用的（真 `Client` 上有，替身得补一个）
   getNegotiatedProtocolVersion: vi.fn().mockReturnValue("2026-07-28"),
+  // 服务器发回来的 `elicitation/create` 通过它注册处理器；用例把注册进来的那一个拿出来直接调
+  setRequestHandler: vi.fn(),
   _walkPages: async (_method: string, fetchPage: (cursor?: string) => unknown) =>
     fetchPage(undefined),
   fallbackRequestHandler: undefined,
@@ -399,5 +402,174 @@ describe("McpConnectionManager：技能清单", () => {
     expect(mockClient.request.mock.calls.map((call) => (call[0] as any).method)).not.toContain(
       "skills/list",
     );
+  });
+});
+
+/**
+ * MCP elicitation：服务器在工具调用中途要问用户一张表。
+ *
+ * 「这次调用属于哪段会话」不在载荷里，得靠 `call_mcp_tool` 在发请求之前压进那本账
+ * （`elicitation.ts`）。这一组把注册进来的处理器拿出来直接调，钉住四件事：
+ * 有账就问、没账回 decline、url 那档回 decline、出题自己炸了回 cancel。
+ */
+describe("McpConnectionManager：elicitation", () => {
+  /** 建连之后把注册进来的那个处理器拿出来 */
+  async function handlerOf(manager: McpConnectionManager) {
+    await manager.connect("github", stdioConfig);
+    const call = mockClient.setRequestHandler.mock.calls.find(
+      (entry) => entry[0] === "elicitation/create",
+    );
+    expect(call).toBeDefined();
+    return call![1] as (request: unknown) => Promise<{ action: string; content?: unknown }>;
+  }
+
+  const formRequest = {
+    method: "elicitation/create",
+    params: {
+      message: "要花 2 块钱，继续吗？",
+      requestedSchema: {
+        type: "object",
+        properties: { ok: { type: "string", enum: ["yes", "no"] } },
+        required: ["ok"],
+      },
+    },
+  };
+
+  function newManager() {
+    return new McpConnectionManager(
+      () => mockTransport as any,
+      () => ({ ...mockClient }) as any,
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.getServerCapabilities.mockReturnValue({ tools: {}, resources: {} });
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    mockClient.listResources.mockResolvedValue({ resources: [] });
+  });
+
+  it("没有人在飞（一次性 Agent / 没有题板）：回 decline", async () => {
+    const manager = newManager();
+    const handler = await handlerOf(manager);
+
+    await expect(handler(formRequest)).resolves.toEqual({ action: "decline" });
+  });
+
+  it("有账：把表交给那一段会话，答复原样收回给服务器", async () => {
+    const manager = newManager();
+    const handler = await handlerOf(manager);
+    const asked: unknown[] = [];
+
+    // 账压在这台服务器的客户端上（真路径由 `call_mcp_tool` 压，这里手动压以隔离这一层）
+    const client = manager.getClient("github")!;
+    const answer = await withElicitationOwner(
+      client,
+      {
+        sessionId: "sess-1",
+        ask: async (request) => {
+          asked.push(request);
+          return { action: "accept", content: { ok: "yes" } };
+        },
+      },
+      () => handler(formRequest),
+    );
+
+    expect(answer).toEqual({ action: "accept", content: { ok: "yes" } });
+    expect(asked).toEqual([
+      {
+        message: "要花 2 块钱，继续吗？",
+        requestedSchema: formRequest.params.requestedSchema,
+      },
+    ]);
+  });
+
+  it("用户拒了：交 decline；用户关掉：交 cancel（三态原样给服务器）", async () => {
+    const manager = newManager();
+    const handler = await handlerOf(manager);
+    const client = manager.getClient("github")!;
+
+    const declined = await withElicitationOwner(
+      client,
+      { sessionId: "sess-1", ask: async () => ({ action: "decline" }) },
+      () => handler(formRequest),
+    );
+    expect(declined).toEqual({ action: "decline" });
+
+    const cancelled = await withElicitationOwner(
+      client,
+      { sessionId: "sess-1", ask: async () => ({ action: "cancel" }) },
+      () => handler(formRequest),
+    );
+    expect(cancelled).toEqual({ action: "cancel" });
+  });
+
+  it("没人答它了（会话没了）：回 decline，不是挂在那里", async () => {
+    const manager = newManager();
+    const handler = await handlerOf(manager);
+    const client = manager.getClient("github")!;
+
+    const answer = await withElicitationOwner(
+      client,
+      { sessionId: "sess-1", ask: async () => undefined },
+      () => handler(formRequest),
+    );
+    expect(answer).toEqual({ action: "decline" });
+  });
+
+  it("url 那一档我们没声明：收到就回 decline", async () => {
+    const manager = newManager();
+    const handler = await handlerOf(manager);
+    const client = manager.getClient("github")!;
+
+    const answer = await withElicitationOwner(
+      client,
+      { sessionId: "sess-1", ask: async () => ({ action: "accept" }) },
+      () =>
+        handler({
+          method: "elicitation/create",
+          params: { mode: "url", message: "去这个页面填密钥", url: "https://x.dev" },
+        }),
+    );
+    expect(answer).toEqual({ action: "decline" });
+  });
+});
+
+/**
+ * 那本账本身（`elicitation.ts`）：压栈、弹栈、嵌套、没有账。
+ *
+ * 为什么单独钉：它是「题挂在哪一段会话」唯一的依据，压漏一次就串到别段去了。
+ */
+describe("elicitation 记账", () => {
+  it("压进去才看得到，出来就没了（嵌套时只弹自己那一格）", async () => {
+    const client = {};
+    const outer = { sessionId: "s-outer", ask: async () => undefined };
+    const inner = { sessionId: "s-inner", ask: async () => undefined };
+    expect(currentElicitationOwner(client)).toBeUndefined();
+
+    await withElicitationOwner(client, outer, async () => {
+      expect(currentElicitationOwner(client)).toBe(outer);
+      await withElicitationOwner(client, inner, async () => {
+        expect(currentElicitationOwner(client)).toBe(inner);
+      });
+      // 内层弹掉之后外层还在
+      expect(currentElicitationOwner(client)).toBe(outer);
+    });
+
+    expect(currentElicitationOwner(client)).toBeUndefined();
+  });
+
+  it("客户端或通道缺一个就直接跑（不记账、也不报错）", async () => {
+    const client = {};
+    await expect(withElicitationOwner(client, undefined, async () => 1)).resolves.toBe(1);
+    await expect(
+      withElicitationOwner(
+        undefined,
+        { sessionId: "s", ask: async () => undefined },
+        async () => 2,
+      ),
+    ).resolves.toBe(2);
+    expect(currentElicitationOwner(client)).toBeUndefined();
   });
 });

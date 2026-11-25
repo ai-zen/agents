@@ -432,6 +432,8 @@ export class HostApp {
               handoff,
               assetPort,
               notices,
+              // MCP elicitation 出题要它：题挂在会话下，那一处只有题板认得出
+              questions,
               t,
               onError,
             },

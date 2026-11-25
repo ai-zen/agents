@@ -217,6 +217,14 @@ export { AssetTransportPlugin } from "./agent-plugins/AssetTransportPlugin.js";
 export type { AssetTransportOptions } from "./agent-plugins/AssetTransportPlugin.js";
 export { SubAgentGuardInstallerPlugin } from "./agent-plugins/SubAgentGuardInstallerPlugin.js";
 export type { SubAgentGuardOptions } from "./agent-plugins/SubAgentGuardInstallerPlugin.js";
+/** MCP elicitation 的答题通道：宿主按会话装上它，`call_mcp_tool` 发起调用时就能找到「该问谁」 */
+export { McpElicitationPlugin } from "./agent-plugins/McpElicitationPlugin.js";
+export type {
+  ElicitAnswer,
+  ElicitContent,
+  ElicitRequest,
+  ElicitationOwner,
+} from "./scope/plugins/mcp/elicitation.js";
 
 // 工具 — 内置工具类 + 动态工具工厂
 export { BUILTIN_TOOL_CLASSES } from "./scope/plugins/builtin/index.js";

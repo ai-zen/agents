@@ -5,6 +5,7 @@ import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../../disclosure.js";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "../builtin/outputGuard.js";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
+import { elicitationOwnerOf, withElicitationOwner } from "./elicitation.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import { CANCEL_MCP_TASK_TOOL, GET_MCP_TASK_RESULT_TOOL } from "./mcpTaskNotice.js";
 import type {
@@ -457,15 +458,23 @@ export function createCallMcpTool(
         mcpManager.touch(serverName);
         const media = mediaContextOf(env, ctx);
         // 用不用任务不在这里说：我们只按工具声明的那一档提个偏好，最终由服务器在应答里定
-        const call = await bridge.call({
-          tool: toolName,
-          args,
-          ...(declarationOf(mcpManager, serverName, toolName) === undefined
-            ? {}
-            : { declaration: declarationOf(mcpManager, serverName, toolName)! }),
-          ...(ctx?.agent === undefined ? {} : { agent: ctx.agent }),
-          ...(ctx?.signal === undefined ? {} : { signal: ctx.signal }),
-        });
+        //
+        // 这一趟包在「谁在问」里：服务器中途可能发 `elicitation/create` 回来，那一刻得知道该把
+        // 题挂到哪一段会话上（见 `elicitation.ts` 的文件头）。
+        const call = await withElicitationOwner(
+          mcpManager.getClient(serverName),
+          elicitationOwnerOf(ctx?.agent),
+          () =>
+            bridge.call({
+              tool: toolName,
+              args,
+              ...(declarationOf(mcpManager, serverName, toolName) === undefined
+                ? {}
+                : { declaration: declarationOf(mcpManager, serverName, toolName)! }),
+              ...(ctx?.agent === undefined ? {} : { agent: ctx.agent }),
+              ...(ctx?.signal === undefined ? {} : { signal: ctx.signal }),
+            }),
+        );
 
         if (call.kind === "task") {
           return taskHandleText(serverName, call.taskId);

@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
+import { currentElicitationOwner } from "./elicitation.js";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../../shared/clientInfo.js";
 import type {
@@ -208,9 +209,44 @@ export class McpConnectionManager {
     const transport = this.createTransport(config);
     const client = this._clientFactory
       ? this._clientFactory()
-      : new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
+      : new Client(
+          { name: CLIENT_NAME, version: CLIENT_VERSION },
+          // 声明的能力就是「服务器可以在调用中途问用户一张表」。只声明 `form`：`url` 那一档要
+          // 「显示域名 + 征得同意 + 打开浏览器」，我们还没有那个交互面，声明了又不能做就是失信
+          { capabilities: { elicitation: { form: {} } } },
+        );
 
     await client.connect(transport);
+
+    // 服务器发回来的 `elicitation/create`：翻译成宿主的一张表、等答案、按三态交回去。
+    //
+    // 「这次调用属于哪段会话」不在载荷里 —— 得看 `elicitation.ts` 那本账（`call_mcp_tool`
+    // 在发请求之前压进去的那一格）。账是空的就回 `decline`：一次性 Agent 手上没有题板，
+    // 而这是 spec 给的三个去处里唯一诚实的那个。
+    client.setRequestHandler("elicitation/create", async (request) => {
+      const owner = currentElicitationOwner(client);
+      const params = request.params;
+      if (owner === undefined) return { action: "decline" as const };
+      // `url` 那一档我们没声明（见上面声明能力的理由）：真收到就按「没答」回
+      if (params.mode === "url") return { action: "decline" as const };
+
+      try {
+        const answer = await owner.ask({
+          message: params.message,
+          requestedSchema: params.requestedSchema as unknown as Record<string, unknown>,
+        });
+        // 没人答它了（那一段没了）：对服务器而言就是「拒绝」
+        if (answer === undefined) return { action: "decline" as const };
+        if (answer.action !== "accept") return { action: answer.action };
+        return { action: "accept" as const, content: answer.content ?? {} };
+      } catch (err: unknown) {
+        this.logger.error(
+          `[McpConnectionManager] elicitation for "${name}" failed: ${(err as Error)?.message ?? err}`,
+        );
+        // 出题这一路自己炸了：告诉服务器「没答」，别让一条工具调用挂在那里
+        return { action: "cancel" as const };
+      }
+    });
 
     // 任务的分岔口：之后 `call_mcp_tool` 每一次调用都走它（当场结果与任务句柄都从它那里出去）
     const taskBridge = new McpTaskBridge(client, name, this._taskNotice, this.logger);

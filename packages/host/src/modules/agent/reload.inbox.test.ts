@@ -42,6 +42,7 @@ import type { MaterialsDeps } from "./materials.js";
 import { HostObserver } from "./observer.js";
 import { reloadDefinition } from "./reload.js";
 import { ReloadWindow } from "./reload-window.js";
+import { QuestionRegistry } from "../question/registry.js";
 
 /** 生效模型：这段会话的 `modelId` 指向它（`materialsFor` 要按它取两条阈值） */
 const MODEL = {
@@ -86,6 +87,8 @@ function newHost() {
    * `materials.test.ts`，那几格在这条路上一个字都不参与判断）。
    */
   const materialDeps = {
+    // MCP elicitation 出题要用题板：这条路上它一次都不会被调到
+    questions: new QuestionRegistry({ events, t }),
     workspaces,
     definitions: {
       get: async (): Promise<AgentDefinition> => ({

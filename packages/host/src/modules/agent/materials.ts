@@ -3,6 +3,7 @@ import {
   AssetTransportPlugin,
   AutoMigratePlugin,
   ContextGuardPlugin,
+  McpElicitationPlugin,
   SubAgentGuardInstallerPlugin,
   resolveModel,
   resolveModelParams,
@@ -20,6 +21,7 @@ import type { GeneralConfig } from "../config/general.js";
 import type { HandoffService } from "../handoff/service.js";
 import type { Translator } from "../i18n/index.js";
 import type { NoticeService } from "../notice/service.js";
+import type { QuestionRegistry } from "../question/registry.js";
 import type { messageTable } from "../session/messages.js";
 import type { SessionService } from "../session/service.js";
 import type { SessionRecord } from "../session/types.js";
@@ -53,6 +55,8 @@ export interface MaterialsDeps {
    * 「Asset 怎么取」就成了两份得同时改的实现。
    */
   readonly assetPort: ToolEnvDeps;
+  /** 题板：MCP elicitation 要把服务器发来的表变成这一段的题 */
+  readonly questions: QuestionRegistry;
 }
 
 /**
@@ -187,6 +191,32 @@ export function hostPlugins(
   const plugins: AgentPlugin[] = [];
 
   if (session !== null) {
+    // MCP elicitation 的答题通道：那条服务器在工具调用中途问过来的表，要挂在**这一段会话**下
+    // （题是按会话列的），而 MCP 客户端是按工作目录共享的 —— 「哪段会话」只能由这里交出去。
+    //
+    // 不给内容做任何二次加工：宿主那张表与 spec 的 `requestedSchema` 是同一个形状，三态也是同一套。
+    plugins.push(
+      new McpElicitationPlugin({
+        sessionId: session.id,
+        ask: async (request) => {
+          const asked = deps.questions.askAwaitable({
+            sessionId: session.id,
+            message: request.message,
+            requestedSchema: request.requestedSchema as unknown as Parameters<
+              typeof deps.questions.askAwaitable
+            >[0]["requestedSchema"],
+          }).answer;
+          const answer = await asked;
+          // 没人答它了（那一段没了）：回 `undefined`，SDK 那边按 `decline` 交回服务器
+          if (answer === undefined) return undefined;
+          if (answer.action !== "accept") return { action: answer.action };
+          return {
+            action: "accept",
+            content: answer.content as Record<string, string | number | boolean | string[]>,
+          };
+        },
+      }),
+    );
     // 自动交接：装在这一段上，越线之后由插件自己发起。阈值与开关两格是取值函数而不是装配时
     // 算好的数 —— 改阈值、改开关都不重建 Agent（`PRD.md` 4.7），装一次就等于把用户之后的选择
     // 钉死在装配那一刻。

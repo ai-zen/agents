@@ -36,6 +36,7 @@ import { GUARD_BLOCKED_NOTICE_CODE, GuardNoticePlugin } from "./guard-notice.js"
 import { inboxTable } from "./inbox.js";
 import { materialsFor } from "./materials.js";
 import type { MaterialsDeps } from "./materials.js";
+import { QuestionRegistry } from "../question/registry.js";
 
 /** 生效模型：硬线 1000。会话行不给 `guardThreshold` 时用的就是它 */
 const MODEL = {
@@ -57,6 +58,7 @@ function setup() {
   const sessions = new SessionService({ sessions: sessionTable(db), events, t });
 
   const deps = {
+    questions: new QuestionRegistry({ events, t }),
     workspaces: new WorkspaceService({ workspaces: workspaceTable(db), t }),
     definitions: {
       get: async (): Promise<AgentDefinition> => ({

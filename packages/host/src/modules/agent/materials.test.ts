@@ -21,6 +21,7 @@ import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import {
   AssetTransportPlugin,
   AutoMigratePlugin,
+  McpElicitationPlugin,
   ContextGuardPlugin,
   SubAgentGuardInstallerPlugin,
   type AgentDefinition,
@@ -43,6 +44,7 @@ import { materialsFor } from "./materials.js";
 import type { MaterialsDeps } from "./materials.js";
 import { inboxTable } from "./inbox.js";
 import { messageTable } from "../session/messages.js";
+import { QuestionRegistry } from "../question/registry.js";
 
 const input: NewSession = {
   workspaceId: "ws-1",
@@ -80,6 +82,7 @@ function newHost() {
    * 交接那一格给的是不碰的替身：这条用例问的是插件装没装上、阈值是不是现读的，交接不参与。
    */
   const deps = {
+    questions: new QuestionRegistry({ events, t }),
     workspaces: new WorkspaceService({ workspaces: workspaceTable(db), t }),
     definitions: {
       get: async (): Promise<AgentDefinition> => ({
@@ -136,7 +139,7 @@ function pluginOf<T>(materials: WakeMaterials, type: new (...args: never[]) => T
 }
 
 describe("装到Agent上的插件", () => {
-  it("四颗插件都装上了，阈值是取值函数", async () => {
+  it("五颗插件都装上了（含 MCP elicitation 的答题通道），阈值是取值函数", async () => {
     const host = newHost();
     const session: SessionRecord = host.sessions.create(input);
 
@@ -149,6 +152,8 @@ describe("装到Agent上的插件", () => {
       materials.plugins?.some((plugin) => plugin instanceof SubAgentGuardInstallerPlugin),
     ).toBe(true);
     expect(materials.plugins?.some((plugin) => plugin instanceof AssetTransportPlugin)).toBe(true);
+    // MCP elicitation：服务器中途问过来的表，得知道该挂到哪一段会话下（这一段）
+    expect(materials.plugins?.some((plugin) => plugin instanceof McpElicitationPlugin)).toBe(true);
 
     // 会话行没给 `guardThreshold`：按生效模型的 400 判 —— 500 超线，拒
     const guard = pluginOf(materials, ContextGuardPlugin);
