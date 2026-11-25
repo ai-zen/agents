@@ -24,7 +24,7 @@
     "@ai-zen/agents-sdk": "workspace:*",
     "@ai-zen/fake-llm": "workspace:*",
     "@types/node": "^24.12.2",
-    "rimraf": "^6.0.0",
+    "rimraf": "^6.1.4",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.1.0"
