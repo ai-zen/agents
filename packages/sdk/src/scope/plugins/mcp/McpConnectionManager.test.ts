@@ -22,6 +22,11 @@ const mockClient = {
   // 建连之后要裹一层任务会话（`@modelcontextprotocol/ext-tasks`），它摸的是这四格
   request: vi.fn(),
   getProtocolEra: vi.fn().mockReturnValue("legacy"),
+  // 技能扩展那一套（`SkillsClient`）读这两格：协商到的协议版本决定结果信封的形状，
+  // `_walkPages` 是它翻页用的（真 `Client` 上有，替身得补一个）
+  getNegotiatedProtocolVersion: vi.fn().mockReturnValue("2026-07-28"),
+  _walkPages: async (_method: string, fetchPage: (cursor?: string) => unknown) =>
+    fetchPage(undefined),
   fallbackRequestHandler: undefined,
   fallbackNotificationHandler: undefined,
   onclose: undefined,
@@ -319,5 +324,80 @@ describe("生命周期边界（启动即退出 / 断线 / 建连超时）", () =
 
     delete (mockTransport as any).onclose;
     delete (mockTransport as any).onerror;
+  });
+});
+
+/**
+ * 技能（MCP Skills 扩展）：服务端声明了那个扩展才有得问，没声明就一个请求都不发。
+ *
+ * 条目原样带出来 —— 技能内容仍走 `resources/read`，所以要一并给出附属文件的 uri。
+ */
+describe("McpConnectionManager：技能清单", () => {
+  const DIGEST = `sha256:${"a".repeat(64)}`;
+
+  function newManager() {
+    return new McpConnectionManager(
+      () => mockTransport as any,
+      () => ({ ...mockClient }) as any,
+    );
+  }
+
+  it("声明了扩展：清单里带上技能（uri + frontmatter + 文件清单）", async () => {
+    vi.clearAllMocks();
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.getServerCapabilities.mockReturnValue({
+      tools: {},
+      resources: {},
+      extensions: { "io.modelcontextprotocol/skills": {} },
+    });
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    mockClient.listResources.mockResolvedValue({ resources: [] });
+    mockClient.request.mockResolvedValue({
+      resultType: "complete",
+      skills: [
+        {
+          uri: "skill://code-review/SKILL.md",
+          frontmatter: { name: "code-review", description: "Review code using the checklist." },
+          resources: [
+            { uri: "skill://code-review/SKILL.md", digest: DIGEST, size: 12 },
+            { uri: "skill://code-review/references/checklist.md", digest: DIGEST, size: 7 },
+          ],
+        },
+      ],
+      ttlMs: 300000,
+      cacheScope: "public",
+    });
+
+    const manifest = await newManager().connect("github", stdioConfig);
+
+    expect(manifest.skills).toEqual([
+      {
+        uri: "skill://code-review/SKILL.md",
+        frontmatter: { name: "code-review", description: "Review code using the checklist." },
+        resources: [
+          { uri: "skill://code-review/SKILL.md", digest: DIGEST, size: 12 },
+          { uri: "skill://code-review/references/checklist.md", digest: DIGEST, size: 7 },
+        ],
+      },
+    ]);
+    // 真发了那次请求（第三个入参是选项，缺省时是 `undefined`，所以只看第一个入参的形状）
+    expect(mockClient.request.mock.calls.map((call) => (call[0] as any).method)).toContain(
+      "skills/list",
+    );
+  });
+
+  it("没声明扩展：一个 skills/list 都不发，清单里是空数组", async () => {
+    vi.clearAllMocks();
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.getServerCapabilities.mockReturnValue({ tools: {}, resources: {} });
+    mockClient.listTools.mockResolvedValue({ tools: [] });
+    mockClient.listResources.mockResolvedValue({ resources: [] });
+
+    const manifest = await newManager().connect("github", stdioConfig);
+
+    expect(manifest.skills).toEqual([]);
+    expect(mockClient.request.mock.calls.map((call) => (call[0] as any).method)).not.toContain(
+      "skills/list",
+    );
   });
 });

@@ -252,6 +252,7 @@ describe("createLoadMcpTool", () => {
       connected: true,
       tools: 2,
       resources: 1,
+      skills: 0,
     });
     // 摘要不得携带任何工具/资源定义（否则节省 token 的目的落空）
     expect(result).not.toContain("inputSchema");
@@ -280,6 +281,7 @@ describe("createLoadMcpTool", () => {
       connected: true,
       tools: 1,
       resources: 0,
+      skills: 0,
     });
   });
 

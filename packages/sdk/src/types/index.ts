@@ -483,11 +483,37 @@ export interface McpAnnotations {
 
 // ---- MCP Server Manifest ----
 
-/** load_mcp 成功后返回的工具/资源/提示清单 */
+/** load_mcp 成功后返回的工具/资源/提示/技能清单 */
 export interface McpServerManifest {
   tools: McpToolDef[];
   resources: McpResourceDef[];
   prompts?: McpPromptDef[];
+  /** 技能（MCP Skills 扩展）：服务端没声明这个扩展时一个都没有 */
+  skills?: McpSkillDef[];
+}
+
+/**
+ * 技能定义（MCP Skills 扩展，SEP-2640）：一个技能是一个目录 —— `SKILL.md` 加可选附属文件。
+ *
+ * 字段原样取自 `skills/list` 的条目：技能的内容仍然走 `resources/read`，所以附属文件的 uri 必须
+ * 一并交出去（模型读到正文里的 `references/x.md` 之后，要拿它换成一条能读的 uri）。
+ *
+ * 技能的身份是**服务器 + `uri`**；`name` 只是标签，不保证跨服务器唯一。
+ */
+export interface McpSkillDef {
+  /** 这个技能 `SKILL.md` 的 uri */
+  uri: string;
+  /** `SKILL.md` 的 YAML frontmatter 原样（`name` / `description` 通常就在里面） */
+  frontmatter: Record<string, unknown>;
+  /** 完整文件清单（含 `SKILL.md` 自己）；服务器现生成内容时是 `"dynamic"` */
+  resources: McpSkillFile[] | "dynamic";
+}
+
+/** 技能清单里的一项：一个文件的 uri 与完整性信息 */
+export interface McpSkillFile {
+  uri: string;
+  digest: string;
+  size: number;
 }
 
 /** 工具定义（MCP 规范 Tools） */

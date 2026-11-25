@@ -49,7 +49,7 @@ export function createLoadMcpTool(
     function: {
       name: "load_mcp",
       description:
-        "Connect to the specified MCP server and get the list of tools and resources it exposes. Pass include_manifest=false to only establish the connection without returning the manifest (useful when the manifest is already in context).",
+        "Connect to the specified MCP server and get the list of tools, resources and skills it exposes. Pass include_manifest=false to only establish the connection without returning the manifest (useful when the manifest is already in context).",
       parameters: {
         type: "object",
         properties: {
@@ -96,18 +96,24 @@ export function createLoadMcpTool(
       // 静默模式：只回吐摘要（清单仍留在管理器内，供 call_mcp_tool 使用）
       if (!includeManifest) {
         logger.info(
-          `[load_mcp] ${serverName}: connected (manifest not disclosed: ${manifest.tools.length} tools, ${manifest.resources.length} resources)`,
+          `[load_mcp] ${serverName}: connected (manifest not disclosed: ${manifest.tools.length} tools, ${manifest.resources.length} resources, ${manifest.skills?.length ?? 0} skills)`,
         );
         return JSON.stringify({
           server: serverName,
           connected: true,
           tools: manifest.tools.length,
           resources: manifest.resources.length,
+          skills: manifest.skills?.length ?? 0,
         });
       }
 
       logger.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
-      return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
+      return JSON.stringify({
+        tools: manifest.tools,
+        resources: manifest.resources,
+        // 没声明技能的服务器就不占地儿（它们在清单里没意思，只会让模型多读一行空数组）
+        ...(manifest.skills?.length ? { skills: manifest.skills } : {}),
+      });
     },
   });
 }
@@ -488,7 +494,7 @@ export function createReadMcpResourceTool(
     function: {
       name: "read_mcp_resource",
       description:
-        "Read a resource (document, data, image, etc.) from a connected MCP server. Text is returned as-is; images and other media are uploaded (file_id) or inlined as base64 depending on endpoint capabilities, and are never dropped.",
+        "Read a resource (document, data, image, or a skill's SKILL.md and its files) from a connected MCP server. Text is returned as-is; images and other media are uploaded (file_id) or inlined as base64 depending on endpoint capabilities, and are never dropped.",
       parameters: {
         type: "object",
         properties: {

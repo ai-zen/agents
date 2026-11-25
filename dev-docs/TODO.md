@@ -8,19 +8,32 @@
 
 ## 1.（调研）MCP 服务器随工具一起发布技能 — Skills over MCP
 
-**现在是什么行为**：技能只从磁盘发现。`scope/plugins/skills/discover.ts` 扫 `SKILL.md`（frontmatter + 正文），`SkillsScopePlugin` 把它们变成 `load_skill` 与 `call_skill_sub_agent` 两件工具，披露口径是「枚举值放参数里、正文按需读」（`scope/disclosure.ts` 的 `createDisclosureParam`）。MCP 那一侧只有 tools 与 resources（`scope/plugins/mcp/mcpTools.ts`：`load_mcp` / `call_mcp_tool` / `read_mcp_resource` / 两条任务工具），**没有任何一条路是「服务器把一段使用说明交给我」**。
+**已经做掉的（2026-11-25）**：发现与清单。`McpConnectionManager` 建连时用 SDK 自带的
+`SkillsClient`（`@modelcontextprotocol/client/ext/skills`，SEP-2640）问一次 `skills/list` ——
+只在服务端声明了那个扩展时才问；条目原样带进 manifest（`uri` / `frontmatter` / 附属文件清单），
+`load_mcp` 的清单里就能看到这台服务器有哪些技能、正文在哪个 uri。
 
-**要变成什么行为**：待定 —— 这一条是调研。要回答的问题：
+**怎么读**：不另加工具 —— 技能正文与附属文件都是 `resources/read`，用现有的
+`read_mcp_resource`。
 
-1. spec 里 Skills over MCP 的承载形态是什么（resource 的一种约定？新增 capability？还是工具名约定），先读 spec 再谈实现。
-2. 形状能不能对上：本地技能是 `SkillInfo` + `readSkill`（id / description / subAgent 开关 / 正文），MCP 那份能不能填进同一个形状，还是只能另开一条平行通道。
-3. 披露时机与口径：和本地技能共用「枚举按需 + 正文按需」这一套，还是 MCP 的清单另算一档。
-4. 权限归谁：`Scope.filter` 里 `permissions.skills` 与 `permissions.mcps` 是两套白名单，MCP 来的技能算哪一套。
-5. 要不要给 `subAgent: true` 那条能力（`skills/skillTools.ts` 会派一个一次性 Agent 出去干活）。
+**剩下的两件事**：
+
+1. **要不要把 MCP 技能并进 `load_skill` 的 id 空间**（形如 `<server>/<skill>`）。并进去：模型
+   不用先 `load_mcp` 也知道有哪些技能，代价是「连接/断开一台服务器」会改一次工具定义（枚举变了，
+   前缀缓存失效一次，与本地技能增删一个文件同一档）；不并：工具定义恒定，模型得先 `load_mcp`。
+2. **要不要一个「派子 agent」的入口**（`call_skill_sub_agent` 的 MCP 版）。可以先不做：主 agent
+   读完正文直接用 `call_mcp_tool` 干那台服务器上的活；等「正文很长、想隔离上下文」真出现了再谈。
 
 **怎么算做完了**：一份结论落进 `PRD.md` 或 `PLAN.md` —— 做的话写清分几步、每步交付什么；不做的话写清理由 —— 然后本条从这份文件删掉。
 
-**相邻的一条已被否掉的路**：`search_tools` 式的**工具定义**按需加载不做。现在的渐进披露是按组给的（一个 MCP 服务器一组、整组一起出现或一起不给），内聚性比「按关键词搜出一把散装工具」好；2026-11-25 用户拍板，不要往回调。
+**不做的两件**：宿主侧的**批准**与**校验**都不做（2026-11-25 用户口径：人家有什么就用什么）。
+SDK 的 `SkillsClient.read()` 内建校验且失败不给字节，所以我们不走它 —— 直接用
+`read_mcp_resource` 读（它封的也是 `resources/read`）。代价写在这里，免得将来当事故查：
+技能正文是第三方服务器给的，会直接进上下文，没有摘要比对也没有人工过目。
+
+**相邻的一条已被否掉的路**：`search_tools` 式的**工具定义**按需加载不做。现在的渐进披露是按组
+给的（一个 MCP 服务器一组、整组一起出现或一起不给），内聚性比「按关键词搜出一把散装工具」好；
+2026-11-25 用户拍板，不要往回调。
 
 ## 2.（调研）MCP Elicitation：调用中途问用户
 

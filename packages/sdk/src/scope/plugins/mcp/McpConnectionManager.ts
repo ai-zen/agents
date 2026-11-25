@@ -5,6 +5,7 @@ import {
   type Transport,
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../../shared/clientInfo.js";
 import type {
@@ -221,6 +222,7 @@ export class McpConnectionManager {
       tools: [],
       resources: [],
       prompts: [],
+      skills: [],
     };
 
     if (serverCaps?.tools) {
@@ -266,6 +268,38 @@ export class McpConnectionManager {
       } catch (err: unknown) {
         this.logger.error(
           `[McpConnectionManager] Failed to list prompts for "${name}": ${(err as Error)?.message ?? err}`,
+        );
+      }
+    }
+
+    // 技能（MCP Skills 扩展）：服务端在 capabilities 里声明了那个扩展才有得问 —— `supported`
+    // 判的就是这一格（外加 `resources`），没声明就一个请求都不发。
+    //
+    // 条目原样留着（`uri` / `frontmatter` / 文件清单）：技能的内容仍走 `resources/read`，所以
+    // 附属文件的 uri 必须一起交出去 —— 模型读到正文里的 `references/x.md`，要拿它换成一条真正
+    // 能读的 uri。
+    //
+    // `skipInvalid`：一条坏条目不该把整台服务器的技能全挡掉（坏的那条由 SDK 丢进 `invalid`）。
+    const skillsClient = new SkillsClient(client, { skipInvalid: true });
+    if (skillsClient.supported) {
+      try {
+        const listing = await skillsClient.list();
+        manifest.skills = listing.skills.map((skill) => ({
+          uri: skill.uri,
+          frontmatter: skill.frontmatter,
+          resources: skill.resources,
+        }));
+        if (listing.invalid.length > 0) {
+          this.logger.warn(
+            `[McpConnectionManager] "${name}" served ${listing.invalid.length} invalid skill entr(ies): ` +
+              listing.invalid
+                .map((item) => `${item.uri ?? `<#${item.index}>`} (${item.reason})`)
+                .join(", "),
+          );
+        }
+      } catch (err: unknown) {
+        this.logger.error(
+          `[McpConnectionManager] Failed to list skills for "${name}": ${(err as Error)?.message ?? err}`,
         );
       }
     }
