@@ -80,7 +80,11 @@ node packages/host/dist/cli.js stop
 
 ## 不装宿主
 
-只要一个答案时，`core` 与 `sdk` 就够：
+宿主不是必需的。`core` 与 `sdk` 两个包就能装配出功能完整的 agent：内置工具、用户工具、技能、子代理、MCP、四维权限、两条上下文阈值与交接都在这一层，`core` 提供队列、请求与工具的循环和事件流。日常能用到的能力一样不少。
+
+缺的是掉进程之后的那几样：会话与历史落库、多个客户端同时连、会话之间互发消息（后者由 `AgentRuntime` 提供，但它向宿主要的四个端口得自己实现）。
+
+最小的一次调用只要这么几行：
 
 ```bash
 pnpm add @ai-zen/agents-core @ai-zen/agents-sdk

@@ -78,7 +78,11 @@ A local instance writes a credential for local clients into `<data root>/run/tok
 
 ## Without a host
 
-For a single answer, `core` and `sdk` are enough:
+A host is not required. `core` and `sdk` alone assemble a complete agent: built-in tools, user tools, skills, sub-agents, MCP, four permission dimensions, both context thresholds and handoff all live in these two packages, with `core` providing the queue, the request-and-tool loop and the event stream. Nothing you use day to day is missing.
+
+What is missing are the things that outlive a process: sessions and history on disk, several clients at once, and sessions posting to each other (the last one is provided by `AgentRuntime`, but the four ports it borrows from a host are yours to implement).
+
+A minimal single call is a few lines:
 
 ```bash
 pnpm add @ai-zen/agents-core @ai-zen/agents-sdk
