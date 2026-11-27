@@ -3,7 +3,7 @@
  *
  * 与 `HandoffService.test.ts` 同一套搭法（假 agent + 临时交接目录），这里多出来的是「听」的那一侧：
  * 一个只订阅、不介入的第三方凭这三格就能说清这一趟走到哪了，不必再轮询 `handingOff`。假的是
- * **模型那一步**（假 agent、假端点），交接流程本身是真的。
+ * 模型那一步（假 agent、假端点），交接流程本身是真的。
  */
 
 import { promises as fs } from "node:fs";
@@ -13,10 +13,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentError, AgentNS } from "@ai-zen/agents-core";
 import { HandoffService, type HandoffFact } from "./HandoffService.js";
 
-// ---------------------------------------------------------------------------
-// helpers（与 HandoffService.test.ts 同一套）
-// ---------------------------------------------------------------------------
-
 /** 生成交接文档正文（形状与真件一致；写多长都不影响判据） */
 function docContent(padding = 600): string {
   return `## 💬 Conversation Breakpoint\nBreakpoint content from the previous round\n## 🔔 First Step for the Next Agent\n- run npm test\n${"x".repeat(padding)}`;
@@ -25,8 +21,7 @@ function docContent(padding = 600): string {
 /**
  * 模型那一侧的脚本：从交接指令里认出这次的文档路径，然后调一次写工具把它落盘。
  *
- * `body` 可以给得比 `docContent()` 短 —— “写出来不到 400 字节算没写出来”那条就靠它验
- * （`PRD.md` 3.6）。
+ * `body` 可以给得比 `docContent()` 短 —— “写出来不到 400 字节算没写出来”那条就靠它验。
  */
 function writeScript(body: string = docContent()): FakeAgentOptions["onSend"] {
   return async (_content, _nth, self) => {
@@ -48,8 +43,8 @@ type Listener = (payload: any) => void;
 /**
  * 假 agent：只实现 `HandoffService` 用到的表面。
  *
- * 常驻会话没有 `send()`（`CORE.md` §1）：自交接靠「`push` 一条指令」，判据是那次写文档
- * 的**工具调用**。所以这个替身要把 core 那条路的三样东西都演出来：
+ * 常驻会话没有 `send()`：自交接靠「`push` 一条指令」，判据是那次写文档
+ * 的工具调用。所以这个替身要把 core 那条路的三样东西都演出来：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
  *   - `push(entry)`：落一条 user 消息 → 变 `working` → 这一批（`onOuterLoopStart`）→ 跑脚本
  *     （脚本里用 `callWrite` 模拟模型调写工具）→ 这一批收口（`onOuterLoopEnd`）→ 变闲；
@@ -57,7 +52,7 @@ type Listener = (payload: any) => void;
  *     钩子在前（还能拒）、跑在中间、钩子在后（能看结果）。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
- * `state` 与 `isOutputPaused` 是**两处状态**（与 core 同口径）：`state` 只说循环的位置，
+ * `state` 与 `isOutputPaused` 是两处状态（与 core 同口径）：`state` 只说循环的位置，
  * `isOutputPaused` 只管「从下一批起还收不收件」。
  */
 class FakeAgent {
@@ -183,8 +178,6 @@ class FakeAgent {
     await this.dispatch("onToolEnd", { agent: this, toolCall });
   }
 
-  // ---- 事件（core 的 `on()` 返回取消函数） ----
-
   on(type: string, handler: Listener): () => void {
     let set = this.listeners.get(type);
     if (!set) this.listeners.set(type, (set = new Set()));
@@ -200,11 +193,9 @@ class FakeAgent {
     const from = this.state;
     if (from === next) return;
     this.state = next;
-    // 与 core 同口径：状态事件按到达值分名（CORE.md §10）
+    // 与 core 同口径：状态事件按到达值分名
     this.emit(`state:${next}`, { agent: this, from });
   }
-
-  // ---- 死活 ----
 
   start(): Promise<void> {
     this.death ??= new Promise<void>((resolve) => (this.resolveDeath = resolve));
@@ -225,8 +216,6 @@ class FakeAgent {
     void this.dispatch("onKill", { agent: this });
     this.resolveDeath?.();
   }
-
-  // ---- 投递 ----
 
   send(entry: any): void {
     if (this.closed) {
@@ -273,17 +262,13 @@ afterEach(async () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// 三格事实
-// ---------------------------------------------------------------------------
-
 describe("交接的事实：开始、结束与失败", () => {
   it("没成的那一趟：开始一条、失败一条", async () => {
     const { service } = await makeService();
     const facts: HandoffFact[] = [];
     service.observe((fact) => facts.push(fact));
 
-    // 摘要是**申请来的**那一档：写文档那一步在端点上，端点回错就是这一趟没成
+    // 摘要是申请来的那一档：写文档那一步在端点上，端点回错就是这一趟没成
     const agent = new FakeAgent();
     agent.client.chat.completions.create.mockRejectedValue(new Error("端点 500：写不了"));
 

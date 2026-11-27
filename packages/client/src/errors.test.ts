@@ -58,7 +58,7 @@ describe("fromTRPCError：宿主回的那些码", () => {
       "unauthorized",
     ];
     for (const hostCode of hostCodes) {
-      // 八个人一个 tRPC 码都可能（对应关系在宿主那一侧），客户端只认自己这一格
+      // 八个 hostCode 可能对应同一个 tRPC 码（对应关系在宿主那一侧），客户端只认 hostCode 这一格
       expect(fromTRPCError(hostError({ hostCode, code: "CONFLICT", message: "x" })).code).toBe(
         hostCode,
       );

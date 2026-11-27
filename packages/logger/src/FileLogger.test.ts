@@ -97,7 +97,6 @@ describe("轮转", () => {
 
     const current = (await readIfExists(file)) ?? "";
     const previous = (await readIfExists(`${file}.1`)) ?? "";
-    // 前三行被轮转到 .1，后三行还在正在写的那份里
     expect(previous.trimEnd().split("\n")).toHaveLength(3);
     expect(previous).toContain("第1行");
     expect(previous).not.toContain("第4行");
@@ -181,7 +180,6 @@ describe("来源标签", () => {
     const text = (await readIfExists(file)) ?? "";
     expect(text).toContain("INFO  host 单根的事");
     expect(text).toContain("WARN  ws 接线层的事");
-    // 同一份流：没有第二个文件，也没有轮转出来的旧份
     expect(await fs.readdir(dir)).toEqual(["host.log"]);
   });
 

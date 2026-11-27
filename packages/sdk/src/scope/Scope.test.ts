@@ -11,10 +11,6 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function makeTool(name: string): Tool {
   return new (class extends Tool {
     constructor() {
@@ -63,9 +59,6 @@ function makeDef(permissions?: AgentPermissions, modelId?: string): AgentDefinit
   };
 }
 
-// ---------------------------------------------------------------------------
-// 带真实文件系统的 Scope 能力发现
-// ---------------------------------------------------------------------------
 let tmpDir: string;
 
 beforeEach(() => {
@@ -150,10 +143,6 @@ export default {
 `,
   );
 }
-
-// ==================================================================
-// 测试
-// ==================================================================
 
 describe("Scope 能力发现与过滤", () => {
   describe("ToolEnv / deps", () => {

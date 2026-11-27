@@ -1,12 +1,12 @@
 /**
- * 运行时的验收：**不 import 宿主**。
+ * 运行时的验收：不 import 宿主。
  *
- * 这里要守住的三件事（`dev-docs/PLAN.md` 第一段）：
+ * 这里要守住的三件事：
  *   1. 常驻：一段会话登记一个 Agent，叫醒就开始跑；杀死之后它不再回应，说过的话还在；
  *   2. 事件驱动：没有人 `await`，一条投递也把它从闲推到忙、跑完自己回到闲；
  *   3. 互相说话：一段会话把话寄给另一段，另一边收下、跑完、回一句落回发起方那边。
  *
- * 假的是**模型提供方**（`@ai-zen/fake-llm` 那个 OpenAI 兼容端点）与**库**（这里几张
+ * 假的是模型提供方（`@ai-zen/fake-llm` 那个 OpenAI 兼容端点）与库（这里几张
  * Map）。凡是这一层真正的接线 —— 容器、定义文件、模型的 client、内核的事件 —— 都是真的。
  */
 
@@ -39,10 +39,6 @@ import {
   type WakeMaterials,
 } from "./AgentRuntime.js";
 import type { SdkAgent } from "./SdkAgent.js";
-
-// ---------------------------------------------------------------------------
-// 一套假的宿主：只有库与能力装配两件事是真的要人做
-// ---------------------------------------------------------------------------
 
 interface Harness {
   runtime: AgentRuntime;
@@ -183,10 +179,6 @@ async function writeDefinition(
   await writeFile(join(agentsDir, `${id}.json`), JSON.stringify(definition), "utf8");
 }
 
-// ---------------------------------------------------------------------------
-// 小工具
-// ---------------------------------------------------------------------------
-
 /** 按 system 提示分派答复：两段会话各说各的，才判得出那句话落在谁那边 */
 function bySystem(replies: { lead: string; helper: string }) {
   return (body: any): string => {
@@ -247,10 +239,6 @@ async function callTool(tool: Tool, agent: Agent, args: Record<string, unknown>)
   return JSON.parse(String(await tool.exec(ctx)));
 }
 
-// ---------------------------------------------------------------------------
-// 用例
-// ---------------------------------------------------------------------------
-
 describe("运行时：常驻与互相说话", () => {
   it("一段会话把话寄给另一段：收下了、跑完了、回的那句落在发起方那边", async () => {
     const h = await harness({ reply: bySystem({ lead: "lead 收到", helper: "helper 收到" }) });
@@ -266,7 +254,7 @@ describe("运行时：常驻与互相说话", () => {
     // 没有人 await，它自己从闲变成忙、跑完回到闲
     await until(() => b.state === "idle" && words(b, "helper 收到").length > 0, 5000);
 
-    // 收下的是那句话，署名是发起方**现读**的名字
+    // 收下的是那句话，署名是发起方现读的名字
     const heard = words(b, "把测试跑一遍");
     expect(heard).toHaveLength(1);
     expect(text(heard[0]!)).toContain("会话甲");
@@ -473,7 +461,7 @@ describe("运行时：观察面（只订阅、不介入）", () => {
     /**
      * 收到那一刻这条消息长什么样。
      *
-     * 拷的是**当下的状态**而不是那条消息的引用：内核后面还会动它（`drop` 策略会把归成
+     * 拷的是当下的状态而不是那条消息的引用：内核后面还会动它（`drop` 策略会把归成
      * `aborted` 的那条删掉），而这里要验的正是「报的那一刻它是 `aborted`」。
      */
     const reported: Array<{ id: string; status: AgentNS.MessageStatus | undefined }> = [];

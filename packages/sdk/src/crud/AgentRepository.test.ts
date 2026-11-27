@@ -97,9 +97,9 @@ describe("AgentRepository", () => {
 });
 
 /**
- * 实体 id 不得逃出仓储目录（L2 / L31）。
+ * 实体 id 不得逃出仓储目录。
  *
- * 用**两级**临时目录：`root/agents` 是仓储目录，逃逸产物只会落到 `root` 下，
+ * 用两级临时目录：`root/agents` 是仓储目录，逃逸产物只会落到 `root` 下，
  * 断言能看见它，也不会污染 `/tmp` 根目录。
  */
 describe("AgentRepository：id 逃不出目录", () => {

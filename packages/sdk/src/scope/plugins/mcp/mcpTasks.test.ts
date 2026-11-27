@@ -13,8 +13,8 @@ import type { AppConfig, McpServerDefinition, ToolEnv } from "../../../types/ind
 /**
  * MCP 的任务（Tasks），按 2026-07-28 那一版扩展（`io.modelcontextprotocol/tasks`）的语义。
  *
- * 与 2025 那一版最大的不同：用不用任务由**服务器**在应答里决定，客户端只表达一个偏好。所以这里
- * 的假服务器是手搓的 —— 它照 1.x 服务器的行为在 `tools/call` 上回一个句柄，而我们这一侧走的是
+ * 与 2025 那一版最大的不同：用不用任务由服务器在应答里决定，客户端只表达一个偏好。所以这里
+ * 的假服务器是手搓的 —— 它照 1.x 服务器的行为在 `tools/call` 上回一个句柄，本侧走的是
  * `@modelcontextprotocol/ext-tasks` 的 session，验的是「句柄 → 拉结果 / 取消 / 终态通知」这条链。
  */
 

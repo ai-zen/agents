@@ -52,7 +52,6 @@ describe("reconcileAbortedMessages", () => {
 
     expect(messages[1]!.status).toBe(AgentNS.MessageStatus.Completed);
     expect(included(messages[1]!)).toBe(true);
-    // 内容与思考原样保留，一个字都不改
     expect(messages[1]!.content).toBe("答案是 4");
     expect(messages[1]!.reasoning_content).toBe("让我想想…");
   });

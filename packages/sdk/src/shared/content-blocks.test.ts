@@ -238,7 +238,7 @@ describe("fileToContentSection：传输方式选择", () => {
 });
 
 /**
- * 默认上传实现走的是**真 HTTP**（`fetch` + `FormData`，不用 `openai` 包）。
+ * 默认上传实现走的是真 HTTP（`fetch` + `FormData`，不用 `openai` 包）。
  *
  * 这里用本地 `node:http` 假端点钉住线格式：路径、鉴权头、multipart 的两个字段名。
  * 换实现时这三样最容易悄悄错 —— 错了就是直接抛错，不会有人替它降级。
@@ -320,8 +320,6 @@ describe("默认上传实现（真 HTTP，不注入 upload）", () => {
     }
   });
 });
-
-// ---- 图片的宽高上限：8192 ----
 
 /** 只造 PNG 头（签名 + IHDR），够读宽高 */
 function pngHeader(width: number, height: number): Buffer {

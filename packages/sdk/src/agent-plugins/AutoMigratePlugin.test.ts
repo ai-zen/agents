@@ -332,7 +332,7 @@ describe("AutoMigratePlugin", () => {
   });
 
   /**
-   * 钩子真的落在 `onIdle` 上吗？—— 上面那些用例都是手喂 ctx，这条用**真 Agent 跑一圈**：
+   * 钩子真的落在 `onIdle` 上吗？—— 上面那些用例都是手喂 ctx，这条用真 Agent 跑一圈：
    * 起 → 投 → 等闲。跑到「闲」的那一刻 core 会分发 `onIdle`，插件应当在那时交接。
    */
   it("真跑一轮：agent 变闲时自动触发交接", async () => {

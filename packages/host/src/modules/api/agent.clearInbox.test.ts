@@ -2,7 +2,7 @@
  * `runtime.agent.clearInbox`：作废这一段还没被取走的那些 InboxEntry（`/free` 那一条命令的宿主入口）。
  *
  * 这条 procedure 的意思全在「排队区有两处」上：内存里是 Agent 的队列，库里是 `inbox` 表的那几行
- * （关掉再打开，那几句还在等，靠的就是它），而**用户看到的排队区就是库里那几行**。所以：
+ * （关掉再打开，那几句还在等，靠的就是它），而用户看到的排队区就是库里那几行。所以：
  *
  * - 有活 Agent 时以内存为事实：`runtime.agent.clearInbox()` 作废队列、报 `inboxCleared`，观察者据此删库行
  *   并推一条空队列 —— 这一层只借它返回的条数；
@@ -10,7 +10,7 @@
  *   Agent，没有别人替它说这一句）。
  *
  * 台架照 `session.transient.test.ts` 与 `handoff.test.ts`：真内存库、真 `SessionService`、真
- * `inbox` 表、**真的 `HostObserver`**（它才是「删库行 + 推客户端」那两步的执行者，换成替身就等于
+ * `inbox` 表、真的 `HostObserver`（它才是「删库行 + 推客户端」那两步的执行者，换成替身就等于
  * 把要验的东西一起替掉了），只有 Agent 是假的 —— 真的 `Agent` 会起请求、跑循环、拉插件，而这两条
  * 路要证的只有「队列谁清、库行谁删、客户端听到的是什么」。
  */

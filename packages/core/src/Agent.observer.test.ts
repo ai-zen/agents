@@ -3,10 +3,6 @@ import { Agent, type ObserverFailedEvent } from "./Agent.js";
 import { AgentNS } from "./AgentNS.js";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 
-// ---------------------------------------------------------------------------
-// Mock OpenAI client
-// ---------------------------------------------------------------------------
-
 type AnyChunk = any;
 
 function chunk(
@@ -49,7 +45,7 @@ function createMockClient(deliveries: AnyChunk[][]) {
 }
 
 /**
- * 等到它**真的停下来**：闲 且 队列空。
+ * 等到它真的停下来：闲 且 队列空。
  *
  * 只看 `state === "idle"` 不够 —— 状态由外循环的位置决定，push 之后要等外循环头
  * 才变 `working`，所以「刚 push 完就问一次」会立刻通过。
@@ -77,8 +73,6 @@ const user = (content: string): AgentNS.InboxInput => ({
   source: { kind: "user" },
   priority: "low",
 });
-
-// ---------------------------------------------------------------------------
 
 describe("Agent 观察隔离", () => {
   it("订阅者抛错，Agent照常跑完", async () => {

@@ -1,24 +1,20 @@
 /**
- * `summary` 分支的**传输契约** —— 真 `openai` 客户端 + 真 HTTP（假端点），中间没有手捏对象。
+ * `summary` 分支的传输契约 —— 真 `openai` 客户端 + 真 HTTP（假端点），中间没有手捏对象。
  *
- * ## 为什么要单独一个文件
- *
- * `HandoffService.test.ts` 里所有 `summary` 用例共用一个手捏客户端：
+ * 单独一个文件，是因为 `HandoffService.test.ts` 里所有 `summary` 用例共用一个手捏客户端：
  *
  * ```ts
  * create: vi.fn(async () => ({ choices: [{ message: { content: docContent() } }] }))
  * ```
  *
- * 它答的是「拿到**这个形状**的响应之后服务怎么走」，答不了「SDK 真会给这个形状吗」。真实的
+ * 它答的是「拿到这个形状的响应之后服务怎么走」，答不了「SDK 真会给这个形状吗」。真实的
  * `chat.completions.create` 还负责：把 `modelConfig` 展开进 body、决定非流式到底发不发
  * `stream`、把 HTTP 错误包成 `InternalServerError`、把 `RequestOptions.signal` 真的接到
  * socket 上。这四件事没有一件能靠手捏对象验出来。
  *
- * ## 为什么用假端点而不是真模型
- *
- * 真模型要 key、要网、答复不确定（断言只能写「非空」）。`@ai-zen/fake-llm` 的假端点
+ * 真模型要 key、要网、答复不确定（断言只能写「非空」），所以用假端点。`@ai-zen/fake-llm` 的假端点
  * 顶上之后：答复正文、响应延迟、错误码都由用例指定，请求体被原样记下来 —— 于是断言可以写
- * 等号，还能断言「请求里**没有** `tools` / **没有** `stream`」这种只有从 wire 外面才看得见的事。
+ * 等号，还能断言「请求里没有 `tools` / 没有 `stream`」这种只有从 wire 外面才看得见的事。
  */
 
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";

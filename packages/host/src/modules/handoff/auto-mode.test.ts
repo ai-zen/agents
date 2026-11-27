@@ -119,7 +119,7 @@ describe("越线那一刻问不问", () => {
     expect(question).toBeDefined();
     // 三选题：自交接 / 独立交接 / 不交接，没有「不答 / 绕过 / 关掉」这种旁路
     expect(enumOf(question, "mode")).toEqual(["self", "summary", "no"]);
-    // 题挂着时不挡发送：按不按发送是客户端拿着 `blocking` 自己决定的事（PRD 原话）
+    // 题挂着时不挡发送：按不按发送是客户端拿着 `blocking` 自己决定的事
     expect(question.blocking).toBe(false);
 
     host.questions.answer(question.id, pick("self"));

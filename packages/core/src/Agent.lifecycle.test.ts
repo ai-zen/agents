@@ -7,10 +7,6 @@ import { Tool } from "./Tool.js";
 import type { ToolCallContext } from "./ToolCallContext.js";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 
-// ---------------------------------------------------------------------------
-// Mock OpenAI client
-// ---------------------------------------------------------------------------
-
 type AnyChunk = any;
 
 function chunk(
@@ -89,7 +85,7 @@ function createMockClient(rounds: AnyChunk[][]) {
 }
 
 /**
- * 等到它**真的停下来**：闲 且 队列空。
+ * 等到它真的停下来：闲 且 队列空。
  *
  * 只看 `state === "idle"` 不够 —— 状态由外循环的位置决定，push 之后要等外循环头
  * 才变 `working`，所以「刚 push 完就问一次」会立刻通过。
@@ -128,8 +124,6 @@ function codeOf(run: () => void): string | undefined {
   }
   return undefined;
 }
-
-// ---------------------------------------------------------------------------
 
 describe("Agent 死活", () => {
   it("start() 的 promise 到死才 resolve", async () => {
@@ -201,7 +195,6 @@ describe("Agent 投递", () => {
       AgentNS.Role.User,
       AgentNS.Role.Assistant,
     ]);
-    // 没有多出第二条 user 消息
     expect(agent.messages.filter((m) => m.role === AgentNS.Role.User)).toHaveLength(1);
 
     agent.stop();
@@ -260,8 +253,8 @@ describe("Agent 投递", () => {
 
 describe("Agent 流末的用量与结束原因", () => {
   /**
-   * 这两格**不是增量**：`usage` 与 `finish_reason` 是那次响应的外层字段（`AgentNS.Delta`
-   * 里没有它们），由流处理这一侧钉到消息上 —— `applyChunk` 只处理那一片增量本身。
+   * `usage` 与 `finish_reason` 不属于增量：它们是那次响应的外层字段（`AgentNS.Delta`
+   * 里没有），由流处理这一侧钉到消息上，`applyChunk` 只处理那一片增量本身。
    */
   it("`usage` 与 `finish_reason` 钉在那条 assistant 消息上", async () => {
     const { client } = createMockClient([
@@ -305,7 +298,6 @@ describe("Agent 流末的用量与结束原因", () => {
     agent.send(user("问一句"));
     await settled(agent);
 
-    // 没有 choices 就没有增量、也没有结束原因，但用量照收
     const assistant = agent.messages.at(-1)!;
     expect(assistant.content).toBe("好");
     expect(assistant.finish_reason).toBeUndefined();
@@ -364,10 +356,10 @@ describe("Agent 死亡事件", () => {
 
     agent.send(user("这一条还在队里"));
     agent.stop();
-    // 没起来过：只能由本体当场说
+    // 没 start 过：`stopped` 只能由 `stop()` 当场报出
     expect(seen).toEqual(["stopped"]);
 
-    // 起来之后存量照跑（关门是「以后不再收」，不是「手上这些不跑」）
+    // start() 之后存量照样跑：关门只表示以后不再收，不表示排队中的不跑
     await agent.start();
 
     expect(agent.messages.at(-1)!.content).toBe("还是答了");
@@ -403,7 +395,6 @@ describe("Agent 死亡事件", () => {
 
     // 订阅方在「死」那一刻读到的已经是死后那一格（不是 working）
     expect(stateAtDeath).toBe("idle");
-    // 死后的 agent 不再冒状态事件
     expect(idleAfterDeath).toBe(0);
     expect(agent.state).toBe("idle");
   });
@@ -463,7 +454,7 @@ describe("Agent 中断", () => {
     agent.abort();
     agent.abort();
 
-    // 开关那一下只有第一次翻得动（后面一声不响），但「按了停」发生几次就是几条事实
+    // 开关只有第一次翻得动，而 abort 发生两次就是两条事实
     expect(seen).toEqual(["output:paused", "aborted", "aborted"]);
 
     agent.kill();
@@ -562,7 +553,7 @@ describe("Agent 不取走", () => {
     await until(() => signal !== undefined);
 
     agent.abort();
-    // 开关翻成不取走了，而 state 那一格还停在 working：两处状态各说各的（这批跑完才报闲）
+    // 输出开关已关，`state` 仍停在 `working`：两处状态不一致，这批跑完才回到 `idle`
     expect(agent.isOutputPaused).toBe(true);
     expect(agent.state).toBe("working");
     expect(signal!.aborted).toBe(true);
@@ -601,7 +592,6 @@ describe("Agent 错误", () => {
     expect(assistant.status).toBe(AgentNS.MessageStatus.Error);
     expect(assistant.error).toBeInstanceOf(AgentError);
     expect(assistant.error!.code).toBe("request-failed");
-    // 错误文本绝不进 content
     expect(assistant.content).toBeUndefined();
 
     expect(failed).toHaveLength(1);
@@ -721,7 +711,6 @@ describe("Agent 工具段里按中断", () => {
     await until(() => toolStarted);
     agent.abort();
 
-    // 等这一批真的收尾（工具消息定型、队列空、回到闲）
     await settled(agent);
     expect(create).toHaveBeenCalledTimes(1);
     expect(agent.messages.some((m) => m.content === "接着把话说完")).toBe(false);
@@ -799,7 +788,6 @@ describe("Agent send：投递并等到空闲，但不关门", () => {
     const messages = await agent.sendAndWait("看这句话");
 
     expect(create).toHaveBeenCalledTimes(1);
-    // 那句话原样进了历史（发出去的请求里），答复跟在它后面
     expect(messages[0]!.content).toBe("看这句话");
     expect(messages.at(-1)!.content).toBe("收到");
 
@@ -873,7 +861,6 @@ describe("Agent runOnce", () => {
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(messages.at(-1)!.content).toBe("一次性结果");
-    // 死了就死透
     expect(() => agent.send(user("还想再来一次"))).toThrow(AgentError);
   });
 
@@ -1119,7 +1106,7 @@ describe("Agent runOnce", () => {
     await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
-    // 工具**不存在优先**：让它去修参数格式 = 让它修一个根本不存在的工具的参数，永远修不好
+    // 工具不存在优先：让它去修参数格式，等于让它去修一个根本不存在的工具的参数，永远修不好
     expect(toolMsg.content).toBe("未知工具: nope，没有找到对应的工具实现。");
     expect(toolMsg.content).not.toContain("参数解析错误");
 
@@ -1300,7 +1287,6 @@ describe("Agent runOnce", () => {
     expect(pending).toHaveLength(2);
     expect(pending[0]!.content).toBe("一");
     expect(pending[1]!.content).toBeUndefined();
-    // 看一眼不取走
     expect(agent.inboxSize).toBe(2);
     expect(agent.inboxPending).toHaveLength(2);
 
@@ -1318,12 +1304,10 @@ describe("Agent runOnce", () => {
     agent.send(); // 钥匙：没有正文
 
     expect(added).toHaveLength(2);
-    // 载荷就是队列里那一条：`createdAt` / `source` / 正文都在
     expect(added[0].entry.content).toBe("一句");
     expect(added[0].entry.source).toEqual({ kind: "user" });
     expect(typeof added[0].entry.createdAt).toBe("string");
     expect(added[1].entry.content).toBeUndefined();
-    // 投进来还没有人取走：队列里就是这两条
     expect(agent.inboxPending).toHaveLength(2);
 
     agent.kill();
@@ -1336,7 +1320,6 @@ describe("Agent runOnce", () => {
     const cleared: any[] = [];
     agent.on("inboxCleared", (payload) => cleared.push(payload));
 
-    // 空队列清一次不算变化
     expect(agent.clearInbox()).toEqual([]);
     expect(cleared).toHaveLength(0);
 
@@ -1346,7 +1329,6 @@ describe("Agent runOnce", () => {
 
     expect(dropped).toHaveLength(2);
     expect(cleared).toHaveLength(1);
-    // 带的就是丢掉的那两条，原顺序
     expect(cleared[0].entries).toHaveLength(2);
     expect(cleared[0].entries[0].content).toBe("一");
     expect(cleared[0].entries[1].content).toBe("二");
@@ -1381,23 +1363,16 @@ describe("Agent runOnce", () => {
     await settled(agent);
 
     expect(taken).toHaveLength(1);
-    // 两条都被取走了：一条带正文、一条是钥匙
     expect(taken[0].entries).toHaveLength(2);
     expect(taken[0].entries[1].content).toBeUndefined();
-    // 报之前那条 user 消息已经写进 messages 了，事件次序也是写进 messages 在前
     expect(addedBefore[0]).toBe(1);
     expect(order).toEqual(["messageAdded", "inboxTaken"]);
-    // 队列已空
     expect(agent.inboxPending).toHaveLength(0);
 
     agent.stop();
     await agent.start();
   });
 });
-
-// ---------------------------------------------------------------------------
-// 恢复：把旧的 InboxEntry 原样放回队列（PRD 4.12）
-// ---------------------------------------------------------------------------
 
 describe("Agent 恢复：把旧InboxEntry原样放回", () => {
   /**
@@ -1423,7 +1398,6 @@ describe("Agent 恢复：把旧InboxEntry原样放回", () => {
 
     agent.restore([stored]);
 
-    // 队列里就是存下来的那一条：id / 时间 / 来源 / 正文一格都没被换掉
     expect(agent.inboxPending).toEqual([stored]);
     // 恢复不是新变化：库里那一行已经在，再发 `inboxAdded` 就会插出第二行
     expect(added).toHaveLength(0);
@@ -1551,11 +1525,11 @@ describe("send 的三种写法", () => {
 });
 
 /**
- * 修历史那一步（`repair()`）会把崩溃留下的半截回答按策略改判 —— 改判**要报出去**。
+ * 修历史那一步（`repair()`）会把崩溃留下的半截回答按策略改判，改判要报出去。
  *
  * 症状：进程意外退出后重启，库里那条 assistant 停在 `writing`；装载时归一成 `aborted`（这一条
  * 报了 `messageChanged`，客户端于是给它挂上「不进上下文」的标记）；用户发下一句，`repair()`
- * 按 `keep` 把它改回 `completed` —— 从前这一步一声不响，客户端就一直挂着那个标记，而库里与
+ * 按 `keep` 把它改回 `completed`。从前这一步不发事件，客户端一直挂着那个标记，而库里与
  * 内存里它早就 `completed` 了。
  */
 describe("修历史：改判的那几条要报 messageChanged", () => {
@@ -1588,7 +1562,6 @@ describe("修历史：改判的那几条要报 messageChanged", () => {
 
     const report = changed.find((message) => message.id === "m-partial");
     expect(report?.status).toBe(AgentNS.MessageStatus.Completed);
-    // 三处同一份：内存里那条就是被改回来的那一份，且没有被删
     expect(agent.messages.some((message) => message.id === "m-partial")).toBe(true);
 
     agent.stop();

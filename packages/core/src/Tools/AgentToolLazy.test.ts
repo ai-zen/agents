@@ -6,7 +6,6 @@ import { Message } from "../Message.js";
 import { ToolCallContext } from "../ToolCallContext.js";
 import { addUsage, sumUsage } from "../Usage.js";
 
-// Helper: 创建 mock OpenAI client，始终返回固定文本
 function createMockClient(responseText = "mock回复") {
   const stream = {
     async *[Symbol.asyncIterator]() {
@@ -167,7 +166,6 @@ describe("AgentToolLazy subagent 委派边界", () => {
     const result = await tool.exec(buildCtx(host));
 
     expect(result).toBe("subagent结果");
-    // 初始消息保持 buildAgent 的决定（其后只由内循环追加 assistant 消息）
     expect(child.messages.slice(0, 2).map((m) => m.content)).toEqual(["动态提示", "动态任务"]);
   });
 
@@ -216,7 +214,7 @@ describe("AgentToolLazy subagent 委派边界", () => {
     // 发事件那一刻名册里已经有它（先记名字、再发事件）
     expect(names).toBe(1);
     expect(endedAtDuring).toBe("null");
-    // 结束只标注、不移除：父照样答得出它跑过什么（§17）
+    // 结束只标注、不移除：父照样答得出它跑过什么
     expect(host.subAgents).toHaveLength(1);
     expect(host.subAgents[0]!.agent).toBe(child);
     expect(host.subAgents[0]!.endedAt).not.toBeNull();
@@ -275,10 +273,6 @@ describe("AgentToolLazy subagent 委派边界", () => {
     expect(result).not.toBe("写代码");
   });
 });
-
-// ---------------------------------------------------------------------------
-// 委派这一拍留下的用量事实
-// ---------------------------------------------------------------------------
 
 type AnyChunk = any;
 
@@ -449,15 +443,11 @@ describe("AgentToolLazy 委派用量", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 收口那一条：最后一片正文靠它钉上去
-// ---------------------------------------------------------------------------
-
 /**
- * 一段回答的流：正文分两片到，**第二片自己带收尾信息**（`finish_reason` + `usage`）。
+ * 一段回答的流：正文分两片到，第二片自己带收尾信息（`finish_reason` + `usage`）。
  *
  * 真实端点最后一片正文往往就是流里最后一条带增量的 chunk。core 派发 `delta` 排在把这个片
- * 攒进消息**之前**，所以接收方看到的最后一条「原始片」永远缺这一片正文；它只能由收口那一条补。
+ * 攒进消息之前，所以接收方看到的最后一条「原始片」永远缺这一片正文；它只能由收口那一条补。
  */
 function tailPieceStream(first: string, last: string, usage: AgentNS.Usage): AnyChunk[] {
   return [

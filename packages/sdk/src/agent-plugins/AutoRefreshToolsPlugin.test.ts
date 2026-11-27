@@ -3,10 +3,6 @@ import type { InnerLoopContext, OuterLoopContext } from "@ai-zen/agents-core";
 import { AutoRefreshToolsPlugin } from "./AutoRefreshToolsPlugin.js";
 import { SdkAgent } from "../runtime/SdkAgent.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /** 最小 Scope mock —— 只暴露插件用到的 refresh / buildTools */
 function mockScope() {
   return {
@@ -33,10 +29,6 @@ function createTestAgent(opts?: { scope?: any; permissions?: any; definition?: a
     tools: [],
   });
 }
-
-// ==================================================================
-// 测试
-// ==================================================================
 
 describe("AutoRefreshToolsPlugin", () => {
   it("返回 AgentPlugin 对象", () => {

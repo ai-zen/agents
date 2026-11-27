@@ -1,14 +1,14 @@
 /**
  * 会话上可改的那六样：名字、置顶、自动交接开关、两条阈值、模型、思考档位。
  *
- * 这一份验的是**客户端调得动、落库落成了什么**：前四样直接写行（Agent 根本不读它们，改完当场
+ * 这一份验的是客户端调得动、落库落成了什么：前四样直接写行（Agent 根本不读它们，改完当场
  * 生效），后两样写行之外还要在活着的 Agent 上就地刷新（`SdkAgent.useModel`）。
  *
  * 每一条的错法都是「不报错也不工作」：名字改完 `nameSource` 还是 `default`（下一次自动起名会把它盖掉）、
  * 换模型没清档位（把一家的 thinking 参数带到另一家，端点直接 400）、阈值只有一个数进了库
  * （另一个还是旧值）、换模型只改了库没改 Agent（界面写着 A、请求发给 B）。
  *
- * 后两样（模型、思考档位）的每一条还同时验着**参数不跨级混合**：模型来自会话行时，AgentDefinition
+ * 后两样（模型、思考档位）的每一条还同时验着参数不跨级混合：模型来自会话行时，AgentDefinition
  * 那份参数（配给定义自己绑的那个模型的）不许跟过来；模型来自定义时它才是基础参数，档位补丁
  * 叠在它上面。
  */
@@ -85,7 +85,7 @@ const DEFINITION: AgentDefinition = {
 /**
  * 同一个 AgentDefinition，绑的是挂着思考档位表的那个模型（`modelParams` 照旧）。
  *
- * 只给「模型来自定义 **且** 有档位补丁」那一条用例用：`DEFINITION` 绑的 `model-plain` 没挂
+ * 只给「模型来自定义且带档位补丁」那一条用例用：`DEFINITION` 绑的 `model-plain` 没挂
  * 档位表，凑不出那个组合。
  */
 const THINKING_DEFINITION: AgentDefinition = { ...DEFINITION, modelId: "model-thinking" };

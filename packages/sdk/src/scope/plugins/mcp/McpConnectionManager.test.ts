@@ -89,8 +89,6 @@ describe("McpConnectionManager", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-  // ---- 状态机 ----
-
   it("初始状态 disconnected", () => {
     expect(manager.getState("github")).toBe("disconnected");
   });
@@ -172,8 +170,6 @@ describe("McpConnectionManager", () => {
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("Unsupported MCP transport");
   });
 
-  // ---- 获取 Client ----
-
   it("getClient 返回已连接的 Client", async () => {
     await manager.connect("github", stdioConfig);
     const client = manager.getClient("github");
@@ -183,8 +179,6 @@ describe("McpConnectionManager", () => {
   it("getClient 返回未连接 server 的 undefined", () => {
     expect(manager.getClient("nonexistent")).toBeUndefined();
   });
-
-  // ---- 空闲超时 ----
 
   it("空闲超时后自动断开", async () => {
     await manager.connect("github", stdioConfig, { idleTimeoutMs: 1000 });
@@ -205,8 +199,6 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("disconnected");
   });
 
-  // ---- 错误状态恢复 ----
-
   it("connect 错误状态后可以重试 connect", async () => {
     mockClient.connect.mockRejectedValueOnce(new Error("fail"));
 
@@ -218,13 +210,9 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("connected");
   });
 
-  // ---- 断开未连接的 server ----
-
   it("disconnect 未连接的 server 无操作", async () => {
     await expect(manager.disconnect("nonexistent")).resolves.toBeUndefined();
   });
-
-  // ---- disconnectAll ----
 
   it("disconnectAll 断开所有连接", async () => {
     await manager.connect("github", stdioConfig);
@@ -234,8 +222,6 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("disconnected");
     expect(manager.getState("slack")).toBe("disconnected");
   });
-
-  // ---- 多 server 独立管理 ----
 
   it("多个 server 状态独立", async () => {
     await manager.connect("github", stdioConfig);
@@ -254,8 +240,6 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("disconnected");
     expect(manager.getState("slack")).toBe("connected");
   });
-
-  // ---- 建连失败 ----
 
   it("建连失败：原错误原样抛出，且只尝试一次（没有重试环）", async () => {
     const boom = new Error("transient");

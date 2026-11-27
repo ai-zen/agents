@@ -20,10 +20,6 @@ function makeManager(basePath: string) {
   return new ConfigManager(join(basePath, "config.json"));
 }
 
-// ==================================================================
-// ensureDefaultAgent
-// ==================================================================
-
 describe("ConfigManager.ensureDefaultAgent", () => {
   let testDir: string;
 
@@ -187,10 +183,6 @@ describe("ConfigManager.ensureDefaultAgent", () => {
   });
 });
 
-// ==================================================================
-// ensureDefaultSubAgent
-// ==================================================================
-
 describe("ConfigManager.ensureDefaultSubAgent", () => {
   let testDir: string;
 
@@ -266,10 +258,6 @@ describe("ConfigManager.ensureDefaultSubAgent", () => {
     await expect(fs.access(join(subDir, `${DEFAULT_SUBAGENT_ID}.json`))).rejects.toThrow();
   });
 });
-
-// ==================================================================
-// ensureDefaultConfig
-// ==================================================================
 
 describe("ConfigManager.ensureDefaultConfig", () => {
   let testDir: string;
@@ -423,10 +411,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
   });
 });
 
-// ==================================================================
-// bootstrap — 一键初始化
-// ==================================================================
-
 describe("ConfigManager.bootstrap", () => {
   let testDir: string;
 
@@ -497,10 +481,6 @@ describe("ConfigManager.bootstrap", () => {
   });
 });
 
-// ==================================================================
-// 默认 MCP 配置（D32：与 config.json / host.json 同一口径）
-// ==================================================================
-
 describe("ConfigManager.ensureDefaultMcpConfig", () => {
   let testDir: string;
 
@@ -551,7 +531,7 @@ describe("ConfigManager.ensureDefaultMcpConfig", () => {
     expect((cfg.mcpServers as Record<string, any>)["my-server"]).toBeTruthy();
     expect((cfg.mcpServers as Record<string, any>)["socket-pty"]).toBeUndefined();
     expect(cfg.somethingUnknown).toEqual([1, 2, 3]);
-    // 逐字节不变（用户的文件不该被我们重排/美化）
+    // 逐字节不变（用户的文件不被重排或美化）
     await expect(fs.readFile(join(testDir, "mcp.json"), "utf-8")).resolves.toBe(original);
     expect(recovered).toEqual([]);
     await expect(fs.access(join(testDir, "mcp.json.broken"))).rejects.toThrow();

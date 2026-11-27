@@ -4,10 +4,6 @@ import { AgentNS } from "./AgentNS.js";
 import { CallbackTool } from "./Tools/CallbackTool.js";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 
-// ---------------------------------------------------------------------------
-// Mock OpenAI client
-// ---------------------------------------------------------------------------
-
 type AnyChunk = any;
 
 function chunk(
@@ -98,7 +94,7 @@ function createMockClient(deliveries: Array<AnyChunk[] | AsyncIterable<ChatCompl
 }
 
 /**
- * 等到它**真的停下来**：闲 且 队列空。
+ * 等到它真的停下来：闲 且 队列空。
  *
  * 只看 `state === "idle"` 不够 —— 状态由外循环的位置决定，push 之后要等外循环头
  * 才变 `working`，所以「刚 push 完就问一次」会立刻通过。
@@ -128,7 +124,7 @@ const user = (content: string): AgentNS.InboxInput => ({
 });
 
 /**
- * 事件表里的**全部**名字：键与值是同一个字。
+ * 事件表里的全部名字：键与值是同一个字。
  *
  * 写成这张穷尽表而不是手抄一串字符串：`AgentEvents` 上多一个事件、这里少一格就过不了编译
  * —— 「一条事实都没漏听」是第五个用例的前提，漏听一条，那条断言就不再成立。
@@ -171,15 +167,13 @@ const ALL_EVENT_NAMES = Object.values(ALL_EVENTS);
 /**
  * 把所有事件按到达顺序记进一个数组（返回那个数组本身，用例最后拿它判次序）。
  *
- * 记的是**名字**：这些用例问的都是「哪几条、什么顺序」，载荷在看具体那几条时另订。
+ * 记的是名字：这些用例问的都是「哪几条、什么顺序」，载荷在看具体那几条时另订。
  */
 function recordAllEvents(agent: Agent): string[] {
   const names: string[] = [];
   for (const name of ALL_EVENT_NAMES) agent.on(name, () => names.push(name));
   return names;
 }
-
-// ---------------------------------------------------------------------------
 
 describe("一趟请求的边界", () => {
   it("一趟里五条事实的次序", async () => {
@@ -289,7 +283,6 @@ describe("一趟请求的边界", () => {
     expect(names).not.toContain("turnStarted");
     expect(names).not.toContain("turnFinished");
     expect(agent.messages.some((message) => message.role === AgentNS.Role.Assistant)).toBe(false);
-    // 模型一次都没被叫
     expect(create).not.toHaveBeenCalled();
 
     // 「这次没跑」本身仍是听得见的一格事实，理由就是钩子返回的那个字符串
@@ -334,7 +327,7 @@ describe("一趟请求的边界", () => {
 });
 
 describe("定稿", () => {
-  /** 收到一条 `messageFinished` 就记下那条消息与它**那一刻**的状态（活对象事后读到的是终值） */
+  /** 收到一条 `messageFinished` 就记下那条消息与它那一刻的状态（活对象事后读到的是终值） */
   function recordFinished(
     agent: Agent,
   ): Array<{ message: AgentNS.Message; status?: AgentNS.MessageStatus }> {
@@ -352,7 +345,7 @@ describe("定稿", () => {
     const names = recordAllEvents(agent);
     const finished = recordFinished(agent);
 
-    // 这一轮**只拧一把钥匙**、history 空着：于是这一轮里写进 messages 的消息只有那条 assistant 占位，
+    // 这一轮只有一个 key、history 空着：于是这一轮里写进 messages 的消息只有那条 assistant 占位，
     // 「整轮里只有一条」才是一句能直接钉的话（用户说的话那一条由下面那个用例单独管）。
     void agent.start();
     agent.send();
@@ -388,7 +381,7 @@ describe("定稿", () => {
 
     const said = agent.messages.find((message) => message.role === AgentNS.Role.User)!;
 
-    // 出生就是终版：`messageAdded` 之后**紧接着**就是它（同一次 `append` 里发出去的两条）
+    // 出生就是终版：`messageAdded` 之后紧接着就是它（同一次 `append` 里发出去的两条）
     expect(names.indexOf("messageFinished")).toBe(names.indexOf("messageAdded") + 1);
     // 同一条消息恰一条：后面（修尾、收尾）不会再报一次
     expect(finished.filter((entry) => entry.message === said)).toHaveLength(1);
@@ -474,7 +467,6 @@ describe("序号与时刻", () => {
     expect(seqs[0]).toBe(1);
     expect(seqs).toEqual(seqs.map((_, index) => index + 1));
 
-    // 时刻：每一条都解析得出
     expect(facts.every((fact) => !Number.isNaN(Date.parse(fact.at)))).toBe(true);
 
     agent.stop();
@@ -512,7 +504,7 @@ describe("序号与时刻", () => {
 
 describe("死了之后不再有事实", () => {
   it("killed 之后一条事实都没有", async () => {
-    // 这条钉的是**次序**，不是门：死亡那一条必须是最后一条。
+    // 这条钉的是次序，不是门：死亡那一条必须是最后一条。
     //
     // 正常形状里它本来就排在最后 —— 收尾（`turnFinished`、`messageChanged`、`failed`）走完，
     // 才轮到循环出口的 `markDead()`；也就是说把门去掉，这一条照样绿（做过对照）。它挡的是

@@ -1,12 +1,12 @@
 /**
  * 配置面的读与改（`config.json` 与思考档位表那一半）。
  *
- * 这一份验的是 `prd/PLAN.md` 第 9 行那三条判据落到代码上的样子：
+ * 这一份验的是那三条判据落到代码上的样子：
  *
- * 1. **删之前说清还有谁指它**：删端点时还挂着模型 → `conflict`，并说清是哪几个；
- * 2. **没改就不写盘**：合出来与当前逐字一样 → 文件一个字都不动（这一条断言的是**文件的
- *    修改时间没变**，见那一条用例的注释）；
- * 3. **非法值被拒且改动留住**：形状不对的档位补丁、指不到东西的默认项都被拒，磁盘那份不变。
+ * 1. 删之前说清还有谁指它：删端点时还挂着模型 → `conflict`，并说清是哪几个；
+ * 2. 没改就不写盘：合出来与当前逐字一样 → 文件一个字都不动（这一条断言的是文件的
+ *    修改时间没变，见那一条用例的注释）；
+ * 3. 非法值被拒且改动留住：形状不对的档位补丁、指不到东西的默认项都被拒，磁盘那份不变。
  *
  * 另外两条是同一条判据的另一半：删图片模型时默认项要改指（不然默认项指着一条不在的），
  * 改中断策略时活着的 Agent 要当场按新的走（不然「下一句话就按新的来」只在文件层面成立）。
@@ -267,7 +267,7 @@ describe("配置面：图片模型", () => {
 
     const afterSecond = await host.caller.config.imageModels.delete({ id: "img-a2" });
 
-    // 同端点一条都不剩了：清空，而**不是**跨到 ep-b 上那条 img-b1
+    // 同端点一条都不剩了：清空，而不是跨到 ep-b 上那条 img-b1
     expect(afterSecond.config.defaultImageModel).toBeUndefined();
     expect(afterSecond.config.imageModels?.map((item) => item.id)).toEqual(["img-b1"]);
     // `undefined` 那一格在文件里就是不出现
@@ -289,7 +289,7 @@ describe("配置面：没改就不写盘", () => {
       maxToolOutput: host.deps.config.read().maxToolOutput,
     });
 
-    // 断言的是**文件没被重写**（不是内容一样 —— 内容当然一样）：mtime 只在写的那一刻变
+    // 断言的是文件没被重写（不是内容一样 —— 内容当然一样）：mtime 只在写的那一刻变
     expect(statSync(configPath).mtimeMs).toBe(before);
     // 「原样返回」是同一个对象：客户端拿到的那一份不必再叠补丁
     expect(config).toBe(beforeConfig);
@@ -540,7 +540,7 @@ describe("配置面：默认项", () => {
 });
 
 /**
- * 改过的模型必须活过**下一次启动**。
+ * 改过的模型必须活过下一次启动。
  *
  * `ensureDefaultConfig()` 每次启动都跑一遍出厂同步（`syncManagedModels`），而那条规则是
  * 「没标 `custom: true` 的一律整条换成出厂定义」。所以写入这一侧必须把用户改过的那一条转成

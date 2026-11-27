@@ -4,7 +4,7 @@ import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
 import type { HandoffService } from "../runtime/HandoffService.js";
 
 /**
- * 护栏现在**拒绝这一圈**（返回字符串），不是抛错。
+ * 护栏现在拒绝这一圈（返回字符串），不是抛错。
  *
  * 新 core 里 `onInnerLoopStart` 返回 string = 这一圈压根没发出去（历史里一个字都不多，
  * core 报 `denied`，循环继续等下一个事件）；抛错会穿到 `start()` 外面把整个循环打死。

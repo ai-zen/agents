@@ -1,11 +1,11 @@
 /**
- * 真实目录结构下的**装配**：仓库里那份夹具（`packages/test-home` + `packages/test-project`）
+ * 真实目录结构下的装配：仓库里那份夹具（`packages/test-home` + `packages/test-project`）
  * 走一遍「发现 → 过滤 → 建 Agent」。
  *
  * 这个文件只钉装配这一段 —— 也就是说：`allInOne` 把四维路径真的串起来了、权限过滤真的按
  * 定义削掉了工具、`createAgent` 真能装出一个能跑的 Agent、插件能在真 Agent 上挂住。
  *
- * 发现与读写的细节**不在这里重复**，各有自己的套件：
+ * 发现与读写的细节不在这里重复，各有自己的套件：
  * `scope/plugins/{skills,usertools,subagents,mcp}/discover.test.ts`、`crud/AgentRepository.test.ts`
  * （临时目录造的夹具，改仓库夹具不会牵连它们）。
  *
@@ -23,9 +23,6 @@ import type { Tool } from "@ai-zen/agents-core";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
-// ---------------------------------------------------------------------------
-// 真实路径
-// ---------------------------------------------------------------------------
 const TEST_HOME_DIR = join(__dirname, "..", "..", "test-home");
 const TEST_CONFIG = join(TEST_HOME_DIR, "config.json");
 const TEST_AGENTS_DIR = join(TEST_HOME_DIR, "agents");

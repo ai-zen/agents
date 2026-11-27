@@ -305,7 +305,7 @@ async function startSession(
 }
 
 /**
- * 在一段窗口里反复看一眼，窗口内**每一次**都必须成立。
+ * 在一段窗口里反复看一眼，窗口内每一次都必须成立。
  *
  * 「等一会儿，然后断言什么都没发生」不能写成 `sleep` 接着一句断言：那样只看见窗口末尾那一瞬。
  * 这里隔 `step` 毫秒问一次，`probe` 里那几条断言有一刻不成立就当场失败 —— 于是它既是一段
@@ -438,7 +438,6 @@ describe("宿主跑起来", () => {
     const sessions = await client.query<SessionRecord[]>("session.list", { workspaceId });
     expect(sessions).toEqual([]);
 
-    // ── 第一步：建行。只写库 ──
     const callsBefore = model.requests.length;
     const created = await client.mutation<{ session: SessionRecord }>("session.create", {
       workspaceId,
@@ -466,14 +465,12 @@ describe("宿主跑起来", () => {
     // 建行一个字都没发到模型端点：这一段还没有 Agent，也就没有人去要模型的话
     expect(model.requests.length).toBe(callsBefore);
 
-    // ── 第二步：起来 Agent。这一条不投递任何东西（装进来的只有 AgentDefinition 里的那条 system）──
     await client.mutation("runtime.agent.wake", { sessionId });
     const woken = await client.query<Opened>("session.open", { sessionId });
     expect(woken.live?.state).toBe("idle");
     expect(woken.inbox).toEqual([]);
     expect(woken.messages.map(textOf)).not.toContain(SAID);
 
-    // ── 第三步：投一条话 ──
     const sent = await client.mutation<{ sessionId: string; messageId: string }>(
       "runtime.agent.send",
       {
@@ -869,9 +866,9 @@ describe("能力来源目录", () => {
 });
 
 /**
- * 第 13 行的另一半：「关掉再打开，历史与没被处理的那几句话都在，没有一段会话自己跑起来」。
+ * 「关掉再打开，历史与没被处理的那几句话都在，没有一段会话自己跑起来」。
  *
- * 两个宿主**先后**起在同一个数据根上（第一个 `stop()` 完成之后才起第二个），端口都用 `0`。这条
+ * 两个宿主先后起在同一个数据根上（第一个 `stop()` 完成之后才起第二个），端口都用 `0`。这条
  * 用例只走客户端的公开面：`runtime.agent.send` / `runtime.agent.abort` / `session.open` —— 宿主怎么把 Agent 装
  * 起来、库里那张表长什么样，都不是断言的对象。
  */
@@ -958,7 +955,6 @@ describe("关掉再打开", () => {
   }, 60_000);
 
   it("关掉再打开：历史与没处理的那几句都在，没有一段会话自己跑起来", async () => {
-    // ── 第一台：建项目、发一句话，把那次回答等到落库 ──
     const first = await HostApp.open({ port: 0, local: true });
     await first.start();
     const firstClient = await HostClient.connect(
@@ -996,8 +992,6 @@ describe("关掉再打开", () => {
       );
     await vi.waitFor(() => expect(answered()).toBe(true), { timeout: 30_000, interval: 20 });
 
-    // ── 停机之前留一条**没被处理**的话 ──
-    //
     // 选「先 abort 关掉输出开关、再投一句」，不是「趁 Agent 忙的时候投」：忙的那段窗口只有几十毫秒
     // （假端点立刻回），早一步是「它还没开始跑」、晚一步是「它已经回完并把话取走了」，用例会随机
     // 落进不同的处境。abort 之后管理取走的那道开关是关着的 —— 此后投进去的 InboxEntry 只可能躺在排队区
@@ -1017,7 +1011,7 @@ describe("关掉再打开", () => {
     expect(beforeStop.live?.state).toBe("idle");
     expect(beforeStop.inbox.map(entryText)).toEqual([pendingText]);
 
-    // ── 正常停掉（`stop()`，不是杀进程）──
+    // 正常停掉（`stop()`，不是杀进程）
     firstClient.close();
     await first.stop();
 
@@ -1043,7 +1037,7 @@ describe("关掉再打开", () => {
     const callsBefore = model.requests.length;
     expect(callsBefore).toBeGreaterThan(0);
 
-    // ── 第二台：同一个数据根，什么都不投 ──
+    // 第二台：同一个数据根，什么都不投
     const second = await HostApp.open({ port: 0, local: true });
     await second.start();
     const secondClient = await HostClient.connect(
@@ -1071,7 +1065,7 @@ describe("关掉再打开", () => {
       });
       expect(model.requests.length).toBe(callsBefore);
     } finally {
-      // ── 收尾：停第二台、关假端点、清临时目录（临时目录在 `afterAll` 里清）──
+      // 收尾：停第二台、关假端点、清临时目录（临时目录在 `afterAll` 里清）
       secondClient.close();
       await second.stop();
     }
@@ -1079,9 +1073,9 @@ describe("关掉再打开", () => {
 });
 
 /**
- * 第 14 行的另一半：pin 与退出信号是两件事。
+ * pin 与退出信号是两件事。
  *
- * 只写 pin 的话，一次**正常**关闭之后启动方式会照着老 pin 把服务又拉起来。所以：「正常关闭把 pin
+ * 只写 pin 的话，一次正常关闭之后启动方式会照着老 pin 把服务又拉起来。所以：「正常关闭把 pin
  * 清掉」（下一条用例），而升级那一路留下 pin，并以另一个退出码退出 —— 启动方式据此分清「照 pin
  * 重拉」与「就是关了」。
  *
@@ -1211,7 +1205,7 @@ describe("pin 与退出信号", () => {
  * （`db.close()` 走了一半），同一刻又来一条 SIGTERM —— `agents-host stop` 那一路的 `app.stop()`
  * 会再跑一遍，第二次在已经关掉的库上抛，而进程本该安安静静退出去。
  *
- * 所以第二次拿到的必须是**同一句** promise：等第一句，而不是从头再拆一遍。这里连关两次，两次都要
+ * 所以第二次拿到的必须是同一句 promise：等第一句，而不是从头再拆一遍。这里连关两次，两次都要
  * 正常返回，发现文件照样清掉（该做的事一件没少，只是没做第二遍）。
  *
  * 不碰网络也不碰模型：起一台宿主、绑端口、写发现文件，然后关两次。

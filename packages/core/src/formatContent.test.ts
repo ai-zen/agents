@@ -181,9 +181,7 @@ describe("formatHistory 的逐段路径", () => {
 
     const history = agent.formatHistory();
 
-    // 三条消息都有内容：各过一次入口
     expect(contentCalls).toBe(3);
-    // 只有数组内容逐段走：两段
     expect(sectionCalls).toBe(2);
     expect(history[1]?.content).toEqual([
       { type: "text", text: "一段" },

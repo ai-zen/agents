@@ -4,7 +4,7 @@
  * 两台夹具都用官方 server SDK 搭，差别只在入口 —— 而入口恰好决定年款：
  *
  * - `fixtures/official-elicit-server.mjs`（`serveStdio`）：年款由开场那条消息定，所以它会跟
- *   我们一起谈到 2026-07-28，工具回 `input_required`、客户端带 `inputResponses` 重发；
+ *   本仓一起谈到 2026-07-28，工具回 `input_required`、客户端带 `inputResponses` 重发；
  * - `fixtures/official-legacy-elicit-server.mjs`（`new McpServer` + `new StdioServerTransport`）：
  *   这条基本写法没有「按开场消息定年款」那层，只服务 2025 那一档，客户端把版本探回 2025，
  *   工具跑到中途中由 SDK 反过来发一条 `elicitation/create` 请求。

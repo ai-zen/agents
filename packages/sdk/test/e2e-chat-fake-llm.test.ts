@@ -2,9 +2,9 @@
  * 真实 HTTP 链路上的一轮问答：`createModel → SdkAgent → start / push / 等闲`。
  *
  * 端点换成 `@ai-zen/fake-llm`（OpenAI 兼容、只依赖 `node:http`）：既是真 socket、真 SSE 流、
- * 真 `openai` 客户端，又能把**剧本**定死 —— 于是「发出去的是什么」与「拼起来的答案是什么」
+ * 真 `openai` 客户端，又能把剧本定死 —— 于是「发出去的是什么」与「拼起来的答案是什么」
  * 都能写等号。原来那套要 `DEEPSEEK_API_KEY`、只能断言「回复里提到小明」的用例由这个文件取代：
- * 那种断言测的是模型会不会说话，不是我们这条链。
+ * 那种断言测的是模型会不会说话，不是这条链路。
  *
  * 起了一个本地端口的 HTTP 服务，所以不在默认套件里：`npm run test:e2e`。
  */
@@ -143,7 +143,7 @@ describe("真实 HTTP 链路（fake-llm）", () => {
     const h = await makeAgent({
       reply: (request: any, index: number) => {
         if (index === 0) return toolCall;
-        // 第二轮：端点能看到我们喂回来的工具结果，用它拼一句话
+        // 第二轮：端点能看到请求里喂回去的工具结果，用它拼一句话
         const toolMessage = request.messages.find((m: any) => m.role === "tool");
         return `读到了：${String(toolMessage?.content ?? "").includes('"name"')}`;
       },

@@ -12,10 +12,6 @@ import {
 import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
 import { FALLBACK_HANDOFF_TEMPLATE } from "../config/factory-skills.js";
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
 const SKILL_CONTENT = [
   "---",
   "name: handoff",
@@ -36,8 +32,7 @@ function docContent(padding = 600): string {
 /**
  * 模型那一侧的脚本：从交接指令里认出这次的文档路径，然后调一次写工具把它落盘。
  *
- * `body` 可以给得比 `docContent()` 短 —— “写出来不到 400 字节算没写出来”那条就靠它验
- * （`PRD.md` 3.6）。
+ * `body` 可以给得比 `docContent()` 短 —— “写出来不到 400 字节算没写出来”那条就靠它验。
  */
 function writeScript(body: string = docContent()): FakeAgentOptions["onSend"] {
   return async (_content, _nth, self) => {
@@ -59,8 +54,8 @@ type Listener = (payload: any) => void;
 /**
  * 假 agent：只实现 `HandoffService` 用到的表面。
  *
- * 常驻会话没有 `sendAndWait()`（`CORE.md` §1）：自交接靠「`send` 一条指令」，判据是那次写文档
- * 的**工具调用**。所以这个替身要把 core 那条路的三样东西都演出来：
+ * 常驻会话没有 `sendAndWait()`：自交接靠「`send` 一条指令」，判据是那次写文档
+ * 的工具调用。所以这个替身要把 core 那条路的三样东西都演出来：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
  *   - `push(entry)`：落一条 user 消息 → 变 `working` → 这一批（`onOuterLoopStart`）→ 跑脚本
  *     （脚本里用 `callWrite` 模拟模型调写工具）→ 这一批收口（`onOuterLoopEnd`）→ 变闲；
@@ -68,7 +63,7 @@ type Listener = (payload: any) => void;
  *     钩子在前（还能拒）、跑在中间、钩子在后（能看结果）。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
- * `state` 与 `isOutputPaused` 是**两处状态**（与 core 同口径）：`state` 只说循环的位置，
+ * `state` 与 `isOutputPaused` 是两处状态（与 core 同口径）：`state` 只说循环的位置，
  * `isOutputPaused` 只管「从下一批起还收不收件」。
  */
 class FakeAgent {
@@ -194,8 +189,6 @@ class FakeAgent {
     await this.dispatch("onToolEnd", { agent: this, toolCall });
   }
 
-  // ---- 事件（core 的 `on()` 返回取消函数） ----
-
   on(type: string, handler: Listener): () => void {
     let set = this.listeners.get(type);
     if (!set) this.listeners.set(type, (set = new Set()));
@@ -211,11 +204,9 @@ class FakeAgent {
     const from = this.state;
     if (from === next) return;
     this.state = next;
-    // 与 core 同口径：状态事件按到达值分名（CORE.md §10）
+    // 与 core 同口径：状态事件按到达值分名
     this.emit(`state:${next}`, { agent: this, from });
   }
-
-  // ---- 死活 ----
 
   start(): Promise<void> {
     this.death ??= new Promise<void>((resolve) => (this.resolveDeath = resolve));
@@ -237,8 +228,6 @@ class FakeAgent {
     this.resolveDeath?.();
   }
 
-  // ---- 投递 ----
-
   /** 换完记忆之后那条「去读文档」的指令（它们留在队列里，不进记忆，见 `send`） */
   resumeInstructions: Array<{ content: string; priority: string; label: string }> = [];
 
@@ -248,7 +237,7 @@ class FakeAgent {
     }
     const content = entry.content as string;
     this.sent.push(content);
-    // 「去读文档」那条只记下来、不落进记忆：这些用例验的是**记忆长什么样**（模板 + 断点），
+    // 「去读文档」那条只记下来、不落进记忆：这些用例验的是记忆长什么样（模板 + 断点），
     // 而那条指令在真 core 里要等下一批才被取走（宿主那边还压着输出开关）。
     if (entry.source?.label === HANDOFF_RESUME_SOURCE_LABEL) {
       this.resumeInstructions.push({
@@ -299,10 +288,6 @@ afterEach(async () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// 静态纯工具
-// ---------------------------------------------------------------------------
-
 describe("HandoffService 静态工具", () => {
   it("createHandoffFileName 只用到秒的时间戳（无会话 id 后缀）", () => {
     const name = HandoffService.createHandoffFileName(new Date(2026, 0, 2, 3, 4, 5));
@@ -342,7 +327,7 @@ describe("HandoffService 静态工具", () => {
 
     expect(messages).toHaveLength(1);
     const breakpoint = messages[0]!;
-    // `role: system` + `hidden`（不给人看，但照常进上下文）—— PRD 3.6 / 4.5
+    // `role: system` + `hidden`（不给人看，但照常进上下文）
     expect(breakpoint.role).toBe("system");
     expect(breakpoint.hidden).toBe(true);
     // 正文只有路径：不带全文，也不带自己编的指令句
@@ -358,10 +343,6 @@ describe("HandoffService 静态工具", () => {
     ).toBe("[user]: hello\n\n[assistant]: hi");
   });
 });
-
-// ---------------------------------------------------------------------------
-// handoff：只产出文档
-// ---------------------------------------------------------------------------
 
 describe("handoff", () => {
   it("self 模式：原 agent 在自己会话里写文档，会话不切换", async () => {
@@ -448,7 +429,7 @@ describe("handoff", () => {
         pausedAtCommit = (ctx.agent as any).isOutputPaused;
       },
     });
-    // 摘要是这一段**申请**的执行者（构造时 `mode: "summary"`），不是替谁降级的
+    // 摘要是这一段申请的执行者（构造时 `mode: "summary"`），不是替谁降级的
     const agent = new FakeAgent({ writeTool: false });
     const resume = vi.spyOn(agent, "resumeOutput");
 
@@ -476,8 +457,8 @@ describe("handoff", () => {
   });
 
   it("agent 无 write 工具时这一趟失败（报「没有写文件的工具」）", async () => {
-    // 申请的是自交接：做不成就报失败，**不是**退到独立摘要。退过去会让用户以为手里那份文档
-    // 是原会话自己写的（`PRD.md` 3.6）
+    // 申请的是自交接：做不成就报失败，不是退到独立摘要。退过去会让用户以为手里那份文档
+    // 是原会话自己写的
     const { service, dir } = await makeService();
     const agent = new FakeAgent({ writeTool: false });
 
@@ -504,7 +485,7 @@ describe("handoff", () => {
     const { service } = await makeService();
     const agent = new FakeAgent({ onSend: writeScript("too short") });
 
-    // 文件写出来了，但不到 400 字节 —— 算没写出可用的文档（PRD 3.6 / 4.5），这一趟到此为止
+    // 文件写出来了，但不到 400 字节 —— 算没写出可用的文档，这一趟到此为止
     await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(
       /no usable handoff document/,
     );
@@ -546,7 +527,7 @@ describe("handoff", () => {
   });
 
   it("agent 已经关门时不投递、不做 summary，直接把 closed 往上抛", async () => {
-    // `push` 在关门之后抛 `AgentError("closed")`（CORE.md §1）。那不是「文档没写出来」，
+    // `push` 在关门之后抛 `AgentError("closed")`。那不是「文档没写出来」，
     // 而是「这个会话已经不在了」—— 换一个执行者接着做只会为一个死掉的会话白烧一次全量输入。
     const { service } = await makeService();
     const agent = new FakeAgent();
@@ -584,7 +565,7 @@ describe("handoff", () => {
 
   it("summary 模型不返回内容时抛错", async () => {
     const { service } = await makeService();
-    // 摘要是**申请来的**（`mode: "summary"`），不是替谁降级的：不传这一格就该走自交接
+    // 摘要是申请来的（`mode: "summary"`），不是替谁降级的：不传这一格就该走自交接
     const agent = new FakeAgent({ writeTool: false });
     agent.client.chat.completions.create.mockResolvedValue({
       choices: [{ message: { content: null } }],
@@ -626,10 +607,6 @@ describe("handoff", () => {
     expect(service.handingOff).toBe(false);
   });
 });
-
-// ---------------------------------------------------------------------------
-// self 模式：真 core 走一遍
-// ---------------------------------------------------------------------------
 
 /**
  * 这一组不接假 agent：判据落在 core 的钩子上（`onToolStart` / `onToolEnd` / `onOuterLoopEnd`），
@@ -841,10 +818,6 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
   });
 });
 
-// ---------------------------------------------------------------------------
-// migrate：写文档 **+ 换记忆**（记忆长什么样只有这一处算）
-// ---------------------------------------------------------------------------
-
 /**
  * 这一组的预设：假 agent 开局是 `[system 模板, user, assistant]`，模板那一条在 `definition.messages`。
  * 自交接会投一条指令、跑一趟写工具，所以交接回合本身也会多出两条消息。
@@ -908,7 +881,7 @@ describe("migrate", () => {
 
   it("交接失败（没写出可用文档）不投那条指令：记忆没换，没人要读", async () => {
     const { service } = await makeService();
-    // 写出来了但不到 400 字节 —— 算没写出可用的文档（PRD 3.6 / 4.5）
+    // 写出来了但不到 400 字节 —— 算没写出可用的文档
     const agent = new FakeAgent({ onSend: writeScript("too short") });
 
     await expect(service.migrate({ agent: asAgent(agent) })).rejects.toThrow(
@@ -958,7 +931,7 @@ describe("migrate", () => {
 
   it("summary 模式下 prune 也把文档落盘，断点仍只给路径", async () => {
     const { service } = await makeService({ strategy: "prune" });
-    // 摘要必须被**申请**：没有 write 工具又没申请摘要，那一趟是失败，不是自动退过去
+    // 摘要必须被申请：没有 write 工具又没申请摘要，那一趟是失败，不是自动退过去
     const agent = new FakeAgent({ writeTool: false });
 
     const ctx = await service.migrate({ agent: asAgent(agent), mode: "summary" });
@@ -1042,15 +1015,11 @@ describe("migrate", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// migrate 的落库接缝：一处实现 + 可接管
-// ---------------------------------------------------------------------------
-
 describe("migrate 的落库接缝（commitMemory）", () => {
   it("不注入：SDK 自己换 agent.messages（外部使用者走的那条）", async () => {
     const { service } = await makeService({ strategy: "prune" });
     const agent = new FakeAgent({ onSend: writeScript() });
-    // 记忆就是这个数组（换是原地换：同一个数组、不换引用，CORE.md §12）
+    // 记忆就是这个数组（换是原地换：同一个数组、不换引用）
     const memory = agent.messages;
 
     const ctx = await service.migrate({ agent: asAgent(agent) });
@@ -1097,7 +1066,7 @@ describe("migrate 的落库接缝（commitMemory）", () => {
     const agent = new FakeAgent({ onSend: writeScript("too short") });
     const memory = agent.messages;
 
-    // 自交接没写出 400 字节 → 这一趟失败。**不换成摘要**：换了就是「记忆照换、看起来像成功」
+    // 自交接没写出 400 字节 → 这一趟失败。不换成摘要：换了就是「记忆照换、看起来像成功」
     await expect(service.migrate({ agent: asAgent(agent) })).rejects.toThrow(
       /no usable handoff document/,
     );
@@ -1129,10 +1098,6 @@ describe("migrate 的落库接缝（commitMemory）", () => {
     expect(agent.messages.at(-1)?.content).toBe("Handoff document written.");
   });
 });
-
-// ---------------------------------------------------------------------------
-// 取消（AbortSignal）—— 用户按 Ctrl+C 必须真的停下，且**不降级、不重试**
-// ---------------------------------------------------------------------------
 
 describe("取消（AbortSignal）", () => {
   /** 造一个「请求一开始就被取消」的 OpenAI 错误（与 SDK 抛的形态一致） */

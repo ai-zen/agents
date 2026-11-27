@@ -1,15 +1,15 @@
 /**
- * AgentDefinition 与 subagent 的写入口（`prd/PLAN.md` 第 9 行的「AgentDefinition 与 subagent」那一格）。
+ * AgentDefinition 与 subagent 的写入口。
  *
  * 这一份验的是那三条判据落到这一个域上的样子：
  *
- * 1. **写进去的非法值被拒且改动留住**：标识不是文件名安全的、模板里没有系统提示、参数结构是
+ * 1. 写进去的非法值被拒且改动留住：标识不是文件名安全的、模板里没有系统提示、参数结构是
  *    一段坏 JSON，三种都被拒在写盘之前 —— 磁盘那一份一个字都不动（改动留在编辑器里是客户端
  *    的事，宿主只保证不接受）；
- * 2. **多行内容原样存**：提示词与参数结构都是编辑器里的多行文本，换行与缩进读回来逐字相等；
- * 3. **删与恢复出厂的连带**：删默认 AgentDefinition 要连带清默认，恢复出厂要整条换回出厂定义并重新归入
+ * 2. 多行内容原样存：提示词与参数结构都是编辑器里的多行文本，换行与缩进读回来逐字相等；
+ * 3. 删与恢复出厂的连带：删默认 AgentDefinition 要连带清默认，恢复出厂要整条换回出厂定义并重新归入
  *    托管（`custom: false`）；
- * 4. **再建与再保存**：同 id 再建一次是 `conflict`（磁盘那一份不被覆盖），什么都没改就再保存
+ * 4. 再建与再保存：同 id 再建一次是 `conflict`（磁盘那一份不被覆盖），什么都没改就再保存
  *    一次则不写盘（断言的是文件的修改时间没变）。
  *
  * 落盘全用真的：临时目录 + 真的 `AgentRepository` + 真的 `ConfigManager`。打桩存储只会验到桩，
@@ -327,7 +327,7 @@ describe("AgentDefinition：再建与再保存", () => {
     const { id: _id, createdAt: _createdAt, updatedAt, ...same } = stored;
     const saved = await host.definitions.update(stored.id, same);
 
-    // 断言的是**文件没被重写**（不是内容一样 —— 内容当然一样）：mtime 只在写的那一刻变
+    // 断言的是文件没被重写（不是内容一样 —— 内容当然一样）：mtime 只在写的那一刻变
     expect(statSync(path).mtimeMs).toBe(before);
     // `updatedAt` 也不是「用户点了一次保存」的时刻：没改动就不该被推到当前
     expect(saved.updatedAt).toBe(updatedAt);

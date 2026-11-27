@@ -260,7 +260,7 @@ describe("createCallSkillSubAgentTool", () => {
     // 初始消息来自 SKILL.md 与 task 参数
     expect(String(captured!.messages[0].content)).toContain("Git operations guide");
     expect(captured!.messages[1].content).toBe("commit these changes");
-    // 委派造出来的必须是**一次性** agent（core 的 `buildAgent` 契约）
+    // 委派造出来的 agent 是一次性的（core 的 `buildAgent` 契约）
     expect(captured!.lifetime).toBe("one-shot");
     // 注入的那条 user 消息由委派工具补 `source`（谁注入谁填）
     expect(captured!.messages[1].source).toEqual({ kind: "agent", label: "call_skill_sub_agent" });

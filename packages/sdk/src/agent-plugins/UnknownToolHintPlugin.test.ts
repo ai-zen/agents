@@ -98,7 +98,7 @@ function availableTool(name: string): Tool {
 /**
  * 造一次「未知工具」的 `onUnknownTool` ctx。
  *
- * 新 core 把两个问题拆回两个钩子：工具**不存在**时派发 `onUnknownTool`（工具存在才走
+ * 新 core 把两个问题拆回两个钩子：工具不存在时派发 `onUnknownTool`（工具存在才走
  * `onToolStart`），所以这里不需要构造「匹配到实现」那一半 —— 来到这里就已经是未知工具。
  */
 function unknownToolCtx(toolName: string, availableTools: string[]): UnknownToolContext {
@@ -124,7 +124,7 @@ describe("UnknownToolHintPlugin", () => {
   });
 
   it("MCP 已配置、call_mcp_tool 真被权限禁掉时，提示里说的是权限问题", async () => {
-    // 真走一遍能力装配（不是手搭 tools 数组）：`call_mcp_tool` 是被**权限**关掉的，
+    // 真走一遍能力装配（不是手搭 tools 数组）：`call_mcp_tool` 是被权限关掉的，
     // 于是它压根不在可用工具里 —— 本插件的判据（`availableTools` 里没有它）因此成立。
     const scope = mockScope({ mcpPaths: ["/tmp/mcp.json"] });
     const definition = {

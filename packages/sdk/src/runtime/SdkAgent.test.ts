@@ -5,10 +5,6 @@ import { SdkAgent } from "./SdkAgent.js";
 import { CallbackTool } from "@ai-zen/agents-core";
 import { sendRound } from "../test-support/agent-round.js";
 
-// ---------------------------------------------------------------------------
-// mock helpers
-// ---------------------------------------------------------------------------
-
 type AnyChunk = any;
 
 /** 构造一个流式 chunk */
@@ -101,10 +97,6 @@ function modelScope() {
     },
   } as any;
 }
-
-// ---------------------------------------------------------------------------
-// 测试
-// ---------------------------------------------------------------------------
 
 describe("SdkAgent", () => {
   it("构造时携带 scope / definition（含 permissions）", () => {

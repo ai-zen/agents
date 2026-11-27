@@ -34,10 +34,6 @@ function writeSkillRaw(id: string, raw: string) {
   writeFileSync(join(skillDir, "SKILL.md"), raw);
 }
 
-// ==================================================================
-// discoverSkills
-// ==================================================================
-
 describe("discoverSkills", () => {
   it("空目录返回空数组", async () => {
     await expect(discoverSkills([dir])).resolves.toEqual([]);
@@ -131,13 +127,7 @@ describe("discoverSkills", () => {
   });
 });
 
-// ==================================================================
-// parseFrontmatter
-// ==================================================================
-
 describe("parseFrontmatter", () => {
-  // ---- 核心字段 ----
-
   it("解析 name、description、sub-agent", () => {
     const fm = parseFrontmatter(`---
 name: test-skill
@@ -174,8 +164,6 @@ sub-agent: false
     const fm = parseFrontmatter(`# 直接正文`);
     expect(fm).toEqual({});
   });
-
-  // ---- 规范字段 ----
 
   it("解析 license 和 compatibility", () => {
     const fm = parseFrontmatter(`---
@@ -259,13 +247,7 @@ Full body content here.`);
   });
 });
 
-// ==================================================================
-// validateSkill
-// ==================================================================
-
 describe("validateSkill", () => {
-  // ---- name 校验 ----
-
   it("合法 name 无错误", () => {
     const errors = validateSkill("pdf-processing", { name: "pdf-processing", description: "desc" });
     expect(errors).toEqual([]);
@@ -329,8 +311,6 @@ describe("validateSkill", () => {
     );
   });
 
-  // ---- description 校验 ----
-
   it("合法 description 无错误", () => {
     const errors = validateSkill("my-skill", {
       name: "my-skill",
@@ -349,8 +329,6 @@ describe("validateSkill", () => {
     const errors = validateSkill("my-skill", { name: "my-skill", description: longDesc });
     expect(errors.some((e) => e.field === "description" && e.message.includes("1024"))).toBe(true);
   });
-
-  // ---- compatibility 校验 ----
 
   it("合法 compatibility 无错误", () => {
     const errors = validateSkill("my-skill", {
@@ -371,18 +349,12 @@ describe("validateSkill", () => {
     expect(errors.some((e) => e.field === "compatibility")).toBe(true);
   });
 
-  // ---- 多错误聚合 ----
-
   it("多个字段违规时返回全部错误", () => {
     const errors = validateSkill("my-dir", { name: "", description: "" });
     expect(errors.filter((e) => e.field === "name").length).toBeGreaterThanOrEqual(1);
     expect(errors.filter((e) => e.field === "description").length).toBeGreaterThanOrEqual(1);
   });
 });
-
-// ==================================================================
-// readSkill
-// ==================================================================
 
 describe("readSkill", () => {
   it("读取完整 Skill 内容与元数据", async () => {

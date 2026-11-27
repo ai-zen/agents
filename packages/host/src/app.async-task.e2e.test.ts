@@ -116,7 +116,7 @@ function toolOf(agent: Agent, name: string): Tool {
 /**
  * 调一次工具：`ctx` 与 core 在模型发起工具调用时造的是同一个形状，`ctx.agent` 就是那个 Agent。
  *
- * 注意它是**同步开到 `spawn` 的那一步**的（`AsyncExecTool.call` 在起进程之前没有 await），
+ * 注意它是同步开到 `spawn` 的那一步的（`AsyncExecTool.call` 在起进程之前没有 await），
  * 这是这条用例能在同一个 tick 里抢先杀掉会话的前提。
  */
 async function callTool(tool: Tool, agent: Agent, args: Record<string, unknown>): Promise<any> {

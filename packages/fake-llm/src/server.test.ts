@@ -241,7 +241,6 @@ describe("故障注入", () => {
     const { frames, done } = parseSse(text);
     expect(frames).toHaveLength(3);
     expect(frames[0].choices[0].delta.role).toBe("assistant");
-    // 断在中间：没有收尾片，也没有 [DONE]，客户端读到的是一次错误
     expect(done).toBe(false);
     expect(failure).toBeInstanceOf(Error);
     expect(failure!.message).toContain("terminated");

@@ -1,5 +1,5 @@
 /**
- * 一条对着**真宿主**的用例：真端口、真连，中间没有任何替身。
+ * 一条对着真宿主的用例：真端口、真连，中间没有任何替身。
  *
  * 起一台 `HostApp`（`port: 0`、本机实例、临时数据根），用这个包交出去的 `connect` 连上去，
  * 然后把客户端要做的五件事按顺序走一遍：握手（对令牌 / 错令牌）、建项目与列会话、订阅事件、
@@ -27,7 +27,6 @@ import { fromTRPCError, type ClientError } from "./errors.js";
 /** 假端点要说的话；切成几片发，且片间留 80ms —— 于是流式那几侧真的有一段中间态 */
 const REPLY = "The local endpoint received this line.";
 
-/** 发出去的那句话 */
 const SAID = "hello, local endpoint";
 
 /** 一张 1×1 的 PNG（几十字节，够走完整条上传与取回的路） */
@@ -258,7 +257,6 @@ describe("事件流", () => {
       ) as { message: { id: string; content: unknown } }[];
       expect(added.map((event) => event.message.id)).toContain(sent.messageId);
 
-      // 模型说的话是流回来的：至少一条 message.changed
       const changed = events.filter(
         (event) => (event as { type: string }).type === "message.changed",
       );

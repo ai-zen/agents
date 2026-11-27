@@ -229,7 +229,7 @@ describe("createModel：出网请求的头", () => {
 
       const headers = llm.requests[0]!.headers;
       expect(headers["x-opencode-session"]).toBe("sess-1");
-      // 配置里写了 user-agent：盖掉我们自己的那个
+      // 配置里写了 user-agent：盖掉 SDK 自己带的那个
       expect(headers["user-agent"]).toBe("custom/9");
     } finally {
       await llm.close();

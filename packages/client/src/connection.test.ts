@@ -1,5 +1,5 @@
 /**
- * `ensureHost` 的验收：有就上、没有就拉一个、**给了显式地址就只连**。
+ * `ensureHost` 的验收：有就上、没有就拉一个、给了显式地址就只连。
  *
  * spawn 与文件读取都注入成假的，所以这里既不真起进程、也不真读盘；「拉起 → 轮询 → 就绪」这条链
  * 用一个手摇的时钟（`sleep` 推进 `now`）走完，不必真等 15 秒。
@@ -38,7 +38,7 @@ import { ClientError, localError, type LocalWarning } from "./errors.js";
 const DATA_ROOT = "/data/ai-zen";
 
 /**
- * 拉起日志的落点由**调用方**给，所以用例自己定一个（CLI 那边给的是 `<数据根>/logs/cli/launch.log`）。
+ * 拉起日志的落点由调用方给，所以用例自己定一个（CLI 那边给的是 `<数据根>/logs/cli/launch.log`）。
  */
 function launchLogOf(dataRoot: string): string {
   return join(dataRoot, "logs", "cli", "launch.log");
@@ -320,8 +320,6 @@ describe("本地事实的读法", () => {
   });
 });
 
-// ==================== 拉起：两条路 ====================
-
 /** 一个假子进程：只长着拉起那一层用到的那几件事（`once` / `emit` 来自 `EventEmitter`） */
 class FakeChild extends EventEmitter {
   pid: number | undefined = 999_999;
@@ -349,7 +347,7 @@ interface SpawnCall {
 function fakeSpawn(
   plan: {
     exit?: { code: number | null; signal?: string | null };
-    /** 「子进程」往拉起日志里写的那几行（npm 的输出来自子进程，不是我们写的） */
+    /** 「子进程」往拉起日志里写的那几行（npm 的输出来自子进程，不是本文件写的） */
     output?: { path: string; text: string };
   } = {},
 ) {
@@ -605,8 +603,6 @@ describe("拉起失败：拿子进程最后一行输出当原因", () => {
     expect(error.detail).toMatchObject({ code: 1, logFile: launchLogOf(DATA_ROOT) });
   });
 });
-
-// ==================== 升级：pin 与 75 ====================
 
 const PIN_FILE = versionPinFilePath(DATA_ROOT);
 
@@ -924,7 +920,7 @@ describe("升级：子进程以 75 退出不是拉起失败", () => {
 
     expect(contexts).toHaveLength(1);
     expect(error.code).toBe("host_launch_failed");
-    // 这一侧只读 pin，不顺手删它
+    // 这一侧只读 pin，不删它
     expect(test.files.has(PIN_FILE)).toBe(true);
   });
 });

@@ -45,13 +45,11 @@ describe("reconcileAbortedToolRounds", () => {
 
     reconcileAbortedToolRounds(messages, "fill", "用户中断了会话");
 
-    // assistant 被恢复为 Completed 并纳入
     expect(messages[1]!.status).toBe(AgentNS.MessageStatus.Completed);
     expect(included(messages[1]!)).toBe(true);
-    // 中断的 b 被补上原因
     expect(messages[3]!.status).toBe(AgentNS.MessageStatus.Completed);
     expect(messages[3]!.content).toBe("用户中断了会话");
-    // 三条结果全部纳入 → N 调用 = N 结果
+    // 三条结果全部纳入：调用数与结果数相等
     const results = messages.filter((m) => m.role === AgentNS.Role.Tool);
     expect(results).toHaveLength(3);
     expect(results.every(included)).toBe(true);
@@ -105,7 +103,6 @@ describe("reconcileAbortedToolRounds", () => {
       toolResult("a", AgentNS.MessageStatus.Error, "工具出错"),
     ];
     reconcileAbortedToolRounds(messages, "fill");
-    // Error 结果不被改写为 Completed
     expect(messages[2]!.status).toBe(AgentNS.MessageStatus.Error);
   });
 

@@ -131,7 +131,7 @@ describe("createSubAgentTool", () => {
   });
 
   it("buildAgent 造出来的subagent 是「一次性」的，且注入的 user 消息带 source", async () => {
-    // 一次性委派的理由见 `subAgentTools.ts`（`CORE.md` §9）
+    // 一次性委派的理由见 `subAgentTools.ts`
     const scope = mockScope();
     const def = sampleDef("sa1", "agent_one");
     def.modelId = "gpt4"; // 有独立模型 → 不必碰父 agent 的 client
@@ -170,7 +170,7 @@ describe("createSubAgentTool", () => {
   });
 
   it("被派出去的Agent没有平级会话那三个工具与两个后台工具，别的工具还在", async () => {
-    // 这里要一个**真实**的 Scope：`mockScope()` 的 filter 与 instantiate 都是桩，会把 exclude 吃掉，
+    // 这里要一个真实的 Scope：`mockScope()` 的 filter 与 instantiate 都是桩，会把 exclude 吃掉，
     // 那样这条用例就证明不了剔除真的发生了。
     const scope = new Scope({
       getConfig: () => ({}) as AppConfig,

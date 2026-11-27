@@ -1,10 +1,10 @@
 /**
- * MCP elicitation 的**真协议往返**：一台真的 `McpServer`，一条管理器自己造的 `Client`，
+ * MCP elicitation 的真协议往返：一台真的 `McpServer`，一条管理器自己造的 `Client`，
  * 中间用 in-memory 传输接起来。
  *
  * 为什么还要这一层：`McpConnectionManager.test.ts` 那一组把注册进来的处理器掏出来直接调，
- * 验的是「我们的处理器拿到账之后怎么答」；它验不到的另一半在这边 —— 服务器真把
- * `elicitation/create` 发出来的时候，这条请求会不会走到我们的处理器上、答案会不会被服务器
+ * 验的是「注册进来的处理器拿到账之后怎么答」；它验不到的另一半在这边 —— 服务器真把
+ * `elicitation/create` 发出来的时候，这条请求会不会走到处理器上、答案会不会被服务器
  * 那一侧的 `elicitInput()` 收到、账本空着的时候真的是 cancel 而不是把调用挂在那里，
  * 以及工具最终拿到的文本里是不是真带着用户填的东西。
  *
@@ -91,7 +91,7 @@ interface Harness {
 /**
  * 起一场。
  *
- * `answer` 是「人」那一侧：服务器问过来时我们交什么；回 `undefined` 表示那一段会话已经没了。
+ * `answer` 是「人」那一侧：服务器问过来时交什么；回 `undefined` 表示那一段会话已经没了。
  */
 async function setup(
   answer: (request: ElicitRequest) => Promise<ElicitAnswer | undefined>,

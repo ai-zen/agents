@@ -4,7 +4,6 @@ import { Agent } from "./Agent.js";
 import { AgentNS } from "./AgentNS.js";
 import { Message } from "./Message.js";
 
-// 创建一个最小可用的 Agent mock
 function createMockAgent(): Agent {
   return new Agent({
     client: {} as any,
@@ -119,14 +118,11 @@ describe("ToolCallContext", () => {
         resultMessage: resultMsg,
       });
 
-      // 统一形状
       expect(ctx.tool_call.id).toBe("call_1");
       expect(ctx.tool_call.function?.name).toBe("fn");
       // 一个概念一种形状：没有兼容字段可读
       expect((ctx as any).function_call).toBeUndefined();
-      // 匹配到的工具
       expect(ctx.tool).toBeDefined();
-      // parsedArgs 由 tool_call.function.arguments 解析
       expect(ctx.parsedArgs).toEqual({ x: 1 });
     });
   });

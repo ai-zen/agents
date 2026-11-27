@@ -4,7 +4,7 @@ import { discoverBuiltinTools } from "./discover.js";
 import { makeEnv } from "../../../test-support/test-helpers.js";
 
 /**
- * 严格模式（`tools[].function.strict: true`）对 JSON Schema 有两条硬要求，我们无条件下发那个开关，
+ * 严格模式（`tools[].function.strict: true`）对 JSON Schema 有两条硬要求，SDK 无条件下发那个开关，
  * 所以每一个工具定义都必须满足：
  *
  * 1. 每一层对象都要有 `additionalProperties: false`；
