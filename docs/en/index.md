@@ -7,6 +7,7 @@ A self-hosted runtime for LLM agents. These pages are ordered the way you would 
 | [Getting started](getting-started.md) | Install the terminal client, start a host, first conversation; the smallest example without a host |
 | [Agent](agent.md) | Fields of a definition file, delivery and stopping, the event stream, async results, sub-agents |
 | [Capabilities](capabilities.md) | Four kinds of files: tools, skills, sub-agents, MCP; directory layers; four permission dimensions; progressive disclosure |
+| [Skills](skills.md) | What a skill is, frontmatter fields and validation, how the model reads one, sub-agent mode, factory skills |
 | [MCP](mcp.md) | Writing `mcp.json`, five merged layers, the five runtime tools, tasks and elicitation |
 | [Host](host.md) | Sessions and history, waking versus delivering, sessions talking to each other, credentials, public instances |
 | [Handoff](handoff.md) | Two thresholds, two kinds, two executors, the nine-section document, archiving and cancellation |

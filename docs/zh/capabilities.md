@@ -75,9 +75,11 @@ description: Write a task handoff document — when you stop work and leave the 
 
 - `name` 与 `description` 从 frontmatter 读取；`id` 是目录名
 - 正文不常驻上下文：只在 `load_skill` 那一刻展开，同时返回技能目录的绝对路径与文件清单，模型据此读取附属文件
-- frontmatter 里标了 `subAgent: true` 的技能，可以在子代理模式下运行（`call_skill_sub_agent`）：该技能自带一份上下文去执行，父只收到结果
+- frontmatter 里标了 `sub-agent: true` 的技能，可以在子代理模式下运行（`call_skill_sub_agent`）：该技能自带一份上下文去执行，父只收到结果
 
 出厂会释放一份 `handoff` 技能到 `<数据根>/skills/handoff/`，交接文档的九节格式与写作规则就在里面，可以直接改。
+
+完整的字段规则、校验、子代理模式与例子见[技能](skills.md)。
 
 ## 子代理
 

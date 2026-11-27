@@ -75,9 +75,11 @@ description: Write a task handoff document — when you stop work and leave the 
 
 - `name` and `description` come from the frontmatter; `id` is the directory name
 - The body does not live in the context: it is expanded at `load_skill`, which also returns the skill directory's absolute path and its file list so the model can read the attachments
-- A skill whose frontmatter says `subAgent: true` can run in sub-agent mode (`call_skill_sub_agent`): it executes with a context of its own and the parent receives only the result
+- A skill whose frontmatter says `sub-agent: true` can run in sub-agent mode (`call_skill_sub_agent`): it executes with a context of its own and the parent receives only the result
 
 A factory `handoff` skill is released to `<data root>/skills/handoff/`. The nine-section format and the writing rules for the handoff document live there and can be edited.
+
+For the full field rules, validation, sub-agent mode and an example, see [Skills](skills.md).
 
 ## Sub-agents
 
