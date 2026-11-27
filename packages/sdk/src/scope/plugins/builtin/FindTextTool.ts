@@ -140,7 +140,7 @@ export class FindTextTool extends SdkCallbackTool {
         if (signal?.aborted) break; // 中断：stat 后再次检查
 
         if (!stats.isFile()) continue;
-        // 文件过大则跳过（避免撑爆上下文；与 ReadTool 300KB 口径一致，但此处为跳过而非报错）
+        // 文件过大则跳过（避免超出上下文容量；与 ReadTool 300KB 口径一致，但此处为跳过而非报错）
         if (stats.size > maxFileSize) continue;
 
         const content = await fsp.readFile(fullPath, "utf-8");

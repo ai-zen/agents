@@ -452,7 +452,7 @@ describe("handoff", () => {
 
     await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(HandoffAbortedError);
 
-    // 停是他的意愿：交接收尾不许顺手把它开回来
+    // 停是他的意愿：交接收尾不许把它开回来
     expect(agent.isOutputPaused).toBe(true);
   });
 
