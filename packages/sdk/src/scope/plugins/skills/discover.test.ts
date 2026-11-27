@@ -201,26 +201,6 @@ metadata:
     expect(fm.metadata).toBeUndefined();
   });
 
-  it("解析 allowed-tools（空格分隔 → 数组）", () => {
-    const fm = parseFrontmatter(`---
-name: my-skill
-allowed-tools: Bash(git:*) Read write
----
-# Body`);
-
-    expect(fm.allowedTools).toEqual(["Bash(git:*)", "Read", "write"]);
-  });
-
-  it("allowed-tools 空值时为空数组", () => {
-    const fm = parseFrontmatter(`---
-name: my-skill
-allowed-tools:
----
-# Body`);
-
-    expect(fm.allowedTools).toEqual([]);
-  });
-
   it("全字段综合解析", () => {
     const fm = parseFrontmatter(`---
 name: pdf-processing
@@ -230,7 +210,6 @@ compatibility: requires python3
 metadata:
   author: example-org
   version: "1.0"
-allowed-tools: Bash(git:*) Read
 sub-agent: true
 ---
 # PDF Processing Skill
@@ -242,7 +221,6 @@ Full body content here.`);
     expect(fm.license).toBe("Apache-2.0");
     expect(fm.compatibility).toBe("requires python3");
     expect(fm.metadata).toEqual({ author: "example-org", version: "1.0" });
-    expect(fm.allowedTools).toEqual(["Bash(git:*)", "Read"]);
     expect(fm.subAgent).toBe(true);
   });
 });

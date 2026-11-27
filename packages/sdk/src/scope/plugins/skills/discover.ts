@@ -8,7 +8,6 @@ export interface Frontmatter {
   license?: string;
   compatibility?: string;
   metadata?: Record<string, string>;
-  allowedTools?: string[];
   /** @extension Claude Code 启发：声明此 Skill 可作为 subagent 运行 */
   subAgent?: boolean;
 }
@@ -34,7 +33,6 @@ export interface SkillInfo {
   license?: string;
   compatibility?: string;
   metadata?: Record<string, string>;
-  allowedTools?: string[];
 }
 
 /** 发现 / 读取一个 Skill 时的选项 */
@@ -135,7 +133,6 @@ async function readSkillFromPath(
       license: fm.license,
       compatibility: fm.compatibility,
       metadata: fm.metadata,
-      allowedTools: fm.allowedTools,
     };
   } catch {
     return null;
@@ -189,9 +186,6 @@ export function parseFrontmatter(content: string): Frontmatter {
           break;
         case "compatibility":
           result.compatibility = val;
-          break;
-        case "allowed-tools":
-          result.allowedTools = val ? val.split(/\s+/).filter(Boolean) : [];
           break;
       }
     }
