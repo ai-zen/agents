@@ -2,7 +2,7 @@ import type { Bus } from "../../infra/bus.js";
 import { HostError } from "../../infra/errors.js";
 import type { HostEvent } from "../events.js";
 import type { Translator } from "../i18n/index.js";
-import type { FormAnswer, FormField, FormRequest, FormSchema } from "./types.js";
+import type { FormAction, FormAnswer, FormField, FormRequest, FormSchema } from "./types.js";
 
 export interface QuestionRegistryDeps {
   readonly events: Bus<HostEvent>;
@@ -16,6 +16,8 @@ export interface AskInput {
   readonly requestedSchema: FormSchema;
   /** 不给就是挡着 */
   readonly blocking?: boolean;
+  /** 这道题允许交哪几态；不给就是三态齐全（见 `FormRequest.actions`） */
+  readonly actions?: readonly FormAction[];
 }
 
 /**
@@ -77,6 +79,7 @@ export class QuestionRegistry {
       );
     }
 
+    assertActionOffered(question, answer, this.deps.t);
     const normalized = normalize(question, answer, this.deps.t);
 
     this.questions.delete(id);
@@ -143,6 +146,7 @@ export class QuestionRegistry {
       sessionId: input.sessionId,
       message: input.message,
       requestedSchema: input.requestedSchema,
+      ...(input.actions === undefined ? {} : { actions: [...new Set(input.actions)] }),
       // 缺省挡着：题就是为「停下来问」而造的，不挡的那一种是调用方显式说出来的
       blocking: input.blocking ?? true,
       createdAt: Date.now(),
@@ -166,6 +170,23 @@ export class QuestionRegistry {
  * 校验只做这张表声明过的事（必填、枚举、类型与范围），不引入 JSON Schema 引擎：表由宿主
  * 或者 MCP 服务器按同一个子集给出，子集之外的东西本来就该在产生它的那一侧被挡掉。
  */
+/**
+ * 交回来的那一态必须是这道题开着的。
+ *
+ * 面板只会画开着的按钮，但答话这条路不只面板在用：客户端可以自己拼一份 `question.answer`。
+ * 开了两态的题收到第三种，那是调用方的错，不是这道题的答复 —— 在这里拒掉，别让它落到出题方手里
+ * 变成一个它没打算处理的取值。
+ */
+function assertActionOffered(question: FormRequest, answer: FormAnswer, t: Translator): void {
+  const offered = question.actions;
+  if (offered === undefined || offered.includes(answer.action)) return;
+  throw new HostError("invalid_params", t("这道题不接受这种作答"), {
+    questionId: question.id,
+    action: answer.action,
+    offered: offered.join(", "),
+  });
+}
+
 function normalize(question: FormRequest, answer: FormAnswer, t: Translator): FormAnswer {
   if (answer.action !== "accept") {
     // 拒了、关掉了：内容没有意义，留着它就是一份没人认领的输入

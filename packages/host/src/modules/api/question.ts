@@ -21,6 +21,10 @@ const formRequestSchema = z.object({
   message: z.string(),
   requestedSchema: formSchema,
   blocking: z.boolean(),
+  actions: z
+    .array(z.enum(["accept", "decline", "cancel"]))
+    .readonly()
+    .optional(),
   createdAt: z.number(),
 });
 

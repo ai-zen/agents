@@ -601,6 +601,8 @@ export class HandoffService {
           },
           // 题挂着不挡发送：按不按发送是客户端拿着这一格自己决定的事
           blocking: false,
+          // 「不交接」是枚举里的一项，不再另给拒绝/取消两个按钮：三个入口说同一件事
+          actions: ["accept"],
         })
         .answer.then(handoffModeOf);
 

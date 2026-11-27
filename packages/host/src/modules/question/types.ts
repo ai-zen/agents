@@ -86,5 +86,16 @@ export interface FormRequest {
   readonly requestedSchema: FormSchema;
   /** 挡住这段会话继续跑，缺省就是挡（宿主自己的行为，MCP 那边没有这一格） */
   readonly blocking: boolean;
+  /**
+   * 这道题允许用户交哪几态；缺省三态齐全。
+   *
+   * 出题方决定它，因为只有出题方知道「拒绝」在这道题里有没有意义：交接那句问的是「用哪种方式」，
+   * 「不交接」本来就是枚举里的一项，再给一个「拒绝」按钮是两个入口说同一件事；而一个即将删数据的
+   * 确认，`decline` 有意义、「默默关掉」没有。
+   *
+   * 这是**面板的画法**，不是新的作答语义：登记的仍只有 accept / decline / cancel，客户端只会从
+   * 这几态里挑一个交回来（不在表里的那一态在这里被拒，见 `QuestionRegistry.answer`）。
+   */
+  readonly actions?: readonly FormAction[];
   readonly createdAt: number;
 }
