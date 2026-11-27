@@ -97,10 +97,11 @@ describe("端到端：真实文件系统路径", () => {
       expect(config.models).toHaveLength(3);
       expect(config.imageModels).toHaveLength(1);
       // 夹具里的模型只写了旧字段 maxContextTokens，没有 tokenThresholds：读出来的
-      // 是补位后的形状，两条线都取出厂值（软线取出厂 handoff，硬线取其 1.5 倍）
+      // 是补位后的形状，两条线都取出厂值（软线取出厂 handoff，硬线取窗口 80% 那一档，
+      // 也就是软线的 2 倍 —— 见 `normalize.ts` 的 `GUARD_RATIO`）
       expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds).toEqual({
         handoff: DEFAULT_HANDOFF_THRESHOLD,
-        guard: DEFAULT_HANDOFF_THRESHOLD * 1.5,
+        guard: DEFAULT_HANDOFF_THRESHOLD * 2,
       });
     });
 
@@ -243,7 +244,7 @@ describe("端到端：真实文件系统路径", () => {
       await checkPaths();
       const agent = await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant");
       expect(agent).not.toBeNull();
-      expect(agent!.name).toBe("代码AgentDefinition");
+      expect(agent!.name).toBe("代码助手");
       expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
     });
 
@@ -326,7 +327,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(agent.scope).toBe(scope);
 
       // 元数据
-      expect(agent.definition.name).toBe("代码AgentDefinition");
+      expect(agent.definition.name).toBe("代码助手");
       expect(agent.definition.permissions?.tools).toEqual({ allow: ["*"] });
 
       // 模型
@@ -334,7 +335,7 @@ describe("端到端：真实文件系统路径", () => {
 
       // 消息
       expect(agent.messages[0].role).toBe("system");
-      expect(agent.messages[0].content).toContain("代码AgentDefinition");
+      expect(agent.messages[0].content).toContain("代码助手");
 
       // 工具
       const names = agent.tools.map((t: Tool) => t.function.name);

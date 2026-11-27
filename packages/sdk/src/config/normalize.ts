@@ -69,7 +69,7 @@ function readThresholds(value: unknown): Partial<TokenThresholds> {
  * 补齐单个模型缺失的阈值。
  *
  * - 两条都在（都是合法正整数）→ 原样返回，`changed: false` 且连对象引用都不换；
- * - 只有 `handoff` → `guard` 按 1.5 倍补；
+ * - 只有 `handoff` → `guard` 按 `GUARD_RATIO`（2 倍）补；
  * - 只有 `guard` → `handoff` 补 `DEFAULT_HANDOFF_THRESHOLD`（硬线是用户自己的选择，不动）；
  * - 两条都缺，或值不合法 → 两条都补出厂值。
  *
