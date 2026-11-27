@@ -5,6 +5,7 @@ import {
   type TaskOutcome,
   type ToolDeclaration,
   type ToolExecution,
+  type WithTasksOptions,
 } from "@modelcontextprotocol/ext-tasks/client";
 import { toJsonValue, type JsonValue, type TaskId } from "@modelcontextprotocol/ext-tasks/core";
 import type { Client } from "@modelcontextprotocol/client";
@@ -45,12 +46,41 @@ export class McpTaskBridge {
     server: string,
     port?: McpTaskNoticePort,
     logger: LogSink = SILENT_LOG,
+    /**
+     * 服务器在调用中途要人回答时走这里（现代协议的多轮 `input_required`）。
+     *
+     * 为什么得由外面递进来：这一层的 session 发 `tools/call` 时带着 `allowInputRequired`，意思是
+     * 「那份 input_required 原样给我」—— SDK 自己那套「拿注册的处理器自动履行」因此被关掉了，
+     * 轮次归调用方接。而「谁能答题」只有调用方知道（宿主的题板、挂在哪一段会话下）。
+     */
+    private readonly elicit?: (
+      params: Record<string, unknown>,
+    ) => Promise<{ action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> }>,
   ) {
     this.server = server;
     this.port = port;
     this.logger = logger;
     this.adapter = createSessionPortFromClient(client, server);
-    this.session = withTasks(this.adapter);
+    this.session = withTasks(
+      this.adapter,
+      elicit === undefined
+        ? {}
+        : {
+            // 这一格在包里是泛型的（按请求种类推结果类型），我们只有 elicitation 一种，
+            // 所以在这儿收窄成具体形状，交给泛型去对
+            onInputRequest: (async (request: {
+              kind: string;
+              params?: Record<string, unknown>;
+            }) => {
+              // 我们只声明了 `elicitation.form`：sampling / roots 问过来就是服务器越了界，
+              // 那就报错，而不是编一个能过校验的答案
+              if (request.kind !== "elicitation") {
+                throw new Error(`unsupported input request from "${server}": ${request.kind}`);
+              }
+              return await elicit(request.params ?? {});
+            }) as unknown as NonNullable<WithTasksOptions["onInputRequest"]>,
+          },
+    );
   }
 
   /**

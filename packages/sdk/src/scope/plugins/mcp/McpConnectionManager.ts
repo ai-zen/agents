@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { SkillsClient } from "@modelcontextprotocol/client/ext/skills";
-import { currentElicitationOwner } from "./elicitation.js";
+import { currentElicitationOwner, type ElicitAnswer } from "./elicitation.js";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 import { CLIENT_NAME, CLIENT_VERSION } from "../../../shared/clientInfo.js";
 import type {
@@ -211,45 +211,73 @@ export class McpConnectionManager {
       ? this._clientFactory()
       : new Client(
           { name: CLIENT_NAME, version: CLIENT_VERSION },
-          // 声明的能力就是「服务器可以在调用中途问用户一张表」。只声明 `form`：`url` 那一档要
-          // 「显示域名 + 征得同意 + 打开浏览器」，我们还没有那个交互面，声明了又不能做就是失信
-          { capabilities: { elicitation: { form: {} } } },
+          {
+            // 声明的能力就是「服务器可以在调用中途问用户一张表」。只声明 `form`：`url` 那一档要
+            // 「显示域名 + 征得同意 + 打开浏览器」，我们还没有那个交互面，声明了又不能做就是失信
+            capabilities: { elicitation: { form: {} } },
+            // 版本谈判：2026-07-28 那一档只有先问一句 `server/discover` 才谈得成（谈成之后
+            // 多轮 `input_required` 与每个请求的 `_meta` 信封才启用）。不认识的服务器答
+            // Method not found —— 探针据此判回 2025 那一档，之后的报文与不做谈判时一样。
+            //
+            // sse 不谈：那是 2024-11 那一代的传输，modern 服务器不会走它；而 HTTP 上的探针
+            // 遇到不应答算「连接超时」而不是「老服务器」，为一个谈不成的版本赔上这个不值。
+            ...(config.transport === "sse"
+              ? {}
+              : { versionNegotiation: { mode: "auto" as const } }),
+          },
         );
 
     await client.connect(transport);
 
-    // 服务器发回来的 `elicitation/create`：翻译成宿主的一张表、等答案、按三态交回去。
+    // 服务器要人回答一张表：翻译成宿主的一张表、等答案、按三态交回去。
+    //
+    // 两个年款都落在这一个函数上：2025 那一档它被当作 `elicitation/create` 的请求处理器直接调；
+    // 2026-07-28 那一档多轮 `input_required` 由任务会话接手，也调它（见 `McpTaskBridge` 那个
+    // `elicit` 参数）。两种问法、一个「谁在问」的账。
     //
     // 「这次调用属于哪段会话」不在载荷里 —— 得看 `elicitation.ts` 那本账（`call_mcp_tool`
     // 在发请求之前压进去的那一格）。账是空的就回 `decline`：一次性 Agent 手上没有题板，
     // 而这是 spec 给的三个去处里唯一诚实的那个。
-    client.setRequestHandler("elicitation/create", async (request) => {
+    const fulfilElicitation = async (params: Record<string, unknown>): Promise<ElicitAnswer> => {
       const owner = currentElicitationOwner(client);
-      const params = request.params;
-      if (owner === undefined) return { action: "decline" as const };
+      if (owner === undefined) return { action: "decline" };
       // `url` 那一档我们没声明（见上面声明能力的理由）：真收到就按「没答」回
-      if (params.mode === "url") return { action: "decline" as const };
+      if (params.mode === "url") return { action: "decline" };
 
       try {
         const answer = await owner.ask({
-          message: params.message,
-          requestedSchema: params.requestedSchema as unknown as Record<string, unknown>,
+          message: params.message as string,
+          requestedSchema: params.requestedSchema as Record<string, unknown>,
         });
         // 没人答它了（那一段没了）：对服务器而言就是「拒绝」
-        if (answer === undefined) return { action: "decline" as const };
+        if (answer === undefined) return { action: "decline" };
         if (answer.action !== "accept") return { action: answer.action };
-        return { action: "accept" as const, content: answer.content ?? {} };
+        return { action: "accept", content: answer.content ?? {} };
       } catch (err: unknown) {
         this.logger.error(
           `[McpConnectionManager] elicitation for "${name}" failed: ${(err as Error)?.message ?? err}`,
         );
         // 出题这一路自己炸了：告诉服务器「没答」，别让一条工具调用挂在那里
-        return { action: "cancel" as const };
+        return { action: "cancel" };
       }
+    };
+
+    client.setRequestHandler("elicitation/create", async (request) => {
+      const answer = await fulfilElicitation(request.params as unknown as Record<string, unknown>);
+      return {
+        action: answer.action,
+        ...(answer.content === undefined ? {} : { content: answer.content }),
+      };
     });
 
     // 任务的分岔口：之后 `call_mcp_tool` 每一次调用都走它（当场结果与任务句柄都从它那里出去）
-    const taskBridge = new McpTaskBridge(client, name, this._taskNotice, this.logger);
+    const taskBridge = new McpTaskBridge(
+      client,
+      name,
+      this._taskNotice,
+      this.logger,
+      fulfilElicitation,
+    );
 
     // 根据 Server 声明的 capabilities 按需调用，避免调用未声明的方法
     const serverCaps = client.getServerCapabilities();
