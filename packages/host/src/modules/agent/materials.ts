@@ -207,7 +207,8 @@ export function hostPlugins(
             >[0]["requestedSchema"],
           }).answer;
           const answer = await asked;
-          // 没人答它了（那一段没了）：回 `undefined`，SDK 那边按 `decline` 交回服务器
+          // 没人答它了（那一段没了）：回 `undefined`，SDK 那边按 `cancel` 交回服务器
+          // （「没做决定」；`decline` 只留给用户在面板上按 `[拒绝]`）
           if (answer === undefined) return undefined;
           if (answer.action !== "accept") return { action: answer.action };
           return {

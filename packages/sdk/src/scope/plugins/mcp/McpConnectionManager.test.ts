@@ -410,7 +410,7 @@ describe("McpConnectionManager：技能清单", () => {
  *
  * 「这次调用属于哪段会话」不在载荷里，得靠 `call_mcp_tool` 在发请求之前压进那本账
  * （`elicitation.ts`）。这一组把注册进来的处理器拿出来直接调，钉住四件事：
- * 有账就问、没账回 decline、url 那档回 decline、出题自己炸了回 cancel。
+ * 有账就问、没账回 cancel、url 那档回 cancel、出题自己炸了回 cancel；decline 只来自用户。
  */
 describe("McpConnectionManager：elicitation", () => {
   /** 建连之后把注册进来的那个处理器拿出来 */
@@ -450,11 +450,11 @@ describe("McpConnectionManager：elicitation", () => {
     mockClient.listResources.mockResolvedValue({ resources: [] });
   });
 
-  it("没有人在飞（一次性 Agent / 没有题板）：回 decline", async () => {
+  it("没有人在飞（一次性 Agent / 没有题板）：回 cancel（不是「拒绝」，是没人做决定）", async () => {
     const manager = newManager();
     const handler = await handlerOf(manager);
 
-    await expect(handler(formRequest)).resolves.toEqual({ action: "decline" });
+    await expect(handler(formRequest)).resolves.toEqual({ action: "cancel" });
   });
 
   it("有账：把表交给那一段会话，答复原样收回给服务器", async () => {
@@ -505,7 +505,7 @@ describe("McpConnectionManager：elicitation", () => {
     expect(cancelled).toEqual({ action: "cancel" });
   });
 
-  it("没人答它了（会话没了）：回 decline，不是挂在那里", async () => {
+  it("没人答它了（会话没了）：回 cancel，不是挂在那里", async () => {
     const manager = newManager();
     const handler = await handlerOf(manager);
     const client = manager.getClient("github")!;
@@ -515,10 +515,10 @@ describe("McpConnectionManager：elicitation", () => {
       { sessionId: "sess-1", ask: async () => undefined },
       () => handler(formRequest),
     );
-    expect(answer).toEqual({ action: "decline" });
+    expect(answer).toEqual({ action: "cancel" });
   });
 
-  it("url 那一档我们没声明：收到就回 decline", async () => {
+  it("url 那一档我们没声明：收到就回 cancel", async () => {
     const manager = newManager();
     const handler = await handlerOf(manager);
     const client = manager.getClient("github")!;
@@ -532,7 +532,7 @@ describe("McpConnectionManager：elicitation", () => {
           params: { mode: "url", message: "去这个页面填密钥", url: "https://x.dev" },
         }),
     );
-    expect(answer).toEqual({ action: "decline" });
+    expect(answer).toEqual({ action: "cancel" });
   });
 });
 

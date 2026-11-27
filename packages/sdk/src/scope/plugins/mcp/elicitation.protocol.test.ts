@@ -5,14 +5,18 @@
  * 为什么还要这一层：`McpConnectionManager.test.ts` 那一组把注册进来的处理器掏出来直接调，
  * 验的是「我们的处理器拿到账之后怎么答」；它验不到的另一半在这边 —— 服务器真把
  * `elicitation/create` 发出来的时候，这条请求会不会走到我们的处理器上、答案会不会被服务器
- * 那一侧的 `elicitInput()` 收到、账本空着的时候真的是 decline 而不是把调用挂在那里，
+ * 那一侧的 `elicitInput()` 收到、账本空着的时候真的是 cancel 而不是把调用挂在那里，
  * 以及工具最终拿到的文本里是不是真带着用户填的东西。
  *
  * 用 in-memory 传输而不是子进程：这一套跑在默认套件里，不起端口、不 spawn、不出网。但它得
  * 再套一层 JSON 往返（见 `jsonTransport`）才对得上真线的行为。
  */
 import { describe, it, expect } from "vitest";
-import { InMemoryTransport, type ElicitRequestFormParams, type Transport } from "@modelcontextprotocol/client";
+import {
+  InMemoryTransport,
+  type ElicitRequestFormParams,
+  type Transport,
+} from "@modelcontextprotocol/client";
 import { McpServer, fromJsonSchema } from "@modelcontextprotocol/server";
 
 import { McpConnectionManager } from "./McpConnectionManager.js";
@@ -196,25 +200,25 @@ describe("MCP elicitation：真协议往返", () => {
     }
   });
 
-  it("没人能答（一次性 Agent 手上没有题板）：服务器收到 decline，调用不挂在半路", async () => {
+  it("没人能答（一次性 Agent 手上没有题板）：服务器收到 cancel，调用不挂在半路", async () => {
     const h = await setup(async () => ({ action: "accept", content: { confirm: true } }));
     try {
       const text = await h.call();
 
       // 人这一侧一次都没被问到（账本是空的）
       expect(h.asked).toEqual([]);
-      expect(text).toContain("action=decline");
+      expect(text).toContain("action=cancel");
     } finally {
       await h.close();
     }
   });
 
-  it("会话没了（ask 回 undefined）：服务器收到 decline", async () => {
+  it("会话没了（ask 回 undefined）：服务器收到 cancel", async () => {
     const h = await setup(async () => undefined);
     try {
       const text = await h.call({ agent: {} });
       expect(h.asked).toHaveLength(1);
-      expect(text).toContain("action=decline");
+      expect(text).toContain("action=cancel");
     } finally {
       await h.close();
     }

@@ -123,12 +123,12 @@ describe("MCP elicitation：服务 2026-07-28 那一档的服务器（serveStdio
     }
   });
 
-  it("没有答题通道：服务器收到 decline，调用不挂在半路", async () => {
+  it("没有答题通道：服务器收到 cancel，调用不挂在半路", async () => {
     const h = await setup("modern", async () => ({ action: "accept", content: { confirm: true } }));
     try {
       const text = await h.call("deploy");
       expect(h.asked).toEqual([]);
-      expect(text).toContain("action=decline");
+      expect(text).toContain("action=cancel");
     } finally {
       await h.close();
     }

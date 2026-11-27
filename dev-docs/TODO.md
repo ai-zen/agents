@@ -51,6 +51,9 @@
 - 建连默认做版本谈判（`versionNegotiation: { mode: "auto" }`，`sse` 除外：那一代传输不会谈成新版，
   而 HTTP 上探针不应答算连接超时）。2026-07-28 谈成之后，服务器改用「回 `input_required`、客户端带
   `inputResponses` 重发」的多轮问法。
+- 三态各归各的来处：`accept` / `decline` 只来自用户在面板上按 `[同意]` / `[拒绝]`；**没人能答一律
+  `cancel`**（一次性 Agent、会话没了、`url` 档我们没声明）。按 spec 的语义 `decline` 是明确的「不」、
+  `cancel` 是「没做决定」，自动回的只能是后者。
 - 两套问法落同一个函数（`McpConnectionManager` 的 `fulfilElicitation`）：2025 那一档它被当作请求处理器
   直接调；2026 那一档由任务会话的多轮循环接手，经 `McpTaskBridge` 的 `elicit` 参数调回来。
   不能让 SDK 自己履行那几轮 —— `@modelcontextprotocol/ext-tasks` 发 `tools/call` 时带 `allowInputRequired`，

@@ -17,10 +17,11 @@
  * 同一段会话内的并行调用不受影响（答题的仍是同一段会话）；跨会话并行才有可能记到另一段上，
  * 而那种情况下也没有任何客户端可见的信息能把它们分开。
  *
- * ## 没有账时一律 decline
+ * ## 没有账时一律 cancel
  *
  * 一次性 Agent（子 agent、`runOnce`、`/ask`）手上没有题板 —— 宿主不会给它们装这一层。于是栈是
- * 空的，处理器回 `decline`：这是实话（没人能答），也是 spec 给的三个去处之一。
+ * 空的，处理器回 `cancel`：没人做决定，说的就是这个。`decline` 是留给用户的明确拒绝的（面板上的
+ * `[拒绝]`），自动回的只可能是 `cancel`。
  */
 
 import type { Agent } from "@ai-zen/agents-core";
@@ -48,8 +49,8 @@ export interface ElicitAnswer {
 /**
  * 一个 Agent 的答题通道：题挂在 `sessionId` 那段会话下，`ask` 把表交给宿主、等一个答复。
  *
- * `ask` 回 `undefined` 是「没人答它了」（会话没了），处理器据此回 `decline` —— 那不是「用户说了
- * 不」，但对服务器而言是同一种可用的答复。
+ * `ask` 回 `undefined` 是「没人答它了」（会话没了），处理器据此回 `cancel` —— 那不是「用户说了
+ * 不」，是「没人做决定」。
  */
 export interface ElicitationOwner {
   readonly sessionId: string;

@@ -235,22 +235,26 @@ export class McpConnectionManager {
     // 2026-07-28 那一档多轮 `input_required` 由任务会话接手，也调它（见 `McpTaskBridge` 那个
     // `elicit` 参数）。两种问法、一个「谁在问」的账。
     //
+    // 三态各归各的来处：`accept` / `decline` 只可能来自用户（面板上的 `[同意]` / `[拒绝]`）；
+    // **没人能答就是 `cancel`** —— 一次性 Agent 手上没有题板、那一段会话没了、`url` 那一档我们
+    // 没声明，都是「没有做决定」，不是「用户拒绝了」。按 spec 的语义，`decline` 是明确的「不」
+    // （服务器该收手），`cancel` 才是「没做决定」（服务器可以稍后再问）。
+    //
     // 「这次调用属于哪段会话」不在载荷里 —— 得看 `elicitation.ts` 那本账（`call_mcp_tool`
-    // 在发请求之前压进去的那一格）。账是空的就回 `decline`：一次性 Agent 手上没有题板，
-    // 而这是 spec 给的三个去处里唯一诚实的那个。
+    // 在发请求之前压进去的那一格）。
     const fulfilElicitation = async (params: Record<string, unknown>): Promise<ElicitAnswer> => {
       const owner = currentElicitationOwner(client);
-      if (owner === undefined) return { action: "decline" };
+      if (owner === undefined) return { action: "cancel" };
       // `url` 那一档我们没声明（见上面声明能力的理由）：真收到就按「没答」回
-      if (params.mode === "url") return { action: "decline" };
+      if (params.mode === "url") return { action: "cancel" };
 
       try {
         const answer = await owner.ask({
           message: params.message as string,
           requestedSchema: params.requestedSchema as Record<string, unknown>,
         });
-        // 没人答它了（那一段没了）：对服务器而言就是「拒绝」
-        if (answer === undefined) return { action: "decline" };
+        // 没人答它了（那一段没了）：同样是「没做决定」
+        if (answer === undefined) return { action: "cancel" };
         if (answer.action !== "accept") return { action: answer.action };
         return { action: "accept", content: answer.content ?? {} };
       } catch (err: unknown) {
