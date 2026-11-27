@@ -35,7 +35,9 @@ const messages = await agent.runOnce("classify this error log");
 console.log(messages.at(-1)?.content);
 ```
 
-No host is needed here — no database, no resident process, no network interface, just one request and one answer. A host is a resident service on a machine, described under "Turning it into a service". `core` is the agent itself (queue, request and tool loop, event stream); `sdk` assembles it from files.
+No host is needed here — no database, no resident process, no network interface, just one request and one answer. `core` is the agent itself (queue, request and tool loop, event stream); `sdk` assembles it from files.
+
+Leaving the host out does not reduce what the agent can do: built-in tools, user tools, skills, sub-agents, MCP, four permission dimensions, both thresholds and handoff all live in these two packages. What is missing are the things that outlive a process — sessions and history on disk, several clients at once, and sessions posting to each other. Those need a host, or your own implementation of the four ports the runtime borrows from one.
 
 `bootstrap()` writes a `config.json` with four factory endpoints, all of whose `apiKey` fields are empty; fill one in and it runs. The default agent is bound to `deepseek-flash`.
 
