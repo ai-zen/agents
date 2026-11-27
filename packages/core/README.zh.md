@@ -244,7 +244,7 @@ interface InboxKey {
 | `send(input?, { signal })`    | 需要就先起，递进去，等到闲，交回 `messages`（不关门）                                    | 等     |
 | `runOnce(input?, { signal })` | 起、`send`、关门、等到死透，交回 `messages`                                              | 等     |
 
-`send()` 与 `runOnce()` 拒掉一切 `lifetime` 不是 `"one-shot"` 的 Agent。`runOnce()` 还拒已经开始
+`sendAndWait()` 与 `runOnce()` 拒掉一切 `lifetime` 不是 `"one-shot"` 的 Agent。`runOnce()` 还拒已经开始
 的 Agent，也拒 `messages` 为空且没有正文的调用 —— 没燃料的钥匙发出去是一个空请求。这些都是调用方
 代码写错了，所以抛裸 `Error` 而不是 `AgentError`：那几个错误码是给会落到 `message.error`、会被从
 存储里读回来的失败用的。

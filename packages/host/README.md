@@ -21,7 +21,7 @@ database and a factory configuration, prints the address it listens on, and reco
 
 ```
 Listening on ws://127.0.0.1:8790
-Version: 0.2.0-alpha.0
+Version: 0.2.0-alpha.1
 Discovery file: /home/you/.ai-zen/run/host.json
 Logs: /home/you/.ai-zen/logs
 Credential file: /home/you/.ai-zen/run/token
@@ -97,22 +97,20 @@ Every client talks to one thing: a tRPC router served over a single WebSocket (`
 `src/app.ts`), with one subscription for the facts the host publishes. The routers are grouped by
 domain in `src/modules/api/`:
 
-| Router            | Procedures                                                                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session`         | `list` `create` `open` `rename` `pin` `setAutoHandoff` `setThresholds` `setModelDefinition` `setThinkingLevel` `rewind` `remove` `transient` |
-| `workspace`       | `list` `create` `files` `rename` `remove`                                                                                                    |
-| `agent`           | `wake` `send` `pause` `resume` `abort` `kill` `clearInbox`                                                                                   |
-| `asset`           | `upload` `get` `list`                                                                                                                        |
-| `notice`          | `list` `clear` `clearOne`                                                                                                                    |
-| `question`        | `list` `answer`                                                                                                                              |
-| `handoff`         | `start` `cancel`                                                                                                                             |
-| `search`          | `messages` `sessions`                                                                                                                        |
-| `scope`           | `reload`                                                                                                                                     |
-| `config`          | `get` `setDefaults` `setGlobal`, plus `endpoint.*` `model.*` `imageModelDefinition.*` `presets.set`                                          |
-| `mcp`             | `list` `save` `remove`                                                                                                                       |
-| `agentDefinition` | `list` `get` `create` `update` `remove` `reset`                                                                                              |
-| `host`            | `version` `upgrade` `shutdown`                                                                                                               |
-| `events`          | one subscription, not a domain of actions                                                                                                    |
+| Router            | Procedures                                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session`         | `list` `create` `open` `rename` `autoTitle` `pin` `updateAutoHandoff` `updateThresholds` `updateModel` `updateThinkingLevel` `rewind` `delete`                   |
+| `workspace`       | `list` `create` `files` `rename` `delete`                                                                                                                        |
+| `runtime.agent`   | `wake` `send` `pauseOutput` `resumeOutput` `abort` `kill` `clearInbox` `runOnce`                                                                                  |
+| `runtime.scope`   | `reload`                                                                                                                                                         |
+| `asset`           | `get` `upload` `list`                                                                                                                                            |
+| `notice`          | `list` `delete` `deleteAll`                                                                                                                                      |
+| `question`        | `list` `answer`                                                                                                                                                  |
+| `handoff`         | `start` `cancel`                                                                                                                                                 |
+| `search`          | `messages` `sessions`                                                                                                                                            |
+| `config`          | `get` `update` `defaults.update`, plus `endpoints.*` `models.*` `imageModels.*` `presets.update` and the nested `agents.*` `mcp.*`                                |
+| `host`            | `version` `upgrade` `shutdown`                                                                                                                                   |
+| `events`          | one subscription, not a domain of actions                                                                                                                        |
 
 Each procedure declares its own input and output on the procedure itself; there is no second list of
 shapes anywhere.
@@ -122,23 +120,23 @@ shapes anywhere.
 `src/modules/events.ts` holds the one union of facts pushed to clients. Every entry is a change, never
 a stage:
 
-| Event                        | Says                                                                             |
-| ---------------------------- | -------------------------------------------------------------------------------- |
-| `message.added`              | A message joined the transcript                                                  |
-| `message.changed`            | A message was updated in place (a stream filling in, a status flipping)          |
-| `message.removed`            | A message was deleted                                                            |
-| `subagent.message`           | A subagent said something; it never reaches the database, so it is its own event |
-| `agent.status`               | The live agent went working or idle                                              |
-| `runtime.agent.pauseOutputd` | One of the two switches was closed or opened, named by `side`                       |
-| `agent.alive`                | An agent was woken or killed                                                     |
-| `agent.inbox`                | The pending inbox of a session, whole                                            |
-| `session.changed`            | A session row changed; the whole row is carried                                  |
-| `session.deleted`            | A session row is gone                                                            |
-| `session.handoff`            | A handoff started or finished for a session                                      |
-| `notice`                     | A notice was published, with its scope and its level                             |
-| `notice.deleteAlled`         | Notices were cleared: one by id, all of a session, or everything                 |
-| `question.asked`             | A question is waiting for the user                                               |
-| `question.answered`          | A question was answered, and is gone                                             |
+| Event               | Says                                                                             |
+| ------------------- | -------------------------------------------------------------------------------- |
+| `message.added`     | A message joined the transcript                                                  |
+| `message.changed`   | A message was updated in place (a stream filling in, a status flipping)          |
+| `message.removed`   | A message was deleted                                                            |
+| `subagent.message`  | A subagent said something; it never reaches the database, so it is its own event |
+| `agent.status`      | The live agent went working or idle                                              |
+| `agent.paused`      | One of the two switches changed, named by `side` (`input` / `output`)            |
+| `agent.alive`       | An agent was woken or killed                                                     |
+| `agent.inbox`       | The pending inbox of a session, whole                                            |
+| `session.changed`   | A session row changed; the whole row is carried                                  |
+| `session.removed`   | A session row is gone                                                            |
+| `session.handoff`   | A handoff started or finished for a session                                      |
+| `notice`            | A notice was published, with its scope and its level                             |
+| `notice.cleared`    | Notices were cleared: optionally one by id, optionally limited to a session      |
+| `question.asked`    | A question is waiting for the user                                               |
+| `question.answered` | A question was answered, and is gone                                             |
 
 ### The contract surface does not fill in for clients
 

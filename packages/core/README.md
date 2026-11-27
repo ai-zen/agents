@@ -275,7 +275,7 @@ would leave it without an owner. A decision about a batch belongs before deliver
 | `sendAndWait(input?, { signal })` | Starts if needed, sends, waits until idle, returns `messages` (does not close) | yes |
 | `runOnce(input?, { signal })` | Starts, `send`, closes, waits until dead, returns `messages` | yes |
 
-`send()` and `runOnce()` refuse anything whose `lifetime` is not `"one-shot"`. `runOnce()` also
+`sendAndWait()` and `runOnce()` refuse anything whose `lifetime` is not `"one-shot"`. `runOnce()` also
 refuses an agent that has already been started, and refuses an empty `messages` array with no input
 content — a key with no fuel would send an empty request. Those are mistakes in the calling code, so
 they throw a plain `Error` rather than an `AgentError`: the error codes exist for failures that end

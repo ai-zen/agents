@@ -157,15 +157,15 @@ await scope.init();
 | `ConfigManager`                                             | `config.json` 和它旁边的目录：读写、出厂默认、坏文件恢复、思考档位、出厂技能、`mcp.json` |
 | `AgentRepository`                                           | 一个文件一个 AgentDefinition，`<agentsDir>/<id>.json`                                    |
 | `createAgent(scope, agentId, options)`                      | 一个装好的 `SdkAgent`：读定义、解析模型、按过滤后的候选造工具                            |
-| `resolveModelDefinition` / `resolveModelDefinitionParams`   | 会话级覆盖 > 定义 > `config.defaultModelDefinition`，唯一的实现                          |
-| `createModelDefinition` / `createModelDefinitionFromConfig` | `OpenAI` 客户端、模型名与请求参数                                                        |
+| `resolveModel` / `resolveModelParams`                              | 会话级覆盖 > 定义 > `config.defaultModel`，唯一的实现                          |
+| `createModel` / `createModelFromConfig`                     | `OpenAI` 客户端、模型名与请求参数                                                        |
 | `completeOnce`                                              | 一次不带工具、不带历史的非流式调用                                                       |
 
 `createAgent` 的选项：`modelId` 与 `modelParams`（会话那一级）、`lifetime`（跑一次就死的 Agent 用 `"one-shot"`）、`canOpenPeers`，以及两个中断策略 `abortedToolRoundStrategy` / `abortedMessageStrategy` —— 它们回落到配置，再回落到内核默认值。
 
 模型解析从不混级：参数跟着提供模型的那一级走，于是换了模型的会话不会带着上一个模型的参数。
 
-`SdkAgent` 是一个 `Agent`，另外带着 `scope` 与 `definition`（生效中的那份定义，解析出来的模型已经写进去），还有 `useModelDefinition(modelId, modelParams?)` —— 就地换模型与参数，不杀 Agent。
+`SdkAgent` 是一个 `Agent`，另外带着 `scope` 与 `definition`（生效中的那份定义，解析出来的模型已经写进去），还有 `useModel(modelId, modelParams?)` —— 就地换模型与参数，不杀 Agent。
 
 ### 交接
 
@@ -352,7 +352,7 @@ await config.write({
       tokenThresholds: { handoff: 500_000, guard: 750_000 },
     },
   ],
-  defaultModelDefinition: "gpt-4o",
+  defaultModel: "gpt-4o",
 });
 
 const agents = new AgentRepository(`${base}/agents`);
