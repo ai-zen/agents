@@ -10,7 +10,7 @@ import type { Tool } from "./Tool.js";
  * 工具从这里停不掉循环：它返回什么，就只是一条 tool 消息回给模型，引擎接着跑
  *（停循环的两条路 —— 钩子拒、用户 `abort` —— 都不在工具手里，`CORE.md` §8）。
  *
- * 参数解析是容错的：参数烂 = 「没给出有效结果」，与「执行挂了」「工具不存在」同一件事 ——
+ * 参数解析是容错的：参数不合法 = 「没给出有效结果」，与「执行挂了」「工具不存在」同一件事 ——
  * 一条 tool 消息回给模型，其他什么都不做。所以只有一种行为：解析失败时 `parsedArgs` 为
  * `undefined`、`parseError` 有值。
  */
@@ -41,7 +41,7 @@ export class ToolCallContext {
   /** 参数 JSON 解析错误信息（仅解析失败时存在） */
   parseError?: string;
 
-  /** 工具执行的中止信号：`abort()` 会掐断它，工具实现可监听以真正中断执行 */
+  /** 工具执行的中止信号：`abort()` 会中断它，工具实现可监听以真正中断执行 */
   signal?: AbortSignal;
 
   constructor(options: {

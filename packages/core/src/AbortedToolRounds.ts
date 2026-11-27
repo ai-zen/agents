@@ -33,7 +33,7 @@ function keyOfResult(m: AgentNS.Message): string {
 
 /**
  * 归一化「被中断的工具调用轮次」——确保每条带 `tool_calls`（或 `function_call`）的
- * assistant 消息与其结果消息**同进同出**，从而满足服务端「N 个 tool_calls 必须有 N 条
+ * assistant 消息与其结果消息**同进同出**，从而满足服务端「N 个 tool_calls 需要 N 条
  * 结果」的约束。
  *
  * ## 范围

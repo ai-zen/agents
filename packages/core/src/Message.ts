@@ -93,7 +93,7 @@ export class Message implements AgentNS.Message {
  * - 无 crypto 的老环境降级为「时间戳 + 随机数」组合，保证会话内唯一即可
  *
  * 导出是因为 inbox InboxEntry 要在**入队时**就拿到写进 messages 那条消息的 id（`InboxEntry.messageId`）：
- * 同一套 id 规则只该有一份实现，否则「宿主给的 id」与「消息自己生成的 id」迟早长得不一样。
+ * 同一套 id 规则由一份实现给出，否则「宿主给的 id」与「消息自己生成的 id」迟早长得不一样。
  */
 export function generateMessageId(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;

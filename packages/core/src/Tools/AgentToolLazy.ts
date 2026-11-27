@@ -10,7 +10,7 @@ import { sumUsage } from "../Usage.js";
  * Agent 不在构造时创建，而在 `exec` 时通过 `buildAgent` 回调获取 —— 这避免了工具列表
  * 构建阶段的递归创建问题（SubAgent → buildToolList → SubAgent → ...）。
  *
- * ## 委派的形态：燃料 + 一把钥匙
+ * ## 委派的形态：燃料 + 钥匙
  *
  * 交给这里的 agent，`messages` 里已经装好了历史，末尾那条 user 就是这一趟要回答的问题。
  * 所以**不需要把消息搬进 inbox**：`runOnce()` 不给正文，就是拧钥匙。
@@ -83,7 +83,7 @@ export class AgentToolLazy implements Tool {
     });
 
     try {
-      // 跑它、等它闲、收尸 —— 全在 runOnce 里。中断信号直接交过去，
+      // 跑它、等它空闲、收尾 —— 全在 runOnce 里。中断信号直接交过去，
       // 不再需要手工把父的 abort 转成 subagent 的 abort。
       await agent.runOnce(undefined, { signal: ctx.signal });
     } finally {
@@ -96,7 +96,7 @@ export class AgentToolLazy implements Tool {
     }
 
     // 被拒的那一次请求不产生任何消息。此时若还交回「最后一条消息的内容」，父模型读到的会是
-    // **它自己那句问题原文** —— 等于 subagent 装傻复读了一遍，而调用方以为拿到了结果。
+    // **它自己那句问题原文** —— 等于 subagent 把问题原文重复了一遍，而调用方以为拿到了结果。
     if (agent.messages.length <= before) {
       return refused ?? "subagent 没有产出：这次请求被拒了，或者它一个字也没说";
     }
@@ -134,8 +134,8 @@ export class AgentToolLazy implements Tool {
 
     // **收口那一条也要转发。** 主转录靠 `responseFinished` 把**最后一片正文**、`status`、
     // `finish_reason`、`usage` 钉到消息上（§10：收流之后才发）—— 派出去的那个也一样欠这一条：
-    // 不转发的话，subagent 的最后一片正文只能等「下一片」带出来，而最后一片没有下一片（那片字
-    // 就这么丢了），父级看到的 subagent 消息还会长期停在 `writing`。
+    // 不转发的话，subagent 的最后一片正文就没有机会带出来：最后一片没有下一片（那段正文
+    // 就此丢失），父级看到的 subagent 消息还会长期停在 `writing`。
     //
     // 载荷改写与「消息」那几条**同一套**（`agent` 换成父、加 `subAgent` / `via`）；带出去的是
     // **那条活消息本身**、不是 id —— 接收方读它就把收尾三格一起拿到了，与 `messageChanged` 同理。

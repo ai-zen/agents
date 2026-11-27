@@ -17,8 +17,8 @@ import { generateMessageId } from "./Message.js";
  * 全部可用的工具**，给全了才够用：插件要靠它判断「某个工具在不在」（例如
  * `call_mcp_tool` 是否被权限禁掉），从而决定怎么引导模型。
  *
- * 为什么不给 `agent` 让插件自己去 `agent.tools` 里捞：这个钩子要读的就这两样，
- * 「可用工具」在派发那一刻就是**已知答案**，让每个插件各捞一次只会多出一条「忘了捞」的路。
+ * 为什么不给 `agent` 让插件自己去 `agent.tools` 里取：这个钩子要读的就这两样，
+ * 「可用工具」在派发那一刻就是**已知答案**，让每个插件各取一次只会多出一条「忘了取」的路径。
  */
 export interface UnknownToolContext {
   /** 模型调用的那一次工具调用（`function.name` 就是它要的、却不存在的工具名） */
@@ -54,7 +54,7 @@ export class AgentContext {
   /**
    * 寿命：常驻还是只用一次（语义见 `AgentNS.AgentLifetime`）。
    *
-   * 默认 `resident` —— 它是能力更大的那个；想要「跑完就死」得显式声明。
+   * 默认 `resident` —— 它是能力更大的那个；想要「跑完即终结」需要显式声明。
    */
   lifetime: AgentNS.AgentLifetime;
   /**

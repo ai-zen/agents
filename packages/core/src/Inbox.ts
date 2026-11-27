@@ -12,7 +12,7 @@ import { Message, generateMessageId } from "./Message.js";
  *
  * ## 为什么时间也写进这行注释
  *
- * 外部通知可能是很久以前发生的（排队、重试、别的会话攒下的结果）。模型拿到它得能判断
+ * 外部通知可能是很久以前发生的（排队、重试、别的会话遗留的结果）。模型拿到它得能判断
  * 时效性，否则会把一条陈年结果当成刚刚发生的事。时间就用 InboxEntry 自己的 `createdAt`，不另算一份。
  *
  * ## 为什么分段内容不是「转成纯文本再拼」
@@ -40,7 +40,7 @@ export function inboxEntryContent(entry: AgentNS.InboxEntryWithContent): AgentNS
  * 内容由 {@link inboxEntryContent} 决定；这里只负责「消息」这一层：角色、状态、id、来源。
  * 状态给 `Completed`，与 `Message.User()` 一致 —— 它是用户已经说完的话，不是待写占位。
  *
- * **钥匙（没有正文的 InboxEntry）返回 `undefined`**：它只负责把人叫起来，历史里一个字都不多加。
+ * **钥匙（没有正文的 InboxEntry）返回 `undefined`**：它只负责唤醒 agent，历史里一个字都不多加。
  */
 export function inboxEntryMessage(entry: AgentNS.InboxEntry): AgentNS.Message | undefined {
   if (entry.content === undefined) return undefined;

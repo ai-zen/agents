@@ -27,7 +27,7 @@ export function formatContent(content: AgentNS.MessageContent): AgentNS.MessageC
 /**
  * 一段内容里能出网的那一份：按段类型取认识的字段重建，返回新对象（不改入参）。
  *
- * 认不出的键（`__` 开头的本地扩展、厂商多塞的字段）与认不出的段类型都留不下东西 ——
+ * 认不出的键（`__` 开头的本地扩展、厂商额外添加的字段）与认不出的段类型都留不下东西 ——
  * 未知段类型只剩 `type`（有 `index` 就带上），因为不知道该留什么。
  */
 export function formatContentSection(

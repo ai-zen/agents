@@ -1,10 +1,10 @@
 /**
- * 一片增量（`AgentNS.Delta`）→ 就地攒进一条 assistant 消息。**这一件事在 core 里只有这一份实现。**
+ * 一片增量（`AgentNS.Delta`）→ 就地拼进一条 assistant 消息。**这一件事在 core 里只有这一份实现。**
  *
  * 本文件处理的**是那一片增量本身**，不是任何外壳：厂商 chunk 里的 `choices[0].delta`、
  * 宿主推给客户端的 `message.delta` 载荷 —— 说的都是 `AgentNS.Delta`。所以它是独立导出的函数，
- * 而不是 `Agent.runTurn` 里的循环体：只看流的消费者（客户端镜像）要做的是同一件事，攒出来的
- * 对象必须与 core 手里那条**逐字一致**，否则「界面上的字」与「真正存下来的消息」迟早对不上，
+ * 而不是 `Agent.runTurn` 里的循环体：只看流的消费者（客户端镜像）要做的是同一件事，拼出来的
+ * 对象与 core 手里那条**逐字一致**，否则「界面上的字」与「真正存下来的消息」迟早对不上，
  * 而症状只在某一类增量（数组内容段、半截工具参数）上显形 —— 那几条规则各有各的边界情形，
  * 抄一遍就是抄漏一处。
  *
@@ -23,13 +23,13 @@
 import type { AgentNS } from "./AgentNS.js";
 
 /**
- * 把一片增量攒进 `receiver`。
+ * 把一片增量拼进 `receiver`。
  *
  * 就地改 `receiver`（正文 / 推理 / 工具调用），不返回新对象 ——
  * 调用方手里那个引用就是「正在拼的那条消息」，换对象会让已经挂在它上面的引用（事件载荷、
  * 订阅方刚收到的那条消息、客户端的镜像）指着一条不再更新的旧消息。
  *
- * 一片什么都不带的增量（`{}`）是合法的：正文不动，别的字段也不动 —— 攒消息的规则只认
+ * 一片什么都不带的增量（`{}`）是合法的：正文不动，别的字段也不动 —— 拼接消息的规则只认
  * 这片增量**自己带的字段**。
  */
 export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): void {
@@ -48,7 +48,7 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
           const index = deltaSection.index!;
 
           if (!receiver.content[index]) {
-            // 首片**只放声明字段**（`index` / `type`）：正文与 `url` 一律走下面的 `+=`。
+            // 首片**只放声明字段**（`index` / `type`）：正文与 `url` 都由下面的 `+=` 写入。
             // 把整片 `...deltaSection` 铺进来的话，首片自带的正文会被拼两遍（`"A"` → `"AA"`），
             // 首片自带的 `image_url` 会被拼成 `"[object Object]…"`。
             receiver.content[index] = {
@@ -77,8 +77,8 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
         }
       }
     } else {
-      // 两种形状**不混**：已经攒成段数组的，来了字符串 delta 就把它包成一段 `text` 追进去 ——
-      // 赋值成一个字符串会把握到此刻的段整段抹掉。
+      // 两种形状**不混**：已经拼成段数组的，来了字符串 delta 就把它包成一段 `text` 追进去 ——
+      // 赋值成一个字符串会把拼接至今的段整段抹掉。
       if (receiver.content instanceof Array) {
         receiver.content.push({ type: "text", text: delta.content });
       } else {
@@ -97,14 +97,14 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
     }
 
     // 一片里可以带多个调用（并行工具调用就是这么发的）：整数组遍历，按 `index` 归位。
-    // 只看 `[0]` 会把同片里其余调用整条丢掉 —— 模型说要调三个工具，这里只攒出一个。
+    // 只看 `[0]` 会把同片里其余调用整条丢掉 —— 模型说要调三个工具，这里只拼出一个。
     for (const deltaToolCall of delta.tool_calls) {
       const index = deltaToolCall.index!;
 
       if (!receiver.tool_calls[index]) {
         // 顺序不能反：先铺这一片原样的字段，再把它里面那个 `function` 换成归一过的一份。
         // 反过来的话，`...deltaToolCall` 里的 `function` 会把上面那份整个盖掉 ——
-        // 首片只给 `name` 不给 `arguments` 时，攒参数的串就变成了 `undefined`。
+        // 首片只给 `name` 不给 `arguments` 时，拼接参数的字符串就变成了 `undefined`。
         receiver.tool_calls[index] = {
           ...deltaToolCall,
           index,
@@ -125,9 +125,9 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
       }
 
       if (deltaToolCall.function?.arguments) {
-        // 攒到此刻的那一段（厂商显式给了 `arguments: undefined` 时也不能变成 "undefined"）
+        // 拼接至今的那一段（厂商显式给了 `arguments: undefined` 时也不能变成 "undefined"）
         const accumulated = receiver.tool_calls[index]["function"]!["arguments"] ?? "";
-        // 两种厂商行为都要认：有的把「到目前为止的整串」重发（本次串以已攒的为前缀），
+        // 两种厂商行为都要认：有的把「到目前为止的整串」重发（本次串以已拼接的内容为前缀），
         // 有的只发新增那一段（向前接上）。
         if (deltaToolCall.function.arguments.startsWith(accumulated)) {
           receiver.tool_calls[index]["function"]!["arguments"] = deltaToolCall.function.arguments;
