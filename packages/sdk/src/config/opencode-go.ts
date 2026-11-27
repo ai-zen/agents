@@ -261,6 +261,9 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 128000,
     tokenThresholds: { handoff: 420000, guard: 840000 },
     vision: true,
+    // 这一条在本端点走 responses 面。不点明要摘要，回包里只有 `reasoning.encrypted`，客户端
+    // 拿不到明文思考；`provider_options` 是网关自己给出的作用域写法，域名是 `openai-responses`。
+    defaultParams: { provider_options: { "openai-responses": { reasoning: { summary: "auto" } } } },
     description: "Cost-efficient GPT-5.6 model for fast, high-volume workloads",
   },
   {
@@ -272,6 +275,8 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 128000,
     tokenThresholds: { handoff: 420000, guard: 840000 },
     vision: true,
+    // 同上：不带这一格时思考照跑（usage 里有 reasoning_tokens），但流里只有加密块。
+    defaultParams: { provider_options: { "openai-responses": { reasoning: { summary: "auto" } } } },
     description: "OpenAI's most efficient model for focused, high-volume tasks",
   },
   {
