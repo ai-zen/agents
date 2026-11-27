@@ -1,14 +1,21 @@
+/**
+ * 真实目录结构下的**装配**：仓库里那份夹具（`packages/test-home` + `packages/test-project`）
+ * 走一遍「发现 → 过滤 → 建 Agent」。
+ *
+ * 这个文件只钉装配这一段 —— 也就是说：`allInOne` 把四维路径真的串起来了、权限过滤真的按
+ * 定义削掉了工具、`createAgent` 真能装出一个能跑的 Agent、插件能在真 Agent 上挂住。
+ *
+ * 发现与读写的细节**不在这里重复**，各有自己的套件：
+ * `scope/plugins/{skills,usertools,subagents,mcp}/discover.test.ts`、`crud/AgentRepository.test.ts`
+ * （临时目录造的夹具，改仓库夹具不会牵连它们）。
+ *
+ * 起子进程、写真实磁盘、连端口的一律不收 —— 这一套只读夹具：`npm run test:e2e`。
+ */
 import { describe, it, expect } from "vitest";
 import { Scope } from "../src/scope/Scope.js";
 import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { createAgent } from "../src/runtime/createAgent.js";
 import { ConfigManager } from "../src/config/ConfigManager.js";
-import { AgentRepository } from "../src/crud/AgentRepository.js";
-import { readSkill, discoverSkills } from "../src/scope/plugins/skills/discover.js";
-import { discoverSubAgents } from "../src/scope/plugins/subagents/discover.js";
-import { discoverUserTools } from "../src/scope/plugins/usertools/discover.js";
-import { discoverMcpServers } from "../src/scope/plugins/mcp/discover.js";
-import { discoverBuiltinTools } from "../src/scope/plugins/builtin/discover.js";
 import { SdkAgent } from "../src/runtime/SdkAgent.js";
 import { AutoRefreshToolsPlugin } from "../src/agent-plugins/AutoRefreshToolsPlugin.js";
 import type { AgentDefinition } from "../src/types/index.js";
@@ -35,13 +42,27 @@ const PROJECT_TOOLS_DIR = join(PROJECT_AIZEN_DIR, "tools");
 const PROJECT_SUB_AGENTS_DIR = join(PROJECT_AIZEN_DIR, "sub-agents");
 const PROJECT_AIZEN_MCP = join(PROJECT_AIZEN_DIR, "mcp.json");
 
-// 前置检查
 async function checkPaths() {
   try {
     await fs.access(TEST_CONFIG);
   } catch {
     throw new Error(`测试数据不存在，请先创建 ${TEST_CONFIG}`);
   }
+}
+
+/** 一个四维全开的探针 Agent 定义（仅用于 filter/buildTools） */
+function allowAllDef(): AgentDefinition {
+  return {
+    id: "probe",
+    name: "Probe",
+    messages: [],
+    permissions: {
+      tools: { allow: ["*"] },
+      skills: { allow: ["*"] },
+      mcps: { allow: ["*"] },
+      subagents: { allow: ["*"] },
+    },
+  } as unknown as AgentDefinition;
 }
 
 /** 用真实路径装配一个标准 Scope（allInOne）并完成发现 */
@@ -61,356 +82,71 @@ async function makeScope(): Promise<Scope> {
   return scope;
 }
 
-/** 一个四维全开的探针 Agent 定义（仅用于 filter/buildTools） */
-function allowAllDef(): AgentDefinition {
-  return {
-    id: "probe",
-    name: "Probe",
-    messages: [],
-    permissions: {
-      tools: { allow: ["*"] },
-      skills: { allow: ["*"] },
-      mcps: { allow: ["*"] },
-      subagents: { allow: ["*"] },
-    },
-    createdAt: "2025-01-01T00:00:00Z",
-    updatedAt: "2025-01-01T00:00:00Z",
-  };
-}
+describe("真实路径装配", () => {
+  it("四维候选都从真实目录里出来了（用户工具并进 tools 维度）", async () => {
+    await checkPaths();
+    const scope = await makeScope();
+    const result = scope.filter(allowAllDef());
 
-// ==================================================================
-// 测试
-// ==================================================================
-
-describe("端到端：真实文件系统路径", () => {
-  // -----------------------------------------------------------------
-  // 1. 基础发现
-  // -----------------------------------------------------------------
-  describe("1. 发现阶段", () => {
-    it("config.json 可正常读取", async () => {
-      await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      // 模型真相源在 Agent 定义上，config.json 不再有 defaultModel
-      expect("defaultModel" in config).toBe(false);
-      expect(config.endpoints).toHaveLength(2);
-      expect(config.models).toHaveLength(3);
-      expect(config.imageModels).toHaveLength(1);
-    });
-
-    it("discoverBuiltinTools: 有 imageModels 时包含 generate_image", async () => {
-      await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const tools = discoverBuiltinTools({ cwd: TEST_HOME_DIR, config });
-      const names = tools.map((t) => t.function.name);
-      expect(names).toContain("generate_image");
-      expect(names.length).toBeGreaterThan(15);
-    });
-
-    it("discoverSubAgents: 能发现用户级 SubAgent", async () => {
-      await checkPaths();
-      const agents = await discoverSubAgents([TEST_SUB_AGENTS_DIR]);
-      expect(agents.length).toBeGreaterThanOrEqual(2);
-      const names = agents.map((a) => a.function!.name);
-      expect(names).toContain("sub_agent_default");
-      expect(names).toContain("code_reviewer");
-    });
-
-    it("discoverSubAgents: 合并用户级和项目级 SubAgent", async () => {
-      await checkPaths();
-      const agents = await discoverSubAgents([PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR]);
-      const names = agents.map((a) => a.function!.name);
-      expect(names).toContain("sub_agent_default");
-      expect(names).toContain("code_reviewer");
-      expect(names).toContain("project_manager");
-    });
-
-    it("discoverSkills: 能发现用户级 Skill", async () => {
-      await checkPaths();
-      const skills = await discoverSkills([TEST_SKILLS_DIR]);
-      expect(skills.length).toBeGreaterThanOrEqual(2);
-      const ids = skills.map((s) => s.id);
-      expect(ids).toContain("code-review");
-      expect(ids).toContain("git-helper");
-    });
-
-    it("discoverSkills: 合并用户级和项目级 Skill", async () => {
-      await checkPaths();
-      const skills = await discoverSkills([PROJECT_SKILLS_DIR, TEST_SKILLS_DIR]);
-      const ids = skills.map((s) => s.id);
-      expect(ids).toContain("code-review");
-      expect(ids).toContain("git-helper");
-      expect(ids).toContain("project-guide");
-    });
-
-    it("readSkill: 可读取完整 Skill 内容和元数据", async () => {
-      await checkPaths();
-      const skill = await readSkill([TEST_SKILLS_DIR], "code-review");
-      expect(skill).not.toBeNull();
-      expect(skill!.name).toBe("code-review");
-      expect(skill!.description).toBe("代码审查最佳实践指南");
-      expect(skill!.subAgent).toBe(true);
-      expect(skill!.content).toContain("代码审查 Skill");
-      expect(skill!.license).toBe("MIT");
-      expect(skill!.compatibility).toBe("requires git");
-    });
-
-    it("discoverUserTools: 能发现用户级工具", async () => {
-      await checkPaths();
-      const tools = await discoverUserTools([TEST_TOOLS_DIR]);
-      expect(tools.length).toBeGreaterThanOrEqual(2);
-      const names = tools.map((t) => t.function.name);
-      expect(names).toContain("count_lines");
-      expect(names).toContain("greet");
-    });
-
-    it("discoverUserTools: 合并用户级和项目级工具", async () => {
-      await checkPaths();
-      const tools = await discoverUserTools([PROJECT_TOOLS_DIR, TEST_TOOLS_DIR]);
-      const names = tools.map((t) => t.function.name);
-      expect(names).toContain("count_lines");
-      expect(names).toContain("greet");
-      expect(names).toContain("project_stats");
-    });
-
-    it("discoverMcpServers: 能发现用户级 MCP 服务器", async () => {
-      await checkPaths();
-      const servers = await discoverMcpServers([TEST_MCP]);
-      const names = servers.map((s) => s.id);
-      expect(names).toContain("github");
-      expect(names).toContain("filesystem");
-    });
-
-    it("discoverMcpServers: 合并用户级 + 项目共享 + 项目个人 MCP", async () => {
-      await checkPaths();
-      const servers = await discoverMcpServers([PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP]);
-      const names = servers.map((s) => s.id);
-      expect(names).toContain("github");
-      expect(names).toContain("filesystem");
-      expect(names).toContain("postgres");
-      expect(names).toContain("custom-server");
-    });
-
-    it("用户工具可实际调用", async () => {
-      await checkPaths();
-      const tools = await discoverUserTools([TEST_TOOLS_DIR]);
-      const greetTool = tools.find((t) => t.function.name === "greet")!;
-      expect(greetTool).toBeDefined();
-
-      const result = await greetTool.exec({
-        parsedArgs: { name: "测试" },
-        agent: null,
-      } as any);
-      expect(result).toContain("测试");
-      expect(result).toContain("欢迎");
-    });
-
-    it("项目工具可实际调用", async () => {
-      await checkPaths();
-      const tools = await discoverUserTools([PROJECT_TOOLS_DIR]);
-      const statsTool = tools.find((t) => t.function.name === "project_stats")!;
-      expect(statsTool).toBeDefined();
-
-      const result = await statsTool.exec({
-        parsedArgs: { dir: PROJECT_DIR },
-        agent: null,
-      } as any);
-      expect(result).toContain("项目统计");
-      expect(result).toContain("glob");
-    });
+    expect(result.subagents.length).toBeGreaterThanOrEqual(3);
+    expect(result.skills.length).toBeGreaterThanOrEqual(3);
+    expect(result.mcps.length).toBeGreaterThanOrEqual(4);
+    expect(result.tools).toContain("count_lines");
+    expect(result.tools).toContain("greet");
+    expect(result.tools).toContain("project_stats");
   });
 
-  // -----------------------------------------------------------------
-  // 2. CRUD
-  // -----------------------------------------------------------------
-  describe("2. CRUD 操作", () => {
-    it("listAgents: 能列出用户级 Agent", async () => {
-      await checkPaths();
-      const agents = await new AgentRepository(TEST_AGENTS_DIR).list();
-      expect(agents.length).toBeGreaterThanOrEqual(2);
-      const ids = agents.map((a) => a.id);
-      expect(ids).toContain("code-assistant");
-      expect(ids).toContain("translator");
-    });
+  it("allow all 的定义：装配出完整 Agent（含按配置给的 generate_image）", async () => {
+    await checkPaths();
+    const scope = await makeScope();
 
-    it("readAgent: 可读取单个 Agent 定义", async () => {
-      await checkPaths();
-      const agent = await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant");
-      expect(agent).not.toBeNull();
-      expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
-    });
+    const agent = await createAgent(scope, "code-assistant");
 
-    it("readAgent: translator 权限受限", async () => {
-      await checkPaths();
-      const agent = await new AgentRepository(TEST_AGENTS_DIR).read("translator");
-      expect(agent).not.toBeNull();
-      expect(agent!.permissions?.tools).toEqual({ allow: ["read", "write", "exec"] });
-      expect(agent!.permissions?.skills).toEqual({ deny: ["*"] });
-      expect(agent!.permissions?.mcps).toEqual({ deny: ["*"] });
-      expect(agent!.permissions?.subagents).toEqual({ deny: ["*"] });
-    });
+    expect(agent).toBeInstanceOf(SdkAgent);
+    expect(agent.scope).toBe(scope);
+    expect(agent.model).toBeDefined();
+    expect(agent.messages[0]?.role).toBe("system");
+
+    const names = agent.tools.map((t: Tool) => t.function.name);
+    expect(names).toContain("read");
+    expect(names).toContain("write");
+    expect(names).toContain("exec");
+    expect(names).toContain("sub_agent_default");
+    expect(names).toContain("load_skill");
+    // 夹具配了 imageModels，这一颗就该在
+    expect(names).toContain("generate_image");
   });
 
-  // -----------------------------------------------------------------
-  // 3. 能力管线（Scope + 插件）
-  // -----------------------------------------------------------------
-  describe("3. 能力管线", () => {
-    it("使用真实路径构建 Scope：全局候选集完整", async () => {
-      await checkPaths();
-      const scope = await makeScope();
-      const result = scope.filter(allowAllDef());
+  it("受限权限的定义：同一套路径下，多出来的能力一个都不露", async () => {
+    await checkPaths();
+    const scope = await makeScope();
 
-      // 四维候选
-      expect(result.subagents.length).toBeGreaterThanOrEqual(3);
-      expect(result.skills.length).toBeGreaterThanOrEqual(3);
-      expect(result.mcps.length).toBeGreaterThanOrEqual(4);
-      // 用户工具并入 tools 维度
-      expect(result.tools).toContain("count_lines");
-      expect(result.tools).toContain("greet");
-      expect(result.tools).toContain("project_stats");
-    });
+    const agent = await createAgent(scope, "translator");
 
-    it("code-assistant: allow all 时所有能力可用", async () => {
-      await checkPaths();
-      const scope = await makeScope();
-
-      const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant"))!;
-      const tools = scope.buildTools(definition);
-
-      const names = tools.map((t) => t.function.name);
-      expect(names).toContain("read");
-      expect(names).toContain("exec");
-      expect(names).toContain("sub_agent_default");
-      expect(names).toContain("code_reviewer");
-      expect(names).toContain("project_manager");
-      expect(names).toContain("load_skill");
-      expect(names).toContain("call_skill_sub_agent");
-    });
-
-    it("translator: 受限权限只暴露指定工具", async () => {
-      await checkPaths();
-      const scope = await makeScope();
-
-      const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("translator"))!;
-      const tools = scope.buildTools(definition);
-
-      const names = tools.map((t) => t.function.name);
-      expect(names).toContain("read");
-      expect(names).toContain("write");
-      expect(names).toContain("exec");
-      expect(names).not.toContain("rm");
-      expect(names).not.toContain("load_skill");
-      expect(names).not.toContain("sub_agent_default");
-    });
+    const names = agent.tools.map((t: Tool) => t.function.name);
+    expect(names).toContain("read");
+    expect(names).toContain("write");
+    expect(names).toContain("exec");
+    expect(names).not.toContain("rm");
+    expect(names).not.toContain("sub_agent_default");
+    expect(names).not.toContain("load_skill");
   });
 
-  // -----------------------------------------------------------------
-  // 4. createAgent 完整装配
-  // -----------------------------------------------------------------
-  describe("4. createAgent 完整装配", () => {
-    it("从真实路径创建 code-assistant", async () => {
-      await checkPaths();
-      const scope = await makeScope();
+  it("插件能挂在真 Agent 上：刷新之后工具名单不变", async () => {
+    await checkPaths();
+    const scope = await makeScope();
 
-      const agent = await createAgent(scope, "code-assistant");
+    const agent = await createAgent(scope, "code-assistant");
+    const beforeNames = agent.tools.map((t: Tool) => t.function.name);
 
-      // 类型
-      expect(agent).toBeInstanceOf(SdkAgent);
-      expect(agent.scope).toBe(scope);
+    agent.use(new AutoRefreshToolsPlugin());
+    // 内循环开头那一缝的 ctx（core 那一侧是 `{ agent, body }`）
+    const ctx = { agent, body: { messages: [] } };
+    await agent.init();
+    const plugin = (agent as any)._plugins[0];
+    await plugin.onInnerLoopStart(ctx);
 
-      // 元数据（名字是夹具里的文案，随夹具改；这里只钉权限这样有语义的东西）
-      expect(agent.definition.permissions?.tools).toEqual({ allow: ["*"] });
-
-      // 模型
-      expect(agent.model).toBeDefined();
-
-      // 消息：system prompt 从定义里来（内容本身是夹具文案，不钉）
-      expect(agent.messages[0]?.role).toBe("system");
-
-      // 工具
-      const names = agent.tools.map((t: Tool) => t.function.name);
-      expect(names).toContain("read");
-      expect(names).toContain("write");
-      expect(names).toContain("exec");
-      expect(names).toContain("sub_agent_default");
-      expect(names).toContain("load_skill");
-      expect(names).toContain("generate_image"); // 有 imageModels 配置
-    });
-
-    it("从真实路径创建 translator（受限权限）", async () => {
-      await checkPaths();
-      const scope = await makeScope();
-
-      const agent = await createAgent(scope, "translator");
-
-      const names = agent.tools.map((t: Tool) => t.function.name);
-      expect(names).toContain("read");
-      expect(names).toContain("write");
-      expect(names).toContain("exec");
-      expect(names).not.toContain("rm");
-      expect(names).not.toContain("sub_agent_default");
-      expect(names).not.toContain("load_skill");
-    });
-  });
-
-  // -----------------------------------------------------------------
-  // 5. 插件集成
-  // -----------------------------------------------------------------
-  describe("5. 插件集成", () => {
-    it("autoRefreshTools 可在真实 SdkAgent 上使用", async () => {
-      await checkPaths();
-      const scope = await makeScope();
-
-      const agent = await createAgent(scope, "code-assistant");
-      const beforeNames = agent.tools.map((t: Tool) => t.function.name);
-
-      // 注册并触发 autoRefreshTools
-      agent.use(new AutoRefreshToolsPlugin());
-
-      // 内循环开头那一缝的 ctx（新 core：`{ agent, body }`）
-      const ctx = { agent, body: { messages: [] } };
-
-      // 先 init
-      await agent.init();
-
-      // 执行 onInnerLoopStart（默认 `inner-loop-start` 档）
-      const plugin = (agent as any)._plugins[0];
-      await plugin.onInnerLoopStart(ctx);
-
-      // 刷新后工具列表应仍然完整
-      const afterNames = agent.tools.map((t: Tool) => t.function.name);
-      expect(afterNames).toEqual(beforeNames);
-    });
-  });
-
-  // -----------------------------------------------------------------
-  // 6. 多路径优先级
-  // -----------------------------------------------------------------
-  describe("6. 多路径合并优先级", () => {
-    it("用户级 + 项目级 SubAgent 不冲突合并", async () => {
-      await checkPaths();
-      const agents = await discoverSubAgents([TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
-      const names = agents.map((a) => a.function!.name);
-      // 各自有不同名称，不会冲突
-      expect(new Set(names).size).toBe(names.length);
-    });
-
-    it("用户级 + 项目级 Skill 不冲突合并", async () => {
-      await checkPaths();
-      const skills = await discoverSkills([TEST_SKILLS_DIR, PROJECT_SKILLS_DIR]);
-      const ids = skills.map((s) => s.id);
-      // 各自有不同 id，不会冲突
-      expect(new Set(ids).size).toBe(ids.length);
-    });
-
-    it("用户级 + 项目级 MCP 合并时同名按优先级覆盖", async () => {
-      await checkPaths();
-      // 这里的 server 名称各不相同，验证能全部发现
-      const servers = await discoverMcpServers([TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
-      const names = servers.map((s) => s.id);
-      expect(names).toContain("github");
-      expect(names).toContain("filesystem");
-      expect(names).toContain("postgres");
-      expect(names).toContain("custom-server");
-    });
+    const afterNames = agent.tools.map((t: Tool) => t.function.name);
+    expect(afterNames).toEqual(beforeNames);
   });
 });
