@@ -46,4 +46,16 @@
 1. **`url` 模式没做**（也没声明）：要「显示域名 + 征得同意 + 打开浏览器」，TUI 没那个交互面。服务器就不该发。
 2. **跨会话不过并行**：MCP 客户端按工作目录共享，并行调用时栈顶是最近那一次，没有任何客户端可见的信息能把它们分开（同段会话内的并行不受影响）。
 
-**剩下的（真机上验）**：拿一个真的会 elicitation 的服务器跑一遍 —— 目前只有单元层（处理器四个去处 + 记账那本账）。
+**补上的一轮（2026-11-27）：新版协议的两种问法都通了，并有真服务器可跑**。
+
+- 建连默认做版本谈判（`versionNegotiation: { mode: "auto" }`，`sse` 除外：那一代传输不会谈成新版，
+  而 HTTP 上探针不应答算连接超时）。2026-07-28 谈成之后，服务器改用「回 `input_required`、客户端带
+  `inputResponses` 重发」的多轮问法。
+- 两套问法落同一个函数（`McpConnectionManager` 的 `fulfilElicitation`）：2025 那一档它被当作请求处理器
+  直接调；2026 那一档由任务会话的多轮循环接手，经 `McpTaskBridge` 的 `elicit` 参数调回来。
+  不能让 SDK 自己履行那几轮 —— `@modelcontextprotocol/ext-tasks` 发 `tools/call` 时带 `allowInputRequired`，
+  自动履行因此是关的。
+- 测试服务器：`packages/test-project/mcp-servers/elicit-server.mjs`（`--era modern|legacy`），
+  端到端用例 `packages/sdk/test/e2e-elicitation.test.ts`（`npm run test:e2e`）。
+- 一个事实值得记：官方 `@modelcontextprotocol/server@2.4.0` 对 `server/discover` 回 Method not found，
+  也就是说用它搭出来的服务器永远停在 2025 那一档；新版那一档的线上形状只能手写（测试服务器就是这么来的）。
