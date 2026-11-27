@@ -55,10 +55,13 @@
   直接调；2026 那一档由任务会话的多轮循环接手，经 `McpTaskBridge` 的 `elicit` 参数调回来。
   不能让 SDK 自己履行那几轮 —— `@modelcontextprotocol/ext-tasks` 发 `tools/call` 时带 `allowInputRequired`，
   自动履行因此是关的。
-- 测试服务器两台，分工不同：`packages/test-project/mcp-servers/elicit-server.mjs`（手写 JSON-RPC，
-  `--era modern|legacy`，能造「非要某一档」的对照与 url 档那种我们没声明的问法）；
-  `packages/sdk/test/fixtures/official-elicit-server.mjs`（官方 `serveStdio` + `inputRequired`/`inputResponse`，
-  验与官方 SDK 搭出来的服务器互通）。端到端用例 `packages/sdk/test/e2e-elicitation.test.ts`（`npm run test:e2e`）。
+- 测试服务器两台，都用官方 SDK 搭，差别只在入口 —— 入口恰好决定年款：
+  `sdk/test/fixtures/official-elicit-server.mjs`（`serveStdio`，谈成 2026-07-28）与
+  `sdk/test/fixtures/official-legacy-elicit-server.mjs`（`new McpServer` + `new StdioServerTransport`，
+  只服务 2025 那一档）。端到端用例 `packages/sdk/test/e2e-elicitation.test.ts`（`npm run test:e2e`）。
+- 没为 `url` 档造端到端用例：官方 SDK 在客户端没声明 url 时根本不发（`Client does not support url
+  elicitation`），要造就得手写一台「不按规矩办事」的服务器 —— 那种形状真服务器发不出来，而这条分支
+  在单测里已经钉过了（`McpConnectionManager.test.ts`）。
 - 一个事实值得记：官方 server SDK **能**服务 2026-07-28 那一档，但只走 `serveStdio`（stdio）与
   `createMcpHandler`（HTTP）两个入口 —— 年款由开场那条消息定，Server 是被这两个入口「标记」之后才
   装上 `server/discover` 处理器的。手写 `new McpServer` + `new StdioServerTransport` 的那套只服务 2025
