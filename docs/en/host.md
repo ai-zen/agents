@@ -97,7 +97,7 @@ Both attach to sessions:
 - **Notices**: failures, threshold crossings, handoff outcomes. They go into the `notice` table, so a client sees the history of them as soon as it connects
 - **Questions**: when a person has to decide — which handoff executor to use after crossing the soft line, a form requested by an MCP server — the host raises a question and waits. Questions are live only and are not persisted: if the process dies the question dies with it, and there is no second table
 
-A one-shot call (`ai "…"`) has nobody to ask, so that path installs no question board: questions stay pending rather than being answered on the user's behalf.
+A one-shot call (`ai "…"`) has no interactive interface, so that path installs no question board: questions stay pending rather than being answered on the user's behalf.
 
 ## Interface
 
