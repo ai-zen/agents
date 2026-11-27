@@ -87,15 +87,11 @@ export interface FormRequest {
   /** 挡住这段会话继续跑，缺省就是挡（宿主自己的行为，MCP 那边没有这一格） */
   readonly blocking: boolean;
   /**
-   * 这道题允许用户交哪几态；缺省三态齐全。
+   * 面板上画哪几个按钮；不给就是三个都画。
    *
-   * 出题方决定它，因为只有出题方知道「拒绝」在这道题里有没有意义：交接那句问的是「用哪种方式」，
-   * 「不交接」本来就是枚举里的一项，再给一个「拒绝」按钮是两个入口说同一件事；而一个即将删数据的
-   * 确认，`decline` 有意义、「默默关掉」没有。
-   *
-   * 这是**面板的画法**，不是新的作答语义：登记的仍只有 accept / decline / cancel，客户端只会从
-   * 这几态里挑一个交回来（不在表里的那一态在这里被拒，见 `QuestionRegistry.answer`）。
+   * 纯呈现：它不改变这道题接受哪些答复（三态恒在），只说屏幕上有哪几行可按的按钮。
+   * 交接那道题给空数组 —— 一格枚举里回车就是同意、Esc 就是关掉，多画一行只是噪声。
    */
-  readonly actions?: readonly FormAction[];
+  readonly buttons?: readonly FormAction[];
   readonly createdAt: number;
 }

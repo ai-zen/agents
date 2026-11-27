@@ -137,22 +137,19 @@ describe("越线那一刻问不问", () => {
    * 关掉面板（Esc / Ctrl+C）在新形状里是 `cancel` —— 这一题由出题的人把它解释成「不交接」：
    * 题一挂着，这一段就一直等在它上面（自动那条路也不再问第二次），所以没有「不作答」这个去处。
    */
-  it("这道题只开 accept：交 cancel / decline 被拒（要停就选「不交接」那一项）", async () => {
+  it("关掉面板（cancel）= 不交接：回 null、开关写成 false；而这道题不画按钮", async () => {
     const host = newHost();
     const session = newSession(host, false);
 
     const asked = host.handoff.automaticMode(session.id);
     const question = host.questions.list(session.id)[0];
-    expect(question.actions).toEqual(["accept"]);
+    // 一格枚举：回车选一项就走、Esc 关掉，面板上不需要按钮
+    expect(question.buttons).toEqual([]);
 
-    expect(() => host.questions.answer(question.id, { action: "cancel" })).toThrow(
-      /不接受这种作答/,
-    );
-    // 被拒之后题还挂着：一次不合法的作答不该把它吃掉
-    expect(host.questions.list(session.id)).toHaveLength(1);
+    host.questions.answer(question.id, { action: "cancel" });
 
-    host.questions.answer(question.id, pick("no"));
     await expect(asked).resolves.toBeNull();
+    expect(host.sessions.get(session.id)?.autoHandoff).toBe(false);
   });
 
   it("答不交接：回 null、开关写成 false，第二次直接回 null 不再问", async () => {
