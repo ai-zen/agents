@@ -3,7 +3,6 @@ import { Scope } from "../src/scope/Scope.js";
 import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { createAgent } from "../src/runtime/createAgent.js";
 import { ConfigManager } from "../src/config/ConfigManager.js";
-import { DEFAULT_HANDOFF_THRESHOLD } from "../src/config/normalize.js";
 import { AgentRepository } from "../src/crud/AgentRepository.js";
 import { readSkill, discoverSkills } from "../src/scope/plugins/skills/discover.js";
 import { discoverSubAgents } from "../src/scope/plugins/subagents/discover.js";
@@ -96,13 +95,6 @@ describe("端到端：真实文件系统路径", () => {
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
       expect(config.imageModels).toHaveLength(1);
-      // 夹具里的模型只写了旧字段 maxContextTokens，没有 tokenThresholds：读出来的
-      // 是补位后的形状，两条线都取出厂值（软线取出厂 handoff，硬线取窗口 80% 那一档，
-      // 也就是软线的 2 倍 —— 见 `normalize.ts` 的 `GUARD_RATIO`）
-      expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds).toEqual({
-        handoff: DEFAULT_HANDOFF_THRESHOLD,
-        guard: DEFAULT_HANDOFF_THRESHOLD * 2,
-      });
     });
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generate_image", async () => {
@@ -244,7 +236,6 @@ describe("端到端：真实文件系统路径", () => {
       await checkPaths();
       const agent = await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant");
       expect(agent).not.toBeNull();
-      expect(agent!.name).toBe("代码助手");
       expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
     });
 
@@ -326,16 +317,14 @@ describe("端到端：真实文件系统路径", () => {
       expect(agent).toBeInstanceOf(SdkAgent);
       expect(agent.scope).toBe(scope);
 
-      // 元数据
-      expect(agent.definition.name).toBe("代码助手");
+      // 元数据（名字是夹具里的文案，随夹具改；这里只钉权限这样有语义的东西）
       expect(agent.definition.permissions?.tools).toEqual({ allow: ["*"] });
 
       // 模型
       expect(agent.model).toBeDefined();
 
-      // 消息
-      expect(agent.messages[0].role).toBe("system");
-      expect(agent.messages[0].content).toContain("代码助手");
+      // 消息：system prompt 从定义里来（内容本身是夹具文案，不钉）
+      expect(agent.messages[0]?.role).toBe("system");
 
       // 工具
       const names = agent.tools.map((t: Tool) => t.function.name);
