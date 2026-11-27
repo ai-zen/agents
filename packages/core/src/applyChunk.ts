@@ -1,23 +1,21 @@
 /**
- * 一片增量（`AgentNS.Delta`）→ 就地拼进一条 assistant 消息。**这一件事在 core 里只有这一份实现。**
+ * 一片增量（`AgentNS.Delta`）就地拼进一条 assistant 消息。这件事在 core 里只有这一份实现。
  *
- * 本文件处理的**是那一片增量本身**，不是任何外壳：厂商 chunk 里的 `choices[0].delta`、
- * 宿主推给客户端的 `message.delta` 载荷 —— 说的都是 `AgentNS.Delta`。所以它是独立导出的函数，
- * 而不是 `Agent.runTurn` 里的循环体：只看流的消费者（客户端镜像）要做的是同一件事，拼出来的
- * 对象与 core 手里那条**逐字一致**，否则「界面上的字」与「真正存下来的消息」迟早对不上，
- * 而症状只在某一类增量（数组内容段、半截工具参数）上显形 —— 那几条规则各有各的边界情形，
- * 抄一遍就是抄漏一处。
+ * 本文件处理的是那一片增量本身，不是任何外壳：厂商 chunk 里的 `choices[0].delta` 与宿主推给
+ * 客户端的 `message.delta` 载荷说的都是 `AgentNS.Delta`。所以它是独立导出的函数，而不是
+ * `Agent.runTurn` 里的循环体：只看流的消费者（客户端镜像）要做的是同一件事，拼出来的对象必须
+ * 与 core 手里那条逐字一致，否则「界面上的字」与「真正存下来的消息」迟早对不上，而症状只会在
+ * 某一类增量（数组内容段、半截工具参数）上显形。那几条规则各有各的边界情形，抄一遍就是漏掉
+ * 一处。
  *
- * 流末的 `usage` 与 `finish_reason` **不属于这一片增量**（它们说的是「这次响应花了多少、为什么
+ * 流末的 `usage` 与 `finish_reason` 不属于这一片增量（它们说的是「这次响应花了多少」「为什么
  * 停下」）：core 那边由 `runTurn` 从 chunk 的外层取，客户端那边由 `message.changed` 整条回来。
  *
  * 没有返回值：要「这一片新增了什么」读原始片（`Delta` 本身就在描述它），要「到目前为止有什么」
- * 读 `receiver` —— 它就地更新，不需要中间的转述对象。
+ * 读 `receiver`，它就地更新，不需要中间的转述对象。
  *
- * ## 只 import 类型，运行期零依赖
- *
- * `AgentNS` 只出现在类型位置，编译后抹掉：本模块的产物除了自己什么都不 import。客户端要
- * 折流时直接用它，不必因此把 `openai` 拖进自己的打包产物。
+ * 只 import 类型，运行期零依赖：`AgentNS` 只出现在类型位置，编译后抹掉，本模块的产物除了自己
+ * 什么都不 import。客户端要按同一套规则拼流时直接用它，不必因此把 `openai` 拖进自己的打包产物。
  */
 
 import type { AgentNS } from "./AgentNS.js";
@@ -25,20 +23,19 @@ import type { AgentNS } from "./AgentNS.js";
 /**
  * 把一片增量拼进 `receiver`。
  *
- * 就地改 `receiver`（正文 / 推理 / 工具调用），不返回新对象 ——
- * 调用方手里那个引用就是「正在拼的那条消息」，换对象会让已经挂在它上面的引用（事件载荷、
- * 订阅方刚收到的那条消息、客户端的镜像）指着一条不再更新的旧消息。
+ * 就地改 `receiver`（正文 / 推理 / 工具调用），不返回新对象：调用方手里那个引用就是「正在拼的
+ * 那条消息」，换对象会让已经挂在它上面的引用（事件载荷、订阅方刚收到的那条消息、客户端的镜像）
+ * 指着一条不再更新的旧消息。
  *
- * 一片什么都不带的增量（`{}`）是合法的：正文不动，别的字段也不动 —— 拼接消息的规则只认
- * 这片增量**自己带的字段**。
+ * 一片什么都不带的增量（`{}`）是合法的：正文不动，别的字段也不动 —— 拼接的规则只认这片增量
+ * 自己带的字段。
  */
 export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): void {
   if (delta?.content) {
     if (delta.content instanceof Array) {
-      // 一片里可以带多段（各自的 `index` 不同）：整数组遍历，按 `index` 归位。
-      // 只看 `[0]` 会把同一片里其余段静默丢掉 —— 丢的可能是正文、也可能是图片，
-      // 而且只在「一片多段」的流上显形（多数厂商一片一段，所以它很久没被发现）。
-      // 空数组（不带段）不动任何东西：下面这段只为「真的有段」的片子准备。
+      // 一片里可以带多段（各自的 `index` 不同）：按 `index` 归位。只看 `[0]` 会把同一片里其余段
+      // 静默丢掉，丢的可能是正文也可能是图片，而且只在「一片多段」的流上显形（多数厂商一片一段，
+      // 所以这个错误很久没有显形）。
       if (delta.content.length > 0) {
         if (!(receiver.content instanceof Array)) {
           receiver.content = [];
@@ -48,7 +45,7 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
           const index = deltaSection.index!;
 
           if (!receiver.content[index]) {
-            // 首片**只放声明字段**（`index` / `type`）：正文与 `url` 都由下面的 `+=` 写入。
+            // 首片只放声明字段（`index` / `type`）：正文与 `url` 都由下面的 `+=` 写入。
             // 把整片 `...deltaSection` 铺进来的话，首片自带的正文会被拼两遍（`"A"` → `"AA"`），
             // 首片自带的 `image_url` 会被拼成 `"[object Object]…"`。
             receiver.content[index] = {
@@ -77,7 +74,7 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
         }
       }
     } else {
-      // 两种形状**不混**：已经拼成段数组的，来了字符串 delta 就把它包成一段 `text` 追进去 ——
+      // 两种形状不混：已经拼成段数组的，来了字符串 delta 就把它包成一段 `text` 追进去；
       // 赋值成一个字符串会把拼接至今的段整段抹掉。
       if (receiver.content instanceof Array) {
         receiver.content.push({ type: "text", text: delta.content });
@@ -96,14 +93,14 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
       receiver.tool_calls = [];
     }
 
-    // 一片里可以带多个调用（并行工具调用就是这么发的）：整数组遍历，按 `index` 归位。
-    // 只看 `[0]` 会把同片里其余调用整条丢掉 —— 模型说要调三个工具，这里只拼出一个。
+    // 一片里可以带多个调用（并行工具调用就是这么发的）：按 `index` 归位。
+    // 只看 `[0]` 会把同片里其余调用整条丢掉：模型说要调三个工具，这里只拼出一个。
     for (const deltaToolCall of delta.tool_calls) {
       const index = deltaToolCall.index!;
 
       if (!receiver.tool_calls[index]) {
         // 顺序不能反：先铺这一片原样的字段，再把它里面那个 `function` 换成归一过的一份。
-        // 反过来的话，`...deltaToolCall` 里的 `function` 会把上面那份整个盖掉 ——
+        // 反过来的话，`...deltaToolCall` 里的 `function` 会把上面那份整个盖掉：
         // 首片只给 `name` 不给 `arguments` 时，拼接参数的字符串就变成了 `undefined`。
         receiver.tool_calls[index] = {
           ...deltaToolCall,

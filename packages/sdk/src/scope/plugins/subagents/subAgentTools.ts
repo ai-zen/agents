@@ -85,8 +85,8 @@ export function createSubAgentTool(def: AgentDefinition, scope: Scope): Tool {
         model,
         modelConfig,
         tools,
-        // 委派就是「干一件已经看得见结果的活」：`buildAgent` 造出来的必须是**一次性**
-        // （`CORE.md` §9）。常驻子节点不能走这条路 —— 它得有人给它定地址、有人负责 stop。
+        // 委派就是「干一件已经看得见结果的活」：`buildAgent` 造出来的必须是一次性
+        // 常驻子节点不能走这条路 —— 它得有人给它定地址、有人负责 stop。
         lifetime: "one-shot",
       });
 

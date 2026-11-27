@@ -9,12 +9,12 @@ import type { SessionNameSource, SessionRecord } from "./types.js";
  * `pinned` 用 `COALESCE` 兜住缺键：缺这个键时 `json_extract` 给的是 NULL，而 NULL 参与比较
  * 既不是 0 也不是 1，写成 `pinned = 0` 会把缺键的行漏掉。
  *
- * 排序是「置顶优先，再按**最后一次动过的时刻**倒序」（`updatedAt`）：列表要回答的是「哪一段
+ * 排序是「置顶优先，再按最后一次动过的时刻倒序」（`updatedAt`）：列表要回答的是「哪一段
  * 最近动过」，而 `createdAt` 只是「哪一段先建」—— 一段上周建的会话今天接着聊，它应该排在最上面。
  * `updatedAt` 由 `SessionService.touch()` 在每一批活开始时推一次（老的那一条 `sessions_order`
  * 索引按 `createdAt` 排，已经不用了，这里一并删掉）。
  *
- * `workspaceId` 上的外键是「删项目连带删它名下的会话」（PRD 1.5）的唯一实现：删项目那一侧
+ * `workspaceId` 上的外键是「删项目连带删它名下的会话」的唯一实现：删项目那一侧
  * 只删自己那一行，不跨域写另一张表。`openDatabase` 已打开 `foreign_keys`，级联才会生效。
  */
 export function sessionTable(db: DatabaseSync) {

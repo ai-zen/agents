@@ -15,8 +15,8 @@ import { mcpRouter } from "./mcp.js";
 import type { Trpc } from "./trpc.js";
 
 /**
- * 写配置的出参一律是这一格，与 `get` 里那一格同名同形：客户端拿到的是**改完之后**的整份
- * `AppConfig`，不必自己把补丁叠到手里那份快照上（叠法一旦漏掉一格 —— 比如删模型时被顺手
+ * 写配置的出参一律是这一格，与 `get` 里那一格同名同形：客户端拿到的是改完之后的整份
+ * `AppConfig`，不必自己把补丁叠到手里那份快照上（叠法一旦漏掉一格 —— 比如删模型时一并
  * 改指的默认项 —— 界面就安静地显示旧值）。
  *
  * 形状只有 SDK 那一处（`types/index.ts` 的 `AppConfig`），这里不抄第二份：`z.custom` 就是
@@ -59,8 +59,8 @@ const globalInput = z.object({
  * 配置面：一份配置的读与改。
  *
  * 读写同一份形状（`AppConfig` + 档位表两张），一个 `get` 拿全、每个写口回整份。界面因此不需要
- * 「保存」这个动作：改一格提交一格，回来的就是新的那一份（`prd/03-legacy.md` 3.4
- * 「一处管完全部，改完即生效，没有全局保存键」）。
+ * 「保存」这个动作：改一格提交一格，回来的就是新的那一份（「一处管完全部，改完即生效，
+ * 没有全局保存键」）。
  */
 export function configRouter(deps: HostApiDeps, api: Trpc) {
   return api.router({
@@ -82,7 +82,7 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
       /**
        * 默认项五格。给了 `null` 就是清空（写进去的是 `undefined`，文件里这一格消失）。
        *
-       * **赋值时校验引用**：指着一个不存在的 AgentDefinition / 模型，下一次新建会话会在解析模型那一步失败，
+       * 赋值时校验引用：指着一个不存在的 AgentDefinition / 模型，下一次新建会话会在解析模型那一步失败，
        * 而界面上看不出原因（出厂同步会改指 `defaultImageModel` / `defaultMigrationModel`，但那是
        * 下次启动的事）。清空不校验 —— 清空之后没有指向，也就没有指错。
        */
@@ -95,7 +95,7 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
     /**
      * 全局那几格：语言、自动命名开关、工具输出上限、中断策略两项。
      *
-     * `language` 写完**不重建任何 Agent**：宿主那份语言只有一个写口（`HostApp` 上的 `t`），它
+     * `language` 写完不重建任何 Agent：宿主那份语言只有一个写口（`HostApp` 上的 `t`），它
      * 在调用那一刻现读配置，下一次渲染就是新语言。已经落库的通知也不回填 —— 那里存的是产生那
      * 一刻的成品句子，改语言不追认旧账。
      *
@@ -103,7 +103,7 @@ export function configRouter(deps: HostApiDeps, api: Trpc) {
      * 下一次变闲就是新值。已经起过名的会话不受影响 —— 名字是会话行的格子，这一格只决定还要不要
      * 发那次请求。
      *
-     * 中断策略写完**就地刷新活着的 Agent**（见 `applyInterruptStrategies`）；`maxToolOutput` 不
+     * 中断策略写完就地刷新活着的 Agent（见 `applyInterruptStrategies`）；`maxToolOutput` 不
      * 在这条路上刷新，理由也写在那儿。
      */
     update: api.procedure
@@ -300,15 +300,15 @@ async function assertAgentDefinition(deps: HostApiDeps, id: string): Promise<voi
 }
 
 /**
- * 把中断策略两项赋到**每一段活着的 Agent**上。
+ * 把中断策略两项赋到每一段活着的 `Agent` 上。
  *
- * 需求原文说这两项「只在造 agent 时读，改完要重建才生效」（`prd/03-legacy.md` 3.4），而过关
- * 标准是「改完下一句话就按新的走」（`prd/PLAN.md` 第 9 行）。两者靠**就地赋这两格**同时成立：
+ * 需求原文说这两项「只在造 agent 时读，改完要重建才生效」，而过关
+ * 标准是「改完下一句话就按新的走」。两者靠就地赋这两格同时成立：
  * core 在每次请求之前才读它们（组装请求时现读 `this.abortedMessageStrategy` /
  * `this.abortedToolRoundStrategy`），所以赋完不杀会话、下一句话就是新策略 —— 而「重建」会把
- * 排队区作废、把正在写的那一条掐成 aborted，用户按的只是改个开关。
+ * 排队区作废、把正在写的那一条置成 aborted，用户按的只是改个开关。
  *
- * `maxToolOutput` **不在这条路上刷**：它是 Scope 的输入（工具拿 `Scope.config` 现读），
+ * `maxToolOutput` 不在这条路上刷：它是 Scope 的输入（工具拿 `Scope.config` 现读），
  * Agent 上没有这一格；容器由配置事件驱动重读（`app.ts` 里那条订阅），写完之后它自己就拿
  * 新值了。
  */

@@ -3,10 +3,6 @@ import type { AppConfig, AgentDefinition, ToolEnv, ToolEnvDeps } from "../types/
 import { PermissionEvaluator } from "./PermissionEvaluator.js";
 import type { ScopePlugin } from "./ScopePlugin.js";
 
-// ---------------------------------------------------------------------------
-// 类型导出
-// ---------------------------------------------------------------------------
-
 /**
  * 能力过滤系统的公共类型。
  * FilterOutput 由 filter() 产出，由 instantiate() 消费。
@@ -30,7 +26,6 @@ export interface ExcludeOptions {
   subagents?: string[];
 }
 
-/** filter / buildTools 的过滤选项 */
 export interface FilterOptions {
   exclude?: ExcludeOptions;
 }
@@ -47,12 +42,6 @@ export type ScopeConfigSource = () => AppConfig | Promise<AppConfig>;
 
 /**
  * Scope — 全局上下文 + 能力装配编排容器。
- *
- * 持有：
- *   - 应用配置（端点、模型等）
- *   - 当前工作目录 cwd（相对路径解析基准，ToolEnv.cwd 的来源）
- *   - Agent 定义目录 agentsDir（createAgent 用）
- *   - 一组 ScopePlugin（能力插件）
  *
  * 装配方式（插件必须显式注入，Scope 不装任何默认插件）：
  * ```ts
@@ -87,7 +76,6 @@ export class Scope {
   /** Agent 定义目录（createAgent 用） */
   readonly agentsDir: string;
 
-  /** 已注册的插件 */
   private _plugins: ScopePlugin[] = [];
 
   /** 是否已 init（init 之后再 use() 会抛错） */
@@ -125,7 +113,7 @@ export class Scope {
   /**
    * 应用配置（端点、模型等）。
    *
-   * 同步读，读到的是**当下**那一份：`refresh()` 之后就是磁盘上的新配置。
+   * 同步读，读到的是当下那一份：`refresh()` 之后就是磁盘上的新配置。
    * 配置端口是异步的且还没 `init()` 过时抛错（那时确实还没有「当下这一份」）。
    */
   get config(): AppConfig {
@@ -136,10 +124,6 @@ export class Scope {
     }
     return this.current;
   }
-
-  // ==================================================================
-  // 插件注册与生命周期
-  // ==================================================================
 
   /** 已注册插件（只读视图） */
   get plugins(): readonly ScopePlugin[] {
@@ -201,14 +185,8 @@ export class Scope {
     }
   }
 
-  // ==================================================================
-  // 能力过滤与实例化
-  // ==================================================================
-
   /**
-   * 按权限过滤候选集，返回过滤后的名称列表。
-   * 汇总各插件 candidates() → 剔除 `exclude` 里的名字 → 四维权限过滤。
-   * 纯名称操作，不涉及 Tool 实例化。
+   * 按权限过滤候选集，返回过滤后的名称列表。纯名称操作，不涉及 Tool 实例化。
    */
   filter(definition: AgentDefinition, options?: FilterOptions): FilterOutput {
     const exclude = options?.exclude ?? {};
@@ -230,7 +208,6 @@ export class Scope {
       c.subagents?.forEach((n) => subagents.add(n));
     }
 
-    // 2 + 3. 剔除 exclude + 四维权限过滤
     const evaluator = new PermissionEvaluator(definition.permissions);
     const filtered = evaluator.filter({
       tools: [...tools].filter((n) => !excludeTools.has(n)),
@@ -255,8 +232,7 @@ export class Scope {
   }
 
   /**
-   * 将过滤后的名称列表实例化为 Tool 数组。
-   * 遍历各插件 instantiate()，收集后去重（后注册覆盖先注册）。
+   * 将过滤后的名称列表实例化为 Tool 数组；同名的名字以先注册的插件为准
    */
   instantiate(filtered: FilterOutput): Tool[] {
     const result: Tool[] = [];

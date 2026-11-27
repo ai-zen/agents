@@ -13,7 +13,7 @@ import type { Translator } from "../i18n/index.js";
  *
  * 八个码落到七个 tRPC 码上，合起来的两对正是这一套分不开的地方：`busy` 与 `conflict` 都在
  * `CONFLICT` 上，`not_available` 与 `not_found` 都在 `NOT_FOUND` 上。「这段会话还在跑，等它
- * 停下来」与「有人先动了一步」是两件事，「换个版本再挑」与「你给的不是一个版本号」也是两件事，
+ * 停下来」与「有人先动了一步」是两件事，「换个版本再挑」与「给出的值不是版本号」也是两件事，
  * 各要一条分支 —— 这就是 `hostCode` 那一格存在的理由。
  */
 const TRPC_CODES: Record<ErrorCode, keyof typeof TRPC_ERROR_CODES_BY_KEY> = {

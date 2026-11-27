@@ -32,7 +32,7 @@ export interface AutoMigrateOptions {
   handoffTokens: number;
   /**
    * 执行者解析（可选）。上层可在此弹确认框、读用户偏好，
-   * 或直接返回 `null` 表达「本次不迁移」——**无需**再继承本插件。
+   * 或直接返回 `null` 表达「本次不迁移」——无需再继承本插件。
    */
   resolveMode?: AutoMigrateModeResolver;
   /**
@@ -40,13 +40,13 @@ export interface AutoMigrateOptions {
    * 观测事实 —— 插件自己不认识存储层。
    *
    * 钩子抛错就让这一次迁移报错（本插件不接）：写钩子的是宿主，它写崩了该在自己的调用栈里
-   * 炸出来，而不是被吞成一行日志。
+   * 抛到调用方，而不是被吞成一行日志。
    */
   onMigrated?: (info: AutoMigrateTriggerInfo & { mode: HandoffMode }) => void | Promise<void>;
   /**
-   * 迁移**没成**的回声（可选）：模型没有写出来、写出来不够长、落库失败、端点 4xx……
+   * 迁移没成的回声（可选）：模型没有写出来、写出来不够长、落库失败、端点 4xx……
    *
-   * **取消不算失败**（用户按了停那条不叫它）：那是回到交接前，没什么要收尾的。
+   * 取消不算失败（用户按了停那条不叫它）：那是回到交接前，没什么要收尾的。
    * 宿主拿它把输出开关开回来 —— 开关是交接那一批的批头关上的，而开开关只有宿主能决定
    * （SDK 不认识「记忆换完了」这件事，见 `HandoffService.runHandoff` 的注释）。
    *
@@ -78,10 +78,10 @@ export interface AutoMigrateOptions {
  *
  * ## 为什么落在 `onIdle`（旧的 `onAfterSend` 已删除）
  *
- * 迁移是「**彻底不动了才做**」的事：它要在原会话里再跑一个交接回合写文档，换记忆则在
+ * 迁移是「彻底不动了才做」的事：它要在原会话里再跑一个交接回合写文档，换记忆则在
  * 宿主那一侧（服务只管产出文档）。「这一次回答完了」还不够 ——
  * 内循环可能还要接着跑工具、队列里可能还压着别的投递，那些都还在写同一个数组。
- * `onIdle` 的语义正是「手上没活、队列也空」（`CORE.md` §4），此刻开工才不会
+ * `onIdle` 的语义正是「手上没活、队列也空」，此刻开工才不会
  * 踩到正在跑的那一次请求；而 `onOuterLoopEnd` 只保证「这一批跑完了」，队列里可能还有货。
  *
  * ## 两层让行（缺一不可）
@@ -126,13 +126,13 @@ export class AutoMigratePlugin implements AgentPlugin {
     if (promptTokens == null) return;
     if (promptTokens <= handoffTokens) return;
 
-    // 迁移本身（写文档 + 换记忆）失败：报一句、把失败回声叫起来
+    // 迁移本身（写文档 + 换记忆）失败：报一句、把失败回声传下去
     let migrated: HandoffContext;
     try {
       const mode = resolveMode ? await resolveMode({ promptTokens, handoffTokens }) : undefined;
       if (mode === null) return; // 用户选择跳过本次交接
 
-      // 自动交接走 `migrate()`：**写文档 + 换记忆**。记忆长什么样只有 SDK 这一处算，
+      // 自动交接走 `migrate()`：写文档 + 换记忆。记忆长什么样只有 SDK 这一处算，
       // 落在哪儿看服务有没有注入落库接缝（宿主注入了，于是它落库、落内存；外部使用者没注入，
       // 于是 SDK 自己换 `agent.messages`）—— 不是两套实现，是同一份结果两个落点。
       migrated = await service.migrate({
@@ -146,17 +146,17 @@ export class AutoMigratePlugin implements AgentPlugin {
       // 凭空多一条「迁移失败」（日志口是注入的，宿主那格可能是终端）
       if (err instanceof HandoffAbortedError) return;
       // agent 已经关门/被硬杀（`stop()` / `kill()` 之后又走到 idle）：没什么可交接的。
-      // 不报错、也不换执行者 —— 那会为一个已经没有的会话白烧一次全量输入。
+      // 不报错、也不换执行者 —— 那会为一个已经没有的会话白跑一次全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
       this.logger.error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
-      // 失败回声是「把开关开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里炸出来
+      // 失败回声是「把开关开回来」的那一道：它自己抛错不在这里接，让它在这个调用栈里抛出来
       await onFailed?.({ promptTokens, handoffTokens, error: err });
       return;
     }
 
     // 记忆已经换完：这时候才报「压过了」（实际执行者以服务报的为准）。
     // 它故意留在上面那个 try 之外：回声自己崩了不是「交接失败」，不该被当成失败再报一遍
-    // 失败回声 —— 它就在这个调用栈里炸出来（与 `commitMemory` 同一个口径）。
+    // 失败回声 —— 它就在这个调用栈里抛出来（与 `commitMemory` 同一个口径）。
     await onMigrated?.({ promptTokens, handoffTokens, mode: migrated.mode });
   }
 }

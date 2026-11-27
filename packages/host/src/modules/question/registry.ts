@@ -19,7 +19,7 @@ export interface AskInput {
 }
 
 /**
- * 题是活物，一张内存表，没有表也没有状态格。
+ * 题只存在内存里：一张表，没有库表，也没有状态格。
  *
  * 它只有两种去处：被答了、它那一段没了。两个去处都在这一张表上收场 —— 答过的那一条当场摘掉，
  * 所以「还挂着」与「在表里」是同一个事实。多留一格 `state` 会让两处各说一半：表里有它、状态说
@@ -63,7 +63,7 @@ export class QuestionRegistry {
    * 不留「上次答的是什么」那一格：留着它就得回答「答过之后还能不能改」，而这个项目里没有改答案
    * 这回事（没有「不答」、也没有「重答」）。
    *
-   * `accept` 的 `content` 按**题自己那张表**校验一遍：面板是我们自己画的，但填进来的是用户，
+   * `accept` 的 `content` 按题自己那张表校验一遍：面板由宿主渲染，但填进来的是用户，
    * 而接上外部服务器之后这一格还会来自更远的地方 —— 形状不对就在这里拒，别让一个类型错的值
    * 穿到下游去。
    */
@@ -99,7 +99,7 @@ export class QuestionRegistry {
    * 等不到的情形有两种，都回 `undefined`：那一段没了（{@link forget}），以及题被答了之后才轮到
    * 等的那一方 —— 后者在现实中不会发生（先登记再发事件，见下），留着只是因为类型上必须有。
    *
-   * **题仍然只做实时、不落库**（`dev-docs/prd/01-decisions.md` 第 107–111 行）：挂着的这一格只
+   * 题仍然只做实时、不落库：挂着的这一格只
    * 活在内存里，进程没了它就没了。`undefined` 不是「用户说了不」而是「没人答它了」—— 调用方据此
    * 按默认执行者走，不能把它当成一个否定的答复。
    */
@@ -163,8 +163,8 @@ export class QuestionRegistry {
 /**
  * 把一次作答收成能落地的那一份：`accept` 校验内容，另两种把内容丢掉。
  *
- * 校验只做这张表声明过的事（必填、枚举、类型与范围），不引入 JSON Schema 引擎：表是我们自己
- * 或者 MCP 服务器按同一个子集给的，子集之外的东西本来就该在产生它的那一侧被挡掉。
+ * 校验只做这张表声明过的事（必填、枚举、类型与范围），不引入 JSON Schema 引擎：表由宿主
+ * 或者 MCP 服务器按同一个子集给出，子集之外的东西本来就该在产生它的那一侧被挡掉。
  */
 function normalize(question: FormRequest, answer: FormAnswer, t: Translator): FormAnswer {
   if (answer.action !== "accept") {
@@ -195,7 +195,6 @@ function normalize(question: FormRequest, answer: FormAnswer, t: Translator): Fo
   return { action: "accept", content };
 }
 
-/** 一格自己的校验；没问题回 `undefined` */
 function checkField(field: FormField, value: unknown): string | undefined {
   switch (field.type) {
     case "string":

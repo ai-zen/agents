@@ -7,8 +7,8 @@ import type { LogSink } from "@ai-zen/agents-logger";
 /** 投递这一条要用到的两件事，都由装配根从运行时现取 */
 export interface McpTaskNoticeDeps {
   /**
-   * 这一段此刻活着的 Agent。**只有运行时答得出来**：宿主这一侧不留存活表。
-   * `undefined` 就是那段已经不在（被杀、被删会话，或者进程重启后还没人叫醒它）。
+   * 这一段此刻活着的 Agent。只有运行时答得出来：宿主这一侧不留存活表。
+   * `undefined` 就是那段已经不在（被杀、被删会话，或者进程重启后还没有被唤醒）。
    */
   readonly alive: (sessionId: string) => Pick<SdkAgent, "send"> | undefined;
   /** 这个 Agent 属于哪一段会话；被派出去的那个不属于任何一段 */
@@ -21,10 +21,10 @@ export interface McpTaskNoticeDeps {
  *
  * 两件事只在这里做：
  *
- * - **投**：`agent.send()` 进队列。落库与推给客户端不在这里 —— 那条路已经有一份（观察者听
+ * - 投：`agent.send()` 进队列。落库与推给客户端不在这里 —— 那条路已经有一份（观察者听
  *   `inboxAdded` 写 `inbox` 表、推 `agent.inbox`），再走一遍就是第二条投递路。
- * - **丢**：那段会话已经不在，就把这条通知丢掉并留一行日志。不唤醒、不建行、不留半条 ——
- *   一条服务器推来的通知不该把一段死会话叫起来（`PRD.md` 4.1）。
+ * - 丢：那段会话已经不在，就把这条通知丢掉并留一行日志。不唤醒、不建行、不留半条 ——
+ *   一条服务器推来的通知不该把一段死会话叫起来。
  *
  * 任务 id 到会话 id 的对应关系不在这里：它活在 SDK 的任务会话里，进程没了就没了。
  */
@@ -42,7 +42,7 @@ export function createMcpTaskNoticePort(deps: McpTaskNoticeDeps): McpTaskNoticeP
       }
 
       const entry = {
-        // 高：这条通知说的是「你等的那个任务有结论了」，而等它的一方常常正在轮询
+        // 高：这条通知说的是「等待的那个任务已有结论」，而等它的一方常常正在轮询
         //（`sleep` / `get_mcp_task_result`）。取低就永远等不到 —— 内循环只在工具边界取 high
         //（`Agent.landHigh`），那一批不结束，这条就一直不被看见。与 `deliverAsyncResult` 同一个理由。
         priority: "high" as const,

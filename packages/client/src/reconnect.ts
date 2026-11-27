@@ -1,21 +1,17 @@
 /**
- * 重连的**策略**：重试几次、等多久、哪些失败不值得重试。
+ * 重连的策略：重试几次、等多久、哪些失败不值得重试。
  *
- * ## 分工
+ * 分工：「怎么重连」是连接层的事（`HostClient.reconnect()`：等到一次调用又能调通），「是否一直
+ * 重试」是调用方的事 —— 不同前端对「试到什么时候」的答案不一样，包内不预设「失败三次就放弃」
+ * 那种数（那是产品判断，不是传输事实）。
  *
- * 「怎么重连」是连接层的事（`HostClient.reconnect()`：把手上那条 socket 掐掉，再等到一次调用
- * 调通），「要不要一直重试」是**调用方**的事 —— 不同前端对「试到什么时候」的答案不一样，包内
- * 不预设「失败三次就放弃」那种数（那是产品判断，不是传输事实）。
- *
- * 所以这个文件的默认策略是「**一直重试**」（{@link DEFAULT_RECONNECT_POLICY}：
+ * 所以这个文件的默认策略是一直重试（{@link DEFAULT_RECONNECT_POLICY}：
  * `maxAttempts: Infinity`），调用方要给上限就传一个有限的数字。
  *
- * ## 哪些失败不值得重试
- *
- * 传输层的失败（连不上、断了、握手超时）重试有意义；**被宿主拒**（`unauthorized` / `invalid_params`，
- * 以及还没升级的宿主说的 `UNAUTHORIZED` / `BAD_REQUEST`）与**地址不合法**重试一万次也是同一个结果，
- * 无限重试只会把一条该上屏的错误藏进一个转圈的界面里。判据在 {@link isRetryableByDefault}，按码
- * 而不是按错误文本 —— 文本会变，码是契约。
+ * 哪些失败不值得重试：传输层的失败（连不上、断了、握手超时）重试有意义；被宿主拒
+ * （`unauthorized` / `invalid_params`，以及还没升级的宿主说的 `UNAUTHORIZED` / `BAD_REQUEST`）
+ * 与地址不合法，重试一万次也是同一个结果，无限重试只会把一条该上屏的错误藏进一个一直在重连的
+ * 界面里。判据在 {@link isRetryableByDefault}，按码而不是按错误文本：文本会变，码是契约。
  */
 
 import { ClientError } from "./errors.js";
@@ -35,10 +31,10 @@ export interface ReconnectPolicy {
 }
 
 /**
- * 缺省策略：**一直重试**，从 250ms 起按 2 倍退避、封顶 10 秒。
+ * 缺省策略：一直重试，从 250ms 起按 2 倍退避、封顶 10 秒。
  *
- * 封顶那 10 秒是「别把断线的会话变成一台空转的机器」：桌面端可能挂一整天，无限退避会让下一次
- * 重试落到几小时之后，于是宿主早就回来了而界面还停在「重连中」。
+ * 封顶那 10 秒是为了不把断线拖成空转：桌面端可能挂一整天，无限退避会让下一次重试落到几小时之后，
+ * 于是宿主早就回来了而界面还停在「重连中」。
  */
 export const DEFAULT_RECONNECT_POLICY: ReconnectPolicy = {
   maxAttempts: Number.POSITIVE_INFINITY,
@@ -73,8 +69,8 @@ export interface ReconnectOptions {
 /**
  * 反复 `reconnect()` 直到连上（断线之后补什么由调用方决定：宿主有 `session.open`，一次取全）。
  *
- * 抛出的错误是**最后一次失败的那个**：调用方要显示的就是它（宿主的话术已经按连接语言渲染
- * 好了，本地那些也有文案）。不重试的失败当场抛出，不等满次数。
+ * 抛出的错误是最后一次失败的那个：调用方要显示的就是它（宿主的话已经按连接语言渲染好了，本地
+ * 那些也有文案）。不重试的失败当场抛出，不等满次数。
  */
 export async function reconnectUntilConnected(
   target: Reconnectable,

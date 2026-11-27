@@ -1,7 +1,7 @@
 /**
  * MCP elicitation 的答题通道安装器 — McpElicitationPlugin
  *
- * 为什么是插件：题必须挂在**某一段会话**下（`QuestionRegistry` 按会话列），而这件事只有宿主知道
+ * 为什么是插件：题必须挂在某一段会话下（`QuestionRegistry` 按会话列），而这件事只有宿主知道
  * （`materialsFor` 手里有那一段的会话行）。插件由宿主按会话装上，装的时候把那一段的 id 与题板
  * 一起交进来；之后 `call_mcp_tool` 发起调用时按 Agent 把这条通道压进 MCP 那一侧的栈
  * （`scope/plugins/mcp/elicitation.ts`），服务器发回来的 `elicitation/create` 就知道该问谁。

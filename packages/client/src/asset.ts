@@ -1,20 +1,15 @@
 /**
- * Asset 的两件事：把一份字节传上去（`asset.upload`）、按 id 把字节取回来（`asset.get`）。
+ * Asset 的两件事：把一份字节传上去（`asset.upload`），按 id 把字节取回来（`asset.get`）。
  *
- * ## 判断都在宿主那一侧
+ * 判断都在宿主那一侧：20MB 的上限、一条消息里几张 Asset、内容段上的 `__asset_id` 怎么重建，全是
+ * 宿主的（后者在 SDK 的 `AssetTransportPlugin` 里）。客户端这一层只做「把本地文件读成字节」和「把
+ * 字节交上去」这两步：同一个上限在两处各判一次，第二处迟早与第一处不一样，而用户看到的是第二处
+ * 那个数。
  *
- * 一张 20MB 的上限、一条消息几张 Asset、内容段上的 `__asset_id` 怎么重建 —— 全是宿主的（后者在
- * SDK 的 `AssetTransportPlugin` 里）。客户端这一层只做「把本地文件读成字节」和「把字节交上去」
- * 这两步：同一个上限在两处各判一次，第二处迟早与第一处不一样，而用户看到的是第二处那个数。
- *
- * ## 取回：为什么按 id 就够
- *
- * 消息里存的是段上的本地扩展字段 `__asset_id`（厂商的 `file_id`、base64、绝对路径都不进库），
- * 所以任何一段历史里的图，客户端都要能按 id 把字节取回来自己显示：换模型、换设备、重启之后都
- * 是同一条路。判断「这一段要不要去取」只看有没有那个字段，不解析 url scheme（见
- * {@link localAssetIdOf}）。
- *
- * ## 形状
+ * 取回按 id 就够：消息里存的是段上的本地扩展字段 `__asset_id`（厂商的 `file_id`、base64、绝对
+ * 路径都不进库），所以任何一段历史里的图，客户端都要能按 id 把字节取回来自己显示 —— 换模型、换
+ * 设备、重启之后都是同一条路。判断「这一段要不要去取」只看有没有那个字段，不解析 url scheme
+ * （见 {@link localAssetIdOf}）。
  *
  * 两条 procedure 都走同一条 ws 上的 JSON：上行给 base64、下行回 base64。内容本身就是原子的，
  * 不需要为下载另开一条二进制通道，代价是多三分之一体积。
@@ -78,7 +73,6 @@ export interface UploadAssetsResult {
 /** 取回来的一份 Asset：类型与字节 */
 export interface AssetContent {
   mime: string;
-  /** 解好码的字节 */
   bytes: Uint8Array;
 }
 
@@ -103,9 +97,9 @@ export async function uploadAsset(
 /**
  * 一次上传多份内容。
  *
- * 一份失败不连累其它份：某一张读不出来、宿主拒了，它进 `failures`，剩下的继续 —— 「四张里有
- * 一张不行」不该等于「这一次什么都不发」。顺序串行：一次拖进来的几张图一块发，并发写同一条
- * socket 只是给对端的接收链排队。
+ * 一份失败不连累其它份：某一张读不出来、宿主拒了，它进 `failures`，剩下的继续，「四张里有一张
+ * 不行」不该等于「这一次什么都不发」。顺序串行：一次拖进来的几张图一块发，并发写同一条 socket 只是
+ * 给对端的接收链排队。
  */
 export async function uploadAssets(
   client: ContractCaller,
@@ -199,7 +193,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   ".svg": "image/svg+xml",
 };
 
-/** 按扩展名认类型；认不出来返回 `null` */
+/** 按扩展名认类型，认不出来返回 `null` */
 export function mimeOfPath(path: string): string | null {
   return MIME_BY_EXTENSION[extname(path).toLowerCase()] ?? null;
 }
@@ -209,7 +203,7 @@ function normalizeMime(mime: string): string {
   return mime.trim().toLowerCase();
 }
 
-/** 这份内容叫做什么（报告里说「第几张、哪个文件」用） */
+/** 这份内容的显示名（报告里说「第几张、哪个文件」用） */
 function nameOf(source: AssetSource): string | null {
   return "path" in source ? (source.name ?? basename(source.path)) : (source.name ?? null);
 }

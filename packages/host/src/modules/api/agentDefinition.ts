@@ -55,9 +55,9 @@ export function agentDefinitionRouter(deps: HostApiDeps, api: Trpc) {
      * `change` 是同一份定义去掉 `id` 的那一部分。给了 `messages` 就是整份替换模板 —— 用着这个
      * 定义的 Agent 在下面那一次重装里按新模板重新装一遍。
      *
-     * **没有真的改动就不重装**：`AgentDefinitionService.update` 在「合出来与当前逐字一样」时原样
+     * 没有真的改动就不重装：`AgentDefinitionService.update` 在「合出来与当前逐字一样」时原样
      * 返回当前那份（不写盘），所以这里拿返回的那一份与改动前的那一份逐字比一次 —— 一样就是没
-     * 改动，也就没有要重装的东西。重装是掐掉在途（正在写的那一条会断），白掐一次也是代价。
+     * 改动，也就没有要重装的东西。重装会中止在途的写入（正在写的那一条会断），空做一次同样是代价。
      */
     update: api.procedure
       .input(
@@ -79,7 +79,7 @@ export function agentDefinitionRouter(deps: HostApiDeps, api: Trpc) {
     /**
      * 删一条定义。默认 AgentDefinition 指着它时，那一格跟着清掉（在 service 里，与删定义是同一次写盘）。
      *
-     * **删完不重装**：那些还活着的会话下一次唤醒会失败。删 AgentDefinition 不看还有几段会话在用它 ——
+     * 删完不重装：那些还活着的会话下一次唤醒会失败。删 AgentDefinition 不看还有几段会话在用它 ——
      * 「删之前说清还有谁指它」是端点到模型那条路上的事，AgentDefinition 这一条需求里没有这道校验。
      */
     delete: api.procedure

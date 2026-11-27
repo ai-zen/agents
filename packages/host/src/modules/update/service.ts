@@ -43,7 +43,7 @@ export class UpdateService {
 
   /**
    * 两条判据验「这一版拿得到」，成立就写 pin 并请宿主退出，不成立就报 `not_available` 而
-   * **不退出** —— 把「这一版不存在」挡在弄死服务之前。
+   * 不退出 —— 把「这一版不存在」挡在弄死服务之前。
    */
   async upgrade(version: string): Promise<{ version: string; restarting: true }> {
     if (!VERSION.test(version)) {
@@ -70,10 +70,10 @@ export class UpdateService {
       );
     }
 
-    // pin 先落盘、再请退出：反过来的话，启动方式可能在 pin 还不存在的那一刻就把服务拉起来，
+    // pin 先落盘、再请退出：反过来的话，启动方式可能在 pin 还不存在的那一刻就把服务启动，
     // 于是它拉起的还是老版本
     writeVersionPin(this.deps.pinFile, { version, requestedAt: new Date().toISOString() });
-    // 这是「请」，不是「做」：真正把新版拉起来的是启动方式
+    // 这是「请」，不是「做」：真正启动新版的是启动方式
     this.deps.requestRestart(version);
 
     return { version, restarting: true };

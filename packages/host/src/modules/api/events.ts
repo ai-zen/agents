@@ -5,7 +5,7 @@ import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
 
 /**
- * 一条流。`.output()` 在 subscription 上声明的是**流本身**，不是每一片载荷 —— 写成载荷类型，
+ * 一条流。`.output()` 在 subscription 上声明的是流本身，不是每一片载荷 —— 写成载荷类型，
  * tRPC 会要求 resolver 直接返回那个值。所以这里给的是 `AsyncIterable<HostEvent>`：事件的形状
  * 仍然只有 `modules/events.ts` 那一份，逐片校验 tRPC 在流上没有这个口。
  */
@@ -22,7 +22,7 @@ export function eventsProcedure(deps: HostApiDeps, api: Trpc) {
       wake?.();
     });
 
-    // 客户端走了要能把挂着的等待叫醒。不这么做的话生成器停在那一句 `await` 上，`finally`
+    // 客户端离开时要能唤醒挂着的等待。不这么做的话生成器停在那一句 `await` 上，`finally`
     // 永远等不到，总线上留下一个直到进程退出都在的订阅者。
     const stopped = new Promise<void>((resolve) => {
       signal?.addEventListener("abort", () => resolve(), { once: true });

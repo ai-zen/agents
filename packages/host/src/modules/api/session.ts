@@ -64,8 +64,8 @@ const sessionView = z.object({
 const sessionIdInput = z.object({ sessionId: z.string() });
 
 /**
- * 改完返回新的一行，与 `open` 那一支同名（`session`）：客户端拿到的是**改完之后**的那一行，
- * 不必自己把补丁叠到手里那份快照上 —— 那种叠法一旦漏掉一格（如 `updatedAt`、或被顺手清掉的
+ * 改完返回新的一行，与 `open` 那一支同名（`session`）：客户端拿到的是改完之后的那一行，
+ * 不必自己把补丁叠到手里那份快照上 —— 那种叠法一旦漏掉一格（如 `updatedAt`、或被一并清掉的
  * `thinkingLevel`）就会安静地显示成旧值。
  */
 const sessionResult = z.object({ session: sessionSchema });
@@ -82,7 +82,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
      * 的事实。新建出来的这一段就是一段没有 Agent 的会话，与「重启之后所有会话都是死的」是同一种
      * 状态：`open` 读回来 `live` 是 `null`，消息与排队区都是空的。
      *
-     * 起 Agent 是 `runtime.agent.wake`，投话是 `runtime.agent.send`：三件事各有一条口，客户端要哪一件就打哪
+     * 起 Agent 是 `runtime.agent.wake`，投递消息是 `runtime.agent.send`：三件事各有一条口，客户端要哪一件就调哪
      * 一条。建行顺带唤醒再顺带投一句（投的还是空正文）会让 Agent 白跑一次模型请求，历史里还会
      * 多一条空的用户消息。
      *
@@ -181,7 +181,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       })),
 
     /**
-     * 两条阈值。两个数各自可设：需求给的是「建议硬线 ≈ 软线 × 1.5」，不是约束，所以这里**不做**
+     * 两条阈值。两个数各自可设：需求给的是「建议硬线 ≈ 软线 × 1.5」，不是约束，所以这里不做
      * 「硬线必须大于软线」这类校验 —— 硬绑起来之后，用户想先把软线调到硬线之上试一下都做不到。
      *
      * 两个都写（而不是「传了哪个改哪个」）：`null` 是「跟随模型的配置」这个有意义的取值，
@@ -203,14 +203,14 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
       })),
 
     /**
-     * 换模型。**就地刷新，不杀 Agent**：模型是 Agent 的构造参数，而「重建」不等于「杀」——
+     * 换模型。就地刷新，不杀 Agent：模型是 Agent 的构造参数，而「重建」不等于「杀」——
      * 参数挂在 Agent 上，刷新就是给字段赋值（`SdkAgent.useModel`）。杀掉会把排队区作废、把正在
-     * 写的那条掐成 aborted，而用户按的是「换模型」。
+     * 写的那条置成 aborted，而用户按的是「换模型」。
      *
      * `modelId` 是必填的 `string`（不可为 `null`）：会话指不到模型那条路是「配置里没这个模型」，
      * 不是「清空」—— 清空之后这一段就没有可用的模型了，那不是用户能表达的意思。
      *
-     * 两条报错的次序是**先会话、后模型**：会话不存在就是 `not_found`，模型不在配置里才是
+     * 两条报错的次序是先会话、后模型：会话不存在就是 `not_found`，模型不在配置里才是
      * `config_invalid`。反过来先校验模型的话，两者同时不成立时客户端听到的是「换个模型名试试」，
      * 而真正该做的是重新打开会话。
      */
@@ -237,7 +237,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
           );
         }
 
-        // `setModel` 顺手把 `thinkingLevel` 清成 `null`（档位是模型的参数，把一家的 thinking 参数
+        // `setModel` 一并把 `thinkingLevel` 清成 `null`（档位是模型的参数，把一家的 thinking 参数
         // 带到另一家会被直接拒），这里不重复清。
         const session = deps.sessions.setModel(input.sessionId, input.modelId);
 
@@ -245,7 +245,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
         if (agent !== undefined) {
           // 档位刚被清空，所以这一刻算出来的参数里没有档位补丁；而基础参数按「生效模型来自
           // 哪一级」取 —— 这里刚把模型写进会话行，那一级就是会话行，而会话行上没有参数这一格，
-          // 于是参数整份是**空的**（定义那份配的是定义自己绑的那个模型，不能发给新模型）。
+          // 于是参数整份是空的（定义那份配的是定义自己绑的那个模型，不能发给新模型）。
           // 仍然走同一个函数，不在这里另取一份：算「模型 + 档位补丁」的地方多一处，两处迟早
           // 不一致。
           const { params } = await modelAndParamsFor(deps, session);
@@ -257,7 +257,7 @@ export function sessionRouter(deps: HostApiDeps, api: Trpc) {
 
     /**
      * 换思考档位。档位名是客户端的选择，请求参数是厂商的方言，两者之间只有档位表能翻译 ——
-     * 表由**生效模型**的 `reasoningPreset` 指过来，所以校验要看生效模型，而不是会话行上那一格。
+     * 表由生效模型的 `reasoningPreset` 指过来，所以校验要看生效模型，而不是会话行上那一格。
      *
      * `null` 是「跟随 AgentDefinition」，任何模型都接受；非 `null` 时它必须是那张表里的一个键。
      * 改完同样就地刷新（`useModel`），不杀 Agent。

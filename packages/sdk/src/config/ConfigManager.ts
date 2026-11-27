@@ -23,9 +23,6 @@ import { normalizeConfig } from "./normalize.js";
  */
 export type ConfigRecoveredHandler = (path: string) => void | Promise<void>;
 
-/**
- * 配置管理器 — 负责配置文件的读写、目录初始化、默认实体创建。
- */
 export class ConfigManager {
   readonly configPath: string;
   readonly basePath: string;
@@ -40,9 +37,7 @@ export class ConfigManager {
   private readonly logger: LogSink;
 
   /**
-   * @param configPath `config.json` 的路径（`basePath` 取它的同级目录）
-   * @param onRecovered 配置被恢复出厂之后的回调（可选）
-   * @param logger 日志口（可选）：读不出来但已降级的那几处从这里报一句；缺省不记
+   * `configPath` 是 `config.json` 的路径，`basePath` 取它的同级目录。
    */
   constructor(
     configPath: string,
@@ -55,15 +50,11 @@ export class ConfigManager {
     this.logger = logger;
   }
 
-  // -----------------------------------------------------------------------
-  // config.json
-  // -----------------------------------------------------------------------
-
   /**
    * 读取配置。文件不存在时返回出厂默认配置；文件坏了（解析不了 / 不是对象）时
    * 恢复出厂并写回磁盘，也返回出厂默认配置（见 `readRaw`）。
    *
-   * 读到即**补位**（`config/normalize.ts`）：缺字段或非法值补成出厂值，上层拿到的永远是
+   * 读到即补位（`config/normalize.ts`）：缺字段或非法值补成出厂值，上层拿到的永远是
    * 合法形状（阈值两条齐、中断策略合法、端点能力位不缺）。
    * 补位结果不在这里落盘——落盘只在 `ensureDefaultConfig()` 做一次。
    */
@@ -114,14 +105,6 @@ export class ConfigManager {
     await fs.rename(tmpPath, this.configPath);
   }
 
-  // -----------------------------------------------------------------------
-  // 目录 & 默认实体
-  // -----------------------------------------------------------------------
-
-  /**
-   * 确保基础目录结构存在。
-   * 创建 basePath 及所有标准共享子目录（agents/、sub-agents/、skills/ 等）。
-   */
   async ensureDirs(): Promise<void> {
     await fs.mkdir(this.basePath, { recursive: true });
     for (const dir of CONFIG_SUB_DIRS) {
@@ -133,7 +116,7 @@ export class ConfigManager {
    * 确保 config.json 存在。不存在时写入出厂默认配置 DSL。
    *
    * 已存在时执行「出厂模型清单同步」（见 syncManagedModels）：
-   * models / imageModels 中凡是**没有** `custom: true` 的 InboxEntry 一律视为出厂托管，
+   * models / imageModels 中凡是没有 `custom: true` 的 InboxEntry 一律视为出厂托管，
    * 会被移除并替换为 DEFAULT_APP_CONFIG 中的最新定义；标了 `custom: true` 的
    * InboxEntry 视为用户自有，原样保留。同步结果与磁盘内容一致时不写盘。
    */
@@ -169,7 +152,7 @@ export class ConfigManager {
    * 实际在用的模型。
    *
    * @param defaultModel 配置里的 `defaultModel`（三级解析的兜底那一级）。仅在默认 Agent
-   *   **既无 modelId** 且该模型仍在模型清单里时用它补齐，让升级不改变用户实际在用的模型。
+   *   既无 modelId 且该模型仍在模型清单里时用它补齐，让升级不改变用户实际在用的模型。
    *   注意它不是「永远生效的兜底」：Agent 自己绑了模型就轮不到它（见 `resolveModel`）。
    */
   async ensureDefaultAgent(defaultModel?: string): Promise<AgentDefinition | null> {
@@ -211,7 +194,7 @@ export class ConfigManager {
       return updated;
     } catch (error) {
       // 文件不在 → 正常首次启动，走下面的初始化流程。
-      // 读得到却读不出来（不是合法 JSON、权限不对）是另一件事：**不能当成「没有这个文件」** ——
+      // 读得到却读不出来（不是合法 JSON、权限不对）是另一件事：不能当成「没有这个文件」——
       // 下面的「目录里已有文件就返回 null」会让它静默消失，用户永远不知道自己的定义坏了
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -243,10 +226,6 @@ export class ConfigManager {
 
   /**
    * 确保 basePath/sub-agents/{DEFAULT_SUBAGENT_ID}.json 存在。
-   *
-   * - 文件已存在 → 返回已有定义，不覆盖
-   * - sub-agents/ 为空 → 写入默认通用 AgentDefinition SubAgent
-   * - 已有其他 SubAgent → 返回 null
    */
   async ensureDefaultSubAgent(): Promise<AgentDefinition | null> {
     const subDir = join(this.basePath, "sub-agents");
@@ -306,11 +285,6 @@ export class ConfigManager {
     return { config, agent, subAgent };
   }
 
-  // -----------------------------------------------------------------------
-  // 思考策略表（{basePath}/reasoning-presets.json）
-  // -----------------------------------------------------------------------
-
-  /** 策略表文件路径（与 config.json 同级） */
   get reasoningPresetsPath(): string {
     return join(this.basePath, REASONING_PRESETS_FILE);
   }
@@ -341,7 +315,7 @@ export class ConfigManager {
   /**
    * 释放 / 同步出厂思考策略。
    *
-   * 覆盖策略与 `syncManagedModels` 同构，**按策略逐个判断**（粒度到单个策略）：
+   * 覆盖策略与 `syncManagedModels` 同构，按策略逐个判断（粒度到单个策略）：
    *   - 文件不存在 → 写入出厂种子；
    *   - 某策略标了 `custom: true` → 用户自有，原样保留；
    *   - 某策略未标 → 用出厂版覆盖该策略（内容相同则不写盘）；
@@ -357,7 +331,7 @@ export class ConfigManager {
       ) as ReasoningPresets;
     } catch (error) {
       // 只有「还没有这个文件」可以当成要释放出厂值。文件在却读不出来（不是 JSON、权限不对）
-      // 时**不覆盖** —— 那会把用户标了 `custom: true` 的 InboxEntry 一起抹掉，那是「擅自修」
+      // 时不覆盖 —— 那会把用户标了 `custom: true` 的 InboxEntry 一起抹掉，那是「擅自修」
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.logger.error(
           `[ConfigManager] 思考策略表读不出来，本次不写盘（你的表原样留着）：${String(error)}`,
@@ -391,10 +365,6 @@ export class ConfigManager {
     }
     return written;
   }
-
-  // -----------------------------------------------------------------------
-  // 出厂 Skill（{basePath}/skills/<id>/SKILL.md）
-  // -----------------------------------------------------------------------
 
   /**
    * 释放 / 同步出厂 Skill。
@@ -439,11 +409,6 @@ export class ConfigManager {
     return written;
   }
 
-  // -----------------------------------------------------------------------
-  // MCP 配置（~/.ai-zen/mcp.json）
-  // -----------------------------------------------------------------------
-
-  /** mcp.json 路径：{basePath}/mcp.json */
   get mcpPath(): string {
     return join(this.basePath, "mcp.json");
   }
@@ -451,10 +416,10 @@ export class ConfigManager {
   /**
    * 确保 basePath/mcp.json 存在，三种情况分开（与 `config.json` / `host.json` 同一口径）：
    *
-   * - **不存在** → 写入出厂默认 MCP 配置（含 socket-pty 与 chrome-devtools）。这是正常首启，
+   * - 不存在 → 写入出厂默认 MCP 配置（含 socket-pty 与 chrome-devtools）。这是正常首启，
    *   不回调；
-   * - **存在且解析得成对象** → 原样返回，不动用户的文件（哪怕里面全是用户自己的服务器）；
-   * - **存在但坏了**（读不了 / 不是 JSON / 不是对象 / 是数组）→ 恢复出厂：先把坏文件改名
+   * - 存在且解析得成对象 → 原样返回，不动用户的文件（哪怕里面全是用户自己的服务器）；
+   * - 存在但坏了（读不了 / 不是 JSON / 不是对象 / 是数组）→ 恢复出厂：先把坏文件改名
    *   留档为 `mcp.json.broken`，再写回出厂默认配置，然后回调一次。
    *
    * @returns 当前生效的 MCP 配置原始内容
@@ -502,7 +467,6 @@ export class ConfigManager {
     await fs.rename(path, target);
   }
 
-  /** 这个路径在不在（`access` 不抛就是在） */
   private async exists(path: string): Promise<boolean> {
     try {
       await fs.access(path);
@@ -531,7 +495,7 @@ export class ConfigManager {
  * - 默认模型 ID（defaultImageModel / defaultMigrationModel）
  *   在合并后若已不存在 → 回退到出厂默认，避免悬空引用。
  *
- * `defaultModel`（三级解析的全局兜底）**不在这里校验、也不在这里改写**：它指向一个已被删掉
+ * `defaultModel`（三级解析的全局兜底）不在这里校验、也不在这里改写：它指向一个已被删掉
  * 的模型时，`createAgent` 会在真要跑的时候报 `ModelDefinition "x" not found` —— 那时用户看得见自己
  * 刚删了什么；而在这里默默换成别的模型，只会让「我明明没改它」变成一宗悬案。
  *

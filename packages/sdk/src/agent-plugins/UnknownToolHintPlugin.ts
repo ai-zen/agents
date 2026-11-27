@@ -18,15 +18,15 @@ import { McpScopePlugin } from "../scope/plugins/mcp/McpScopePlugin.js";
  *
  * ## 钩子：`onUnknownTool`
  *
- * 「未知工具」与「工具开始」是**两个问题**，core 分别用两个钩子问，一次工具调用只走其中一个：
- *   - `onToolStart`：工具**存在**，问「要不要开始跑」；
- *   - `onUnknownTool`：工具**不存在**，问「模型调了个不存在的工具，要怎么回应它」。
+ * 「未知工具」与「工具开始」是两个问题，core 分别用两个钩子问，一次工具调用只走其中一个：
+ *   - `onToolStart`：工具存在，问「要不要开始跑」；
+ *   - `onUnknownTool`：工具不存在，问「模型调了个不存在的工具，要怎么回应它」。
  *
  * 本插件守的是后一条缝 —— 于是不必再自己判「工具在不在」：来到这里就是不存在。
  * 被调用的工具名与当时全部可用的工具都在入参里（`toolCall.function?.name` /
  * `availableTools`），不必去别处捞。
  *
- * 返回的字符串**就是那条 tool 消息的正文**：模型读到的是引导，而不是默认的
+ * 返回的字符串就是那条 tool 消息的正文：模型读到的是引导，而不是默认的
  * 「没有找到对应的工具实现」；返回 `undefined` 则交回 core 走默认文案。
  */
 export class UnknownToolHintPlugin implements AgentPlugin {

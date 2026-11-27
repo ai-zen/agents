@@ -2,10 +2,10 @@ import type { Agent, AgentNS } from "@ai-zen/agents-core";
 
 /**
  * 「跑一次」的测试件 —— 新 core 没有 `send()` 之后，用例里那句 `await agent.sendAndWait(text)`
- * 的等价物只有一条路：**起 → 投 → 等闲**（`CORE.md` §1「投递的两个口子」）。
+ * 的等价物只有一条路：起 → 投 → 等闲（「投递的两个口子」）。
  *
  * 为什么不直接 `runOnce()`：`runOnce` 只给 `lifetime: "one-shot"` 的 agent 用，而且跑完
- * 就死透（复活 = 新建）。用例里的大多数 agent 是常驻的、要连跑多次（多次会话、插件在
+ * 就终止（复活 = 新建）。用例里的大多数 agent 是常驻的、要连跑多次（多次会话、插件在
  * 第二次请求的行为），所以这里走常驻那条路：`start()` + `push()` + 订阅 `state` 等闲。
  *
  * `start()` 幂等（已起来就返回同一句 promise），所以同一次可以反复调；收尾别忘了
@@ -64,7 +64,7 @@ export async function stopAgent(agent: Agent): Promise<void> {
  * 「跑一次就收工」：{@link runRound} + {@link stopAgent}。
  *
  * 这是 `await agent.sendAndWait(text)` 最接近的替换（老 `send` 也是「发出去、等这一段跑完、返回
- * messages」）。**只适用于不需要接着跑的用例** —— 多次会话要用 {@link runRound}。
+ * messages」）。只适用于不需要接着跑的用例 —— 多次会话要用 {@link runRound}。
  */
 export async function sendRound(
   agent: Agent,

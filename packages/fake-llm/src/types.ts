@@ -28,7 +28,7 @@ export interface FakeLlmRequest {
    * 服务可以在请求正常返回之后再检查一次 `signal.aborted` 得到同样的结果 —— 那种情况下
    * 请求其实跑完了全部延迟与 token。`jsonDelayMs` 把窗口撞开之后，这个字段才能区分两者。
    *
-   * 端点自己掐断流的那些请求不算（那是服务端先断的，见 `breakAfter`）。
+   * 端点自己中断流的那些请求不算（那是服务端先断的，见 `breakAfter`）。
    */
   aborted: boolean;
 }
@@ -72,10 +72,10 @@ export type FakeLlmContentSection =
 export type FakeLlmStreamPart = "reasoning" | "tool_call" | "content";
 
 /**
- * 一InboxEntry标消息：端点要把它倒推成 delta 流里的那些增量。
+ * 一条目标消息：端点要把它倒推成 delta 流里的那些增量。
  *
- * 缺的格一律按「这条消息没有它」处理：没有 `finish_reason` 时，带工具调用的算
- * `tool_calls`，其余算 `stop`。
+ * 缺的格一律按「这条消息没有它」处理：没有 `finish_reason` 时，带工具调用的算 `tool_calls`，
+ * 其余算 `stop`。
  */
 export interface FakeLlmMessage {
   role?: "assistant";
@@ -96,10 +96,10 @@ export interface FakeLlmMessage {
 }
 
 /**
- * 剧本：按这次请求决定回哪InboxEntry标消息。
+ * 剧本：按这次请求决定回哪一条目标消息。
  *
  * - 字符串 = 正文是这句话、没有工具调用的那条消息；
- * - 一InboxEntry标消息 = 每次请求都回它；
+ * - 一条目标消息 = 每次请求都回它；
  * - 数组 = 按请求序号取，用完停在最后一条；
  * - 函数 = 自己按请求体算（`index` 是这次请求的序号，从 0 起）。
  */
@@ -125,9 +125,9 @@ export interface FakeLlmOptions {
   /**
    * 非流式响应「首字节」之前的等待（缺省 0）。
    *
-   * `chunkDelayMs` 只活在 SSE 分支：非流式是一把梭回的，没有中间态。但有一类用例
-   * 需要非流式的慢响应 —— 「请求还在路上时被取消」（交接摘要就是这种：它不 stream，
-   * 退不掉，只能真取消）。所以这里单独给一个开关，而不是让 `chunkDelayMs` 兼职。
+   * `chunkDelayMs` 只活在 SSE 分支：非流式是一次性返回的，没有中间态。但有一类用例需要非流式
+   * 的慢响应：「请求还在路上时被取消」（交接摘要就是这种：它不 stream，退不掉，只能真取消）。
+   * 所以这里单独给一个开关，而不是让 `chunkDelayMs` 兼职。
    */
   jsonDelayMs?: number;
   /** 流末 `usage`（目标消息自己带了就以它为准；缺省给一组固定值） */
@@ -137,10 +137,10 @@ export interface FakeLlmOptions {
   /** 只让第几次请求失败，其余照常回内容；序号从 0 起，与剧本函数拿到的 `index` 同一口径 */
   failOn?: number;
   /**
-   * 吐完这么多片之后直接掐断连接：不写收尾片、不写 `[DONE]`。
+   * 写完这么多片之后直接中断连接：不写收尾片、不写 `[DONE]`。
    *
-   * 片数从首片（带 `role` 的那一片）起算。这是「拿到了回应，但流断了」这条错误路径
-   * 唯一能稳定复现的来源 —— 正常 `end()` 结尾的流在客户端看来就是一次完整回答。
+   * 片数从首片（带 `role` 的那一片）起算。这是「拿到了回应，但流断了」这条错误路径唯一能稳定复
+   * 现的来源：正常 `end()` 结尾的流在客户端看来就是一次完整回答。
    */
   breakAfter?: number;
 }

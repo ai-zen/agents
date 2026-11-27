@@ -38,7 +38,7 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     // 客户端在响应写完之前取消（慢响应 + abort 的用例）时，socket 已关，再写会抛
-    // ERR_STREAM_DESTROYED。那不是故障，正是那些用例要的结果，不该让它掀掉测试进程。
+    // ERR_STREAM_DESTROYED。那不是故障，正是那些用例要的结果，不该让它终止测试进程。
     response.on("error", () => {});
     const parsed = safeJson(await readBody(request));
     const record: FakeLlmRequest = {
@@ -50,7 +50,7 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
     };
     requests.push(record);
 
-    // 端点自己掐断时 `close` 一样会来，那不是客户端挂断，不能算进 `aborted`
+    // 端点自己中断流时 `close` 一样会来，那不是客户端挂断，不能算进 `aborted`
     const state = { serverHungUp: false };
     response.on("close", () => {
       if (!response.writableEnded && !state.serverHungUp) record.aborted = true;
@@ -126,8 +126,8 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
     ];
 
     for (const [at, payload] of payloads.entries()) {
-      // 上一片之后先等一等：`chunkDelayMs` 就是「慢模型」那一个可测的中间态。写在这一头而不是
-      // 写在整个响应之后 —— `end()` 之后客户端已经拿到全文了，那之后再等只是拖住处理函数。
+      // 上一片之后先等一等：`chunkDelayMs` 就是「慢模型」那一个可测的中间态。写在这里而不是写在
+      // 整个响应之后 —— `end()` 之后客户端已经拿到全文了，那之后再等只是拖住处理函数。
       if (at > 0 && options.chunkDelayMs) {
         await new Promise((resolve) => setTimeout(resolve, options.chunkDelayMs));
       }
@@ -139,8 +139,8 @@ export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLl
         return;
       }
       send(payload);
-      // 断流：写完这一片就不再往下写，也不写 `[DONE]`。掐的是 socket 而不是
-      // `end()`：`end()` 收尾的流在客户端看来是一次完整回答，只有连接中途消失才叫断。
+      // 断流：写完这一片就不再往下写，也不写 `[DONE]`。断的是 socket 而不是 `end()`：
+      // `end()` 收尾的流在客户端看来是一次完整回答，只有连接中途消失才叫断。
       if (options.breakAfter !== undefined && options.breakAfter === at + 1) {
         state.serverHungUp = true;
         await flush(response);

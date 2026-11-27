@@ -3,7 +3,6 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
-/** 发现 SubAgent 时的选项 */
 export interface DiscoverSubAgentsOptions {
   /** 日志口（可选）：有文件读不出来、被跳过时报一句；不注入就不记（库缺省沉默） */
   logger?: LogSink;

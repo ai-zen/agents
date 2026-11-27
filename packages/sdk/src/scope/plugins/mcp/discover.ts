@@ -62,7 +62,7 @@ function normalizeTransport(
  * ```
  *
  * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。靠前的文件里
- * **任何一条**占住这个名字的 InboxEntry 都算数，包括 `disabled: true` 的那一条：近层停用即取消远层。
+ * 任何一条占住这个名字的 InboxEntry 都算数，包括 `disabled: true` 的那一条：近层停用即取消远层。
  */
 /** 发现 MCP 配置时的选项 */
 export interface DiscoverMcpServersOptions {

@@ -1,5 +1,5 @@
 /**
- * `@ai-zen/agents-client` —— cli 与 desktop 共用的**到 `agents-host` 的连接层**。
+ * `@ai-zen/agents-client` —— cli 与 desktop 共用的到 `agents-host` 的连接层。
  *
  * 一个门面，五件事：
  *
@@ -11,12 +11,12 @@
  * | 重连几次、等多久 | `reconnect.ts` |
  * | 把图片传上去、按 id 取回字节 | `asset.ts`（`uploadAsset` / `uploadAssets` / `getAsset`） |
  *
- * 契约（procedure 名、入参出参、事件形状）**不在这里重写一份**：`api` 的类型是
+ * 契约（procedure 名、入参出参、事件形状）不在这里重写一份：`api` 的类型是
  * `TRPCClient<AppRouter>`，`AppRouter` 直接从 `@ai-zen/agents-host` 转出，所以
- * `client.api.session.open.query({ sessionId })` 的推导演到底，与宿主只差一次编译。运行期一个
- * 字节都不 import 那个包 —— 它的包根会把整个宿主（单根、SQLite worker、SDK 装配）拉进产物。
+ * `client.api.session.open.query({ sessionId })` 的推导演到底，与宿主只差一次编译。运行期一个字节
+ * 都不 import 那个包 —— 它的包根会把整个宿主（单根、SQLite worker、SDK 装配）拉进产物。
  *
- * 这个包 `private: true`、不发版（R69）：cli 与 desktop 打包时各自把它**捆进自己的产物**。
+ * 这个包 `private: true`、不发版：cli 与 desktop 打包时各自把它捆进自己的产物。
  */
 
 export { connect } from "./client.js";
@@ -110,8 +110,8 @@ export type {
  * 契约类型的转出（只转出形状，运行期不 import 宿主）。
  *
  * 上层只用这个包时也要能写出「一段会话」「一份 Asset」这种类型，所以跨 wire 的那几个行形状
- * （`SessionRecord` / `WorkspaceRecord` / `AssetRecord` / `NoticeRecord` / `FormRequest`）与事件流一起从这里出去 ——
- * 它们的定义仍然只有宿主那一份，客户端不包一层。
+ * （`SessionRecord` / `WorkspaceRecord` / `AssetRecord` / `NoticeRecord` / `FormRequest`）与事件
+ * 流一起从这里出去。它们的定义仍然只有宿主那一份，客户端不包一层。
  */
 export type { AppRouter, HostEvent } from "@ai-zen/agents-host";
 export type {

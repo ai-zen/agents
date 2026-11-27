@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
  * 单通道总线：泛型，不认识任何业务概念。
  *
  * 用 `node:events` 而不是自己维护订阅者数组：`EventEmitter` 在 `emit` 时迭代订阅者快照，
- * 订阅者在处理中被退订也不影响本轮，这个语义正是我们要的，不必再写一遍。
+ * 订阅者在处理中被退订也不影响本轮，这个语义正是需要的，不必再写一遍。
  */
 const CHANNEL = "event";
 

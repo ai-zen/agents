@@ -16,10 +16,10 @@ export interface PresetDeps {
 /**
  * 思考档位表的读写。
  *
- * 它是**独立的一份文件**（`<数据根>/reasoning-presets.json`），不是 `AppConfig` 的一格 ——
+ * 它是独立的一份文件（`<数据根>/reasoning-presets.json`），不是 `AppConfig` 的一格 ——
  * 所以它没有 `GeneralConfig` 里那份内存副本，读与写都是现碰磁盘（理由见 `GeneralConfig.presets()`）。
  *
- * 写完**不发配置事件**：Scope 的装配不读这张表，读它的是「选档位那一刻」
+ * 写完不发配置事件：Scope 的装配不读这张表，读它的是「选档位那一刻」
  * （`session.updateThinkingLevel` 现读磁盘）与模型写入时的校验（`ModelService.assertWritable`）。
  * 发一个没人需要重读的事件，只会让每个容器白刷一次。
  */
@@ -31,9 +31,9 @@ export class PresetService {
   }
 
   /**
-   * 写整张表。**先校验形状，不合法就一个字都不写**：客户端从界面上改一格就提交一次，
-   * 写坏一次的结果是这个模型从此选不了档 —— 而那时文件已经覆盖了（`prd/PLAN.md` 第 9 行：
-   * 「写进去的非法值被拒且改动留住」）。
+   * 写整张表。先校验形状，不合法就一个字都不写：客户端从界面上改一格就提交一次，
+   * 写坏一次的结果是这个模型从此选不了档 —— 而那时文件已经覆盖了（「写进去的非法值被拒且改动
+   * 留住」）。
    *
    * 与磁盘那份逐字一样 → 不写盘。
    */
@@ -56,7 +56,7 @@ export class PresetService {
  *
  * - 补丁是数组 / `null` / 字符串 → 展开进请求体时要么什么都不是、要么把请求体搞坏，
  *   而失败点在真正发请求那一刻 —— 用户那时已经记不住自己刚才改了哪一格；
- * - 所以拒在写入口，并且说清是**哪张表的哪一档**。表坏了要能一眼找到那一行。
+ * - 所以拒在写入口，并且说清是哪张表的哪一档。表坏了要能一眼找到那一行。
  */
 function assertShape(table: ReasoningPresets, t: Translator): void {
   if (!isPlainObject(table)) {

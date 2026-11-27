@@ -50,7 +50,7 @@ export class GuardNoticePlugin extends ContextGuardPlugin {
    * 先让护栏判，再决定要不要说：放行等于这一段的输入又回到线下，把上一次那一条忘掉。
    *
    * 拒的时候返回的仍是护栏那一句 —— 调用方（core）拿它当「这一次请求不发」的判决，这里一个字
-   * 都不改；抛错则会把整个循环打死（agent 从此塞进去也不动），那是另一件事。
+   * 都不改；抛错则会让整个循环终止（agent 此后投递进去也不动），那是另一件事。
    */
   async onInnerLoopStart(ctx: InnerLoopContext): Promise<string | undefined> {
     const denied = await super.onInnerLoopStart(ctx);

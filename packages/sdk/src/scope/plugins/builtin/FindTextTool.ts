@@ -17,11 +17,9 @@ interface MatchResult {
   matches: MatchItem[];
 }
 
-/** 默认总匹配数上限 */
 const DEFAULT_MAX_MATCHES = 200;
 /** 默认文件大小上限（字节，与 ReadTool 的 300KB 口径一致） */
 const DEFAULT_MAX_FILE_SIZE = 300 * 1024;
-/** 默认行内容/匹配子串截断长度 */
 const DEFAULT_MAX_LINE_LENGTH = 200;
 
 export class FindTextTool extends SdkCallbackTool {

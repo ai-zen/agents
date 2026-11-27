@@ -33,7 +33,7 @@ const defaultGenerateImage: GenerateImageFn = async ({
 };
 
 /**
- * 根据文字描述生成图片。**统一返回字符串**（JSON，含图片 URL 列表）：
+ * 根据文字描述生成图片。统一返回字符串（JSON，含图片 URL 列表）：
  * 生成结果如何处理（查看/下载/转发）由模型与上层自由决定——
  * 需要让模型看图时，模型可主动调用 view_image(URL)；需要保存时用 download_file。
  */

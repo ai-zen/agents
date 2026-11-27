@@ -1,12 +1,12 @@
 import { AgentNS } from "@ai-zen/agents-core";
 
 /**
- * 上一次回答的 prompt 用量 —— **只从消息上取，不另立快照**。
+ * 上一次回答的 prompt 用量 —— 只从消息上取，不另立快照。
  *
  * 用量是消息自己的事实：core 跑流时把响应收尾片的 `usage` 钉在那条 assistant 消息上
  * （它不属于那一片增量，也就不过 `applyChunk`），随消息持久化（core 不算、不存、不报
  * 用量，公理 4）。所以这里也不存第二份：两个护栏插件（`ContextGuardPlugin` /
- * `AutoMigratePlugin`）读的是**同一份事实、同一个读法** —— 从 `agent.messages` 倒着找
+ * `AutoMigratePlugin`）读的是同一份事实、同一个读法 —— 从 `agent.messages` 倒着找
  * 最近一条带 `usage` 的 assistant 消息。
  *
  * 读「最近一条」而不是求和：护栏判的是「这一次请求会带多大的输入」，而每次请求都会重发

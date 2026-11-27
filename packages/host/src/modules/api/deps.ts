@@ -27,7 +27,7 @@ import type { WorkspaceService } from "../workspace/service.js";
  * procedure 拿到的那一层。全部必填：缺哪一个，调用点就得自己判「有没有」，那份判断迟早会
  * 变成一条没人走过的分支。
  *
- * `runtime` 是「谁活着」唯一的答案（`get` / `wake` / `kill` 都问它）；宿主自己不留第二份。
+ * `runtime` 是「哪些会话有活 Agent」唯一的答案（`get` / `wake` / `kill` 都问它）；宿主自己不留第二份。
  *
  * `onError` 是落库、发事件这两条路上不跨 wire 的失败出口（`HostObserver` 要它）；它的去向是
  * 宿主日志，不是客户端。
@@ -40,7 +40,7 @@ export interface HostApiDeps {
   readonly runtime: AgentRuntime;
   readonly definitions: AgentDefinitionService;
   /**
-   * 内存里那一份配置。它同时是**配置面的读口**（`config.get` 读它）与**写盘口的入口**
+   * 内存里那一份配置。它同时是配置面的读口（`config.get` 读它）与写盘口的入口
    * （`GeneralConfig.patch` / `write`：写盘、更新内存那份、发事件都在那一处）。
    */
   readonly config: GeneralConfig;
@@ -58,7 +58,7 @@ export interface HostApiDeps {
   readonly inbox: ReturnType<typeof inboxTable>;
   /**
    * 正在重装的那几段会话。改完定义那条路开它、观察者读它：窗口里那一次清空不作废库里那几行
-   * （`dev-docs/prd/05-control.md` 的「换模型不是杀死」）—— 两处必须拿到同一个对象，否则谁也
+   * （「换模型不是杀死」）—— 两处必须拿到同一个对象，否则谁也
    * 看不见谁。
    */
   readonly reloads: ReloadWindow;

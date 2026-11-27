@@ -17,12 +17,10 @@ export class CallbackTool extends Tool {
     let result;
 
     if (this.callback) {
-      // 回调拿到解析后的参数与完整 ctx（要 agent / signal / 那条工具调用都不必另存闭包）
+      // 回调拿到解析后的参数与完整 ctx：要 agent / signal / 那条工具调用都不必另存闭包
       result = await this.callback(ctx.parsedArgs, ctx);
     }
 
-    // string 原样返回；内容块数组（图片/文件等）直接透传；
-    // 其余值（对象/数字等）JSON 序列化后返回（undefined 归一为空串）。
     if (typeof result === "string") return result;
     if (Array.isArray(result)) return result as AgentNS.MessageContentSection[];
     return JSON.stringify(result) ?? "";

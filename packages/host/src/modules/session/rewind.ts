@@ -27,7 +27,7 @@ export interface RewindDeps {
 /**
  * 撤回到这条消息之前：这条与它之后的全部硬删，正文交回去让客户端回填输入框。
  *
- * 「撤回」是**这一句不算我说过**，所以它删的是历史本身（库里的行、记忆里那一份），不是把话
+ * 「撤回」表示这一句不算用户说过，所以它删的是历史本身（库里的行、记忆里那一份），不是把话
  * 改成别的东西、也不是留一条「已撤回」的空壳 —— 模型下一次请求要看不到它说过的那半截。
  *
  * ## 一条一条的规则
@@ -35,20 +35,20 @@ export interface RewindDeps {
  * 1. 会话行不存在 → `not_found`（连「这一段是谁」都不知道，后面每一步都没有材料）；
  * 2. 目标消息不存在、或不属于这一段 → `not_found`（`messageId` 是客户端给的，它可能属于另一段
  *    会话，也可能那条已经没了）；
- * 3. **只认用户自己说的话**：`role === "user"` 且 `source?.kind === "user"`，别的一律
+ * 3. 只认用户自己说的话：`role === "user"` 且 `source?.kind === "user"`，别的一律
  *    `invalid_params`。AgentDefinition 的话与工具结果不是「自己说过的话」，撤回它们的语义另说（撤回一条
  *    AgentDefinition 回复等于什么？它后面的工具调用要不要一起作废？），这一版不做；
- * 4. **跑着的时候不许撤**：`working` 时记忆正被写（`PRD.md` 4.1：没在跑的时候才可以直接改
+ * 4. 跑着的时候不许撤：`working` 时记忆正被写（没在跑的时候才可以直接改
  *    记忆），从外面 `splice` 一手就是两个东西同时改同一个数组；
- * 5. 硬删：这一段历史里**从这一条起（含）到最后**的消息逐条删行；记忆里活着的那一份用
- *    `splice` **就地**删（不换数组引用 —— Agent 自己拿着那个数组，换一个它看不见）；
+ * 5. 硬删：这一段历史里从这一条起（含）到最后的消息逐条删行；记忆里活着的那一份用
+ *    `splice` 就地删（不换数组引用 —— Agent 自己拿着那个数组，换一个它看不见）；
  * 6. Asset：删之前把这几个 id 收起来（`assets.listBySession` 是按「这一段的消息引用了哪些」
  *    查的，所以收起的是整段的引用，删完之后由 `sweepUnreferenced` 逐个判「还剩不剩引用」
  *    —— 还被活下来的消息引用的那些会原地留下）；
  * 7. 删掉的每一条推一条 `message.removed`，客户端据此把行去掉；
  * 8. 返回目标那条的 `content` 原样（可能是字符串，也可能是内容块数组），客户端拿它回填输入框。
  *
- * **不通过 agent 的 `emit("messageRemoved")` 报这件事**：观察者收到那条会去删库、并推一条
+ * 不通过 agent 的 `emit("messageRemoved")` 报这件事：观察者收到那条会去删库、并推一条
  * `message.removed` 给客户端，而这里已经删过、也会自己推 —— 两条路一起走就是删两次、推两条。
  */
 export function rewindTo(
@@ -107,7 +107,7 @@ export function rewindTo(
   for (const message of doomed) deps.messages.delete(message.id);
 
   if (agent !== undefined) {
-    // 就地删：`splice` 从目标那条起一直切到末尾，**不换数组引用**（Agent 自己拿着它）。
+    // 就地删：`splice` 从目标那条起一直切到末尾，不换数组引用（Agent 自己拿着它）。
     // 按 id 找下标而不是直接用上面那个：记忆里前面还接着 AgentDefinition 带来的系统提示，两边的下标
     // 不是一个。记忆里找不到这一条（理论上不会）就什么都不动。
     const at = agent.messages.findIndex((message) => message.id === messageId);

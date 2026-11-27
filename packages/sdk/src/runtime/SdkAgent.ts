@@ -28,7 +28,7 @@ export type {
  * Core Agent 不感知权限、文件系统等业务逻辑；
  * SdkAgent 在 Core Agent 基础上增加了 SDK 层需要的元数据：
  *   - scope：全局 Scope 实例
- *   - definition：Agent 定义（含权限 permissions）。**模型解析生效之后的那一份**：
+ *   - definition：Agent 定义（含权限 permissions）。模型解析生效之后的那一份：
  *     会话级覆盖会写进它的 `modelId`（见 `createAgent`），于是「读哪个字段都不会跑偏」。
  *     它没有「档位」这一格：档位是 `resolveModel` 的返回值，宿主会话视图的
  *     `modelSource()` 另有自己的一格。
@@ -90,7 +90,7 @@ export class SdkAgent extends Agent {
   }
 
   /**
-   * 就地刷新生效模型：换模型与换思考档位都走它，**不杀 Agent**。
+   * 就地刷新生效模型：换模型与换思考档位都走它，不杀 Agent。
    *
    * 记忆、排队区、两道开关、正在跑的那一次请求一处都不动：下一次请求从头读 `client` /
    * `model` / `modelConfig`，所以下一次就按新的走。定义上的 `modelId` 一并改成生效的那个

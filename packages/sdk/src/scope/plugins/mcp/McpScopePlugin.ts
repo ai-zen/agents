@@ -62,7 +62,7 @@ export class McpScopePlugin implements ScopePlugin {
   /**
    * 让连接跟着发现结果对账。
    *
-   * 连接是按**定义**建立的：声明改了而连接不动，等于「配置改了但实际没生效」。所以
+   * 连接是按定义建立的：声明改了而连接不动，等于「配置改了但实际没生效」。所以
    *   - 这次发现里消失的 server → 断开它的连接（连同缓存的状态 / 清单一起失效）；
    *   - 定义变了的 server → 断开旧连接，下一次调用时按新定义懒连；
    *   - 新增的 server → 不主动连（保持懒连接：没人调用就不起进程 / 不建链）；
@@ -154,7 +154,7 @@ export function staleMcpConnections(
 /**
  * 「定义」的指纹：哪些字段变了就算连接不能再用。
  *
- * 算进来的是**连接事实**：transport 以及各 transport 的写进 messages 参数（command / args / env /
+ * 算进来的是连接事实：transport 以及各 transport 的写进 messages 参数（command / args / env /
  * url / headers / oauth）。不算 `description` —— 它只影响 `load_mcp` 给人看的那段文字，
  * 与怎么连无关，改它不该把一条好连接断掉（新描述下一次实例化就带上了）。
  * `id` 也不进指纹：按 id 配对的，同一 id 才比。

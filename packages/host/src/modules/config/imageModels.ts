@@ -14,8 +14,8 @@ export interface ImageModelDeps {
 /**
  * 图片模型的增删改。
  *
- * `custom` 这一格照出厂托管的规矩（`prd/03-legacy.md` 3.4）：客户端建的图模自带
- * `custom: true`，由**调用方**给，服务不替它定 —— 服务替它定，就等于替用户决定了「这一条
+ * `custom` 这一格照出厂托管的规矩：客户端建的图模自带
+ * `custom: true`，由调用方给，服务不替它定 —— 服务替它定，就等于替用户决定了「这一条
  * 下次启动该不该被出厂清单覆盖」。恢复出厂那一支反过来：`custom` 置回 `false`，重新归入托管。
  */
 export class ImageModelService {
@@ -51,10 +51,10 @@ export class ImageModelService {
   }
 
   /**
-   * 删图片模型。`defaultImageModel` 指着它的，改指**同端点**剩余的第一条，同端点一条不剩就
+   * 删图片模型。`defaultImageModel` 指着它的，改指同端点剩余的第一条，同端点一条不剩就
    * 清空（`undefined`）。
    *
-   * 与 `ModelService.remove` 里 `redirect` 那一格是**同一套规则**：只改指同端点的，跨端点改指
+   * 与 `ModelService.remove` 里 `redirect` 那一格是同一套规则：只改指同端点的，跨端点改指
    * 等于把图片请求发去另一家服务商；而默认项指着一个已经不在的模型比这更糟，所以这一格必须
    * 当场改掉。两处不共用一段代码（一个是模型、一个是图片模型，字段名也不同），规则共用一句话。
    */

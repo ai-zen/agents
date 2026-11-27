@@ -4,12 +4,12 @@ import type { SdkAgent } from "../runtime/SdkAgent.js";
 /**
  * 自动刷新能力的时机。
  *
- * 三个档位是**开销与时效**的取舍，没有对错：
+ * 三个档位是开销与时效的取舍，没有对错：
  *
  * | 档位 | 钩子 | 会话中新装的 MCP / skill / 工具什么时候能被模型看见 |
  * |------|------|---------------------------------------------|
  * | `inner-loop-start` | `onInnerLoopStart`（每次请求发出前） | 这一次回答里的下一次请求就看见（含工具回合的空档） |
- * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一批只刷一次） | 下一次被叫起来才看见；一批只刷一次，开销最小 |
+ * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一批只刷一次） | 下一次被唤醒才生效；一批只刷一次，开销最小 |
  * | `off` | 不装插件 | 只靠 `/reload` |
  *
  * 为什么不是「每次请求固定刷一次」：一次 `refresh()` 会重扫 MCP 配置、按需建连接，
@@ -30,7 +30,7 @@ export type AutoRefreshWhen = "inner-loop-start" | "outer-loop-start";
  * await agent.init();
  * ```
  *
- * 两件事必须成对做：先 `scope.refresh()` 重新发现，再按**新的**发现结果重建
+ * 两件事必须成对做：先 `scope.refresh()` 重新发现，再按新的发现结果重建
  * `agent.tools` —— 只刷前者，模型看到的还是旧工具集。
  */
 export class AutoRefreshToolsPlugin implements AgentPlugin {

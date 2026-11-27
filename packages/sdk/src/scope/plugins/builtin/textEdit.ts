@@ -1,7 +1,3 @@
-/**
- * 文本替换的公共实现（`edit` / `batch_edit` 共用）。
- */
-
 /** 统计 `text` 在 `content` 中非重叠的出现次数（`text` 为空时返回 0） */
 export function countOccurrences(content: string, text: string): number {
   if (text === "") return 0;
@@ -17,7 +13,7 @@ export function countOccurrences(content: string, text: string): number {
 }
 
 /**
- * 执行一次替换，返回新内容与**实际替换次数**。
+ * 执行一次替换，返回新内容与实际替换次数。
  *
  * 必须用回调式 replacer：字符串形式的替换值里，`$&`、`` $` ``、`$'`、`$$` 会被
  * `String.replace` 当作替换模式展开（写入的不再是字面量），而回调的返回值一律按字面量处理。

@@ -11,7 +11,6 @@ import type { MessageSearchScope, SearchHit } from "./types.js";
  */
 const TRIGRAM_MIN_LENGTH = 3;
 
-/** 片段长度上限 */
 const SNIPPET_LENGTH = 160;
 
 /** 命中位置之前保留的字数：让人看得出命中落在什么上下文里 */

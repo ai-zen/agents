@@ -9,7 +9,7 @@ import { SILENT_LOG, type LogSink } from "./logger.js";
  *   - 每个实体一个 JSON 文件，文件名 = `${id}.json`
  *   - 目录不存在时自动创建
  *   - `read()` 只把「文件不在」答成 `null`；文件在但读不出来（不是 JSON、没权限）照抛
- *   - `list()` 跳过读不出来的那**一条**并报一句
+ *   - `list()` 跳过读不出来的那一条并报一句
  */
 export class EntityRepository<T extends { id: string }> {
   /**
@@ -24,7 +24,7 @@ export class EntityRepository<T extends { id: string }> {
   /**
    * 获取实体的文件路径；`id` 必须落在本仓储目录内，否则抛错。
    *
-   * 这是**唯一**的落盘口（read / write / delete 全走这里，`list()` 的 id 来自
+   * 这是唯一的落盘口（read / write / delete 全走这里，`list()` 的 id 来自
    * `readdir` 的单层文件名、不可能逃逸），所以校验放这里读写删天然自洽。
    *
    * 两个细节都是必需的：
@@ -71,7 +71,7 @@ export class EntityRepository<T extends { id: string }> {
   }
 
   /**
-   * 读取单个实体：**只有文件不在才回 `null`**。
+   * 读取单个实体：只有文件不在才回 `null`。
    *
    * 「没有这一条」与「这一条坏了」（不是 JSON、EACCES、EIO）是两个答案。折叠成一个 `null`
    * 会让读者对坏文件说假话。要把它当成「没有」的调用方自己接住，并在那一处写明为什么。

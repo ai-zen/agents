@@ -16,9 +16,6 @@ function matchPermission(name: string, policy: PermissionPolicy): boolean {
   return !policy.deny.some((p) => p === "*" || p === name);
 }
 
-/**
- * 权限评估器 — 按四维度权限过滤候选集。
- */
 export class PermissionEvaluator {
   private permissions?: AgentPermissions;
 

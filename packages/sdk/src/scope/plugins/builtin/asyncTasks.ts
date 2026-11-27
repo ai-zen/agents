@@ -110,7 +110,7 @@ export function trackTimer(agent: Agent, timer: NodeJS.Timeout, log?: LogSink): 
  * ## 优先级取高
  *
  * 这条结果是「手上这一批还没跑完就该知道的事」，而等它的一方十有八九正卡在轮询上
- *（`sleep`、`async_timeout`、反复 `get_mcp_task_result`）。内循环只在**工具跑完那个边界**
+ *（`sleep`、`async_timeout`、反复 `get_mcp_task_result`）。内循环只在工具跑完那个边界
  * 取一次件（`Agent.landHigh`，只认 high），取低的话那一批永远不会结束 —— 模型一直在调工具，
  * 结果就一直递不进去，最后是「最多 16 秒的异步任务被一串 sleep 堵到永不返回」。
  *

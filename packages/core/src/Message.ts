@@ -88,11 +88,10 @@ export class Message implements AgentNS.Message {
 }
 
 /**
- * 生成消息唯一 id。core 包需同时兼容 Node.js 与 Web：
- * - 优先使用全局 crypto.randomUUID（Node 19+ / 现代浏览器均可用）
- * - 无 crypto 的老环境降级为「时间戳 + 随机数」组合，保证会话内唯一即可
+ * 生成消息唯一 id。core 需同时兼容 Node.js 与 Web：优先用全局 `crypto.randomUUID`（Node 19+ 与
+ * 现代浏览器都有）；没有 `crypto` 的老环境降级为「时间戳 + 随机数」，保证会话内唯一即可。
  *
- * 导出是因为 inbox InboxEntry 要在**入队时**就拿到写进 messages 那条消息的 id（`InboxEntry.messageId`）：
+ * 导出的理由：InboxEntry 要在入队时就拿到写进 messages 那条消息的 id（`InboxEntry.messageId`），
  * 同一套 id 规则由一份实现给出，否则「宿主给的 id」与「消息自己生成的 id」迟早长得不一样。
  */
 export function generateMessageId(): string {

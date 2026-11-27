@@ -19,7 +19,7 @@ const scopeSchema = z.enum([
 ]);
 
 /**
- * 出参一律是这一格：**这一批服务器 + 每条写在哪一层**（`McpConfig.describe` 的结果）。
+ * 出参一律是这一格：这一批服务器 + 每条写在哪一层（`McpConfig.describe` 的结果）。
  *
  * 写完也回这一份（而不是只回一个 `ok`）：客户端不必再发一次 `list`，也就不必处理「两个请求
  * 之间夹进另一处改动」这种两半不一致的处境。形状只有 SDK 那一处（`types/index.ts` 的
@@ -57,7 +57,7 @@ export function mcpRouter(deps: HostApiDeps, api: Trpc) {
      * 加一条或改一条：同名（`server.id`）即是改，没有即是加 —— 两者落下去是同一件事（与那一层
      * 文件里那一条合并），所以不分成两个 procedure。
      *
-     * `scope` 在入参里是那五层，**可写的只有两层**：另外三层由 `McpConfig.save` 抛
+     * `scope` 在入参里是那五层，可写的只有两层：另外三层由 `McpConfig.save` 抛
      * `unsupported`（它比这里多知道一条「那个文件是谁的」），这一层不重判。
      */
     update: api.procedure

@@ -26,7 +26,7 @@ const PERMISSION_DIMENSIONS = ["tools", "skills", "mcps", "subagents"] as const;
 /**
  * 一份定义去掉 `updatedAt` 之后的字面样子。
  *
- * 「这一次改了没有」要比的是除它以外的每一格：`updatedAt` 是**这次写盘的瞬时**，带着它比，
+ * 「这一次改了没有」要比的是除它以外的每一格：`updatedAt` 是这次写盘的瞬时，带着它比，
  * 任何一次保存都会被判成改过。逐字比（`JSON.stringify`）就够 —— 定义是纯数据、没有函数与
  * 循环引用，键序由同一个写入口统一（`{ ...当前, ...change }` 只覆盖已有的键，位置不变）。
  */
@@ -73,7 +73,7 @@ export class AgentDefinitionService {
     const now = new Date().toISOString();
     const created = this.validated({ ...definition, createdAt: now, updatedAt: now });
 
-    // 与端点、模型同一条规矩：id 是别人引用一条定义的**唯一**方式（默认项、会话行、别人定义里
+    // 与端点、模型同一条规矩：id 是别人引用一条定义的唯一方式（默认项、会话行、别人定义里
     // 的 subagent 权限，记的都是这个字符串）。同 id 两条定义并存之后，「客户端引用的是哪一条」
     // 这件事没有答案 —— 它不会报错，只会让某一段会话悄悄用上另一份提示词。
     //
@@ -101,7 +101,7 @@ export class AgentDefinitionService {
   /**
    * 改一条定义：先把 `change` 合到当前那份上，再判「到底改了没有」。
    *
-   * **没改动就不写盘**（与 `GeneralConfig.write` 同一条判据）：合出来与当前那份逐字一样 ——
+   * 没改动就不写盘（与 `GeneralConfig.write` 同一条判据）：合出来与当前那份逐字一样 ——
    * 去掉 `updatedAt` 再比，见{@link withoutUpdatedAt} —— 就原样返回当前那份：不写文件、
    * `updatedAt` 不动、也不发事件。判据是「用户改动了什么」，不是「用户点了保存」：一次没带改动
    * 的保存不该产生一次写盘（文件被重写、`updatedAt` 被推到当前时刻，客户端那一栏就显示「刚刚
@@ -130,7 +130,7 @@ export class AgentDefinitionService {
     // 先确认存在：仓储的 `delete` 把「本来就没有」也当成功，那样客户端会以为自己删掉了一个 AgentDefinition
     await this.get(id);
     await this.deps.repository.delete(id);
-    // 删掉的是默认 AgentDefinition 时，默认项也要跟着让位（PRD 3.4）：留着它指向一个不存在的定义，
+    // 删掉的是默认 AgentDefinition 时，默认项也要跟着让位：留着它指向一个不存在的定义，
     // 下一次新建会话会在解析模型那一步失败，而界面上看不出原因。
     //
     // 走 `write` 而不是 `patch` 之后再 `patch`：删定义与清默认是同一次保存，中间那一次写盘会
@@ -144,9 +144,9 @@ export class AgentDefinitionService {
 
   /**
    * 恢复出厂：整条换回出厂那一条（`default` 与 `sub-agent-default` 两个），`custom` 置回
-   * `false` —— 「换回出厂定义、然后重新归入托管」（`prd/03-legacy.md` 3.4）。
+   * `false` —— 「换回出厂定义、然后重新归入托管」。
    *
-   * **整条换，不是把出厂那几格叠到用户那份上**：出厂之后要给用户的是「出厂长什么样」，
+   * 整条换，不是把出厂那几格叠到用户那份上：出厂之后要给用户的是「出厂长什么样」，
    * 用户此前改过的名称、提示词、权限一并退场；`custom` 置回 `false` 之后，下一次启动的出厂同步
    * 会继续按出厂内容校它的提示词，那正是「重新归入托管」的意思。
    *
@@ -192,10 +192,10 @@ export class AgentDefinitionService {
   /**
    * 写之前的校验，返回要落盘的那一份。
    *
-   * `function.parameters` 允许是一段文本：编辑器里写的就是一段 JSON（`prd/03-legacy.md` 3.4 的
-   * 「多行内容」）。解析失败就拒，并且**一个字都不写盘** —— 「非法 JSON 被拒且改动保留」在宿主
-   * 这一侧只有这一个落点：改动留在编辑器里是客户端的事，宿主只保证不接受。解析成功就按对象存，
-   * 此后磁盘上那一份与对象形状没有区别。
+   * `function.parameters` 允许是一段文本：编辑器里写的就是一段 JSON（「多行内容」）。解析失败就
+   * 拒，并且一个字都不写盘 —— 「非法 JSON 被拒且改动保留」在宿主这一侧只有这一个落点：改动留在
+   * 编辑器里是客户端的事，宿主只保证不接受。解析成功就按对象存，此后磁盘上那一份与对象形状没有
+   * 区别。
    */
   private validated(definition: AgentDefinition): AgentDefinition {
     const { t, general } = this.deps;

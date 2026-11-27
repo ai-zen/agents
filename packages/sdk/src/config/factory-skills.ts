@@ -18,7 +18,7 @@ export const HANDOFF_SKILL_ID = "handoff";
  * 交接文档兜底模板。
  *
  * 仅在磁盘上读不到 `handoff` Skill 时使用（用户删除 / 目录不可读）。
- * 它是**保险丝**，不是第二真相源：正常路径下模板一律来自 SKILL.md。
+ * 它是保险丝，不是第二真相源：正常路径下模板一律来自 SKILL.md。
  */
 export const FALLBACK_HANDOFF_TEMPLATE = [
   "# Handoff Document",

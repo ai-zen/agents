@@ -4,22 +4,22 @@
  * 单独一个文件，不并进 `constants.ts`：那里面放的是手写维护的少量模型与注释，这里是按官方
  * `/models` 生成的数据，混在一起会把前者淹掉。
  *
- * ## 只收对话模型，而且只收「我们今天这套请求形状能跑通」的那些
+ * ## 只收对话模型，而且只收「当前这套请求形状能跑通」的那些
  *
  * 清单是 `GET /inference/go/v1/models` 的产物（2026-11-24 取，36 条）。这里只留 19 条：
  *
- * - `type` 不是 `chat` 的 6 条（3 条 `decision`、3 条 `embedding`）不收 —— 我们的模型表里没有
+ * - `type` 不是 `chat` 的 6 条（3 条 `decision`、3 条 `embedding`）不收 —— 本仓的模型表里没有
  *   `type` 这一格，收进来只会被当成聊天模型选；
  * - 混元 4 条（`hy3`、`hy4`、`hy4-preview`、`hy4-flash-free`）与 mimo 2 条（`mimo-v2.6-flash`、
  *   `mimo-v2.6-pro`）不收；
  * - `gemini-4-argon` 不收：它拒绝 `strict` 本身（原话是 google 不能保证 OpenAI 严格模式的语义），
- *   与我们工具定义写得合不合规无关；
+ *   与工具定义写得合不合规无关；
  * - 环境门槛的 4 条不收：`muse-spark-1.2/1.3-contributor` 与 `beam-free` 在部分地区直接 403
  *   （对应清单里的 `go.limited_regions`），`iceman-contributor-free` 要求先在控制台打开
  *   「允许在请求数据上训练」的开关（对应 `go.training`），否则 400。
  *
  * 判断标准只有一条：拿真的 SDK、真的内置工具集打真端点，能完整跑通工具往返的才收。所以这份清单
- * 是**实测**结果，不是把 `/models` 抄一遍 —— 收录与版本升级都该照那条标准重跑一遍。
+ * 是实测结果，不是把 `/models` 抄一遍 —— 收录与版本升级都该照那条标准重跑一遍。
  *
  * ## 逐字段的来源（都是那一份响应里现成的，没有一处凭印象填）
  *
@@ -32,12 +32,12 @@
  * - `maxOutputTokens`：官方 `limit.output`；
  * - `vision`：`modalities.input` 里有没有 `image/*`；
  * - `tokenThresholds`：按窗口的两条比例线（handoff 40%、guard 80%，与出厂其余模型同一个口径）。
- *   **这两条线不是窗口**：一个是「什么时候该交接」的产品取值，一个是「什么时候不许再发」；
+ *   这两条线不是窗口：一个是「什么时候该交接」的产品取值，一个是「什么时候不许再发」；
  *   窗口本身记在 `contextWindow` 里，两者不要互相推导；
  * - `description`：官方 `description`。
  *
- * **没有 `reasoningPreset`**：思考档位表只收「官方文档写明怎么传参数」的端点，而 OpenCode 这边
- * 我们只有 `capabilities.reasoning.effort` 这一格（各模型的档位集合还不一样），没有请求侧参数的
+ * 没有 `reasoningPreset`：思考档位表只收「官方文档写明怎么传参数」的端点，而 OpenCode 这边
+ * 本仓只有 `capabilities.reasoning.effort` 这一格（各模型的档位集合还不一样），没有请求侧参数的
  * 官方说明。所以这些模型在 `/think` 里不可调档 —— 不编一份没依据的表。
  *
  * 更新方式：重新打一次 `/models`，按上面几条重算，并且把「能不能跑通」那一关重过一遍。

@@ -162,7 +162,7 @@ const EXT_BY_MIME: Record<string, string> = {
  *
  * 统一交给 `fileToContentSection()` 决定传输方式：端点声明 Files API 能力就上传
  * （`file` 块 + `file_id`，请求体小、不随历史反复膨胀），否则保持 base64 内联。
- * 转换失败**不丢块**——退化为一条文本说明，避免整个工具调用因媒体问题失败。
+ * 转换失败不丢块——退化为一条文本说明，避免整个工具调用因媒体问题失败。
  */
 async function mediaSection(
   data: string,
@@ -195,7 +195,7 @@ async function mediaSection(
  * `read_mcp_resource` 的 resource contents → SDK 内容块。
  *
  * 注意形状差异：`callTool` 的 content 块带 `type` 判别字段，而 `readResource` 的
- * contents 是 `{ uri, mimeType?, text }` 或 `{ uri, mimeType?, blob }`——**没有 type**。
+ * contents 是 `{ uri, mimeType?, text }` 或 `{ uri, mimeType?, blob }`——没有 type。
  * 若直接复用 `toMessageSection`，文本资源会掉进 default 分支被 JSON 化（实测踩过）。
  */
 async function resourceToMessageSection(
@@ -258,9 +258,9 @@ async function toMessageSection(
 /**
  * 文本输出保护（保序）：
  *
- * - **未超限**：原样返回映射后的块数组，不重排、不合并、不丢块；
+ * - 未超限：原样返回映射后的块数组，不重排、不合并、不丢块；
  *   纯文本时退化为单个字符串。
- * - **超限**：全部文本落盘为 result.txt，只保留**一个**警告文本块占据
+ * - 超限：全部文本落盘为 result.txt，只保留一个警告文本块占据
  *   原首个文本块的位置，其余文本块丢弃（内容已落盘），媒体块原位不动。
  *   这样即使文本夹在中间，媒体与位置的对应关系也不会被打乱。
  *
@@ -457,7 +457,7 @@ export function createCallMcpTool(
       try {
         mcpManager.touch(serverName);
         const media = mediaContextOf(env, ctx);
-        // 用不用任务不在这里说：我们只按工具声明的那一档提个偏好，最终由服务器在应答里定
+        // 用不用任务不在这里说：此处只按工具声明的那一档提个偏好，最终由服务器在应答里定
         //
         // 这一趟包在「谁在问」里：服务器中途可能发 `elicitation/create` 回来，那一刻得知道该把
         // 题挂到哪一段会话上（见 `elicitation.ts` 的文件头）。

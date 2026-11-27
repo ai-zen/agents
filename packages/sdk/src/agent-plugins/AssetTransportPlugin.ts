@@ -7,7 +7,7 @@ import type {
   ToolEnvDeps,
 } from "../types/index.js";
 
-/** 段上的本地标记：内容段里指回宿主 Asset 行的 id（PRD 原文：`__asset_id` 只是本地标记） */
+/** 段上的本地标记：内容段里指回宿主 Asset 行的 id（`__asset_id` 只是本地标记） */
 const ASSET_ID_KEY = "__asset_id";
 
 export interface AssetTransportOptions {
@@ -18,7 +18,7 @@ export interface AssetTransportOptions {
 }
 
 /**
- * 附件传输插件 —— 发出去之前把带 `__asset_id` 的段按**当前生效的模型与端点**重建成厂商要的形状。
+ * 附件传输插件 —— 发出去之前把带 `__asset_id` 的段按当前生效的模型与端点重建成厂商要的形状。
  *
  * 内容在库里只有一份（落库那份就是原本那份，一个字都不清理：prompt caching 要的是前后两次请求
  * 的前缀逐字一致）；`__asset_id` 那一段只是「这是本地的哪一份 Asset」，出网的那一份每次现造：
@@ -28,18 +28,18 @@ export interface AssetTransportOptions {
  * | 端点声明了 `capabilities.filesApi` | `file` 段 + `file_id`（每次调用都真上传，不复用上一份 id） |
  * | 其余端点 + 图片 | `image_url` + base64 data URL |
  * | 模型看不见图（`vision !== true`） | 一段文本提示，并把 warning 单独说清 |
- * | Asset 已不在 / 重建失败 / 上传失败 | 一段说得清的文本，**不重试** |
+ * | Asset 已不在 / 重建失败 / 上传失败 | 一段说得清的文本，不重试 |
  *
  * ## 为什么落在 `onInnerLoopStart`，而不是 `formatContentSection`
  *
- * 后者是 core 拼请求体时用的格式化层，**同步**；而重建要读字节（宿主那边是一次文件读取）、
+ * 后者是 core 拼请求体时用的格式化层，同步；而重建要读字节（宿主那边是一次文件读取）、
  * 还可能上传一次 —— 只能异步。`onInnerLoopStart` 恰恰是异步的，而且按 core 的注释它本来就
  * 允许改这一次要发出去的请求体（`ctx.body` 是「这一次请求」的唯一一份）。
  *
  * ## 为什么这里不拒（`onInnerLoopStart` 是能拒的钩子）
  *
  * 拒了等于整次请求不发。需求要的是「失败就报失败、不重试…绝不假成功，全失败就退回纯文本并说
- * 清楚」：一段发不出去就换成一句话说明，别的段与这条消息本身照发。所以这个插件**永远不返回判决**。
+ * 清楚」：一段发不出去就换成一句话说明，别的段与这条消息本身照发。所以这个插件永远不返回判决。
  *
  * ## Asset 字节从哪来
  *
@@ -58,7 +58,7 @@ export class AssetTransportPlugin implements AgentPlugin {
     // 一句 Asset 引用都没有：这一次请求体一个字都不动（连换一个段对象都不做）
     if (!sources.some((source) => hasAssetSection(source.content))) return;
 
-    // 端点与模型**现读**：`file_id` 是端点维度资源，传错端点会得到 not found
+    // 端点与模型现读：`file_id` 是端点维度资源，传错端点会得到 not found
     const { model, endpoint } = resolveModelAndEndpoint(this.options.config(), ctx.agent.model);
 
     for (let index = 0; index < sources.length; index += 1) {
@@ -95,7 +95,7 @@ export class AssetTransportPlugin implements AgentPlugin {
    * 一段 Asset → 这一次能发出去的那一段（可能的产物是两段：说清 warning 的那一句 + 文本提示）。
    *
    * 三种结局都不抛：这里抛出去会把整次请求打断，而需求要的是「全失败就退回纯文本并说清楚」。
-   * 上传失败也一样 —— **不重试**（换一种传输方式偷偷再试一次，用户就不知道发出去的到底是
+   * 上传失败也一样 —— 不重试（换一种传输方式偷偷再试一次，用户就不知道发出去的到底是
    * 哪一份了）。
    */
   private async transport(
@@ -125,10 +125,10 @@ export class AssetTransportPlugin implements AgentPlugin {
 }
 
 /**
- * 这一次要发出去的每一条消息，配上它在**记忆里**的那一份。
+ * 这一次要发出去的每一条消息，配上它在记忆里的那一份。
  *
  * 为什么要配：`ctx.body.messages` 是 core 的 `formatHistory()` 的产物 —— 它按字段白名单重建每
- * 一段，`__asset_id`（本机扩展键）在那一步就没了。也就是说请求体里**认不出**哪一段是 Asset 引用，
+ * 一段，`__asset_id`（本机扩展键）在那一步就没了。也就是说请求体里认不出哪一段是 Asset 引用，
  * 认得出的只有 `agent.messages` 里那一条（落库那份原样带着它）。
  *
  * 两份一对一：`formatHistory` 只筛消息（`status` 是完成了的、`omit` 没立起来的），既不重排消息

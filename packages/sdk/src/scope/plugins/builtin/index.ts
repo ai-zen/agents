@@ -25,8 +25,7 @@ import { ViewImageTool } from "./ViewImageTool.js";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 
 /**
- * 全部内置工具类（22 个）。
- * 由 BuiltinToolsScopePlugin 用 ToolEnv 实例化（每个 Scope 一套实例，注入其 cwd）。
+ * 内置工具类注册表。由 BuiltinToolsScopePlugin 用 ToolEnv 实例化（每个 Scope 一套实例，注入其 cwd）。
  */
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
   CwdTool,

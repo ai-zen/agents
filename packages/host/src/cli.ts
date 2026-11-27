@@ -325,7 +325,7 @@ export interface StopDeps {
  * 命令行这条路走信号而不过 wire：它不需要凭证（那一串令牌是给客户端连进来用的），也不必先连上
  * 那个宿主就已经能关它。客户端那条命令走的是 `host.shutdown` —— 它本来就连着，关的是同一次收尾。
  *
- * **只认发现文件里那个 pid**：不按端口找、不按进程名找 —— 找错一次就是关掉别人的东西。
+ * 只认发现文件里那个 pid：不按端口找、不按进程名找 —— 找错一次就是关掉别人的东西。
  */
 export async function runStop(deps: StopDeps): Promise<number> {
   const { hostFile } = hostPaths(deps.dataRoot);
@@ -361,7 +361,7 @@ export async function runStop(deps: StopDeps): Promise<number> {
 
   deps.kill(found.pid, "SIGTERM");
 
-  // 等它**真的**退出：`kill` 只把信号交出去，而宿主那一边收到之后还要关库、关日志、断连接
+  // 等它真的退出：`kill` 只把信号交出去，而宿主那一边收到之后还要关库、关日志、断连接
   // （`SIGTERM` → `stop()`）。没退干净的 pid 随时会被系统回收给别的进程，那时说「已经关了」
   // 就是一句假话。
   for (let waited = 0; waited < STOP_TIMEOUT_MS; waited += STOP_POLL_MS) {

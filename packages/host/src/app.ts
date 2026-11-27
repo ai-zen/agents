@@ -71,7 +71,7 @@ const PUBLIC = "0.0.0.0";
 /**
  * 升级那一路的退出码。正常关闭是 `0`，升级是另一个值 —— 启动方式据此分清「照 pin 重拉」与
  * 「就是关了」：pin 与退出信号必须分开，只有 pin 的话，一次正常关闭之后启动方式会照着老 pin
- * 把服务又拉起来。
+ * 把服务重新启动。
  *
  * 取 `75`（`sysexits.h` 的 `EX_TEMPFAIL`，「稍后再试」）：不与常见错误码撞，也不落在 shell
  * 自己的 126 / 127 / 128+n 上。
@@ -159,7 +159,7 @@ export class HostApp {
   private readonly general: GeneralConfig;
   private readonly credentials: CredentialService;
   /**
-   * 谁活着、怎么装起来、容器什么时候拆：全在这一处（宿主不再自己留一份）。
+   * 哪些会话有活 Agent、怎么装起来、容器什么时候拆：全在这一处（宿主不再自己留一份）。
    *
    * 它是个薄壳与运行时之间唯一的接面：宿主给四格端口（造容器、开 PeerSession 的行、现读会话名、日志），
    * 其余全部问它。
@@ -187,7 +187,7 @@ export class HostApp {
   /**
    * 在途的那一次收尾（见 `stop`）。
    *
-   * 「关门只做一次」就靠这一格：留着它，第二次来调 `stop()` 的人拿到的是同一句 promise，而不是
+   * 「收尾只做一次」就靠这一格：留着它，第二次调用 `stop()` 拿到的是同一句 promise，而不是
    * 从头再拆一遍已经拆掉的东西。
    */
   private stopping?: Promise<void>;
@@ -246,7 +246,7 @@ export class HostApp {
     });
     const hostSettings = new HostSettings({ path: join(deps.dataRoot, "host.json") });
     // 配置面的四个写口。读只有一个入口（`this.general`），写全经过它的 `write`：写盘、更新内存
-    // 那份、发事件三件事在一处，内存与文件才不会各自漂移。
+    // 那份、发事件三件事在一处，内存与文件才不会被写成两份不同的内容。
     const endpoints = new EndpointService({ general: this.general, t });
     const models = new ModelService({ general: this.general, t });
     const imageModels = new ImageModelService({ general: this.general, t });
@@ -278,12 +278,12 @@ export class HostApp {
     });
 
     /**
-     * Asset 端口：**只在这里造一次**，两处用 —— Scope 的 `Scope.deps`（工具那一侧）与
+     * Asset 端口：只在这里造一次，两处用 —— Scope 的 `Scope.deps`（工具那一侧）与
      * `materialsFor` 交给附件传输插件的那一格。两处各拼一个 `readAsset` 的话，「Asset 怎么取」
      * 就成了两份得同时改的实现，而它们差一步就会在「工具能看见图、发出去的那一份看不见」
      * 这种地方表现出来。
      *
-     * 找不到就是 `undefined`，**不抛**：Asset 被删是一个正常处境（引用归零就会删），发送前那一步
+     * 找不到就是 `undefined`，不抛：Asset 被删是一个正常处境（引用归零就会删），发送前那一步
      * 把它换成一句「附件已不在」的文本就好。字节读不出来（文件没了）才抛 —— 那是一件真事故，
      * 由调用方接住并说清。
      */
@@ -298,7 +298,7 @@ export class HostApp {
         };
       },
     };
-    // 通知的日志口就是装配根这一份：警告与错误两档在产生处就顺手记一行（界面被占着的时候，
+    // 通知的日志口就是装配根这一份：警告与错误两档在产生处直接记一行（界面被占着的时候，
     // 日志必须另有去处），模块里不另造 `FileLogger`
     const notices = new NoticeService({ notices: noticeTable(this.db), events, log: this.log });
     this.credentials = new CredentialService({ credentials: credentialTable(this.db), t });
@@ -322,7 +322,7 @@ export class HostApp {
     /**
      * MCP 任务终态通知的投递口（SDK 定形状、这里实现）。
      *
-     * 两半都只有这里答得出来：谁活着问运行时（宿主不留存活表），投不出去那一行日志走宿主日志。
+     * 两半都只有这里答得出来：存活问运行时（宿主不留存活表），投不出去那一行日志走宿主日志。
      * 里面的两个函数到真的投的时候才调，那时 `this.runtime` 已经造好了。
      */
     const mcpTaskNotice = createMcpTaskNoticePort({
@@ -380,7 +380,7 @@ export class HostApp {
       /**
        * 开一段 PeerSession：写行、定身份，把装它的材料交回去（装起来由运行时自己接着做）。
        *
-       * 新会话挂在**开出它的那一段**的项目下：会话是项目里的东西，一段会话开出来的那一段
+       * 新会话挂在开出它的那一段的项目下：会话是项目里的东西，一段会话开出来的那一段
        * 当然也在同一个项目里干活。模型先解析、解析不出来直接回一句结构化的拒绝 —— 不先写行，
        * 一条指不到模型的半成品行没有任何用处。
        */
@@ -400,7 +400,7 @@ export class HostApp {
           agentModelId: definition.modelId,
           defaultModel: this.general.read().defaultModel,
         });
-        // 模型解析不出来是**结构化的拒绝**：模型读得懂，可以换一个 AgentDefinition 或自己干
+        // 模型解析不出来是结构化的拒绝：模型读得懂，可以换一个 AgentDefinition 或自己干
         if (resolved === null) return { ok: false, reason: "model_unresolved" };
 
         const session = sessions.create({
@@ -411,9 +411,9 @@ export class HostApp {
           nameSource: input.label === undefined ? "default" : "user",
           agentId: input.agentId,
           modelId: resolved.modelId,
-          // PeerSession 默认自动交接：撞线自己交班、不问（`dev-docs/prd/01-decisions.md` 第 45 行：
-          // 用户建的会话默认关、PeerSession 反过来默认开）。血缘就是开出它的那一段
-          //（「只许开一层」那条判据在运行时那边）
+          // PeerSession 默认自动交接：撞线之后自动交班，不询问用户（用户建的会话默认关、
+          // PeerSession 反过来默认开）。血缘就是开出它的那一段（「只许开一层」那条判据在
+          // 运行时那边）
           autoHandoff: true,
           lineage: input.lineage,
         });
@@ -469,7 +469,7 @@ export class HostApp {
     const reloads = new ReloadWindow();
 
     /**
-     * 观察者：全进程一份，**挂在第一次 `wake` 之前**。
+     * 观察者：全进程一份，挂在第一次 `wake` 之前。
      *
      * 它是这个进程里所有会话「消息与状态落库、再推给客户端」的唯一出口。`wake` 一返回，那段会话
      * 的 Agent 就已经在跑了（运行时那边 `void agent.start()`），它发出来的每一条事实都要有人接；
@@ -518,7 +518,7 @@ export class HostApp {
     });
 
     // 升级的第 ② 段。宿主只验、只记、只请：{@link requestRestart} 是「请」不是「做」—— 不
-    // re-exec 自己，也不碰 npm，真正把新版拉起来的是启动方式。
+    // re-exec 自己，也不碰 npm，真正启动新版的是启动方式。
     const updates = new UpdateService({
       pinFile: paths.versionPinFile,
       // 现读：就地换过（桌面端、docker、`npm i -g`）之后，这个答案要跟着变
@@ -678,7 +678,7 @@ export class HostApp {
    * 还活着的 Agent，而那时已经没有「稍后再拆」这回事。
    *
    * pin 的去留只听 {@link upgrading} 那一格：正常关闭要把 pin 清掉（留着它，启动方式会在下一次
-   * 起来时照着老 pin 把服务又拉起来），而升级那一路留下 pin —— 那条 pin 正是要让启动方式读到
+   * 起来时照着老 pin 把服务重新启动），而升级那一路留下 pin —— 那条 pin 正是要让启动方式读到
    * 的。其余收尾两步都一样，收不干净与为什么收无关。
    *
    * `reason` 是「这一趟是升级」的一条来路，只负责把那一格立起来，自己不再决定 pin 的去留。
@@ -699,7 +699,7 @@ export class HostApp {
     //
     // 这不是防御性编程，是一个真实的窗口：客户端点了升级，`stop("upgrade")` 正在收尾
     // （`db.close()` 走了一半），同一刻又来一条 SIGTERM —— `closeOnSignals` 里的 `app.stop()`
-    // 会再跑一遍，第二次会在已经关掉的库上抛。让它等第一句，「关门」才不会被两条腿各关一半。
+    // 会再跑一遍，第二次会在已经关掉的库上抛。让它等第一句，收尾才不会被两条路径各做一半。
     //
     // 登记先于开拆。两者之间那一段是同步的，没有人能在这段里回头再调一次 `stop`：两条来路
     // （升级请求与信号）都排在事件循环上，信号也等不到同步代码跑完。

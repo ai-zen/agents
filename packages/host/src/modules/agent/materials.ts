@@ -50,7 +50,7 @@ export interface MaterialsDeps {
   /** 插件钩子里失败的去处（宿主日志）：那里没有人接得住异常 */
   readonly onError: (error: unknown, what: string) => void;
   /**
-   * 出网/Asset 端口。**与 `openScope` 里交给 `Scope` 的是同一个对象**（在装配根造一次）：
+   * 出网/Asset 端口。与 `openScope` 里交给 `Scope` 的是同一个对象（在装配根造一次）：
    * 附件传输插件靠它读 Asset 字节，工具那一侧也读同一份 —— 两边各拼一个 `readAsset` 的话，
    * 「Asset 怎么取」就成了两份得同时改的实现。
    */
@@ -60,13 +60,13 @@ export interface MaterialsDeps {
 }
 
 /**
- * 把一段会话装起来需要的**材料**从库里读出来，交给运行时 —— `wake(身份, 材料)` 的另一半。
+ * 把一段会话装起来需要的材料从库里读出来，交给运行时 —— `wake(身份, 材料)` 的另一半。
  *
  * 这一份是宿主在这条路上唯一的活：历史与排队区只在这里认得出自己的表，三级模型解析只有 SDK 的
  * `resolveModel` 一处实现，项目行与 AgentDefinition 是宿主的财产。装起来（造容器、造 Agent、登记、开跑）
  * 全是运行时的事，宿主一个字节都不碰。
  *
- * **这里不做状态归一，也不写回库。** 上个进程没写完的那几条（`pending` / `writing`）由运行时
+ * 这里不做状态归一，也不写回库。 上个进程没写完的那几条（`pending` / `writing`）由运行时
  * `wake` 在自己的内存里归成 `aborted`（它拿到的是一份拷贝，改它不动库），归一之后由运行时补报
  * 一条 `messageChanged` —— 装载那一刻的「读一遍、修一遍、写回一遍」按约定不做了，状态归一是
  * 运行时与内核的事，宿主那份唯一的观察者照旧只听事实写库。归一之后被内核在循环开头丢掉的那几条
@@ -124,9 +124,9 @@ export async function materialsFor(
   return {
     cwd: workspace.cwd,
     agentId: session.agentId,
-    // 把解析出来的生效模型**显式**递下去，而不是让 `createAgent` 再按三级链算一遍：SDK 那一层
+    // 把解析出来的生效模型显式递下去，而不是让 `createAgent` 再按三级链算一遍：SDK 那一层
     // 「参数不跨级混合」—— `modelParams` 只在模型来自会话行时才被用上，模型来自 AgentDefinition 或全局
-    // 兜底时整份会被忽略。而上面那份参数**已经**是按 `resolveModelParams` 判好、档位补丁叠好的
+    // 兜底时整份会被忽略。而上面那份参数已经是按 `resolveModelParams` 判好、档位补丁叠好的
     // 成品，必须让 SDK 原样用它；不显式说明生效模型，用户只改档位、没换过模型（最常见的那一种）
     // 就一点都不生效。解析本身仍然只有 `resolveModel` 一处实现。
     modelId: resolved?.modelId,
@@ -139,21 +139,21 @@ export async function materialsFor(
 }
 
 /**
- * 这一条路上要装的那几颗插件。**只留这一处实现**：装配一段会话（{@link materialsFor}）与
+ * 这一条路上要装的那几颗插件。只留这一处实现：装配一段会话（{@link materialsFor}）与
  * 跑一次性会话（宿主的 `session.transient`）从这里取，两边各写一遍迟早会在「新加一颗护栏只在
  * 一边装上」这种地方表现出来，而那种缺口不报错。
  *
- * `session` 给 `null` 就是**一次性会话**那一路（`PRD.md` 4.1）：它没有会话行，于是
- * - **不装** `AutoMigratePlugin`：自动交接的阈值与开关都长在会话行上，而这个 Agent 跑完就散，
+ * `session` 给 `null` 就是一次性会话那一路：它没有会话行，于是
+ * - 不装 `AutoMigratePlugin`：自动交接的阈值与开关都长在会话行上，而这个 Agent 跑完就散，
  *   没有「下一代」可交接；
  * - 其余照装 —— 它仍是一个 Agent：撞硬线一样要拒（{@link ContextGuardPlugin}）、它的 subagent
  *   一样要罩（{@link SubAgentGuardInstallerPlugin}）、带 Asset 的消息一样要在出网前重建
  *   （{@link AssetTransportPlugin}）。
  *
- * 阈值用的是**取值函数**而不是装配时算好的数：两条阈值改了不重建 Agent
- * （`dev-docs/prd/05-control.md`），装一次就等于把用户之后改的数字钉死在装配那一刻。两颗插件
- * 拿到的是**同一个**对象 —— 主 Agent 与 subagent 必须同源，各算一份就会在「改完阈值之后主 Agent
- * 按新的、subagent 按旧的」上分家。没有会话行时它读到的就是生效模型上那一条（没有行可改）。
+ * 阈值用的是取值函数而不是装配时算好的数：两条阈值改了不重建 Agent，装一次就等于把
+ * 用户之后改的数字钉死在装配那一刻。两颗插件
+ * 拿到的是同一个对象 —— 主 Agent 与 subagent 必须同源，各算一份就会在「改完阈值之后主 Agent
+ * 按新的、subagent 按旧的」上分成两份。没有会话行时它读到的就是生效模型上那一条（没有行可改）。
  */
 export function hostPlugins(
   deps: MaterialsDeps,
@@ -161,11 +161,11 @@ export function hostPlugins(
   model: ModelDefinition,
 ): AgentPlugin[] {
   /**
-   * 生效模型**当下**那一条（每次现读配置）。
+   * 生效模型当下那一条（每次现读配置）。
    *
-   * 为什么不能直接用装配时传进来那个 `model` 对象：它是那一刻的**快照**。用户改阈值走的是
-   * `config.models.update`（或 `/config` 里那一屏），改完**不重建 Agent**（`PRD.md` 4.7 的
-   * 「改完当场生效」）—— 于是快照里的阈值会一直停在旧值：撞了硬线、把阈值调高、再发一句，
+   * 为什么不能直接用装配时传进来那个 `model` 对象：它是那一刻的快照。用户改阈值走的是
+   * `config.models.update`（或 `/config` 里那一屏），改完不重建 Agent（「改完当场生效」）——
+   * 于是快照里的阈值会一直停在旧值：撞了硬线、把阈值调高、再发一句，
    * 护栏仍旧按旧阈值拒，而拒的那条通知又因为「同一对数字」被去重吞掉 —— 用户看到的就是
    * 「撞线之后调了阈值，再发什么也不动了」。
    *
@@ -191,7 +191,7 @@ export function hostPlugins(
   const plugins: AgentPlugin[] = [];
 
   if (session !== null) {
-    // MCP elicitation 的答题通道：那条服务器在工具调用中途问过来的表，要挂在**这一段会话**下
+    // MCP elicitation 的答题通道：那条服务器在工具调用中途问过来的表，要挂在这一段会话下
     // （题是按会话列的），而 MCP 客户端是按工作目录共享的 —— 「哪段会话」只能由这里交出去。
     //
     // 不给内容做任何二次加工：宿主那张表与 spec 的 `requestedSchema` 是同一个形状，三态也是同一套。
@@ -219,7 +219,7 @@ export function hostPlugins(
       }),
     );
     // 自动交接：装在这一段上，越线之后由插件自己发起。阈值与开关两格是取值函数而不是装配时
-    // 算好的数 —— 改阈值、改开关都不重建 Agent（`PRD.md` 4.7），装一次就等于把用户之后的选择
+    // 算好的数 —— 改阈值、改开关都不重建 Agent，装一次就等于把用户之后的选择
     // 钉死在装配那一刻。
     plugins.push(
       new AutoMigratePlugin({
@@ -286,7 +286,7 @@ export interface ModelAndParamsDeps {
  * 算「用哪个模型、带哪一份参数」要读的那几格。
  *
  * 一段会话（`SessionRecord`）本身就是这一份：`agentId` 是定义，`modelId` / `thinkingLevel` 是两级
- * 覆盖。**一次性会话没有行**，所以宿主给的是「三格都没有覆盖」的那一份（`modelId: null`、
+ * 覆盖。一次性会话没有行，所以宿主给的是「三格都没有覆盖」的那一份（`modelId: null`、
  * `thinkingLevel: null`），模型就从 AgentDefinition 落到全局兜底 —— 档位那一格这一次没有，因为它本来
  * 就长在会话行上。
  */
@@ -314,7 +314,7 @@ export interface ModelAndParams {
  * 这一份材料（一段会话，或一个没有行的一次性会话）的生效模型与请求参数：基础参数取「模型来自
  * 哪一级」那一份，思考档位的补丁叠在上面。
  *
- * **「模型 + 档位补丁」全仓只有这一处实现**：装配（`materialsFor`）、换模型与换思考档位两个
+ * 「模型 + 档位补丁」全仓只有这一处实现：装配（`materialsFor`）、换模型与换思考档位两个
  * procedure、一次性会话（`session.transient`）都调它。四路各写一遍的话，用户点了换档位而请求
  * 里带的是另一份参数这种事不会报错，只会在某个厂商那里变成一句 400。
  *
@@ -342,8 +342,8 @@ export async function modelAndParamsFor(
   // 会话换过模型时基础参数是空的：定义那份配的是定义自己绑的那个模型，把旧模型的参数
   // （比如另一家的 thinking 形状）发给新模型就是端点 400。
   //
-  // `sessionModelParams` 永远是 `undefined`：**会话行上没有「会话级参数」这一格**（换模型时档位
-  // 也一并清掉，这一级从来没有过参数可放）。写出来是为了让读者看见这一格是**有意留空**的，
+  // `sessionModelParams` 永远是 `undefined`：会话行上没有「会话级参数」这一格（换模型时档位
+  // 也一并清掉，这一级从来没有过参数可放）。写出来是为了让读者看见这一格是有意留空的，
   // 而不是去会话行上找一个不存在的字段。
   //
   // 模型三级都空（没有生效模型）时按 `global` 走：那一级没有放参数的地方，SDK 对它就返回

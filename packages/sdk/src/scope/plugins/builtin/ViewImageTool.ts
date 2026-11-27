@@ -28,7 +28,7 @@ function isLocalUrl(value: string): boolean {
  *       端点声明 `capabilities.filesApi`（出厂仅 deepseek）→ Files API 上传，`file` 块（file_id）；
  *       其余端点 → base64 data URL 内联（`image_url`）。
  *
- * 端点按**当前模型**反查（`ctx.agent.model`），不硬编码端点 id——`file_id` 是端点维度
+ * 端点按当前模型反查（`ctx.agent.model`），不硬编码端点 id——`file_id` 是端点维度
  * 资源，传错端点会返回 not found。
  */
 export class ViewImageTool extends SdkCallbackTool {

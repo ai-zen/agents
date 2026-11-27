@@ -1,28 +1,28 @@
 /**
  * 思考预设 —— 出厂内容 + 策略表文件名
  *
- * 这里的内容只是**初始值**：`ConfigManager.ensureReasoningPresets()` 在首次运行时把它
+ * 这里的内容只是初始值：`ConfigManager.ensureReasoningPresets()` 在首次运行时把它
  * 写到 `<basePath>/reasoning-presets.json`，之后以磁盘文件为准（用户可改、可加）。
  * 与 `DEFAULT_APP_CONFIG` 写进 `config.json` 完全同一个套路。
  *
  * ## 为什么这份数据在 SDK
  *
- * 它是**跨客户端共享的资产**：CLI 用它决定 `/think` 能选哪几档，桌面端同理；两端不该
- * 各维护一份「智谱 5.3 只认 low/high/max」的知识。所以**定义、出厂内容、读写**都在 SDK。
+ * 它是跨客户端共享的资产：CLI 用它决定 `/think` 能选哪几档，桌面端同理；两端不该
+ * 各维护一份「智谱 5.3 只认 low/high/max」的知识。所以定义、出厂内容、读写都在 SDK。
  *
  * ## 但 SDK 不拿它生成请求参数
  *
  * 参数合并只有一条路：`{ ...model.defaultParams, ...agent.modelParams }`（见 `createModel`）。
- * 客户端读表 → 限制可选强度 → 把选中档位的补丁**写进** `AgentDefinition.modelParams`，
+ * 客户端读表 → 限制可选强度 → 把选中档位的补丁写进 `AgentDefinition.modelParams`，
  * 于是配置本身就是事实，运行期不再查表。
  *
- * ## 为什么每张表长这样（**全部来自官方文档，不要凭印象改**）
+ * ## 为什么每张表长这样（全部来自官方文档，不要凭印象改）
  *
  * | 端点 | 官方依据 | 若写错会怎样 |
  * |------|---------|-------------|
  * | OpenAI | `openai-node` 的 `Shared.ReasoningEffort`（`none/minimal/low/medium/high/xhigh/max`） | 无 `thinking` 参数，写了会被当未知参数拒绝 → 表里干脆不出现该键 |
  * | DeepSeek | `api-docs.deepseek.com/guides/thinking_mode` | 可调 `low/high/max`；关闭用 `thinking.type = "disabled"` |
- * | 智谱 GLM-5.3 系 | `docs.bigmodel.cn/cn/guide/capabilities/thinking` | **只认** `low/high/max`，其余输入报错；**不再支持关闭**（传 disabled 也报错）→ 表里没有 `off` |
+ * | 智谱 GLM-5.3 系 | `docs.bigmodel.cn/cn/guide/capabilities/thinking` | 只认 `low/high/max`，其余输入报错；不再支持关闭（传 disabled 也报错）→ 表里没有 `off` |
  * | 智谱 GLM-4.7 | 同上 | 强制思考且无 `reasoning_effort` 参数 → 不给它挂策略 |
  *
  * 三个结构性保证，都是「表的形状」带来的，不需要任何代码分支：

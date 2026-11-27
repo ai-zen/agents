@@ -2,14 +2,12 @@ import { AgentNS } from "./AgentNS.js";
 import { ToolCallContext } from "./ToolCallContext.js";
 
 /**
- * Tool — 工具抽象基类。
+ * 工具抽象基类。
  *
- * 工具定义（function / type）由子类通过类体或构造函数自行赋值，
- * 基类不通过构造函数强制传入。`exec` 是抽象方法，由子类实现。
+ * 工具定义（`type` / `function`）由子类通过类体或构造函数自行赋值，基类不在构造函数里强制传入。
  *
- * exec 返回类型为 `AgentNS.MessageContent`（string 或内容块数组）：
- * 文本结果返回 string；需要向模型返回图片/文件等内容时，
- * 返回内容块数组（如 `[{ type: "image_url", image_url: { url } }]`）。
+ * `exec` 的返回值是给模型的内容：文本结果给 string；要返回图片、文件这类内容时给内容块数组（如
+ * `[{ type: "image_url", image_url: { url } }]`）。
  */
 export abstract class Tool implements AgentNS.ToolDefine {
   type: "function" = "function";

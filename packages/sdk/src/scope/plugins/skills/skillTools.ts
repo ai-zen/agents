@@ -169,7 +169,7 @@ export function createCallSkillSubAgentTool(
 
       // 沿用父 Agent 的工具能力（不做权限过滤），剔除自身以防自递归
       const parentAgent = ctx.agent;
-      // 但这一个 Agent 是**一次性**的（`lifetime` 在下面），父手上那些只有在常驻 Agent 上才成立
+      // 但这一个 Agent 是一次性的（`lifetime` 在下面），父手上那些只有在常驻 Agent 上才成立
       // 的工具就不跟着继承：PeerSession 三件与 `async_*` 都在 `../oneShotTools.js` 那份名单里
       // ── 尤其是后台任务：它的结果由 inbox 在将来某个时刻投回来，而那时 `runOnce()` 已经返回、
       // 这个 Agent 已经 stop 并关收，`send` 直接抛 closed（结果丢掉），`onStop` 上的清点还会把
@@ -185,7 +185,7 @@ export function createCallSkillSubAgentTool(
         modelConfig: parentAgent.modelConfig,
         messages: [Message.System(skill.content), Message.User(task)],
         tools,
-        // 一次性委派（`CORE.md` §9）：跑完就死透，不与父会话共用寿命。
+        // 一次性委派：跑完即终止，不与父会话共用寿命。
         lifetime: "one-shot",
       });
     },

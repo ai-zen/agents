@@ -1,24 +1,19 @@
 /**
- * 「上次连的是哪台、说什么语言」—— 一份连接设置的**读写、校验与措辞**（PRD D26）。
+ * 「上次连的是哪台、说什么语言」：一份连接设置的读写、校验与措辞。
  *
- * ## 为什么它在包里，而不在各前端
+ * 为什么它在包里而不在各前端：CLI 与桌面端都要记住同一件事 —— 用户选的是「本机」还是「某台
+ * 远程」、选远程时地址与凭证是什么、上一回用的是哪种语言。这套东西的每一处细节都来自实际故障：
+ * `0600`（文件里有凭证）、`.tmp` → `rename`（进程被杀不留半个 JSON）、读失败不抛（坏文件不该
+ * 让应用起不来）。抄成两份的结果是其中一份先被修：一端是 `0600`、另一端是 `0644`，而症状要等到
+ * 某天 `cat` 之后才知道。
  *
- * CLI 与桌面端都要记住同一件事：用户选的是「本机」还是「某台远程」，选远程时地址、凭证是什么，
- * 以及上一回用的是哪种语言。这套东西每一行都是踩出来的：`0600`（文件里有凭证）、
- * `.tmp` → `rename`（进程被杀不留半个 JSON）、读不炸（坏文件不该让应用起不来）。抄两份的下场是
- * **其中一份先修**：一端手上是 `0600`、另一端是 `0644`，而症状要等到某天 `cat` 之后才知道。
+ * 两个前端不共用一份文件：`<数据根>/cli/connection.json` 与 `<数据根>/desktop/connection.json`
+ * 分开存。这两个客户端可能在两台机器上，也可能在同一台上连着不同的宿主。共用的只有
+ * `<数据根>/run/` 下那两样（发现文件与凭证），那是这台机器的事实。
  *
- * ## 两个前端不共用一份文件
- *
- * `<数据根>/cli/connection.json` 与 `<数据根>/desktop/connection.json` 分开存：这两个客户端可能
- * 在两台机器上，也可能在同一台上连着**不同**的宿主。共用的只有 `<数据根>/run/` 下那两样
- * （发现文件与凭证）—— 那是**这台机器**的事实。
- *
- * ## 「没配过」是一个独立的事实
- *
- * {@link readSettings} 在没有可用配置时返回 `null`，而不是 `{ mode: "local" }`。用默认值兜底会
- * 把三种情形压成两格（没配过 / 配过本地 / 配过远程），于是「首次启动该进连接屏」这条判据做不
- * 出来 —— 首启会被当成「用户选过本地」，直接拉起一个宿主。
+ * 「没配过」是一个独立的事实：{@link readSettings} 在没有可用配置时返回 `null`，而不是
+ * `{ mode: "local" }`。用默认值兜底会把三种情形压成两格（没配过 / 配过本地 / 配过远程），于是
+ * 「首次启动该进连接屏」这条判据做不出来，首启会被当成「用户选过本地」，直接拉起一个宿主。
  *
  * 坏 JSON / 字段不合法同样返回 `null`（与「文件不在」同一类事实：这份配置不可用）。
  */
@@ -48,8 +43,8 @@ export interface ConnectionSettings {
   /** 仅 `remote` 有意义：显式凭证。留空 = 退回本机 `<数据根>/run/token`（本机实例那条兜底） */
   token?: string;
   /**
-   * 连接语言。它管的是**客户端自己**那几句文案（连不上、握手超时这一类），留空按英文给；
-   * 宿主说什么语言是它的用户级设置，不进这条连接。
+   * 连接语言。它管的是客户端自己那几句文案（连不上、握手超时这一类），留空按英文给；宿主说
+   * 什么语言是它的用户级设置，不进这条连接。
    */
   language?: string;
 }
@@ -58,8 +53,8 @@ export interface ConnectionSettings {
  * 落点：`<数据根>/<client>/connection.json`。
  *
  * 放在各自的子目录下而不是数据根下：根下（`config.json` / `agents/` / `run/` / 库 / `assets/`）
- * 全是**宿主的事实**，客户端往里写东西会模糊那条边界；`cli/` / `desktop/` 一眼就是「这个
- * 客户端自己的」。
+ * 全是宿主的事实，客户端往里写东西会模糊那条边界；`cli/` / `desktop/` 一眼就是「这个客户端自己
+ * 的」。
  */
 export function settingsPath(dataRoot: string, client: ConnectionClient): string {
   return join(dataRoot, client, "connection.json");
@@ -68,8 +63,8 @@ export function settingsPath(dataRoot: string, client: ConnectionClient): string
 /**
  * 读配置：文件不在 / 坏 JSON / 字段不合法一律 `null`，任何情况下不抛。
  *
- * 参数是**文件路径**而不是数据根：两个前端各拼各的（{@link settingsPath}），用例也能直接指到
- * 临时文件上。
+ * 参数是文件路径而不是数据根：两个前端各拼各的（{@link settingsPath}），用例也能直接指到临时
+ * 文件上。
  */
 export async function readSettings(file: string): Promise<ConnectionSettings | null> {
   let raw: string;
@@ -111,10 +106,10 @@ export async function writeSettings(file: string, settings: ConnectionSettings):
 }
 
 /**
- * 把一份**外来**的设置校验成可落盘的那一份（表单 / IPC 边界用）。
+ * 把一份外来的设置校验成可落盘的那一份（表单 / IPC 边界用）。
  *
  * 与读路径的区别是失败方式：读路径上「不可用」= `null`（应用要继续启动），保存路径上「不可用」=
- * 抛人话（用户刚在面板里敲的，静默改掉他的输入比报错更糟）。
+ * 抛一句能上屏的错（用户刚在面板里敲的，静默改掉输入比报错更糟）。
  */
 export function parseSettings(raw: unknown): ConnectionSettings {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -146,8 +141,9 @@ export function parseSettings(raw: unknown): ConnectionSettings {
 }
 
 /**
- * 一份设置 → 递给连接层的两个值（`url` / `token`）。**这是「`local` 传 `undefined` 而不是空串」
- * 的唯一实现处**：空串会被连接层理解成「显式给了空值」，于是不走发现文件、不读本机凭证。
+ * 一份设置 → 递给连接层的三个值（`url` / `token` / `language`）。这是「`local` 传 `undefined`
+ * 而不是空串」的唯一实现处：空串会被连接层理解成「显式给了空值」，于是不走发现文件、不读本机
+ * 凭证。
  */
 export function settingsToTarget(settings: ConnectionSettings): {
   url?: string;
@@ -165,8 +161,8 @@ export function settingsToTarget(settings: ConnectionSettings): {
 }
 
 /**
- * 界面上那一行字（` 本机宿主 ` / 那个地址）。不含凭证：地址里的 userinfo 会被抹掉 ——
- * 有人会把钥匙写进地址（`wss://token@host`），而这一行要上屏。
+ * 界面上那一行字（`本机宿主` / 那个地址）。不含凭证：地址里的 userinfo 会被抹掉 —— 有人会把
+ * 凭证写进地址（`wss://token@host`），而这一行要上屏。
  */
 export function settingsLabel(settings: ConnectionSettings): string {
   if (settings.mode !== "remote") return "本机宿主";
@@ -174,7 +170,7 @@ export function settingsLabel(settings: ConnectionSettings): string {
 }
 
 /**
- * 一份设置的一句话描述（**进日志**）：只印模式与地址 —— 凭证是钥匙，不该跟着这句出去。
+ * 一份设置的一句话描述（进日志）：只印模式与地址 —— 凭证不该跟着这句出去。
  */
 export function describeSettings(settings: ConnectionSettings): string {
   if (settings.mode !== "remote") return "本地（发现文件 + 本机凭证）";
@@ -188,15 +184,11 @@ export function redactToken(text: string, settings: ConnectionSettings): string 
   return text.split(token).join("***");
 }
 
-// ---------------------------------------------------------------------------
-// 内部
-// ---------------------------------------------------------------------------
-
 /**
- * 读回来那份的**宽松**归一化：认不出来就返回 `null`，任何情况下不抛。
+ * 读回来那份的宽松归一化：认不出来就返回 `null`，任何情况下不抛。
  *
  * 与 {@link parseSettings} 的两处差别都是有意的：不认得 = `null`（读路径不能把一份手滑的文件
- * 变成一次启动失败）；`local` 模式下**不校验**残留的 `url`（它不会被使用）。
+ * 变成一次启动失败）；`local` 模式下不校验残留的 `url`（它不会被使用）。
  */
 function storedSettings(raw: unknown): ConnectionSettings | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;

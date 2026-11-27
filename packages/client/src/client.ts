@@ -1,39 +1,30 @@
 /**
  * 一条到 `agents-host` 的连接：一条 WebSocket，上面跑 tRPC v11 的那条 ws 链路。
  *
- * ## 四件事
+ * 它做四件事：{@link connect}（建连 + 握手）、`api`（`TRPCClient<AppRouter>`，类型直接从宿主
+ * 推出来）、`subscribe`（宿主那一条事件流）、`close`（幂等）。另有 `reconnect()`，它是
+ * `reconnect.ts` 认得的那一个口。
  *
- * {@link connect}（建连 + 握手）、`api`（`TRPCClient<AppRouter>`，类型直接从宿主推出来）、
- * `subscribe`（宿主那一条事件流）、`close`（幂等）。另有 `reconnect()`，它是 `reconnect.ts`
- * 认得的那一个口。
+ * 令牌只从握手帧上来：令牌放进 `createWSClient` 的 `connectionParams`，tRPC 在 socket 开了之后
+ * 把它作为第一帧送上去，宿主拿这一帧建上下文（`createContext` 校验它，验不过就回一帧错误并关掉
+ * 连接）。它不进 URL 查询串，查询串会进访问日志、进程表与反向代理的访问记录。
  *
- * ## 令牌只从握手帧上来
+ * 断线之后补什么不由这里决定：socket 断了之后 tRPC 按它自己的退避重开一条，并把挂着的订阅搬过
+ * 去；要不要一直试、试到什么时候放弃由调用方按 `reconnect.ts` 决定。补什么也由调用方决定：宿主
+ * 有 `session.open`，一次就把状态、消息与排队区全部取回，所以这里不维护任何本地镜像 —— 留一份
+ * 副本只会多一份会和宿主对不上的事实。
  *
- * 令牌放进 `createWSClient` 的 `connectionParams` —— tRPC 在 socket 开了之后把它作为**第一帧**
- * 送上去，宿主拿这一帧建上下文（`createContext` 校验它，验不过就回一帧错误并关掉连接）。它不进
- * URL 查询串：查询串会进访问日志、进程表与反向代理的访问记录。
+ * 契约类型只从宿主的类型上来：`AppRouter` / `HostEvent` 都是 `import type`。这个包被 cli 与桌面
+ * 端各自捆进产物，运行期一个字节都不 import `@ai-zen/agents-host`（它的包根会把整个宿主 ——
+ * 单根、SQLite worker、SDK 装配 —— 拉进产物）。
  *
- * ## 断线之后补什么，不由这里决定
- *
- * socket 断了之后 tRPC 按它自己的退避重开一条，并把挂着的订阅搬过去；要不要一直试、试到什么时候
- * 放弃由调用方按 `reconnect.ts` 决定。**补什么也由调用方决定**：宿主有 `session.open`，一次就把
- * 状态、消息与排队区全部取回，所以这里不维护任何本地镜像 —— 留一份副本只会多一份会和宿主对不上
- * 的事实。
- *
- * ## 契约类型只从宿主的类型上来
- *
- * `AppRouter` / `HostEvent` 都是 `import type`：这个包被 cli 与桌面端各自捆进产物，运行期一个
- * 字节都不 import `@ai-zen/agents-host`（它的包根会把整个宿主 —— 单根、SQLite worker、SDK 装配
- * —— 拉进产物）。
- *
- * ## 传输用 Node 内建的全局 `WebSocket`
- *
- * 不引 `ws`：本包被捆进别人的产物，运行期依赖越少越好，而 Node 26 自带全局 `WebSocket` —— 它实现
- * 的是浏览器那一套接口（WHATWG WebSocket：`addEventListener` + `send`），不是另一个方言。桌面端
- * 要换成自己的实现时从 {@link ClientOptions.WebSocket} 进来。
+ * 传输用 Node 内建的全局 `WebSocket`：不引 `ws`，本包被捆进别人的产物，运行期依赖越少越好，而
+ * Node 26 自带全局 `WebSocket`，它实现的是浏览器那一套接口（WHATWG WebSocket：
+ * `addEventListener` + `send`），不是另一个方言。桌面端要换成自己的实现时从
+ * {@link ClientOptions.WebSocket} 进来。
  *
  * 代价记在明处：它的 `error` 事件不带底层原因（`ECONNREFUSED` 之类在内部被吞掉了），所以本地
- * 错误文案里自己带上端点 —— 连不上谁，是必须说出来的那一半。
+ * 错误文案里自己带上端点，连不上哪一台是必须说出来的那一半。
  */
 
 import {
@@ -85,7 +76,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 /**
  * 连上一台宿主。
  *
- * 返回时一定已经调通过一次调用 —— 宿主拒一条连接的做法是「回一帧错误、再关掉 socket」，socket
+ * 返回时一定已经调通过一次调用：宿主拒一条连接的做法是「回一帧错误、再关掉 socket」，socket
  * 开着并不等于这条连接被接受过。所以握手就是「第一条成功的调用」，而不是「socket open 了」。
  */
 export async function connect(options: ClientOptions): Promise<HostClient> {
@@ -163,11 +154,11 @@ class Connection implements HostClient {
   /**
    * 等到这条连接又能调通（`reconnect.ts` 认的就是这个口）。
    *
-   * 它不自己换 socket：换 socket 是 tRPC 那一层的事（断了它按退避重开一条，挂着的订阅跟着搬过去），
-   * 两边各开一条只会让排进去的请求落在已经退下来的那条上。这里只回答「现在能不能调通」，
+   * 它不自己换 socket：换 socket 是 tRPC 那一层的事（断了它按退避重开一条，挂着的订阅跟着搬过
+   * 去），两边各开一条只会让排进去的请求落在已经退下来的那条上。这里只回答「现在是否能调通」，
    * 调不通就把最后一次失败抛给调用方（试不试、试多久是 `reconnect.ts` 的事）。
    *
-   * 连上之后的**补什么**也不在这里：宿主有 `session.open`，由调用方再取一次。
+   * 连上之后的补什么也不在这里：宿主有 `session.open`，由调用方再取一次。
    */
   async reconnect(): Promise<void> {
     const closed = this.closed;
@@ -186,12 +177,12 @@ class Connection implements HostClient {
    * 等到一次调用成功。
    *
    * 两条出口都可能是真的：宿主回了话（成功，或者一句带码的错），或者到了时限还没人应。前者按
-   * 宿主说的算 —— 令牌不对时它回的那一帧由 {@link watchingSocket} 记下来，那句话与那个码原样
-   * 上抛。
+   * 宿主说的算 —— 令牌不对时它回的那一帧由 {@link watchingSocket} 记下来，那句话与那个码原样上
+   * 抛。
    *
-   * `reason` 只影响宿主没说话时用哪个本地码：`connect` 是「还没连上过」（`host_unavailable`），
-   * `reconnect` 是「连过又没了」（`connection_lost`）。两者对 `connection.ts` 的轮询都是
-   * 「现在不行、等会儿再试」，分开是为了上屏那句话说得准。
+   * `reason` 只影响宿主没有回应时用哪个本地码：`connect` 是「还没连上过」（`host_unavailable`），
+   * `reconnect` 是「连过又没了」（`connection_lost`）。两者对 `connection.ts` 的轮询都是「现在
+   * 不行、等会儿再试」，分开是为了上屏那句话说得准。
    */
   private async probe(reason: "connect" | "reconnect"): Promise<void> {
     const timeoutMs = this.handshakeTimeoutMs;

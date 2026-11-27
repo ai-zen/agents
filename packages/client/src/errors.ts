@@ -1,37 +1,34 @@
 /**
  * 失败：一个 `ClientError`，两处来源，一套判据。
  *
- * ## 宿主那一侧出网的是两个码
- *
- * 宿主把它的 `HostError` 折成 tRPC 的形状再出网（`packages/host/src/modules/api/errors.ts`）：
- * `data.hostCode` 是宿主自己的码（`not_found` / `busy` / …，语义层），`data.code` 是 tRPC 的码
- * （`NOT_FOUND` / `CONFLICT` / …，传输层），`message` 是**已按当前语言渲染好的人话**，
- * `data.details` 是结构化事实（`HostError.details` 原样带出）。
+ * 宿主那一侧出网的是两个码。宿主把它的 `HostError` 折成 tRPC 的形状再出网
+ * （`packages/host/src/modules/api/errors.ts`）：`data.hostCode` 是宿主自己的码（`not_found` /
+ * `busy` / …，语义层），`data.code` 是 tRPC 的码（`NOT_FOUND` / `CONFLICT` / …，传输层），
+ * `message` 是已按当前语言渲染好的句子，`data.details` 是结构化事实（`HostError.details` 原样带
+ * 出）。
  *
  * 能分支的只有 {@link HostErrorCode}：那八个码里有两对落到同一个 tRPC 码上（`busy` 与 `conflict`
  * 都是 `CONFLICT`，`not_available` 与 `not_found` 都是 `NOT_FOUND`），而「这段会话还在跑，等它
  * 停下来」与「有人先动了一步」对调用方是两件事。`data.code` 仍然跟着出网（tRPC 自己的机制按它
- * 走），它也是 {@link TRPCErrorCode} 那一套 —— 只在没有 `hostCode` 时拿来还原，比如还没升级的
- * 宿主。
+ * 走），它是 {@link TRPCErrorCode} 那一套，只在没有 `hostCode` 时拿来还原，比如还没升级的宿主。
  *
- * ## 客户端自己造的错：只有宿主不在场时才有
- *
- * 连不上、握手超时、本端关掉、读不了要上传的文件 —— 这些处境宿主根本没参与，没有它渲染好的
- * 句子可用，所以它们有自己的码与文案（{@link LocalErrorCode}）。两套码不重名：大写下划线是宿主
- * 的 tRPC 码，小写下划线是本地的，一眼看得出这句话是谁说的。
+ * 客户端自己造的错只有宿主不在场时才有：连不上、握手超时、本端关掉、读不了要上传的文件。这些
+ * 处境宿主根本没有参与，没有它渲染好的句子可用，所以它们有自己的码与文案
+ * （{@link LocalErrorCode}）。两套码不重名：大写下划线是宿主的 tRPC 码，小写下划线是本地的，
+ * 一眼能看出这句话是谁说的。
  */
 
 import { isTRPCClientError } from "@trpc/client";
 
 /**
- * 宿主自己那八个码 —— **唯一可以分支的一套**。
+ * 宿主自己那八个码 —— 唯一可以分支的一套。
  *
  * 从 `data.hostCode` 上还原（`packages/host/src/modules/api/errors.ts` 把它写在那一格）。八个码
- * 描述的是八件不同的事，其中两对在 tRPC 那一套里是同一个码 —— `busy` 与 `conflict`、`not_found`
- * 与 `not_available` —— 所以「等一下再试」与「这段会话还在跑」这类判断只能认这一套。
+ * 描述的是八件不同的事，其中两对在 tRPC 那一套里是同一个码（`busy` 与 `conflict`、`not_found`
+ * 与 `not_available`），所以「等一下再试」与「这段会话还在跑」这类判断只能认这一套。
  *
  * 认不出的码照样递出去（`code` 上是个字符串）：宿主加了新码而客户端还不认识时，那个码比丢掉它
- * 有用 —— 调用方按已知的码分支，其余落进 `default` 即可。
+ * 有用，调用方按已知的码分支，其余落进 `default` 即可。
  */
 export type HostErrorCode =
   /** `not_found`：这段会话、这条消息、这份 Asset 不在 */
@@ -54,9 +51,9 @@ export type HostErrorCode =
 /**
  * 没有 `hostCode` 时能还原出来的那一套：tRPC 自己的码。
  *
- * 它落在两处：还没升级的宿主（只写 `data.code`），以及 tRPC 在调用方这一侧自己造的错（入参在
- * 边界上被拒、传输层的失败）。有它总比丢掉一个现成的码强，只是这一套里 `busy` 与 `conflict`
- * 分不开、`not_found` 与 `not_available` 也分不开 —— 要分就得等宿主升级。
+ * 它落在两处：还没升级的宿主（只写 `data.code`），以及 tRPC 在调用方这一侧自己造的错（入参在边界
+ * 上被拒、传输层的失败）。有它总比丢掉一个现成的码强，只是这一套里 `busy` 与 `conflict` 分不开、
+ * `not_found` 与 `not_available` 也分不开，要分就得等宿主升级。
  */
 export type TRPCErrorCode =
   | "BAD_REQUEST"
@@ -162,8 +159,8 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
 /**
  * 一次失败的完整描述。
  *
- * `message` 是**可以直接展示的那句话** —— 宿主回的错用它渲染好的文本，本地的错用上面那张表。
- * 调用方不需要（也不该）自己再拼一句。
+ * `message` 是可以直接展示的那句话：宿主回的错用它渲染好的文本，本地的错用上面那张表。调用方
+ * 不需要（也不该）自己再拼一句。
  */
 export class ClientError extends Error {
   /** 宿主那个码（{@link HostErrorCode}）、没有 `hostCode` 时的 tRPC 码，或本地码（{@link LocalErrorCode}） */
@@ -198,8 +195,8 @@ export function isClientError(value: unknown): value is ClientError {
  *   · 宿主回的错：`data.hostCode` 是它自己的码（{@link HostErrorCode}），
  *     `message` 是它渲染好的那句，`data.details` 进 `detail`；
  *   · 客户端自己抛的（本端关掉、地址不合法……）：tRPC 把它包了一层，从 `cause` 里取回原物；
- *   · 其余（连接断了、没有回包）：tRPC 说的是传输层的事实，那句英文原样留着当 `message` ——
- *     这里编一句中文只会把「谁说的」搅浑。
+ *   · 其余（连接断了、没有回包）：tRPC 说的是传输层的事实，那句英文原样留着当 `message`，这里
+ *     编一句中文只会把「谁说的」搅浑。
  */
 export function fromTRPCError(error: unknown): ClientError {
   if (error instanceof ClientError) return error;
@@ -225,8 +222,8 @@ export function fromTRPCError(error: unknown): ClientError {
 /**
  * 一条本地提醒：不拦流程，只让人看见。
  *
- * 与失败分开的理由：坏掉的升级 pin 只让「这一次拉哪一版」退回版本范围，拉起照旧进行 —— 把它抛
- * 成错会让一次本来能成功的拉起直接失败，而把它吞掉则会让「升过的版本自己退回去了」永远没有解释。
+ * 与失败分开的理由：坏掉的升级 pin 只让「这一次拉哪一版」退回版本范围，拉起照旧进行。把它抛成
+ * 错会让一次本来能成功的拉起直接失败，而把它吞掉则会让「升过的版本自己退回去了」永远没有解释。
  */
 export interface LocalWarning {
   /** 提醒的种类 */
@@ -285,13 +282,13 @@ export function badAddress(input: string): ClientError {
 /**
  * 一个 tRPC 错误形状里宿主写进去的那个码与那几格。
  *
- * 两格都有时**先看 `hostCode`、再看 `code`**：前者是宿主自己的码（语义层，那八个），后者是 tRPC
- * 的码（传输层，没升级的宿主只写它）。这个优先级在类型上没法表达 —— 两格在线上都是字符串 ——
- * 只写在下面那一个 `??` 的次序里。两者都没有、或不是字符串时返回 `null`。
+ * 两格都有时先看 `hostCode`、再看 `code`：前者是宿主自己的码（语义层，那八个），后者是 tRPC 的码
+ * （传输层，没升级的宿主只写它）。这个优先级在类型上没法表达（两格在线上都是字符串），只写在
+ * 下面那个 `??` 的次序里。两者都没有、或不是字符串时返回 `null`。
  *
- * `code` 在 tRPC 的类型里是个数字（它的数字码表），而宿主那一层故意把它换成了码的**名字**
- * （`NOT_FOUND` 这种，见它自己的错误格式化那一层）。两者对不上是那一步的本意，所以这里读的是
- * 运行期的字符串，不按类型走。
+ * `code` 在 tRPC 的类型里是个数字（它的数字码表），而宿主那一层故意把它换成了码的名字
+ * （`NOT_FOUND` 这种，见它自己的错误格式化那一层）。两者对不上是那一步的本意，所以这里读的是运行
+ * 期的字符串，不按类型走。
  */
 function hostErrorOf(data: unknown): { code: string; details?: unknown } | null {
   if (data === null || typeof data !== "object") return null;
@@ -306,7 +303,7 @@ function named(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-/** 这条连接说的是不是中文（缺省英文，与 D8 / R58 一致） */
+/** 这条连接说的是不是中文（缺省英文） */
 function usesChinese(language: string | undefined): boolean {
   return (language ?? "").trim().toLowerCase().startsWith("zh");
 }

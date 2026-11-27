@@ -2,10 +2,6 @@ import { Message } from "@ai-zen/agents-core";
 import type { AgentDefinition, AppConfig } from "../types/index.js";
 import { OPENCODE_GO_ENDPOINT, OPENCODE_GO_MODELS } from "./opencode-go.js";
 
-// ---------------------------------------------------------------------------
-// 默认 Agent
-// ---------------------------------------------------------------------------
-
 /** 默认 Agent ID */
 export const DEFAULT_AGENT_ID = "default";
 
@@ -13,7 +9,7 @@ export const DEFAULT_AGENT_ID = "default";
  * 出厂默认模型 id。
  *
  * 模型按三级解析（` 会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`，
- * 唯一实现在 `runtime/resolveModel.ts`）。出厂配置里**只有**默认 Agent 定义绑了模型，
+ * 唯一实现在 `runtime/resolveModel.ts`）。出厂配置里只有默认 Agent 定义绑了模型，
  * `defaultModel` 刻意留空：兜底层是给用户声明「我清空 Agent 的 modelId 之后用哪个」的，
  * 出厂就填上等于替用户做了这个决定。这个常量只用于给出厂默认 Agent 填初始值。
  */
@@ -42,10 +38,6 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
     subagents: { allow: ["*"] },
   },
 };
-
-// ---------------------------------------------------------------------------
-// 默认 SubAgent
-// ---------------------------------------------------------------------------
 
 /** 默认 SubAgent ID */
 export const DEFAULT_SUBAGENT_ID = "sub-agent-default";
@@ -86,10 +78,6 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
     },
   },
 };
-
-// ---------------------------------------------------------------------------
-// 默认配置（含预置厂商、模型、图片模型）
-// ---------------------------------------------------------------------------
 
 /** SDK 出厂默认 AppConfig。CLI/Desktop 首次初始化时使用。 */
 export const DEFAULT_APP_CONFIG: AppConfig = {
@@ -133,17 +121,16 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   // ConfigManager.syncManagedModels。
   //
   // tokenThresholds 的两条线：handoff（软线，交接触发）与 guard（硬线，请求前强行阻断）。
-  // 出厂口径是**窗口的 40% / 80%**：40% 处开始劝交接（留足换手的余量），80% 处不许再发
+  // 出厂口径是窗口的 40% / 80%：40% 处开始劝交接（留足换手的余量），80% 处不许再发
   // （硬线之后必须换模型 / 调阈值 / 新开一段）。窗口 ≥1M 的模型统一 400K / 800K，
   // glm-4.7-flash 窗口 200K，取 80K / 160K。
   //
-  // reasoningPreset：应用层元数据，**SDK 不解释**（既不参与请求参数生成，也不影响运行行为）。
+  // reasoningPreset：应用层元数据，SDK 不解释（既不参与请求参数生成，也不影响运行行为）。
   // 它由客户端（如 CLI）自己定义含义：指向哪张思考档位表、`/think` 能选哪几档。
   // 之所以留在出厂定义里：字段声明与行为消费是两件事，出厂模型需要把它带上，
   // 否则 `syncManagedModels` 会用出厂定义整块覆盖并抹掉应用声明的值。
   // 不写这个字段 = 应用层视作「不可调档」（如 GLM-4.7 强制思考且无 reasoning_effort 参数）。
   models: [
-    // ---------- OpenAI ----------
     {
       id: "gpt-6-astra",
       name: "GPT-6 Astra",
@@ -182,7 +169,6 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       description:
         "OpenAI GPT-6 series fast, low-cost model: suited for high-throughput, low-latency scenarios",
     },
-    // ---------- 智谱 BigModel ----------
     {
       id: "glm-5.3",
       name: "GLM-5.3",
@@ -227,7 +213,6 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       description: "Zhipu free text model: 200K context, suited for lightweight tasks",
     },
-    // ---------- DeepSeek ----------
     {
       id: "deepseek-flash",
       name: "DeepSeek-V4.1-Flash",
@@ -241,7 +226,6 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       description:
         "DeepSeek flagship (2026-09-10): 552B MoE asymmetric architecture, native multimodal, 1M context",
     },
-    // ---------- OpenCode Go（订阅式，36 条按官方 /models 生成） ----------
     ...OPENCODE_GO_MODELS,
   ],
   imageModels: [
@@ -284,14 +268,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   // 宿主那一份语言（用户可见文本按它渲染）。出厂写英文，与客户端首次启动的出厂值同一门；
   // 之后由客户端连上来时把自己的语言同步到这一格（方向只有一个：客户端 → 宿主）。
   //
-  // 与 `AppConfig.language` 那句「不在这里补一个值写进文件」不矛盾：那一句说的是**类型**不定义
-  // 缺省（消费方遇到没写的文件按 en 算）；这里是**出厂文件**该带什么。两处取值相同，不会漂。
+  // 与 `AppConfig.language` 那句「不在这里补一个值写进文件」不矛盾：那一句说的是类型不定义
+  // 缺省（消费方遇到没写的文件按 en 算）；这里是出厂文件该带什么。两处取值相同，不会漂。
   language: "en",
 };
-
-// ---------------------------------------------------------------------------
-// 默认 MCP 配置（socket-pty 终端 MCP + chrome-devtools 浏览器调试 MCP）
-// ---------------------------------------------------------------------------
 
 /**
  * SDK 出厂默认 MCP 服务器配置（mcp.json 内容，业界标准格式）。
@@ -318,10 +298,6 @@ export const DEFAULT_MCP_CONFIG: { mcpServers: Record<string, unknown> } = {
     },
   },
 };
-
-// ---------------------------------------------------------------------------
-// 目录
-// ---------------------------------------------------------------------------
 
 /**
  * 标准共享子目录列表（不包含运行时目录）。

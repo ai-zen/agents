@@ -22,10 +22,10 @@ type TerminalStatus = "completed" | "failed" | "cancelled";
  * 任务这件事在 2026-07-28 那一版里搬去了扩展轨道（`io.modelcontextprotocol/tasks`），语义跟着变了：
  * 客户端只声明「我接得住」，一次调用到底当场回结果、还是交一个任务句柄，由服务器在应答里自己决定。
  * 这个类就是那条分岔在 SDK 这一侧的落点 —— 包住官方 `@modelcontextprotocol/ext-tasks` 的 session，
- * 只往外露三件我们真正要用的东西：发一次调用、按任务 id 等结果、取消一个任务。
+ * 只往外露三件确实要用的东西：发一次调用、按任务 id 等结果、取消一个任务。
  *
  * 为什么还要自己记一份 `executions` 与 `settled`：包里的 `result()` 是个 Promise，句柄交出之后没有
- * 地方再拿到它 —— 而我们的工具面是「先交句柄、模型稍后用 `get_mcp_task_result` 来取」，两件事之间
+ * 地方再拿到它 —— 而本仓的工具面是「先交句柄、模型稍后用 `get_mcp_task_result` 来取」，两件事之间
  * 隔着好几轮对话，所以句柄与执行对象得在这儿对上号。终态那份也要留一份：任务跑完之后再取结果不该
  * 变成「没有这个任务」。
  */
@@ -66,13 +66,13 @@ export class McpTaskBridge {
       elicit === undefined
         ? {}
         : {
-            // 这一格在包里是泛型的（按请求种类推结果类型），我们只有 elicitation 一种，
+            // 这一格在包里是泛型的（按请求种类推结果类型），本仓只有 elicitation 一种，
             // 所以在这儿收窄成具体形状，交给泛型去对
             onInputRequest: (async (request: {
               kind: string;
               params?: Record<string, unknown>;
             }) => {
-              // 我们只声明了 `elicitation.form`：sampling / roots 问过来就是服务器越了界，
+              // 本仓只声明了 `elicitation.form`：sampling / roots 问过来就是服务器越了界，
               // 那就报错，而不是编一个能过校验的答案
               if (request.kind !== "elicitation") {
                 throw new Error(`unsupported input request from "${server}": ${request.kind}`);
@@ -205,7 +205,7 @@ export class McpTaskBridge {
 /**
  * 工具声明的那一档 → 这次调用怎么提议。
  *
- * 三档不是我们自己发明的：`tools/list` 里每个工具的 `execution.taskSupport` 就是这三格，只是现在由
+ * 三档不是本仓发明的：`tools/list` 里每个工具的 `execution.taskSupport` 就是这三格，只是现在由
  * 声明推出来、不再由模型在参数里说 —— 新扩展里「用不用任务」是服务器在应答时决定的，客户端能表的
  * 只有这个偏好。
  */

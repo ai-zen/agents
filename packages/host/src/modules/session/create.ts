@@ -22,7 +22,7 @@ export interface CreateSessionInput {
 }
 
 /**
- * 写一行会话。只写库：起 Agent 是 `runtime.agent.wake` 的事，投话是 `runtime.agent.send` 的事。
+ * 写一行会话。只写库：起 Agent 是 `runtime.agent.wake` 的事，投递消息是 `runtime.agent.send` 的事。
  *
  * 模型在造行这一刻就解析出来写进去（会话级那一格此刻还不存在，所以只可能是定义那级或全局
  * 兜底）：解析不出就在这里失败，不落一条指不到模型的半成品行 —— 行上的 `modelId` 从这一刻起

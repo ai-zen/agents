@@ -13,7 +13,7 @@
  * | 图片任一边超过 {@link MAX_IMAGE_EDGE} | 抛错（不把超大图丢给端点） |
  * | 内联体积超过上限且无法上传 | 抛错（不静默塞进请求体） |
  *
- * 本模块只负责**选路**与**上传这一个 HTTP 动作**：需要 `file_id` 时每次调用都真上传，
+ * 本模块只负责选路与上传这一个 HTTP 动作：需要 `file_id` 时每次调用都真上传，
  * 不在进程里记「这个文件在这个端点上的 id 是什么」。要复用同一个 id 的是调用方 ——
  * 模块级 Map 这类记录既看不到（不可观测）、也扛不住重启，该由持有持久存储的一侧承担。
  */
@@ -121,7 +121,7 @@ export interface FileToSectionResult {
  * 由「发给 API 的模型名」反查它绑定的模型定义与端点。
  *
  * 工具在 `call()` 阶段拿不到 Agent 定义，但 `ctx.agent.model` 就是发给 API 的
- * 模型名（`ModelDefinition.modelName ?? ModelDefinition.id`）。必须按**当前实际使用的模型**定位端点：
+ * 模型名（`ModelDefinition.modelName ?? ModelDefinition.id`）。必须按当前实际使用的模型定位端点：
  * `file_id` 是端点维度资源，传错端点会得到 not found。
  */
 export function resolveModelAndEndpoint(
@@ -154,7 +154,7 @@ export function contentHash(bytes: Uint8Array): string {
  * 默认上传实现：OpenAI 兼容的 `POST {baseUrl}/files`（`purpose=user_data`）。
  *
  * 用原生 `fetch` + `FormData`，不用 `openai` 包：这里要的只是「发一个 multipart、读回
- * `id`」，而那 20 MB 的 SDK 会随着本模块的**静态 import** 进入任何打包它的人的产物 ——
+ * `id`」，而那 20 MB 的 SDK 会随着本模块的静态 import 进入任何打包它的人的产物 ——
  * CLI 只为了粘贴一张图就得背上它。原生实现没有这个代价，HTTP 上完全等价。
  */
 const defaultUpload: UploadFn = async ({ endpoint, data, filename, signal }) => {

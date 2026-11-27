@@ -1,11 +1,11 @@
 /**
- * 模型的三级解析 —— **整个仓库只有这一处实现**。
+ * 模型的三级解析 —— 整个仓库只有这一处实现。
  *
  * ## 三档是什么、为什么是这个顺序
  *
- *   1. `session` —— 会话级覆盖（用户对**这一段会话**说过「这次用这个模型」）；
+ *   1. `session` —— 会话级覆盖（用户对这一段会话说过「这次用这个模型」）；
  *   2. `agent`   —— Agent 定义上绑的 `modelId`（日常在用的那个，写进 `agents/*.json`）；
- *   3. `global`  —— `AppConfig.defaultModel`（**兜底**：Agent 定义没绑模型时才轮到它）。
+ *   3. `global`  —— `AppConfig.defaultModel`（兜底：Agent 定义没绑模型时才轮到它）。
  *
  * 越靠近「这一次」的越优先：会话是用户当下的意思，Agent 定义是长期配置，全局是兜底。
  *
@@ -13,7 +13,7 @@
  *
  * 这个顺序一旦散到好几层（客户端算一遍、运行时再算一遍、状态栏显示第三遍），结果就是
  * 「界面写着 A、请求实际发给 B」——用户点了半天切模型，401 还是照样报。所以：
- * 解析只在这里做一次，产出**值 + 档位**两件事；宿主只负责把「会话级覆盖」递进来
+ * 解析只在这里做一次，产出值 + 档位两件事；宿主只负责把「会话级覆盖」递进来
  * （`createAgent` 的 `options.modelId`），客户端只负责渲染宿主告诉它的结果。
  *
  * 「值」和「档位」一起返回，而不是分成两个函数：档位是这次判断的副产品，分开写就等于
@@ -21,14 +21,14 @@
  *
  * ## 参数为什么也必须跟着档位走（{@link resolveModelParams}）
  *
- * 模型有三级，参数也有：**参数取「模型来自哪一级」那一份，不跨级混合**。
+ * 模型有三级，参数也有：参数取「模型来自哪一级」那一份，不跨级混合。
  *
  *   - 模型来自 `session` → 参数取会话级（这一级没设则用该模型的出厂参数）；
  *   - 模型来自 `agent`   → 参数取 `AgentDefinition.modelParams`（一直以来的行为）；
- *   - 模型来自 `global`  → 参数**没有**可取的层，只用模型出厂参数。
+ *   - 模型来自 `global`  → 参数没有可取的层，只用模型出厂参数。
  *
  * 跨级混合是会真出事的：装配时做的是 ` 模型出厂参数 + 覆盖 ` 的浅合并，会话级把模型换掉
- * 之后，**旧模型那套参数会原样发给新模型** —— 例如 `thinking: { type: "disabled" }`
+ * 之后，旧模型那套参数会原样发给新模型 —— 例如 `thinking: { type: "disabled" }`
  * 发给一个不接受它的端点，换来的是一句 400。所以「会话级模型 + 定义级参数」这个组合在
  * 解析这一层就被排除掉，而不是留给各调用方各自小心。
  */
@@ -60,7 +60,7 @@ export interface ResolvedModel {
  * 空串按「没配」算（`if (modelId)` 而不是 `!== undefined`）：`modelId: ""` 不是某个模型
  * 的名字，把它当成一档命中，只会在 `createModel` 里变成一句更难懂的
  * `ModelDefinition "" not found`。协议层已经要求 `modelId` 非空，这里只是让手工改坏的配置
- * 也落到那条**明确的**报错上。
+ * 也落到那条明确的报错上。
  */
 export function resolveModel(input: ModelResolutionInput): ResolvedModel | null {
   if (input.sessionModelId) return { modelId: input.sessionModelId, level: "session" };
@@ -86,20 +86,20 @@ export interface ModelParamsResolutionInput {
 }
 
 /**
- * 参数该取哪一份 —— 与模型的三级解析一一对应（**同一个文件、同一处规则**）。
+ * 参数该取哪一份 —— 与模型的三级解析一一对应（同一个文件、同一处规则）。
  *
  * 三条规则就是需求本身：
  *
- *   - `session` → 会话级那份。**这里不叠 Agent 定义那份**：会话把模型换掉了，
+ *   - `session` → 会话级那份。这里不叠 Agent 定义那份：会话把模型换掉了，
  *     定义那份参数是配给旧模型的（它可能带着旧模型才认的 `thinking` 形状），混进来就是
  *     把旧模型的参数发给新模型 → 端点 400。会话级没设（`undefined`）时返回 `undefined`，
  *     由 `createModel` 只用模型出厂参数，这才是「换模型之后什么都不带」的正确形态。
  *   - `agent`   → 定义那份（合不合并由档位决定，不再无条件参与）。
- *   - `global`  → `undefined`：全局兜底那一级只有 `config.defaultModel`，**没有任何地方
- *     可以放参数**（`AppConfig` 里没有「全局参数覆盖」这一层）—— 没有这一层，也就不会
+ *   - `global`  → `undefined`：全局兜底那一级只有 `config.defaultModel`，没有任何地方
+ *     可以放参数（`AppConfig` 里没有「全局参数覆盖」这一层）—— 没有这一层，也就不会
  *     从别的层挪一份过来。
  *
- * 返回 `undefined` 不是「没算出来」，而是一个有意义的答案：**不带覆盖**，让模型走自己的
+ * 返回 `undefined` 不是「没算出来」，而是一个有意义的答案：不带覆盖，让模型走自己的
  * `defaultParams`（`createModel` 里 `mergeParams` 对此的处理就是不合并）。
  */
 export function resolveModelParams(input: ModelParamsResolutionInput): ModelParams | undefined {

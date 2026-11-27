@@ -12,8 +12,7 @@ import type { HostApiDeps } from "./deps.js";
 import type { Trpc } from "./trpc.js";
 
 /**
- * 一条消息最多几张 Asset（`dev-docs/prd/09-attachments.md` 第 5 行）：与「一张最多 4MB」是同一
- * 句话的两半，数值只在这里写一次。
+ * 一条消息最多几张 Asset：与「一张最多 4MB」是同一句话的两半，数值只在这里写一次。
  */
 const MAX_ASSETS_PER_MESSAGE = 4;
 
@@ -76,7 +75,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
     /**
      * 投一条话给活着的 Agent。只投递：建行是 `session.create`，起 Agent 是 `runtime.agent.wake`。
      *
-     * 没有 Agent 时是 `not_found`（不是「顺手叫起来」）：投递不创建会话、也不复活会话，
+     * 没有 Agent 时是 `not_found`（不在此处唤醒它）：投递不创建会话、也不复活会话，
      * 「先唤醒再投递」是客户端的编排，不是宿主的兜底。
      */
     send: api.procedure
@@ -105,7 +104,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
      * 开关与中止这四个动作：都只对活着的 Agent 有效，没有它时是空操作。
      *
      * `pause` / `resume` 两道开关缺一不可：`cancel` 交接时宿主会关掉输出开关且不自己开回来，
-     * 没有 `resume` 的话那一段会话从此不取走，界面上表现为「它不理我」而没有任何报错。
+     * 没有 `resume` 的话那一段会话从此不取走，界面上表现为「它不理会输入」而没有任何报错。
      */
     pauseOutput: api.procedure
       .input(controlInput)
@@ -142,21 +141,21 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
       }),
 
     /**
-     * 作废这一段**还没被取走**的那些 InboxEntry（`dev-docs/prd/04-session.md`「中断不是杀死」那张表里的
-     * 「作废，库里也删」）。它是**调用方的显式决定**：内核那一侧从不自己清队列（`Agent.clearInbox`
+     * 作废这一段还没被取走的那些 InboxEntry（「中断不是杀死」那张表里的
+     * 「作废，库里也删」）。它是调用方的显式决定：内核那一侧从不自己清队列（`Agent.clearInbox`
      * 的注释里写着为什么），所以这条只由 `/free` 这样的用户动作翻过来 —— `/clear` 只管清屏，
      * 两件事不合成一条命令。
      *
-     * **排队区有两处，两处都要清**：内存里是 Agent 的队列，库里是 `inbox` 表的那几行（关掉再打开，
-     * 那几句还在等，靠的就是它）。用户看到的排队区**就是库里那几行**，所以只清内存会剩下一段
+     * 排队区有两处，两处都要清：内存里是 Agent 的队列，库里是 `inbox` 表的那几行（关掉再打开，
+     * 那几句还在等，靠的就是它）。用户看到的排队区就是库里那几行，所以只清内存会剩下一段
      * 「界面上还排着、实际永远不跑」的 InboxEntry。
      *
      * 于是分两条路，判据是「这一段有没有活 Agent」：
      *
-     * - **有**：`runtime.agent.clearInbox()` 作废队列、报 `inboxCleared`，观察者据此删库行、推一条空队列
-     *   —— 有内存可以为准时**以内存为事实**，这一层只借它返回的条数，不自己再数一遍库里那几行
+     * - 有：`runtime.agent.clearInbox()` 作废队列、报 `inboxCleared`，观察者据此删库行、推一条空队列
+     *   —— 有内存可以为准时以内存为事实，这一层只借它返回的条数，不自己再数一遍库里那几行
      *   （两处各有各的真相不是这个域该有的样子）；
-     * - **没有**：内存里根本没有队列可以说话，库就是它的全部 —— 那就直接数出来、直接删，再自己
+     * - 没有：内存里根本没有队列可以说话，库就是它的全部 —— 那就直接数出来、直接删，再自己
      *   推一条空的 `agent.inbox`。这条路上没有 Agent，没有别人替它说这一句。
      *
      * 会话行不存在时是 `not_found`（与别的 procedure 同一句词）：没有这一段，就没有「它的排队区」。
@@ -187,7 +186,7 @@ export function agentRouter(deps: HostApiDeps, api: Trpc) {
 /**
  * 递一条话给这段会话的 Agent。
  *
- * 投递留在这里，是因为它是**客户端的动作翻进队列**：一句客户端的原话进 core 的队列，没有第二件
+ * 投递留在这里，是因为它是客户端的动作翻进队列：一句客户端的原话进 core 的队列，没有第二件
  * 事要做（唤醒与建行都是另外两条 procedure）。运行时那一侧的 `post` 是「一段会话寄给另一段
  * 会话」，不是这个动作。
  */
@@ -225,7 +224,7 @@ function send(
  * —— 那一条已经在队列里、也已经落进了历史，「拒」这件事就变成了一次事后报错。
  *
  * 数的是段不是 Asset id：「带 `__asset_id` 的段」就是这个数 —— 同一张图在一句话里被引用两次，
- * 厂商那边也是两段。内容是**原样入库**的，这里只读、不改一个字节，也不重排段。
+ * 厂商那边也是两段。内容是原样入库的，这里只读、不改一个字节，也不重排段。
  */
 function assertAssetCount(deps: HostApiDeps, content: SendInput["content"]): void {
   if (!Array.isArray(content)) return;

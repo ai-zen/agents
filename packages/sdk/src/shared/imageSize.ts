@@ -9,7 +9,7 @@
  * - GIF：逻辑屏幕描述符里两个 16 位小端；
  * - WebP：三个变体各不一样（有损 VP8、无损 VP8L、扩展 VP8X）。
  *
- * 认不出就返回 `undefined`（**不管**）：这层只负责挡住正常情况，不当安全边界 —— 头坏掉、头跑出
+ * 认不出就返回 `undefined`（不管）：这层只负责挡住正常情况，不当安全边界 —— 头坏掉、头跑出
  * 传入的字节范围，都交给下游端点去报它自己的错。
  */
 
@@ -47,7 +47,7 @@ function jpegSize(bytes: Uint8Array): ImageSize | undefined {
   let i = 2;
   while (i + 3 < bytes.length) {
     if (bytes[i] !== 0xff) {
-      // 段之间不该有别的字节；见到了就说明这不是我们认得的 JPEG，不再猜
+      // 段之间不该有别的字节；见到了就说明这不是本仓认得的 JPEG，不再猜
       return undefined;
     }
     let marker = bytes[i + 1]!;

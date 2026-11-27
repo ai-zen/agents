@@ -2,10 +2,9 @@
  * 正在重装的那几段会话：从「已经杀掉」到「装回来」之间，库里那一份排队区不跟着作废。
  *
  * 它只回答一个问题，而且只有观察者问：一条 `inboxCleared` 事实要不要把库里那几行删掉。杀死就是
- * 作废（`dev-docs/prd/04-session.md` 的「中断不是杀死」那张表：没消费的 InboxEntry「作废，库里也删」），
- * 重装不是 —— 那些 InboxEntry 正等着被放回新装起来的 Agent（`dev-docs/prd/05-control.md` 的「换模型不是
- * 杀死」：改配置引起的重建，inbox 里的东西一句不丢；`dev-docs/prd/07-handoff.md` 同一句：换掉 agent
- * 不丢 inbox）。
+ * 作废（「中断不是杀死」那张表：没消费的 InboxEntry「作废，库里也删」），重装不是 —— 那些
+ * InboxEntry 正等着被放回新装起来的 Agent（「换模型不是杀死」：改配置引起的重建，inbox 里的
+ * 东西一句不丢；换掉 agent 不丢 inbox）。
  *
  * 两条路共用同一个内核事实（`kill()` 清空队列并报 `inboxCleared`），后果却相反，区别只在宿主这一
  * 层 —— 与关机时那一条判据（`HostObserver.shutdown`）同一个形状：内核那一格一个字都不改。
@@ -32,7 +31,6 @@ export class ReloadWindow {
     else this.open.set(sessionId, count - 1);
   }
 
-  /** 这段会话此刻在窗口里吗 —— 观察者问的就是这一句 */
   covers(sessionId: string): boolean {
     return this.open.has(sessionId);
   }

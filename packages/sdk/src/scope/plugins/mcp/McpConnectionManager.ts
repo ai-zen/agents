@@ -17,7 +17,6 @@ import type {
 import { McpTaskBridge } from "./mcpTaskBridge.js";
 import type { McpTaskNoticePort } from "./mcpTaskNotice.js";
 
-// ---------------------------------------------------------------------------
 // McpConnectionManager
 //
 // 基于官方 @modelcontextprotocol/client 的 Client + Transport 实现。
@@ -29,7 +28,6 @@ import type { McpTaskNoticePort } from "./mcpTaskNotice.js";
 //
 // 建连失败只做一件事：把原错误抛给调用方。重试策略不在本类里 —— 哪些错误值得重试、
 // 隔多久重试，只有调用方知道。
-// ---------------------------------------------------------------------------
 
 interface ConnectionEntry {
   state: McpConnectionState;
@@ -94,8 +92,6 @@ export class McpConnectionManager {
     this._taskNotice = taskNotice;
   }
 
-  // ---- 对外查询 ----
-
   getState(name: string): McpConnectionState {
     return this.servers.get(name)?.state ?? "disconnected";
   }
@@ -112,8 +108,6 @@ export class McpConnectionManager {
   getTaskBridge(name: string): McpTaskBridge | undefined {
     return this.servers.get(name)?.taskBridge;
   }
-
-  // ---- 连接 ----
 
   async connect(
     name: string,
@@ -213,7 +207,7 @@ export class McpConnectionManager {
           { name: CLIENT_NAME, version: CLIENT_VERSION },
           {
             // 声明的能力就是「服务器可以在调用中途问用户一张表」。只声明 `form`：`url` 那一档要
-            // 「显示域名 + 征得同意 + 打开浏览器」，我们还没有那个交互面，声明了又不能做就是失信
+            // 「显示域名 + 征得同意 + 打开浏览器」，本仓还没有那个交互面，声明了又不能做就是失信
             capabilities: { elicitation: { form: {} } },
             // 版本谈判：2026-07-28 那一档只有先问一句 `server/discover` 才谈得成（谈成之后
             // 多轮 `input_required` 与每个请求的 `_meta` 信封才启用）。不认识的服务器答
@@ -236,7 +230,7 @@ export class McpConnectionManager {
     // `elicit` 参数）。两种问法、一个「谁在问」的账。
     //
     // 三态各归各的来处：`accept` / `decline` 只可能来自用户（面板上的 `[同意]` / `[拒绝]`）；
-    // **没人能答就是 `cancel`** —— 一次性 Agent 手上没有题板、那一段会话没了、`url` 那一档我们
+    // 没人能答就是 `cancel` —— 一次性 Agent 手上没有题板、那一段会话没了、`url` 那一档本仓
     // 没声明，都是「没有做决定」，不是「用户拒绝了」。按 spec 的语义，`decline` 是明确的「不」
     // （服务器该收手），`cancel` 才是「没做决定」（服务器可以稍后再问）。
     //
@@ -245,7 +239,7 @@ export class McpConnectionManager {
     const fulfilElicitation = async (params: Record<string, unknown>): Promise<ElicitAnswer> => {
       const owner = currentElicitationOwner(client);
       if (owner === undefined) return { action: "cancel" };
-      // `url` 那一档我们没声明（见上面声明能力的理由）：真收到就按「没答」回
+      // `url` 那一档本仓没有声明（见上面声明能力的理由）：真收到就按「没答」回
       if (params.mode === "url") return { action: "cancel" };
 
       try {
@@ -261,7 +255,7 @@ export class McpConnectionManager {
         this.logger.error(
           `[McpConnectionManager] elicitation for "${name}" failed: ${(err as Error)?.message ?? err}`,
         );
-        // 出题这一路自己炸了：告诉服务器「没答」，别让一条工具调用挂在那里
+        // 出题这一路自己抛错：告诉服务器「没答」，别让一条工具调用挂在那里
         return { action: "cancel" };
       }
     };
@@ -474,10 +468,8 @@ export class McpConnectionManager {
     throw new Error(`Unsupported MCP transport type: ${(config as any).transport}`);
   }
 
-  // ---- 断开 ----
-
   /**
-   * 断开**单个** server（不影响别的 server）。
+   * 断开单个 server（不影响别的 server）。
    *
    * 状态与清单一起失效：断开之后 `getState()` 回到 `disconnected`、`getManifest()` 为空，
    * 下一次 `connect()` 会按新的定义重新建链（懒连）。
@@ -514,16 +506,12 @@ export class McpConnectionManager {
     await Promise.all(names.map((n) => this.disconnect(n)));
   }
 
-  // ---- 活跃心跳 ----
-
   touch(name: string): void {
     const entry = this.servers.get(name);
     if (!entry || entry.state !== "connected" || !entry.timeoutMs) return;
     this.clearTimeout(name);
     entry.timeoutTimer = this.scheduleTimeout(name, entry.timeoutMs);
   }
-
-  // ---- 内部 ----
 
   private scheduleTimeout(
     name: string,

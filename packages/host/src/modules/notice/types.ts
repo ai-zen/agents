@@ -1,4 +1,3 @@
-/** 通知的四档语气：信息 / 成功 / 警告 / 错误 */
 export type NoticeLevel = "info" | "success" | "warning" | "error";
 
 /**

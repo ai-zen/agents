@@ -72,9 +72,9 @@ export function sessionAssetTable(db: DatabaseSync) {
 
   return {
     /**
-     * 登记「这条消息引用了这几份 Asset」。**同一对 `(messageId, assetId)` 反复 link 只留一行。**
+     * 登记「这条消息引用了这几份 Asset」。同一对 `(messageId, assetId)` 反复 link 只留一行。
      *
-     * 幂等是这张表的硬要求，理由在时间轴那一侧：观察者**每收到一次消息事实就来登记一次**
+     * 幂等是这张表的硬要求，理由在时间轴那一侧：观察者每收到一次消息事实就来登记一次
      *（新增 / 变了 / 定稿都算），而流式期间一条消息会被写很多次 —— 一百片的回答就是一百次。
      * 不幂等的话引用行会成倍长出来，`countByAsset` 也就再也归不了零，Asset 永远删不掉。
      *

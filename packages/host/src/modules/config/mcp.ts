@@ -67,7 +67,7 @@ export class McpConfig {
   /**
    * 每条服务器来自哪一层、是不是停用。层归属按「近的赢」算，与合并同一个次序。
    *
-   * **不是 {@link effective} 的别名**：`effective` 回答的是「现在能连哪些」，界面要回答的是
+   * 不是 {@link effective} 的别名：`effective` 回答的是「现在能连哪些」，界面要回答的是
    * 「这些服务器各写在哪一层的文件里、哪一条被停用了」—— 停用的那一条在第一份里根本不存在。
    * 而「重新启用一条」读的正是它所在的那一层，不是那份合并后的清单；所以这两个问题不能由一份
    * 清单回答。
@@ -168,7 +168,7 @@ export class McpConfig {
   }
 
   /**
-   * 改一层并写回**原文件的内容**：只动被点名的那一条，文件里其他键、InboxEntry 上这一版不认识的键
+   * 改一层并写回原文件的内容：只动被点名的那一条，文件里其他键、InboxEntry 上这一版不认识的键
    * 都原样留着。所以这里改的是解析出来的原始对象，而不是归一化之后的那一份 —— 归一化会把
    * 未知键去掉，用它写回等于把别人的字段洗掉了。
    */
@@ -182,7 +182,7 @@ export class McpConfig {
   /**
    * 这一层文件里的原始 InboxEntry，读不出来时当它空着。
    *
-   * 与 {@link readForWrite} 是同一份解析口径（同一个 `readTextFile` + `parseRawFile`），但**不抛**：
+   * 与 {@link readForWrite} 是同一份解析口径（同一个 `readTextFile` + `parseRawFile`），但不抛：
    * 合并那一路本来就是这么处置坏文件的（由 SDK 的发现记一句日志），把它改成抛错会让界面
    * 「一条服务器都看不见」，而事实只是「这一层的那几条看不见」。
    */
@@ -195,7 +195,7 @@ export class McpConfig {
    * 正是这种情形，而文件里其余的键仍然要跟着走。
    *
    * 读不出 JSON 就报 `config_invalid` 并且不写：覆盖一份读不出来的文件，等于把人的配置换成
-   * 我们这一份。SDK 那边没有写文件的能力，所以这条判断没有第二处可以借。
+   * 宿主自己造的这一份。SDK 那边没有写文件的能力，所以这条判断没有第二处可以借。
    */
   private readForWrite(path: string): RawFile {
     const text = readTextFile(path);

@@ -2,8 +2,6 @@ import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { SILENT_LOG, type LogSink } from "../../../shared/logger.js";
 
-// ---- 类型 ----
-
 export interface Frontmatter {
   name?: string;
   description?: string;
@@ -38,8 +36,6 @@ export interface SkillInfo {
   metadata?: Record<string, string>;
   allowedTools?: string[];
 }
-
-// ---- 发现（返回完整 SkillInfo，含 subAgent 等元数据）----
 
 /** 发现 / 读取一个 Skill 时的选项 */
 export interface DiscoverSkillsOptions {
@@ -92,8 +88,6 @@ export async function discoverSkills(
   return items;
 }
 
-// ---- 完整读取（用于加载 Skill 正文和 subagent 判断）----
-
 /**
  * 读取单个 Skill 的完整内容与元数据。
  * 按优先级从高到低传入路径列表，靠前的路径优先（先到先得）。
@@ -111,8 +105,6 @@ export async function readSkill(
   }
   return null;
 }
-
-// ---- 内部 ----
 
 async function readSkillFromPath(
   skillId: string,
@@ -149,8 +141,6 @@ async function readSkillFromPath(
     return null;
   }
 }
-
-// ---- 解析 ----
 
 /** @internal */
 export function parseFrontmatter(content: string): Frontmatter {
@@ -217,8 +207,6 @@ function stripQuotes(s: string): string {
   }
   return s;
 }
-
-// ---- 校验 ----
 
 const VALID_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 

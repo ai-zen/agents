@@ -9,20 +9,14 @@ import type { LogSink } from "../shared/logger.js";
 /** 工具刷新的三个档位（`off` = 不装插件，由装配方判） */
 export type AutoRefreshToolsWhen = AutoRefreshWhen | "off";
 
-// ---- 权限 ----
-
-/** 单维度权限策略：allow 或 deny 互斥 */
 export type PermissionPolicy = { allow: string[] } | { deny: string[] };
 
-/** Agent 四维度权限 */
 export interface AgentPermissions {
   tools?: PermissionPolicy;
   skills?: PermissionPolicy;
   mcps?: PermissionPolicy;
   subagents?: PermissionPolicy;
 }
-
-// ---- 核心实体 ----
 
 /**
  * 端点能力声明 —— 决定「本地文件 → 内容块」时走哪条传输路径。
@@ -38,16 +32,12 @@ export interface EndpointCapabilities {
   filesApi?: boolean;
 }
 
-// ---- 模型参数覆盖 ----
-
 /**
  * 模型请求参数（`defaultParams` / `modelParams` 的形状）。
  *
- * 含厂商特有字段（`thinking` / `reasoning_effort` 等），SDK **原样透传**、不解释。
+ * 含厂商特有字段（`thinking` / `reasoning_effort` 等），SDK 原样透传、不解释。
  */
 export type ModelParams = Record<string, unknown>;
-
-// ---- 思考预设（reasoning presets）----
 
 /**
  * 单个档位的请求参数补丁。
@@ -62,13 +52,12 @@ export type ReasoningPatch = ModelParams;
 /**
  * 一个具名思考策略：档位名 → 参数补丁。
  *
- * `levels` 的键集合**就是**该策略的全部可选档位 —— 没有单独的「能否关闭思考」字段：
+ * `levels` 的键集合就是该策略的全部可选档位 —— 没有单独的「能否关闭思考」字段：
  * 表里有 `off` 键就能关，没有就不能（如智谱 GLM-5.3 系，官方原文「其余输入将报错」）。
  */
 export interface ReasoningPreset {
   /** 用户改过 → SDK 初始化不再覆盖该策略（与 `ModelDefinition.custom` 同构） */
   custom?: boolean;
-  /** 档位名 → 参数补丁 */
   levels: Record<string, ReasoningPatch>;
 }
 
@@ -76,16 +65,15 @@ export interface ReasoningPreset {
  * 思考策略表 —— `<basePath>/reasoning-presets.json` 的结构，出厂内容见
  * `config/reasoning-presets.ts`。
  *
- * 这份表是 **CLI / 桌面端等客户端共享的资产**：它定义「有哪些档位、每档写什么参数」，
+ * 这份表是 CLI / 桌面端等客户端共享的资产：它定义「有哪些档位、每档写什么参数」，
  * 由 `ModelDefinition.reasoningPreset` 引用。客户端据此限制可选强度、把选中的档位展开成参数
  * 写进 `AgentDefinition.modelParams`。
  *
- * **SDK 自身不消费它生成请求参数**：参数合并只是 `{...defaultParams, ...modelParams}`
+ * SDK 自身不消费它生成请求参数：参数合并只是 `{...defaultParams, ...modelParams}`
  * 一次浅合并（见 `createModel`）。表在这里只负责「定义 + 出厂默认 + 读写」。
  */
 export type ReasoningPresets = Record<string, ReasoningPreset>;
 
-/** API 端点 */
 export interface EndpointDefinition {
   id: string;
   name: string;
@@ -97,7 +85,7 @@ export interface EndpointDefinition {
    * 把这一段上下文的标识放进哪个请求头（可选）。
    *
    * 有些服务方靠一个稳定的会话标识做流量路由与 prompt 前缀缓存，且要求它出现在指定头里
-   * （OpenCode Go 就要 `x-opencode-session`，不带直接 400）。写了这一格，我们对这个端点的每个
+   * （OpenCode Go 就要 `x-opencode-session`，不带直接 400）。写了这一格，对这个端点的每个
    * 请求都会把当前的 `providerSessionId` 填进这个头；没写就一个字节都不多带。
    *
    * 与 `headers` 的关系：`headers` 里写了同名的键，以那里为准（那是用户显式设的值）。
@@ -122,7 +110,7 @@ export interface EndpointDefinition {
  * 两个阈值语义不同，消费方也不同：
  *   - `handoff`：软线。`AutoMigratePlugin` 在 agent 闲下来之后拿 `usage.prompt_tokens` 比它，
  *     超过即触发任务交接（交接本身还要再发 1~2 次请求，所以这条线必须留足余量）。
- *   - `guard`：硬线。`ContextGuardPlugin` 在**每次请求前**比它，超过即**拒这一次请求**
+ *   - `guard`：硬线。`ContextGuardPlugin` 在每次请求前比它，超过即拒掉这一次请求
  *     （`onInnerLoopStart` 返回理由 → core 报 `denied`，这一次请求压根没发出去）——
  *     这是最后一道保护，宁可报错也不要发出必然失败的请求。
  *
@@ -130,20 +118,17 @@ export interface EndpointDefinition {
  * 不做任何倍数换算（阈值就该是能直接读懂的数字）。
  */
 export interface TokenThresholds {
-  /** 交接阈值（软线）：prompt_tokens 超过它 → 触发任务交接 */
   handoff: number;
-  /** 强行阻断阈值（硬线）：请求前用量超过它 → 中断这一次请求并报错 */
   guard: number;
 }
 
-/** 模型配置，绑定一个 EndpointDefinition */
 export interface ModelDefinition {
   id: string;
   name: string;
   endpointId: string;
   /** 发送给 API 的模型名（不填则用 id） */
   modelName?: string;
-  /** 上下文用量阈值（交接软线 + 阻断硬线）。**不是**模型的真实上下文窗口。 */
+  /** 上下文用量阈值（交接软线 + 阻断硬线）。不是模型的真实上下文窗口。 */
   tokenThresholds: TokenThresholds;
   /**
    * 模型的真实上下文窗口（官方清单里的 `limit.context`，单位 token）。
@@ -154,11 +139,11 @@ export interface ModelDefinition {
   contextWindow?: number;
   /** 单次响应最多能出多少 token（官方清单里的 `limit.output`） */
   maxOutputTokens?: number;
-  defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
+  defaultParams?: Record<string, unknown>;
   /**
    * 思考策略名，引用 `reasoning-presets.json` 里的键。
    *
-   * 它是**跨客户端共享的元数据**：CLI / 桌面端据此判断这个模型能选哪几档。
+   * 它是跨客户端共享的元数据：CLI / 桌面端据此判断这个模型能选哪几档。
    * SDK 不拿它去生成请求参数（那条路只有 `defaultParams` + `modelParams` 浅合并），
    * 只保证该字段能随模型配置一起读写与出厂同步。
    */
@@ -166,11 +151,11 @@ export interface ModelDefinition {
   /** 是否支持图片输入；`view_image` 与本地图片退化为文本提示的判定都看它 */
   vision?: boolean;
   /**
-   * 是不是它所在端点的**首要模型**（一个端点最多一条）。
+   * 是不是它所在端点的首要模型（一个端点最多一条）。
    *
    * 语义：首次配置只要选服务商（端点）、不必再挑模型 —— 客户端拿这一位把「填完密钥之后该把
-   * 哪个模型设成默认」这件事问出来。与 `reasoningPreset` 同一套口径：**跨客户端共享的应用层
-   * 元数据，SDK 不解释**（既不影响请求参数，也不影响运行行为），只保证它能随模型配置一起
+   * 哪个模型设成默认」这件事问出来。与 `reasoningPreset` 同一套口径：跨客户端共享的应用层
+   * 元数据，SDK 不解释（既不影响请求参数，也不影响运行行为），只保证它能随模型配置一起
    * 读写与出厂同步。
    *
    * 缺省（或不写）= 不是首要模型；同一端点上出现多条 `primary` 时以清单里靠前的那条为准
@@ -197,7 +182,7 @@ export interface AgentDefinition {
   /** 预设消息（至少一条 system） */
   messages: AgentNS.Message[];
   /**
-   * 绑定模型 id —— 三级解析的**第二级**（`createAgent` 里唯一一处实现）：
+   * 绑定模型 id —— 三级解析的第二级（`createAgent` 里唯一一处实现）：
    * ` 会话级覆盖 > 本字段 > AppConfig.defaultModel`。
    *
    * 日常在用的模型写在这里（`/model --agent` 写的就是它）；缺省时落到配置层的兜底模型
@@ -208,7 +193,7 @@ export interface AgentDefinition {
    * Agent 级模型参数覆盖，浅合并进模型的 `defaultParams`。
    *
    * SDK 只做 `{ ...model.defaultParams, ...modelParams }`，不解释任何键名、不做
-   * 档位推导、不知道厂商差异。于是「配置即事实」：应用（如 CLI）在**写入配置时**就把
+   * 档位推导、不知道厂商差异。于是「配置即事实」：应用（如 CLI）在写入配置时就把
    * 档位展开成具体参数存在这里，运行时不再查表。
    *
    * 于是同一个模型可以给不同 Agent 配不同强度（编程 Agent `reasoning_effort: "max"`、
@@ -233,9 +218,6 @@ export interface AgentDefinition {
   custom?: boolean;
 }
 
-// ---- 配置文件 ----
-
-/** 图片生成模型配置 */
 export interface ImageModelDefinition {
   id: string;
   name: string;
@@ -258,25 +240,22 @@ export interface ImageModelDefinition {
 export interface AppConfig {
   endpoints: EndpointDefinition[];
   models: ModelDefinition[];
-  /** 图片生成模型列表 */
   imageModels?: ImageModelDefinition[];
-  /** 默认图片生成模型 ID */
   defaultImageModel?: string;
   /** 默认 Agent ID（CLI/Desktop 使用） */
   defaultAgent?: string;
   /**
-   * 全局兜底模型 id —— 三级解析的**最后一级**（解析顺序的唯一实现在 SDK 的
+   * 全局兜底模型 id —— 三级解析的最后一级（解析顺序的唯一实现在 SDK 的
    * `createAgent` / `resolveModel`）：` 会话级覆盖 > AgentDefinition.modelId > 本字段 `。
    *
-   * 它不是主真相源：日常在用的模型写在 **Agent 定义** 上，这里只在 Agent **没绑模型**
+   * 它不是主真相源：日常在用的模型写在 Agent 定义上，这里只在 Agent 没绑模型
    * 时兜底（用户清掉了某个 Agent 的 `modelId`，仍希望整个应用有个能跑的模型）。
    * 三级都拿不到时 `createAgent` 直接报错并带上 agentId —— 绝不静默挑一个出厂模型
    * 顶上（那会变成「界面写着 A、请求和账单落在 B」）。
    *
-   * 出厂配置**不写**这个字段：出厂默认 Agent 自带 `modelId`，兜底层留给用户自己声明。
+   * 出厂配置不写这个字段：出厂默认 Agent 自带 `modelId`，兜底层留给用户自己声明。
    */
   defaultModel?: string;
-  /** 默认迁移模型 ID */
   defaultMigrationModel?: string;
   /**
    * 给新会话自动取名的模型 ID（缺省回落到 `defaultModel`）。
@@ -297,11 +276,11 @@ export interface AppConfig {
    */
   language?: "en" | "zh";
   /**
-   * 自动给新会话起标题（缺省**视为开启**；出厂配置写 `true`）。
+   * 自动给新会话起标题（缺省视为开启；出厂配置写 `true`）。
    *
    * 「缺省视为开启」的唯一判定在消费方（服务端 `AutoTitle`）的 `title === false` 那一处：
    * 老配置里没有这个字段，用户的意图显然是「按出厂的样子跑」，而不是「关掉一个他不知道的功能」。
-   * 所以这里**不做迁移补齐** —— 补了就有两处定义默认值（迁移里的 `true` 与消费方的 `?? true`），
+   * 所以这里不做迁移补齐 —— 补了就有两处定义默认值（迁移里的 `true` 与消费方的 `?? true`），
    * 迟早有一处先漂。
    *
    * 关掉它只是想省下每段新会话那一次几十 token 的请求；不影响手工改名（`session.rename`）。
@@ -320,10 +299,10 @@ export interface AppConfig {
    * 被中断的 assistant 消息（已输出的思考 / 正文）如何处置。
    *
    * - `keep`：保留已输出的部分（恢复为 `Completed`）—— 模型下一次请求能接着半截往下说，
-   *   不会「失忆重来」。**出厂默认**。
+   *   不会「失忆重来」。出厂默认。
    * - `drop`：丢弃（保持 `Aborted`，不进下一次请求的上下文）。core 的库级默认。
    *
-   * 只管**不带工具调用**的消息；工具轮次由 {@link abortedToolRoundStrategy} 决定。
+   * 只管不带工具调用的消息；工具轮次由 {@link abortedToolRoundStrategy} 决定。
    * 缺省时由 `createAgent()` 回落 core 默认值（`drop`），出厂配置已写 `keep`。
    */
   abortedMessageStrategy?: AbortedMessageStrategy;
@@ -331,7 +310,7 @@ export interface AppConfig {
   /**
    * 被中断 / 结果不完整的工具轮次如何归一。
    *
-   * - `fill`：保留整轮（assistant 恢复为 `Completed`，未完成的结果补原因）——**出厂默认**，
+   * - `fill`：保留整轮（assistant 恢复为 `Completed`，未完成的结果补原因）—— 出厂默认，
    *   服务端要求「N 个 tool_calls 对 N 条结果」，整轮进出才不会报错。
    * - `drop`：整轮出列（assistant 与其结果都不发给模型）。
    *
@@ -342,8 +321,8 @@ export interface AppConfig {
   /**
    * 刷新工具清单（MCP server / skill / 用户工具）的时机。
    *
-   * - `inner-loop-start`：`onInnerLoopStart`，**每次请求前**刷（每次工具回合都能看见新装的
-   *   能力）。**出厂默认**；
+   * - `inner-loop-start`：`onInnerLoopStart`，每次请求前刷（每次工具回合都能看见新装的
+   *   能力）。出厂默认；
    * - `outer-loop-start`：`onOuterLoopStart`，每一批事件开头刷一次（一批一次），
    *   要等下一次被叫起来才生效，开销最小；
    * - `off`：不刷，只靠 `/reload`。
@@ -352,8 +331,6 @@ export interface AppConfig {
    */
   autoRefreshTools?: AutoRefreshToolsWhen;
 }
-
-// ---- 工具环境 ----
 
 /**
  * Files API 上传函数签名（默认实现走 OpenAI SDK 的 `POST {baseUrl}/files`）。
@@ -392,7 +369,7 @@ export type GenerateImageFn = (input: {
  * 外部依赖注入点 — 所有出网动作的唯一出口。
  *
  * 缺省（不传）时全部走真实 OpenAI SDK；测试与宿主（CLI / Desktop）可按需替换，
- * 这样业务代码里的网络调用不再需要 `vi.mock("openai")` 之类打穿模块图的技巧。
+ * 这样业务代码里的网络调用不再需要用 `vi.mock("openai")` 去打穿模块图。
  */
 export interface ToolEnvDeps {
   /** 上传文件到端点 Files API，默认 `POST {baseUrl}/files`（purpose=user_data） */
@@ -403,7 +380,7 @@ export interface ToolEnvDeps {
    * 按 id 取一份 Asset 的字节。Asset 库是宿主的财产，SDK 不认识它；这一格是「发出去之前按当前模型
    * 重建内容段」唯一需要外部给的东西。
    *
-   * 取不到（那份 Asset 已经不在）就回 `undefined`，**不要抛**：发送前的那一步要把它换成一句
+   * 取不到（那份 Asset 已经不在）就回 `undefined`，不抛：发送前的那一步要把它换成一句
    * 「附件已不在」的文本，而不是让整次请求失败。
    */
   readAsset?: (assetId: string) => { bytes: Uint8Array; mime: string; name?: string } | undefined;
@@ -416,11 +393,8 @@ export interface ToolEnvDeps {
  * config 供需要模型/端点配置的工具（如 generate_image）使用。
  */
 export interface ToolEnv {
-  /** 当前工作目录 */
   cwd: string;
-  /** 应用配置 */
   config: AppConfig;
-  /** 外部依赖注入点（默认全部走真实 OpenAI SDK） */
   deps?: ToolEnvDeps;
   /**
    * 日志口（可选）。后台任务的结果投不回去时，那一行从这里记；不注入就什么都不写。
@@ -431,28 +405,21 @@ export interface ToolEnv {
   log?: LogSink;
 }
 
-// ---- MCP ----
-
-/** MCP 连接状态 */
 export type McpConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
-/** MCP 服务器配置 */
 export interface McpServerDefinition {
   id: string;
-  /** transport 类型，内部统一使用 "stdio" | "http" | "sse" */
   transport: "stdio" | "http" | "sse";
   /** 是否禁用，默认为 false */
   disabled?: boolean;
   /** 服务器描述（供 load_mcp 呈现给 LLM，非连接必需） */
   description?: string;
-  // stdio
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  // http/sse
   url?: string;
   headers?: Record<string, string>;
-  // oauth (http only)
+  // oauth 只在 http 传输下有效
   oauth?: {
     authorizationUrl: string;
     tokenUrl: string;
@@ -461,8 +428,6 @@ export interface McpServerDefinition {
     scope?: string;
   };
 }
-
-// ---- MCP 共享子类型（传输由 @modelcontextprotocol/sdk 内置实现，宿主无需关心）----
 
 /** 图标（MCP 规范 Icons） */
 export interface McpIcon {
@@ -481,8 +446,6 @@ export interface McpAnnotations {
   lastModified?: string;
 }
 
-// ---- MCP Server Manifest ----
-
 /** load_mcp 成功后返回的工具/资源/提示/技能清单 */
 export interface McpServerManifest {
   tools: McpToolDef[];
@@ -498,7 +461,7 @@ export interface McpServerManifest {
  * 字段原样取自 `skills/list` 的条目：技能的内容仍然走 `resources/read`，所以附属文件的 uri 必须
  * 一并交出去（模型读到正文里的 `references/x.md` 之后，要拿它换成一条能读的 uri）。
  *
- * 技能的身份是**服务器 + `uri`**；`name` 只是标签，不保证跨服务器唯一。
+ * 技能的身份是服务器加 `uri`；`name` 只是标签，不保证跨服务器唯一。
  */
 export interface McpSkillDef {
   /** 这个技能 `SKILL.md` 的 uri */
@@ -509,7 +472,6 @@ export interface McpSkillDef {
   resources: McpSkillFile[] | "dynamic";
 }
 
-/** 技能清单里的一项：一个文件的 uri 与完整性信息 */
 export interface McpSkillFile {
   uri: string;
   digest: string;

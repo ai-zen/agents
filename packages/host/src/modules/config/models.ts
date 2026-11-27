@@ -32,7 +32,7 @@ export class ModelService {
       );
     }
 
-    // 新建的就是**用户自有**的：不打这一位，下次启动的出厂同步（`syncManagedModels`）
+    // 新建的就是用户自有的：不打这一位，下次启动的出厂同步（`syncManagedModels`）
     // 会把它当成「出厂清单里已经没有的那一条」直接丢掉 —— 用户刚加的模型一夜之间没了
     const next: ModelDefinition = { ...model, custom: true };
     await this.assertWritable(next, current);
@@ -45,7 +45,7 @@ export class ModelService {
     if (found === undefined) throw this.notFound(id);
 
     /**
-     * 改过的那一条从**出厂托管**转成**用户自有**（`prd/03-legacy.md` 3.4 / PRD F-F3）。
+     * 改过的那一条从出厂托管转成用户自有。
      *
      * 不转的后果是「改完当场生效、下次启动又变回去」：`syncManagedModels` 只保留 `custom === true`
      * 的条目，其余一律替换成出厂定义 —— 用户把阈值从 400K 调到 600K、把特性开关打开，重启之后
@@ -87,14 +87,14 @@ export class ModelService {
 
   /**
    * 恢复出厂：把这一条整条换回 `DEFAULT_APP_CONFIG` 里同 id 的那一条，并把 `custom` 置回
-   * `false` —— 「换回出厂定义、然后重新归入托管」（`prd/03-legacy.md` 3.4）。
+   * `false` —— 「换回出厂定义、然后重新归入托管」。
    *
-   * **整条换，不是把出厂那几格叠到用户那份上**：出厂之后要给用户的是「出厂长什么样」，
+   * 整条换，不是把出厂那几格叠到用户那份上：出厂之后要给用户的是「出厂长什么样」，
    * 用户此前加在这一条上的字段（自填的描述、额外参数）一并退场；否则「恢复出厂」之后界面上
    * 还留着他改过的痕迹，而下一次启动的出厂同步又会按出厂清单覆盖一次 —— 两个时刻不一样。
    *
    * 写之前照样过 `assertWritable`：出厂那条的端点可能已经被用户删掉了（端点是用户的财产，
-   * 我们不替他补回来），这时写进去的就是一条指不到端点的模型。
+   * 宿主不替用户补回来），这时写进去的就是一条指不到端点的模型。
    */
   async reset(id: string): Promise<AppConfig> {
     const current = this.deps.general.read();

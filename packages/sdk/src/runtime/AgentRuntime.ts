@@ -15,7 +15,7 @@ import type { ScopeCapabilities } from "./Scopes.js";
 import type { SdkAgent } from "./SdkAgent.js";
 
 /**
- * 装出一个 Agent 需要的全部事实 —— 从上往下给（`TRD` 的「材料从上往下给」）。
+ * 装出一个 Agent 需要的全部事实 —— 材料从上往下给。
  *
  * 这里没有一样是运行时自己去取的：历史与没取走的 InboxEntry 在库里的那一份只有宿主认得，模型解析的
  * 三级链只有 `createAgent` 一处实现，运行时只负责把它们拼成一个活着的对象。
@@ -23,7 +23,6 @@ import type { SdkAgent } from "./SdkAgent.js";
 export interface WakeMaterials {
   /** 在哪一个目录上干活：Scope 按它取（同一个目录上的几段会话共用一个） */
   cwd: string;
-  /** 用哪个 AgentDefinition 装 */
   agentId: string;
   /** 这一段会话的模型覆盖（三级解析的第一级） */
   modelId?: string;
@@ -32,18 +31,18 @@ export interface WakeMaterials {
   /**
    * 谁开的这一段：`null` = 人建的，否则是开出它的那一段会话的身份。
    *
-   * 运行时只拿它判一件事：这一段自己能不能再开一段（`PRD.md` 4.3 的「防俄罗斯套娃」）。
+   * 运行时只拿它判一件事：这一段自己能不能再开一段（「防俄罗斯套娃」）。
    * 血缘本身是会话行上的事实，展示归宿主。
    */
   lineage: string | null;
-  /** 已经落库的历史，按原顺序。**不含**AgentDefinition 里的模板消息 —— 那些由 `createAgent` 装 */
+  /** 已经落库的历史，按原顺序。不含 AgentDefinition 里的模板消息 —— 那些由 `createAgent` 装 */
   history: AgentNS.Message[];
   /** 还没被取走的 InboxEntry（上次没来得及处理的那几句），按入队顺序 */
   waiting: AgentNS.InboxEntryWithContent[];
   /**
    * 这一段上要装的插件（比如越线自动交接）。
    *
-   * 插件是**这一段会话的政策**：阈值与开关长在会话行上、配置在宿主的配置里，只有宿主说得清。
+   * 插件是这一段会话的政策：阈值与开关长在会话行上、配置在宿主的配置里，只有宿主说得清。
    * 而「装」这一步是运行时的事 —— 材料从上往下给，装配由做装配的那一层做。
    */
   plugins?: AgentPlugin[];
@@ -55,7 +54,6 @@ export interface NewPeerSession {
   lineage: string;
   /** 交给新会话的第一句话（它从空上下文开始，只能用这一句话知道要干什么） */
   prompt: string;
-  /** 用哪个 AgentDefinition 装 */
   agentId: string;
   /** 模型覆盖（不给就按该定义走三级解析） */
   modelId?: string;
@@ -84,7 +82,7 @@ export interface RuntimePorts {
   log?: LogSink;
 }
 
-/** 登记项：一段会话与它此刻活着的 Agent。**一个身份一条**，全仓只有这一份表 */
+/** 登记项：一段会话与它此刻活着的 Agent。一个身份一条，全仓只有这一份表 */
 interface Resident {
   readonly sessionId: string;
   /** 唤醒时定下的目录：换项目是换会话，不是把 Agent 搬走 */
@@ -102,7 +100,7 @@ interface Resident {
  * - Scope 的三格（`scope:` 前缀，与上面那一对并列）：这个目录的容器造起来了（`scope:appeared`）、
  *   按新配置刷新完了（`scope:refreshed`）、拆掉了（`scope:gone`）。前两格带一份能力快照（四个
  *   维度的候选名），于是第三方不必再摸容器就能说「现在能用什么能力」；
- * - 每个 Agent 的内核事件：名字与载荷**原样**转出（`started`、`messageAdded`、`state:idle` 等），
+ * - 每个 Agent 的内核事件：名字与载荷原样转出（`started`、`messageAdded`、`state:idle` 等），
  *   只额外带上它属于哪一段会话。
  *
  * 内核那一支为什么用映射类型拼、而不是手抄一份成员：手抄的那一份与内核的事件表迟早漂开，而漂开
@@ -128,7 +126,7 @@ export type RuntimeFact =
     }[keyof AgentEvents];
 
 /**
- * 内核事件表的一份**穷尽**清单：键与值是同一个字。
+ * 内核事件表的一份穷尽清单：键与值是同一个字。
  *
  * 它只为一件事存在 —— 防漂移。`keyof AgentEvents` 上加了新事件而这张表没补，TypeScript 直接
  * 报缺属性；表里多写一个内核没有的名字同样过不了编译。转发那一处从这张表取名字，不另抄第二份。
@@ -178,20 +176,20 @@ const EXCERPT_LIMIT = 300;
  * 运行时 —— 让 Agent 活着，并让它们互相说话。
  *
  * 三件事，共用同一份登记：
- * - **常驻**：`wake` 装起来、登记、开跑；`kill` 收掉。一段会话最多一个 Agent。
- * - **事件驱动**：没有人 `await` 也照样跑 —— 一条投递把它从闲推到忙，跑完自己回到闲。
+ * - 常驻：`wake` 装起来、登记、开跑；`kill` 收掉。一段会话最多一个 Agent。
+ * - 事件驱动：没有人 `await` 也照样跑 —— 一条投递把它从闲推到忙，跑完自己回到闲。
  *   运行时不给「等它跑完」这种口，常驻会话也没有「跑完了」这个对象。
- * - **发话**：`post` 把一句话寄给另一段会话（模型那一侧对应的工具是 `post_message`）。
+ * - 发话：`post` 把一句话寄给另一段会话（模型那一侧对应的工具是 `post_message`）。
  *
  * 它还管 Scope 的生死（见 `Scopes`）：容器按目录存活，「这个目录上还有几段会话活着」由登记表
  * 自己答得出，不必问谁。
  *
- * 它自己**没有**库、连接、凭证、语言与用户可见文案，也不认识会话行：身份是不透明的字符串，
+ * 它自己没有库、连接、凭证、语言与用户可见文案，也不认识会话行：身份是不透明的字符串，
  * 名字要问 `ports.nameOf`。
  */
 export class AgentRuntime {
   /**
-   * 活着的那些。**只有活着的**：杀死与删会话都把登记项去掉，于是「这一段在我这儿还在不在」
+   * 活着的那些。只有活着的：杀死与删会话都把登记项去掉，于是「这一段在我这儿还在不在」
    * 与「它有没有 Agent」是同一个问题。
    */
   private readonly residents = new Map<string, Resident>();
@@ -200,7 +198,7 @@ export class AgentRuntime {
    * 看到 false，于是装出两个 Agent，而登记表只留得下一个。
    */
   private readonly waking = new Map<string, Promise<SdkAgent>>();
-  /** 订了这份事实的那些人。**旁路**：只收，不参与任何判断 */
+  /** 订了这份事实的那些人。只收，不参与任何判断 */
   private readonly listeners = new Set<(fact: RuntimeFact) => void>();
   /**
    * 每个活着的 Agent 那一组转发订阅，按会话收好。
@@ -257,9 +255,9 @@ export class AgentRuntime {
   }
 
   /**
-   * 订阅运行时交出去的事实；返回退订函数（幂等：连着调两次不会炸）。
+   * 订阅运行时交出去的事实；返回退订函数（幂等：连着调两次不抛错）。
    *
-   * 这是**旁路**：订阅者不改任何决定，也不参与任何判断。晚到的订阅者拿不到过去的事实 ——
+   * 这是旁路：订阅者不改任何决定，也不参与任何判断。晚到的订阅者拿不到过去的事实 ——
    * 事实只报变化，快照那一侧由 `get` / `aliveOn` 对齐，两者合起来才说得清「此刻」与「怎么走到
    * 这一刻」。
    */
@@ -295,10 +293,10 @@ export class AgentRuntime {
   /**
    * 唤醒：装起来、登记、开跑。
    *
-   * **幂等**：已经活着就把它交回去；正在装的话，等的是同一次装。两个触发方同时叫醒同一段
+   * 幂等：已经活着就把它交回去；正在装的话，等的是同一次装。两个触发方同时叫醒同一段
    * （客户端连点两下发送）不该装出两个 Agent —— 那条会话的记忆只有一个，两个 Agent 会同时写它。
    *
-   * 装不出来就抛（模型解析不出来、定义文件读不出来、历史形状不对），并且**不留登记项**：
+   * 装不出来就抛（模型解析不出来、定义文件读不出来、历史形状不对），并且不留登记项：
    * 一个装了一半的会话在登记表里，等于告诉外面「它活着」，而它连件都收不了。
    */
   async wake(sessionId: string, materials: WakeMaterials): Promise<SdkAgent> {
@@ -318,15 +316,15 @@ export class AgentRuntime {
   /**
    * 发话：把一句话寄给另一段会话。
    *
-   * **投递不创建、也不复活会话**（`PRD.md` 4.1）：目标没有 Agent 就是没投出去，由发起方自己
+   * 投递不创建、也不复活会话：目标没有 Agent 就是没投出去，由发起方自己
    * 决定怎么跟用户说。两条拒绝原因要分得开 —— `gone` 是这段会话不在了（行都没了），`dead`
    * 是行还在、只是没人取走。判据只有宿主答得出，所以问 `nameOf`。
    *
-   * 优先级取高：这是「另一段会话对我说的话」，与用户敲的一句同属一类 —— 内循环在**工具跑完
-   * 那个边界**就会取它（`Agent.landHigh`，只认 high），于是对方在等我这边干活时不会被我这一批
+   * 优先级取高：这是「另一段会话对我说的话」，与用户敲的一句同属一类 —— 内循环在工具跑完
+   * 那个边界就会取它（`Agent.landHigh`，只认 high），于是对方在等我这边干活时不会被我这一批
    * 工具调用拖住（低优先级只在外循环取件那一刻才被看见：我这一批不结束，它就一直递不进来）。
    *
-   * 只有**将来的外部通知**（QQ、Email 这类真正的「来信」，回不回、什么时候回都无所谓）才该用
+   * 只有将来的外部通知（QQ、Email 这类真正的「来信」，回不回、什么时候回都无所谓）才该用
    * `low`：安静地排在队尾，等这一批干完再说。宿主与 SDK 内部现在没有一处用 `low` 投递给模型看
    * 的话 —— 唯一的例外是交接那条指令，理由写在 `HandoffService.pushAndWatch` 上。
    */
@@ -354,8 +352,8 @@ export class AgentRuntime {
   /**
    * 一段会话此刻什么样：忙不忙、名字、最近说了什么。
    *
-   * **不给全量消息、不给历史**：这个答案唯一的读者是另一段会话的模型，给了原文它就会把对方的
-   * 记忆当上下文搬运（`PRD.md` 4.3）。
+   * 不给全量消息、不给历史：这个答案唯一的读者是另一段会话的模型，给了原文它就会把对方的
+   * 记忆当上下文搬运。
    *
    * `found: false` 说的是「我这儿没有它的 Agent」：会话行被删了，或者进程重启之后还没人叫醒
    * 它，都落在这一格。
@@ -377,7 +375,7 @@ export class AgentRuntime {
   /**
    * 开一段 PeerSession：写行、装起来、把 `prompt` 递进去，建完即回。
    *
-   * **只许开一层**（`PRD.md` 4.3）：一段会话本身是别人开出来的话，它开不出第二层；被派出去的
+   * 只许开一层：一段会话本身是别人开出来的话，它开不出第二层；被派出去的
    * 那个 Agent（subagent）不属于任何一段会话，同样开不出来。判据是登记表里的血缘 —— 这一格
    * 只有运行时知道，所以这条规矩落在这里，而不是落在一道谁也查不动的校验里。
    *
@@ -402,7 +400,7 @@ export class AgentRuntime {
       modelId: input.modelId,
       label: input.label,
     });
-    // 模型解析不出来是**结构化的拒绝**：模型读得懂，可以换个 AgentDefinition 或自己干
+    // 模型解析不出来是结构化的拒绝：模型读得懂，可以换个 AgentDefinition 或自己干
     if (!opened.ok) return { ok: false, reason: opened.reason };
 
     await this.wake(opened.sessionId, opened.materials);
@@ -416,9 +414,9 @@ export class AgentRuntime {
   }
 
   /**
-   * 杀死：Agent 销毁，登记项去掉。会话行与历史留着（`PRD.md` 4.1）。
+   * 杀死：Agent 销毁，登记项去掉。会话行与历史留着。
    *
-   * 四步次序（`live-objects.md` 判据四）：
+   * 四步的先后不能换：
    * - 先去掉登记项再杀：杀死会发最后几条事件，那时这一段不该还能被别人查到活着的 Agent，
    *   也不该有人趁这一刻往里投话；
    * - 杀完再报「没了」：它最后那几条事实要排在这一条之前转出去；
@@ -434,7 +432,7 @@ export class AgentRuntime {
     this.detach(sessionId);
   }
 
-  /** 收工：杀光、拆光。进程退出前那一步；此后再叫醒就要重新给材料 */
+  /** 收工：杀掉全部 Agent、拆掉全部 Scope。进程退出前那一步；此后再叫醒就要重新给材料 */
   async close(): Promise<void> {
     for (const sessionId of [...this.residents.keys()]) this.kill(sessionId);
     await this.scopes.disposeAll();
@@ -444,7 +442,7 @@ export class AgentRuntime {
    * 装配：取容器、造 Agent、装材料里带的插件、把历史接在模板后面、把没取走的 InboxEntry 放回队列。
    *
    * 两处次序不是随手定的：
-   * - 历史一条一条 `append`，**不给 `agent.messages` 整体赋值**：那个数组是记忆的唯一真相，
+   * - 历史一条一条 `append`，不给 `agent.messages` 整体赋值：那个数组是记忆的唯一真相，
    *   换掉它会让已经拿到引用的地方继续指着旧的那一份；
    * - 放回队列排在装历史之后：一条 InboxEntry 落过地没有，判据是它那条消息在不在已经装好的历史里。
    *   反过来排，这个判据就得另找一份账。
@@ -479,7 +477,7 @@ export class AgentRuntime {
     );
     agent.restore(waiting);
 
-    // 三项次序（`live-objects.md` 判据一与判据四）：
+    // 三项次序：
     // - 先挂转发再登记：「出现」之后这一段会话发出来的每一条事实都要转出去，一条不落；
     // - 报「出现」排在开跑之前：一跑起来就可能被别的 Agent `post` 到，那些事实必须排在「出现」
     //   后面，否则订阅者会先收到一条关于它还不认识的会话的事实；
@@ -503,7 +501,7 @@ export class AgentRuntime {
     // 装载时归一过的那几条，补报一条「变了」。转发订阅挂在这一步之前（上面那一组），所以这条
     // 事实走的是和内核自己发的一模一样的那条路 —— 宿主那份唯一的观察者照旧只听事实写库。
     //
-    // - 报的是**变了**而不是**出现**：这几条本来就存在，装载不是新增；
+    // - 报的是变了而不是出现：这几条本来就存在，装载不是新增；
     // - 为什么必须报：宿主是这个库唯一的写者，它靠事实写库 —— 不报，那一行就停在上一个进程
     //   写它的那一刻（`writing`），而这一段其实已经归成 `aborted`；
     // - 为什么排在 `resident:appeared` 之后：先有「这一段回来了」，才有「它里面有一条变了」。
@@ -536,19 +534,19 @@ export class AgentRuntime {
   /**
    * 把一条事实交给每一个订阅者。
    *
-   * **这是「把事实交给每个订阅者」的唯一循环**：运行时的每一格事实（`resident:` 那两格、
+   * 这是「把事实交给每个订阅者」的唯一循环：运行时的每一格事实（`resident:` 那两格、
    * `scope:` 那三格、每个 Agent 转发上来的内核事件）都从这里出去，没有第二条路。所以隔离只需要
    * 兜在这一处 —— 漏不出第二个循环去。
    *
    * 一个订阅者抛错：记一句日志，接着交给下一个。抛错既不该连累别的订阅者，也不该打断被观察的
    * Agent（更没有打断这一趟叫醒的道理）。
    *
-   * **与内核那条 `observerFailed` 的分工**：内核报的是「某个 Agent 的订阅者炸了」，它有一个
+   * 与内核那条 `observerFailed` 的分工：内核报的是「某个 Agent 的订阅者抛了错」，它有一个
    * Agent 可以挂在上面（那条事实的 `agent` 一格）。这里没有「被观察的活物」可挂 ——
    * `broadcast` 交出去的正是事实本身，来源可能只是一个目录。替它另造一种事实，就得回答
-   * 「这条事实的订阅者又炸了怎么办」，而那是一个死循环。
+   * 「这条事实的订阅者又抛了错怎么办」，而那是一个死循环。
    *
-   * **为什么必须兜**：`broadcast` 就在 `assemble()` 里（报「这一段出现了」那一下）。订阅者一
+   * 为什么必须兜：`broadcast` 就在 `assemble()` 里（报「这一段出现了」那一下）。订阅者一
    * 抛，`wake` 会以一个旁路者的错误失败 —— 而那时登记项已经写进 `residents`、`start()` 还没
    * 调用，等于留下一段「登记着却永远不跑」的会话：`get` / `aliveOn` 都说它活着，它却一件事都
    * 不会做。
@@ -586,7 +584,7 @@ export class AgentRuntime {
  *
  * 给的是新对象：交进来的那一批是别人的（宿主从库里读出来的），就地改它等于替它改库。
  *
- * `normalized` 是**状态真的被改过**的那几条（还是那一批里的同一批对象，改完之后装进历史的就是
+ * `normalized` 是状态真的被改过的那几条（还是那一批里的同一批对象，改完之后装进历史的就是
  * 它们）。交回来是因为归一这件事在事实流上本来是无声的：`agent.append` 排在挂转发之前，那几条
  * 的 `messageAdded` / `messageFinished` 谁也听不到。
  */
@@ -611,7 +609,7 @@ function recovered(history: readonly AgentNS.Message[]): {
   return { history: repaired, normalized };
 }
 
-/** 最近一条 AgentDefinition 消息的正文摘要（`null` = 它还没说过话） */
+/** 最近一条 assistant 消息的正文摘要（`null` = 它还没说过话） */
 function lastMessageOf(messages: readonly AgentNS.Message[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!;

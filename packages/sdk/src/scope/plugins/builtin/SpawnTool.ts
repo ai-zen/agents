@@ -40,7 +40,7 @@ export class SpawnTool extends SdkCallbackTool {
     const detached = input.detached ?? false;
 
     /**
-     * 本工具只回答「进程是否已启动」，**不跟踪退出状态**。
+     * 本工具只回答「进程是否已启动」，不跟踪退出状态。
      *
      * 它 spawn 后立刻返回，输出也走 `stdio: "ignore"` 丢弃；因此命令不存在、语法错误、
      * 脚本起来就崩这类「早退失败」在这里一律看不见 —— 所以结果字段叫 `started` 而不是

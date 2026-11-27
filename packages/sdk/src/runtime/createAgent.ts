@@ -14,7 +14,7 @@ import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/a
  * `createAgent` 的可选行为开关。
  *
  * 两个中断策略开关不传时先取 `scope.config`（`config.json`）里的同名配置，再往下才是
- * core 默认值：中断策略属于**产品配置**，调用方不该自己读配置再转一道参数。
+ * core 默认值：中断策略属于产品配置，调用方不该自己读配置再转一道参数。
  */
 export interface CreateAgentOptions {
   /** 工具轮次被中断（或结果不完整）时的归一策略（core 默认 `fill`） */
@@ -28,7 +28,7 @@ export interface CreateAgentOptions {
    */
   abortedMessageStrategy?: AbortedMessageStrategy;
   /**
-   * **会话级**模型覆盖（三级解析的第一级）。
+   * 会话级的模型覆盖（三级解析的第一级）。
    *
    * 只有「这一段会话」该换模型时才传（宿主从会话行的 `modelId` 取，`/model`
    * 不带作用级别的写法写的就是它）。不传就落到 Agent 定义，再落到 `config.defaultModel`。
@@ -38,18 +38,18 @@ export interface CreateAgentOptions {
    */
   modelId?: string;
   /**
-   * **会话级**模型参数覆盖（三级解析里与 `modelId` 同一级的那一份，宿主从会话行的
+   * 会话级的模型参数覆盖（三级解析里与 `modelId` 同一级的那一份，宿主从会话行的
    * `modelParams` 取）。
    *
    * 只有 `modelId` 那一级赢了它才会真正生效 —— 取哪一份由 `resolveModelParams` 按档位
-   * 决定（同一处规则）。**它不会与 `AgentDefinition.modelParams` 合并**：定义那份是配给
+   * 决定（同一处规则）。它不会与 `AgentDefinition.modelParams` 合并：定义那份是配给
    * 定义绑定的模型的，会话把模型换掉之后把旧参数发给新模型就是端点 400。
    */
   modelParams?: ModelParams;
   /**
    * 寿命：`resident`（缺省）还是 `one-shot`。
    *
-   * `one-shot` 是「一次调用、一个答案、一个退出码」那条路（`PRD.md` 4.1 的一次性会话）：它只
+   * `one-shot` 是「一次调用、一个答案、一个退出码」那条路（一次性会话）：它只
    * 吃一次投递，跑完就死，`send` / `runOnce` 才有意义。缺省仍是常驻 —— 那是能力更大的那个。
    */
   lifetime?: AgentNS.AgentLifetime;
@@ -78,10 +78,10 @@ export interface CreateAgentOptions {
  * 从磁盘创建 Agent。
  *
  * 通过 Scope 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
- * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）；
- * **参数取「模型来自哪一级」那一份**，不跨级混合（同一处实现：`resolveModelParams`）。
+ * 模型按 会话级覆盖 > Agent 定义 > 全局兜底 解析（唯一实现：`resolveModel`）；
+ * 参数取「模型来自哪一级」那一份，不跨级混合（同一处实现：`resolveModelParams`）。
  *
- * 寿命由 `options.lifetime` 定：缺省造出来的是**常驻**Agent；`one-shot` 造出来的是「一次调用、
+ * 寿命由 `options.lifetime` 定：缺省造出来的是常驻 Agent；`one-shot` 造出来的是「一次调用、
  * 一个答案、一个退出码」那一种（只能 `send` / `runOnce`，跑完就散）。
  *
  * ```ts
@@ -118,7 +118,7 @@ export async function createAgent(
     agentModelId: stored.modelId,
     defaultModel: scope.config?.defaultModel,
   });
-  // 三级都没有就是**真的没有模型**：不静默挑一个出厂模型顶上 —— 用户会以为自己在用
+  // 三级都没有就是真的没有模型：不静默挑一个出厂模型顶上 —— 用户会以为自己在用
   // 配置里那个，实际请求（和账单）落在别的模型上。带上 agentId 是因为同一条错误在
   // 服务端日志里必须能指出是哪份定义没绑。
   if (!resolved) {
@@ -128,7 +128,7 @@ export async function createAgent(
     );
   }
 
-  // 生效的模型写进**这一份**（内存里的）定义：运行期所有读 `definition.modelId` 的地方
+  // 生效的模型写进这一份（内存里的）定义：运行期所有读 `definition.modelId` 的地方
   // —— 状态栏快照、上下文阈值（`tokenThresholds`）、插件 —— 必须看到同一个模型，否则
   // 就又回到「界面写着 A、请求发给 B」。磁盘上的定义一个字都不动：会话级覆盖只属于这一段
   // 会话，落盘走的是会话行的 `modelId`（见宿主 `SessionRepository.setModel`）。
@@ -159,7 +159,7 @@ export async function createAgent(
       //
       // - 一次性 Agent 手上什么都没有：名单与理由都在 `scope/plugins/oneShotTools.ts`（那边是
       //   唯一一份 —— 定义式 subagent、技能 subagent、这条 `runOnce` 的路都从它取，免得再漏第
-      //   四处）。这些工具在它手上只有必错的路，而每一条必错的路都要烧一次模型调用去走 ——
+      //   四处）。这些工具在它手上只有必错的路，而每一条必错的路都要多花一次模型调用 ——
       //   不如一开始就不给。
       // - 别人开出来的那一段会话（`canOpenPeers: false`）只排 `create_session`：再开一层就是
       //   套娃；投递与问状态那两个照旧留着，平级之间是双向说话的。两个后台工具也照旧留着
@@ -184,7 +184,7 @@ export async function createAgent(
     // 快照之后，运行时改动只作用于会话副本。
     messages: [...(definition.messages ?? [])] as AgentNS.Message[],
     tools,
-    // 中断相关策略：**显式参数 > `scope.config` > core 默认值**。
+    // 中断相关策略：显式参数 > `scope.config` > core 默认值。
     // 中间那一层是「配置即事实」：策略写在 `config.json` 里，各端与 subagent 创建
     // 读的是同一份，不必自己读配置再转成参数。
     abortedToolRoundStrategy:

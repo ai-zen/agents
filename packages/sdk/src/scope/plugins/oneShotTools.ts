@@ -1,18 +1,18 @@
 /**
- * 一次性 Agent 手上**不该有**的那些工具 —— 名单与摘法都只有这一份。
+ * 一次性 Agent 手上不该有的那些工具 —— 名单与摘法都只有这一份。
  *
  * ## 为什么一次性 Agent 一件都不能有
  *
  * 一次性 Agent（`lifetime: "one-shot"`）的寿命在调用栈里：`runOnce()` 一返回它就 `stop()`
  * 并关收（`core/src/Agent.ts`）。于是这两类工具在它手上都只有必错的路：
  *
- * - **PeerSession 那三件**（`post_message` / `create_session` / `read_session_status`）：
+ * - PeerSession 那三件（`post_message` / `create_session` / `read_session_status`）：
  *   它不属于任何一段会话 —— 没有可以署名的身份（发话要写「来自哪一段会话」），也开不出有人
  *   认领的新会话（`create_session` 必回 `depth_exceeded`）；
- * - **`async_exec` / `async_timeout`**：结果在将来某个时刻由 inbox 投回来，那时它的调用栈
+ * - `async_exec` / `async_timeout`：结果在将来某个时刻由 inbox 投回来，那时它的调用栈
  *   已经退了 —— `send` 抛 `closed`，那条结果就此丢掉并记一行日志；更早一步，`onStop` 上的
  *   清点会把还没结束的后台命令直接 `kill()`（见 `builtin/asyncTasks.ts` 的 `supervise`）。
- *    也就是说「起了个后台任务，回头再收结果」在子 Agent 身上不是不可靠，是**必然不成立**。
+ *    也就是说「起了个后台任务，回头再收结果」在子 Agent 身上不是不可靠，是必然不成立。
  *
  * ## 三处造一次性 Agent 的地方都要过这一道
  *
@@ -37,7 +37,7 @@ export const ONE_SHOT_WITHHELD_TOOL_NAMES: readonly string[] = [
 ];
 
 /**
- * 从一份**已经装配好**的工具里摘掉 {@link ONE_SHOT_WITHHELD_TOOL_NAMES}（按名字，保持原顺序）。
+ * 从一份已经装配好的工具里摘掉 {@link ONE_SHOT_WITHHELD_TOOL_NAMES}（按名字，保持原顺序）。
  *
  * 给那些「拿父 Agent 的工具实例、不过 `scope.filter`」的路用（技能 subagent）。走 filter 的
  * 那两处不需要它 —— 那边是同一份名单、另一条通道。

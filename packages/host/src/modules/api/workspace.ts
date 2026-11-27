@@ -30,7 +30,7 @@ export function workspaceRouter(deps: HostApiDeps, api: Trpc) {
      * 建一个项目。`cwd` 的归一化在 `WorkspaceService.create` 里做，这一层不再做一遍：
      * 两处各做一次，第二处就得处理「第一处的结果再进来一次」这种不存在的处境。
      *
-     * 名字没给就取**那个目录自己的名字**（{@link defaultWorkspaceName}）：项目是「哪个目录」，
+     * 名字没给就取那个目录自己的名字（{@link defaultWorkspaceName}）：项目是「哪个目录」，
      * 它叫什么最自然的就是目录叫什么。这一格由宿主定、不让客户端传 —— 客户端手里那个路径可能
      * 还没归一化（远端宿主上的 `/srv/proj` 在一台 Windows 客户端上会被切成另一串字符串）。
      */

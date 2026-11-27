@@ -17,24 +17,20 @@ export interface DiscoverUserToolsOptions {
 /** 默认的单文件 import 超时（毫秒） */
 const DEFAULT_IMPORT_TIMEOUT_MS = 5000;
 
-// ==================================================================
-// 宿主护栏
-// ==================================================================
-//
-// `import()` 是把文件当模块**求值**，不是把文件当配置读——顶层代码因此拥有宿主进程
+// `import()` 是把文件当模块求值，不是把文件当配置读——顶层代码因此拥有宿主进程
 // 的全部权限。这里是有过真实事故的：用户把一个一次性开发脚本（无参数时
-// `process.exit(2)`）放进了 tools 目录，于是**每次启动都在初始化途中被这个脚本杀掉**，
+// `process.exit(2)`）放进了 tools 目录，于是每次启动都在初始化途中被这个脚本杀掉，
 // 界面上只剩最后一帧，看着像「卡住不启动」；另有脚本在顶层直接 `writeFileSync`，
 // 每次启动都在静默重写项目资产。
 //
 // 能挡住的：
 //   · `process.exit` / `process.abort` → 换成抛异常，落进 `loadToolFile` 的 try/catch；
-//   · `console.log / info / debug`     → 改指 stderr，不撕宿主的 stdout（TUI 画面）；
+//   · `console.log / info / debug`     → 改指 stderr，不动宿主的 stdout（TUI 画面）；
 //   · 顶层 await 永不 settle（异步挂死）→ 超时放弃该文件。
 //
-// **挡不住**的（只有进程隔离能解，那正是 MCP 的职责）：
+// 挡不住的（只有进程隔离能解，那正是 MCP 的职责）：
 //   · 顶层同步死循环——事件循环被占，连超时定时器都不会跑；
-//   · `process.kill(process.pid)` 这类原生自杀。
+//   · `process.kill(process.pid)` 这类直接结束进程的调用。
 
 /** 正在被 import 的文件（护栏回报错误时用它定位） */
 let importingFile: string | null = null;
@@ -52,7 +48,7 @@ class UserToolExitError extends Error {
 }
 
 /**
- * 工具模块的静态判据：ESM 里没有 `export` 就**不可能**导出 Tool。
+ * 工具模块的静态判据：ESM 里没有 `export` 就不可能导出 Tool。
  *
  * 这个预检能把「放错目录的普通脚本」挡在求值之前——没有 export 的模块本来也会被
  * `normalizeToolExport` 判成 null，区别只在于：那时它已经被求值、副作用已经发生了。
@@ -73,7 +69,7 @@ async function mayExportTool(filepath: string): Promise<boolean> {
 /**
  * 装上宿主护栏，返回还原函数。
  *
- * 保存的是**当前**值而非模块加载时的值，且由调用方在 finally 里还原——
+ * 保存的是当前值而非模块加载时的值，且由调用方在 finally 里还原——
  * 不能常驻，否则宿主自己也永远退不出去。
  */
 function installHostGuards(): () => void {
@@ -106,7 +102,7 @@ function installHostGuards(): () => void {
 /**
  * `import()` + 超时。
  *
- * 超时只是「不再等它」：ESM 求值**不可取消**，该模块随后仍可能被求值完并产生副作用，
+ * 超时只是「不再等它」：ESM 求值不可取消，该模块随后仍可能被求值完并产生副作用，
  * 因此超时只记告警、不声称已终止。
  */
 async function importWithTimeout(url: string, timeoutMs: number): Promise<unknown> {
@@ -136,7 +132,7 @@ function reportReject(
  * 一个用户工具文件（加载成功的那一个）：文件身份 + 加载出来的实例。
  *
  * 为什么要成对给：`Tool` 自己不记「我是从哪个文件来的」（它只是 core 的一个工具对象），
- * 而把发现结果报给上层的调用方（宿主 `DiscoveryService` 列配置层）需要的正是**文件**。
+ * 而把发现结果报给上层的调用方（宿主 `DiscoveryService` 列配置层）需要的正是文件。
  * 让调用方拿着工具名去某个目录里找同名文件，就是第二套扫描规则。
  */
 export interface UserToolFile {
@@ -163,7 +159,7 @@ export async function discoverUserTools(
 }
 
 /**
- * 同 {@link discoverUserTools}，但把**文件**也一起交出来（路径 / 文件名）。
+ * 同 {@link discoverUserTools}，但把文件也一起交出来（路径 / 文件名）。
  *
  * 扫描规则只写在本函数里，另一个出口只是上面的 `map`。
  */
@@ -210,10 +206,6 @@ export async function discoverUserToolFiles(
   return items;
 }
 
-// ==================================================================
-// ESM 加载（import()）
-// ==================================================================
-
 /**
  * 从 .js / .mjs 文件加载 Tool 实例。
  *
@@ -221,9 +213,9 @@ export async function discoverUserToolFiles(
  * 防止模块缓存，确保 refresh() 能重新加载。
  *
  * 三道护栏（顺序有意义）：
- *   1. **先做静态预检**：没有 `export` 的文件根本不 import（连求值的机会都不给）；
- *   2. **再装宿主护栏**：import 期间 `process.exit` / console 输出被接管；
- *   3. **超时**：异步挂死的文件不再拖住启动。
+ *   1. 先做静态预检：没有 `export` 的文件根本不 import（连求值的机会都不给）；
+ *   2. 再装宿主护栏：import 期间 `process.exit` / console 输出被接管；
+ *   3. 超时：异步挂死的文件不再拖住启动。
  */
 async function loadToolFile(
   filepath: string,
@@ -266,10 +258,6 @@ async function loadToolFile(
     restore();
   }
 }
-
-// ==================================================================
-// 导出格式归一化
-// ==================================================================
 
 /**
  * 统一各种导出格式为 Tool 实例。

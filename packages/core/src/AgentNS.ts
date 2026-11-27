@@ -81,7 +81,7 @@ export namespace AgentNS {
     /** 消息唯一标识，强制必填：`Message` 构造时自动生成（或由 `newMessageId()` 给）。
      *  `formatHistory` 发出去的那一份没有它 —— 那是按白名单重排的另一个对象，不是这条消息本身 */
     id: string;
-    /** 这条消息产生的时刻（epoch 毫秒）。构造 `Message` 时自动填，不从外面传 */
+    /** 这条消息产生的时刻（epoch 毫秒），构造 `Message` 时自动填，不从外面传 */
     createdAt: number;
     name?: string;
     content?: MessageContent;
@@ -101,7 +101,7 @@ export namespace AgentNS {
      */
     usage?: Usage;
     /**
-     * 本条 **tool 消息**内「内部委派」产生的累计 token 用量（如 subagent）：
+     * 本条 tool 消息内「内部委派」产生的累计 token 用量（如 subagent）：
      * 委派跑完时由 `AgentToolLazy` 写进 `ctx.resultMessage`，随消息持久化；
      * 与 `usage`（本条消息自身那次响应）互斥出现。求和用 `sumUsage()`。
      */
@@ -109,28 +109,28 @@ export namespace AgentNS {
     hidden?: boolean;
     omit?: boolean;
     /**
-     * 这条 user 消息从哪儿来 —— 「谁说的话」只有这一个来源。宿主注入的隐藏 cwd 消息也要填
+     * 这条 user 消息的来源。「谁说的话」只有这一个来源。宿主注入的隐藏 cwd 消息也要填
      *（`{ kind: "system", label: "cwd" }`）：缺了它，注入消息就会被数进「用户说的话」，
      * 而判据只有一条：`source.kind === "user"`。
      */
     source?: MessageSource;
     /**
-     * 这条消息自己出的错 —— 与 `failed` 事件载荷是**同一个实例**，不另造一个形状。
+     * 这条消息自己出的错，与 `failed` 事件载荷是同一个实例，不另造一个形状。
      *
      * 错误文本不进 `content`：`content` 是模型说的话，写进去之后只要「保留半截」策略一生效，
      * 模型下一次请求就会看到自己「说」了一段 `ECONNREFUSED`。
-     * 例外是 `role: tool`：那条消息的 `content` 本来就是给模型读的**结果**。
+     * 例外是 `role: tool`：那条消息的 `content` 本来就是给模型读的结果。
      */
     error?: AgentError;
   }
 
   /**
-   * 这条 user 消息从哪儿来。
+   * 这条 user 消息的来源。
    *
-   * 三格都是文字，**不带任何活引用** —— 消息要落库，而 `Agent` 带着 `client`、事件
-   * 监听器、自己那份 `messages`：JSON 序列化直接成环抛错，硬裁掉之后同一个字段就变成
-   * 「活的时候有、读回来没有」，形状当场变形。要「点进去看那段会话」，需要的是会话 id
-   *（宿主的财产），不是 agent 引用 —— core 给 label，宿主自己映射。
+   * 三格都是文字，不带任何活引用：消息要落库，而 `Agent` 带着 `client`、事件监听器、自己那份
+   * `messages` —— JSON 序列化直接成环抛错，硬裁掉之后同一个字段就变成「活的时候有、读回来没
+   * 有」，形状当场变形。要让界面跳到那段会话，需要的是会话 id（宿主的财产），不是 agent 引用：
+   * core 给 label，宿主自己映射。
    */
   export type MessageSource =
     /** 用户本人说的话 */
@@ -157,13 +157,13 @@ export namespace AgentNS {
   }
 
   /**
-   * **钥匙**：只用于唤醒 agent，自身不写进 messages 成任何消息。
+   * 只用于唤醒 agent 的 InboxEntry，自身不写进 messages 成任何消息。
    *
-   * 存在的唯一理由是「输入已经在 `messages` 里了」—— 委派的 subagent、装载好历史的一次性
-   * 会话，都是这种情形：燃料装好了，只差触发一次。没有正文就没有消息，所以没有 `messageId`，
-   * 也没有 `source`。
+   * 存在的唯一理由是「输入已经在 `messages` 里了」：委派的 subagent、装载好历史的一次性会话，
+   * 都是这种情形 —— 待处理的输入已就位，只差触发一次。没有正文就没有消息，所以没有
+   * `messageId`，也没有 `source`。
    *
-   * `priority` 恒为 `low`：内循环只看 high，钥匙天然取不到。
+   * `priority` 恒为 `low`：内循环只看 high，这种条目天然取不到。
    */
   export interface InboxKey {
     createdAt: string;
@@ -176,10 +176,10 @@ export namespace AgentNS {
   /**
    * 投递入参。三种写法：
    *
-   * - **一句话**：`send("看一下这个")`；
-   * - **一组内容块**：`send([{ type: "text", … }, { type: "image_url", … }])`（多模态）；
-   * - **信封**：要指定优先级与来源时给全 `{ content, priority, source }`（`messageId` /
-   *   `createdAt` 由 core 补）；什么都不给（或者 `content` 显式为空）= 拧钥匙。
+   * - 一句话：`send("看一下这个")`；
+   * - 一组内容块：`send([{ type: "text", … }, { type: "image_url", … }])`（多模态）；
+   * - 信封：要指定优先级与来源时给全 `{ content, priority, source }`（`messageId` / `createdAt`
+   *   由 core 补）；什么都不给（或者 `content` 显式为空）= 只唤醒 agent，不落消息。
    *
    * 裸内容补的缺省是「有人现在说了一句」：优先级 `high`、来源 `{ kind: "user" }`。别的来源
    * （异步结果、系统通知、另一段会话寄来的话）本来就得说清自己是谁，它们继续给信封。
@@ -190,27 +190,27 @@ export namespace AgentNS {
     | { content?: undefined };
 
   /**
-   * 对外报的两格：在干 / 闲 —— **只由循环的位置决定**，与「收不收件」无关。
+   * 对外报的两格：「在干」与「闲」。只由循环的位置决定，与是否收投递无关。
    *
-   * - `working`：手上有活（本批已经取出来了，正在跑）；
-   * - `idle`：手上没活 **且** 队列真空。中间那一拍（手上没活、但队列里还压着）**不报闲** ——
-   *   否则等在外面的 subagent 会在半截处收走结果。
+   * - `working`：本批已经取出来了，正在跑；
+   * - `idle`：队列真空，且没有正在跑的那一批。中间那一拍（队列里还压着条目、但尚未取走）不报
+   *   闲，否则等在外面的 subagent 会在半截处收走结果。
    *
-   * 「从下一批起还收不收件」**不在这一格里**：它是另一处状态（`Agent.isOutputPaused`）。
-   * 两件事压在同一格上必然有一格报不出来：暂停取走期间投进来的那批照跑（口径如此），跑完就该报
-   * 闲，而那个开关仍旧是 true —— 压成一格的话，这一拍就报不出两个，另一个必然丢。
+   * 「从下一批起还收不投递」不在这一格里，它是另一处状态（`Agent.isOutputPaused`）。两件事压在
+   * 同一格上必然有一格报不出来：暂停取走期间投进来的那批照跑，跑完就该报闲，而那个开关仍是
+   * true；压成一格的话，这一拍报不出两个取值，另一个必然丢。
    *
-   * 不报「出过错」：**出过错是事实，不是状态**（读那条消息的 `status` / `error`）。
-   * 其余的「是否正在推理」「在等哪几个工具」全部读活消息与 delta 流推断，不存第二份状态。
+   * 不报「出过错」：出过错是事实，不是状态（读那条消息的 `status` / `error`）。其余的「是否正在
+   * 推理」「在等哪几个工具」全部读活消息与 delta 流推断，不存第二份状态。
    */
   export type AgentState = "working" | "idle";
 
   /**
    * 寿命：常驻还是只用一次，构造期定下。
    *
-   * 它不只是「活多久」，是**能力差**（`CORE.md` §1）：
-   * - `resident`：`start` / `stop`，任何人都能 `push` 多次 —— 结果以后回来的工具还有人在收；
-   * - `one-shot`：`send()` / `runOnce()` 专用；**开跑即关闭输入开关**（第二次 `push` 抛 `closed`），
+   * 它不只是「活多久」，而是两种能力的差别：
+   * - `resident`：`start` / `stop`，任何调用方都能 `push` 多次 —— 结果以后回来的工具还有接收方；
+   * - `one-shot`：`send()` / `runOnce()` 专用；开跑即关闭输入开关（第二次 `push` 抛 `closed`），
    *   它的寿命在调用栈里，栈一退就没有接收方。
    */
   export type AgentLifetime = "resident" | "one-shot";
