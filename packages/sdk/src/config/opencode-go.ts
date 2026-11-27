@@ -36,9 +36,16 @@
  *   窗口本身记在 `contextWindow` 里，两者不要互相推导；
  * - `description`：官方 `description`。
  *
- * 没有 `reasoningPreset`：思考档位表只收「官方文档写明怎么传参数」的端点，而 OpenCode 这边
- * 本仓只有 `capabilities.reasoning.effort` 这一格（各模型的档位集合还不一样），没有请求侧参数的
- * 官方说明。所以这些模型在 `/think` 里不可调档 —— 不编一份没依据的表。
+ * ## 思考档位
+ *
+ * 挂的是 `reasoning-presets.ts` 里那几张 `opencode-go-*` 表：档位集合抄自 models.dev 各模型的
+ * `capabilities.reasoning.effort`（OpenCode 自己的目录就按它生成可选项），请求侧统一写
+ * `reasoning_effort`。几张表分开，是因为这一家的档位集合按模型各不相同。
+ *
+ * 没有挂表的几条：`kimi-k3` 只认 `max` 一档（菜单只有一项）；`kimi-k2.7-code` 的元数据里没有
+ * 档位，且上游对 `reasoning_effort: none` 直接报错；`minimax-m3`、`longcat-2.5` 只有开关没有档位；
+ * `minimax-m3.1-flash`、`step-5-preview` 元数据里有档位，但实测各档的 `reasoning_tokens` 与明文
+ * 思考长度都没有变化。
  *
  * 更新方式：重新打一次 `/models`，按上面几条重算，并且把「能不能跑通」那一关重过一遍。
  */
@@ -76,6 +83,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 384000,
     tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-high-max",
     description:
       "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
   },
@@ -87,6 +95,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     contextWindow: 1000000,
     maxOutputTokens: 384000,
     tokenThresholds: { handoff: 400000, guard: 800000 },
+    reasoningPreset: "opencode-go-high-max",
     description: "Flagship DeepSeek model for coding, reasoning, and agentic work",
   },
   {
@@ -97,6 +106,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     contextWindow: 1000000,
     maxOutputTokens: 131072,
     tokenThresholds: { handoff: 400000, guard: 800000 },
+    reasoningPreset: "opencode-go-low-high-max",
     description: "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
   },
   {
@@ -108,6 +118,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 131072,
     tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-high-max",
     description: "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
   },
   {
@@ -119,6 +130,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 500000,
     tokenThresholds: { handoff: 200000, guard: 400000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-medium-high-xhigh",
     description:
       "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
   },
@@ -155,6 +167,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 1048576,
     tokenThresholds: { handoff: 419000, guard: 839000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-high-max",
     description:
       "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
   },
@@ -201,6 +214,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 131072,
     tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-medium-xhigh",
     description: "Qwen vision-language model for visual reasoning, documents, and agent tasks",
   },
   {
@@ -212,6 +226,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 131072,
     tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-medium-xhigh",
     description:
       "2.4-trillion-parameter multimodal flagship for coding, professional work, and long-horizon agentic workflows",
   },
@@ -226,6 +241,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 262144,
     tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-high-xhigh",
     description:
       "Flagship multimodal model for coding, office productivity, frontend design, and complex agentic tasks",
   },
@@ -264,6 +280,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     // 这一条在本端点走 responses 面。不点明要摘要，回包里只有 `reasoning.encrypted`，客户端
     // 拿不到明文思考；`provider_options` 是网关自己给出的作用域写法，域名是 `openai-responses`。
     defaultParams: { provider_options: { "openai-responses": { reasoning: { summary: "auto" } } } },
+    reasoningPreset: "opencode-go-low-medium-high-xhigh-max-off",
     description: "Cost-efficient GPT-5.6 model for fast, high-volume workloads",
   },
   {
@@ -277,6 +294,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     vision: true,
     // 同上：不带这一格时思考照跑（usage 里有 reasoning_tokens），但流里只有加密块。
     defaultParams: { provider_options: { "openai-responses": { reasoning: { summary: "auto" } } } },
+    reasoningPreset: "opencode-go-low-medium-high-xhigh-max-off",
     description: "OpenAI's most efficient model for focused, high-volume tasks",
   },
   {
@@ -288,6 +306,7 @@ export const OPENCODE_GO_MODELS: ModelDefinition[] = [
     maxOutputTokens: 128000,
     tokenThresholds: { handoff: 400000, guard: 800000 },
     vision: true,
+    reasoningPreset: "opencode-go-low-medium-high-xhigh-max-off",
     description:
       "Fast Claude model for responsive assistance, classification, and lightweight agents",
   },
