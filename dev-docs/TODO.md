@@ -55,7 +55,11 @@
   直接调；2026 那一档由任务会话的多轮循环接手，经 `McpTaskBridge` 的 `elicit` 参数调回来。
   不能让 SDK 自己履行那几轮 —— `@modelcontextprotocol/ext-tasks` 发 `tools/call` 时带 `allowInputRequired`，
   自动履行因此是关的。
-- 测试服务器：`packages/test-project/mcp-servers/elicit-server.mjs`（`--era modern|legacy`），
-  端到端用例 `packages/sdk/test/e2e-elicitation.test.ts`（`npm run test:e2e`）。
-- 一个事实值得记：官方 `@modelcontextprotocol/server@2.4.0` 对 `server/discover` 回 Method not found，
-  也就是说用它搭出来的服务器永远停在 2025 那一档；新版那一档的线上形状只能手写（测试服务器就是这么来的）。
+- 测试服务器两台，分工不同：`packages/test-project/mcp-servers/elicit-server.mjs`（手写 JSON-RPC，
+  `--era modern|legacy`，能造「非要某一档」的对照与 url 档那种我们没声明的问法）；
+  `packages/sdk/test/fixtures/official-elicit-server.mjs`（官方 `serveStdio` + `inputRequired`/`inputResponse`，
+  验与官方 SDK 搭出来的服务器互通）。端到端用例 `packages/sdk/test/e2e-elicitation.test.ts`（`npm run test:e2e`）。
+- 一个事实值得记：官方 server SDK **能**服务 2026-07-28 那一档，但只走 `serveStdio`（stdio）与
+  `createMcpHandler`（HTTP）两个入口 —— 年款由开场那条消息定，Server 是被这两个入口「标记」之后才
+  装上 `server/discover` 处理器的。手写 `new McpServer` + `new StdioServerTransport` 的那套只服务 2025
+  那一档：同一句 `server/discover` 它回 Method not found，看着像「不支持新版」，其实只是没走对入口。

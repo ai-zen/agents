@@ -21,8 +21,10 @@
  *   authorize                          问一张 url 档的表（要人去外部页面填凭据）
  *   quiet                              什么都不问，用来对照
  *
- * 这里手写 JSON-RPC 而不套官方 server SDK：官方那份（@modelcontextprotocol/server 2.4.0）
- * 对 `server/discover` 回 Method not found，也就产不出 modern 那一档的线上形状。
+ * 这里手写 JSON-RPC 而不用官方 server SDK：官方那份也能双年款（`serveStdio` 按开场那条消息定
+ * 年款、`inputRequired`/`inputResponse` 一套 builder 两种年款通用，见 `fixtures/official-elicit-server.mjs`），
+ * 但它按规矩办事 —— 谈成哪一档由客户端说了算，造不出「非要 `--era legacy`」这种对照，也不会
+ * 发 url 档那种我们没声明的问法。这台是给「客户端在两种年款下、以及边角问法下该怎么接」用的。
  */
 
 import readline from "node:readline";
