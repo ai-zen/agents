@@ -1,227 +1,119 @@
----
-title: Getting Started
-description: From zero to the first message out: install and test, start a host (agents-host serve and its options), mint a credential (token create and run/token), connect a client, and two ways to run without a host (core alone, and core plus Scope).
-outline: deep
----
+# Getting started
 
-# Getting Started
+## Requirements
 
-This page goes from an empty directory to "the first message is out". The two roads can be taken
-separately: one starts a host and lets a client from another repository connect to it; the other
-assembles an agent out of `core` and `sdk` alone, with no host in the picture.
+- Node.js 24 or newer: the host uses the built-in `node:sqlite`
+- pnpm, when building from source
+- An OpenAI-compatible endpoint and its key
 
-## Prerequisites
+The data root is the only writable directory tree in the runtime. It is taken from `AI_ZEN_DIR` and defaults to `~/.ai-zen`. The host and the command line read the same place.
 
-| Item | Notes |
+## The terminal client
+
+```bash
+npm i -g @ai-zen/cli
+ai
+```
+
+`ai` (also `aiz` and `zen`) opens the interactive interface. It looks for a host in this order: an explicit address from `--server <url>`, then the `AI_ZEN_SERVER_URL` environment variable, then the address in `<data root>/run/host.json` together with the credential in `<data root>/run/token`. When nothing is reachable it starts one with `npx -y @ai-zen/agents-host@<version range> serve --ai-zen-dir <data root>` and waits for it to listen.
+
+Two modes, one per process:
+
+| Invocation | Mode |
 |---|---|
-| Node.js | The host uses `node:sqlite` (`packages/host/src/infra/db.ts`), so the runtime needs that module |
-| pnpm | This repository is a pnpm workspace (`pnpm-workspace.yaml`); everything under `packages/*` hangs off it |
-| A model endpoint | The kernel runs on the official `openai` package: an `OpenAI` client, a model name and an array of messages are enough to construct an agent |
+| With positional arguments, or stdin / stdout is not a TTY | Pure stdio: one call, only the final assistant text on stdout, logs and progress on stderr |
+| No arguments and both stdin and stdout are TTYs, or `--tui` | Interactive interface |
 
-## Install and test
+Common arguments:
+
+```bash
+ai "which build scripts does this repo use"   # one call, nothing persisted
+ai --save "read src and summarise it"         # one call, but written into a real session
+ai --new                                     # open the interface on a new session
+ai --server ws://192.168.1.10:8790           # connect to a specific host
+ai --server-status                           # print host status; does not start one, does not open the interface
+```
+
+Exit codes: `0` success; `1` failure after the run has started; `2` the command itself was wrong (for example `--tui` without a TTY).
+
+## Endpoints
+
+The first start writes `<data root>/config.json`. Its four factory endpoints all have an empty `apiKey`:
+
+| Endpoint id | Address |
+|---|---|
+| `openai` | `https://api.openai.com/v1` |
+| `bigmodelcn` | `https://open.bigmodel.cn/api/paas/v4` |
+| `deepseek` | `https://api.deepseek.com/v1` (declares the Files API, so local files are uploaded rather than inlined) |
+| `opencode-go` | subscription endpoint; its model list ships with the SDK |
+
+Fill in the key of the one you use and it runs. The default agent is bound to `deepseek-flash`, which belongs to the `deepseek` endpoint.
+
+## Starting a host from source
 
 ```bash
 pnpm install
-pnpm test
-```
+pnpm -r --filter '@ai-zen/agents-host...' build
 
-`pnpm test` builds `testing`, `logger`, `host` and `client` first, then runs each package's suite in
-turn. A single package is tested from its own directory:
-
-```bash
-cd packages/core
-npm run pretest      # tsc --noEmit -p tsconfig.test.json
-npx vitest run
-```
-
-The host has a second suite that runs real processes and stays out of `npm test`:
-
-```bash
-cd packages/host
-npx vitest run                                  # domain tests: no ports, no real disk
-npx vitest run --config vitest.e2e.config.ts    # a real host: real port, real disk, real WebSocket
-```
-
-Package builds are wired at the root: `pnpm build-core`, `pnpm build-sdk`, `pnpm build-host`,
-`pnpm build-client`, `pnpm build-logger`, `pnpm build-testing`.
-
-## Start a host
-
-```bash
-pnpm build-host
 node packages/host/dist/cli.js serve
 ```
 
-Installed, the same entry point is the `agents-host` bin, so the command reads `agents-host serve`.
-By default it listens on the loopback address, port 8790.
+On start it prints five lines: listen address, version, discovery file, log directory, credential file. Other arguments:
 
-The options of `serve` (`packages/host/src/cli.ts`):
-
-| Option | Meaning |
+| Argument | Meaning |
 |---|---|
-| `--port <n>` | Listen on that port. `0` lets the system assign one, and is only accepted here |
-| `--host <addr>` | Listen on that address, overriding the one `--public` implies. It does not by itself change whether the instance counts as local; `--public` does |
-| `--public` | Listen on all interfaces instead of the loopback address |
-| `--ai-zen-dir <dir>` | The data root, written into `AI_ZEN_DIR` before anything else reads it |
-
-A port that is explicitly given but is not an integer between 0 and 65535 is rejected by the command
-line with the usage text and exit code 2; a port already in use makes startup fail rather than move to
-another one.
-
-`stop` stops the host recorded in `<data root>/run/host.json`, by pid, after one confirmation; `--yes`
-skips that question for scripts.
-
-## Mint a credential
-
-A client presents a token in its handshake. Minting one is the host's own administrative action and
-goes through the command line, which opens no service:
+| `--port <n>` | Port, default 8790 |
+| `--host <addr>` | Listen address |
+| `--public` | Listen on all interfaces, for clients beyond this machine |
+| `--ai-zen-dir <dir>` | Data root, overriding `AI_ZEN_DIR` |
 
 ```bash
-node packages/host/dist/cli.js token create --note laptop   # the plaintext is printed once
-node packages/host/dist/cli.js token list                   # id and state
-node packages/host/dist/cli.js token revoke <id>            # revoke one
+node packages/host/dist/cli.js token create --note "laptop"
+node packages/host/dist/cli.js token list
+node packages/host/dist/cli.js token revoke <id>
+node packages/host/dist/cli.js stop
 ```
 
-The database keeps only the SHA-256 digest of that token; the plaintext appears once, at creation.
-Revoking affects whether a later connection can be made, and does not reach back into a connection
-that already shook hands.
+A local instance writes a credential for local clients into `<data root>/run/token`, so `token create` is not needed on the same machine. Credentials for other machines can only be created with `token create`; the plaintext appears in that output once. The database stores a digest.
 
-A local instance also writes one usable token into `<data root>/run/token`, so a client on the same
-machine can read it instead of being handed one. A public instance (`--public`) does not write that
-file: on that machine credentials are minted by hand and handed to the devices that connect.
+## Without a host
 
-## Connect a client
+For a single answer, `core` and `sdk` are enough:
 
-This repository ships no user interface. A terminal client exists, and a desktop app exists, each in
-its own repository, each embedding `@ai-zen/agents-client` into its own build.
-
-Everything between a client and a host travels one WebSocket: tRPC runs over it, and the facts the
-host publishes come back on one subscription over the same connection. The token goes in the
-handshake frame (`connectionParams` as `{ token }`), never in a query string; a connection that fails
-that check reaches no procedure and is closed with `unauthorized`.
-
-The local case needs neither an address nor a token by hand: the client reads which host is serving
-from `<data root>/run/host.json`, and the token from `run/token` beside it. Connecting to a host on
-another machine means giving both an address and a token, and the token is the string `token create`
-printed.
-
-## A minimal agent without the host
-
-This section uses `@ai-zen/agents-core` only: no database, no session row, no connection. The promise
-from `start()` resolves when the agent dies, so waiting for one batch means waiting for `state:idle`.
-
-```ts
-import OpenAI from "openai";
-import { Agent, Message } from "@ai-zen/agents-core";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: "https://api.openai.com/v1",
-});
-
-const agent = new Agent({
-  client,
-  model: "gpt-4o",
-  messages: [Message.System("Answer in one sentence.")],
-});
-
-// on() returns the unsubscribe function; the handler receives the live message
-const offFinished = agent.on("messageFinished", ({ message }) => {
-  if (message.role === "assistant" && message.content) console.log(message.content);
-});
-
-// resolve when one batch is done and the queue is empty
-const idle = new Promise<void>((resolve) => {
-  const offIdle = agent.on("state:idle", () => {
-    offIdle();
-    resolve();
-  });
-});
-
-agent.send("What does this package do?");
-
-void agent.start();  // resolves only when the agent is dead
-await idle;          // the batch in hand finished
-agent.stop();        // drain what is queued, then die
-offFinished();
-console.log(agent.messages.at(-1)?.content);
+```bash
+pnpm add @ai-zen/agents-core @ai-zen/agents-sdk
 ```
-
-Adding `@ai-zen/agents-sdk` on top puts two sessions in touch: `AgentRuntime` assembles an `Agent` and
-keeps the register of what is alive, and `post()` puts one message in another session's inbox. The
-receiving session goes from idle to working by that delivery, runs on its own and comes back to idle;
-the posting side does not wait for it.
 
 ```ts
 import {
-  AgentRuntime,
   ConfigManager,
-  PeerSessionsScopePlugin,
+  DEFAULT_AGENT_ID,
   Scope,
   allInOne,
-  type RuntimeFact,
-  type WakeMaterials,
+  createAgent,
 } from "@ai-zen/agents-sdk";
 
-// config.json and the two definitions "lead" and "helper" already exist under `base`
 const base = "/path/to/data";
 const config = new ConfigManager(`${base}/config.json`);
-const names = new Map<string, string>();
+await config.bootstrap();
 
-const runtime = new AgentRuntime({
-  openScope: async (cwd, peers) => {
-    const scope = new Scope({ getConfig: () => config.read(), agentsDir: `${base}/agents`, cwd })
-      .use(...allInOne({ mcpPaths: [`${base}/mcp.json`] }))
-      .use(new PeerSessionsScopePlugin(peers)); // the peer tools need the port from the runtime
-    await scope.init();
-    return scope;
-  },
-  open: async (input) => {
-    // a real host writes a session row here and decides the identity
-    const sessionId = `session-${names.size + 1}`;
-    names.set(sessionId, input.label ?? input.prompt);
-    const materials: WakeMaterials = {
-      cwd: base,
-      agentId: input.agentId,
-      modelId: input.modelId,
-      lineage: input.lineage,
-      history: [],
-      waiting: [],
-    };
-    return { ok: true, sessionId, materials };
-  },
-  nameOf: async (sessionId) => names.get(sessionId),
-});
+const scope = new Scope({
+  getConfig: () => config.read(),
+  agentsDir: `${base}/agents`,
+  cwd: base,
+}).use(...allInOne({}));
+await scope.init();
 
-runtime.observe((fact: RuntimeFact) => {
-  if (fact.type === "messageFinished") console.log(fact.sessionId, fact.message.content);
-});
-
-names.set("lead", "lead");
-names.set("helper", "helper");
-await runtime.wake("lead", { cwd: base, agentId: "lead", lineage: null, history: [], waiting: [] });
-await runtime.wake("helper", { cwd: base, agentId: "helper", lineage: null, history: [], waiting: [] });
-
-// the helper is woken up by this delivery, runs on its own, and comes back to idle
-console.log(await runtime.post({ from: "lead", to: "helper", content: "Say hi in one line." }));
-console.log(await runtime.status("helper"));
-
-await runtime.close();
+const agent = await createAgent(scope, DEFAULT_AGENT_ID, { lifetime: "one-shot" });
+const messages = await agent.runOnce("classify this error log");
+console.log(messages.at(-1)?.content);
 ```
 
-The model here is resolved from `config.json`, which carries the endpoints, the models and their
-keys. The runtime borrows four ports from the caller — build a `Scope` (`openScope`), open a session
-(`open`), read what a session is called right now (`nameOf`), log — and the host provides exactly
-these four. Replace them with empty implementations and this layer behaves the same.
-
-For tools, skills and MCP without `AgentRuntime`, `Scope` plus `createAgent` is enough — that code is
-in [Core and Scope alone](scope.md).
+No database, no resident process, no network interface. `bootstrap()` creates the directories, `config.json`, the default agent, the default sub-agent and the factory skills; existing files are never overwritten.
 
 ## Next
 
-- [Architecture](architecture.md) — the criteria for the four layers, the four questions for live
-  objects, where events and persistence land
-- [Core API](core.md) — one `Agent`'s inbox, its two loops, its two switches, the plugin hooks
-- [SDK](sdk.md) — `Scope`, model resolution, handoff, the runtime
-- [Core and Scope alone](scope.md) — no `AgentRuntime`, no host
-- [Deployment](deploy.md) — local and public instances, the three port levels, credentials, upgrades
+- It should stay resident, take repeated deliveries, and wake when a result comes back: [Agent](agent.md)
+- It needs your own tools, skills or sub-agents: [Capabilities](capabilities.md)
+- It needs MCP: [MCP](mcp.md)
+- It needs multiple clients, sessions talking to each other, survival across restarts: [Host](host.md)

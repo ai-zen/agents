@@ -1,198 +1,121 @@
----
-title: 快速开始
-description: 从零到第一句发出去：装依赖、跑测试、起一台宿主（agents-host serve 与它的参数）、拿一串凭证（token create 与 run/token）、把客户端连上去，以及不经宿主的两种用法（只用 core；core 加 Scope）。
-outline: deep
----
-
 # 快速开始
-
-这一页从空目录走到「第一句发出去」。两条路可以分开走：一条是把宿主跑起来、让另一个仓里的客户端连上来；另一条是只用 `core` 与 `sdk` 装一个 agent，不经过宿主。
 
 ## 前提
 
-| 项 | 说明 |
-|---|---|
-| Node.js | 宿主用 `node:sqlite`（`packages/host/src/infra/db.ts`），运行环境要有这个模块 |
-| pnpm | 本仓是 pnpm workspace（`pnpm-workspace.yaml`），`packages/*` 都挂在它下面 |
-| 模型端点 | 内核跑在官方 `openai` 包上；一个 `OpenAI` 客户端、一个模型名、一组消息就够构造一个 agent |
+- Node.js 24 及以上：宿主使用内置的 `node:sqlite`
+- pnpm（从源码构建时）
+- 一个 OpenAI 兼容端点的密钥
 
-## 装依赖、跑测试
+数据根是这套运行时唯一的可写目录树，由环境变量 `AI_ZEN_DIR` 指定，缺省 `~/.ai-zen`。宿主与命令行读同一处。
+
+## 用终端客户端
+
+```bash
+npm i -g @ai-zen/cli
+ai
+```
+
+（从源码构建：`cd cli && npm run build`，入口是 `dist/index.js`，`bin` 里登记了 `ai`、`aiz`、`zen` 三个名字。）
+
+`ai`（同 `aiz`、`zen`）在终端里启动交互界面。它先按顺序找宿主：显式地址 `--server <url>`、环境变量 `AI_ZEN_SERVER_URL`，都没有就读 `<数据根>/run/host.json` 里的地址与 `<数据根>/run/token` 里的凭证；连不上时按 `npx -y @ai-zen/agents-host@<版本范围> serve --ai-zen-dir <数据根>` 拉起一个，再等它开始监听。
+
+两种模式，同一个进程只走其中一条：
+
+| 调用方式 | 模式 |
+|---|---|
+| 带位置参数，或 stdin / stdout 不是 TTY | 纯 stdio：一次性调用，只把最终的助手文本写进 stdout，日志与进度走 stderr |
+| 无参数且 stdin / stdout 都是 TTY，或带 `--tui` | 交互界面 |
+
+常用参数：
+
+```bash
+ai "这个仓库用了哪些构建脚本"          # 一次性调用，不落库
+ai --save "看完 src 后总结一下"        # 一次性调用，但写成一段真会话
+ai --new                              # 进界面，开一段新会话，不续接这个目录上一次的
+ai --server ws://192.168.1.10:8790    # 连指定的宿主
+ai --server-status                    # 打印宿主状态，不拉起、不进界面
+```
+
+退出码：`0` 成功；`1` 已经跑起来之后的失败；`2` 命令本身用错（例如 `--tui` 但终端不是 TTY）。
+
+## 配端点
+
+第一次启动会写出 `<数据根>/config.json`，里面四个出厂端点的 `apiKey` 都是空串：
+
+| 端点 id | 地址 |
+|---|---|
+| `openai` | `https://api.openai.com/v1` |
+| `bigmodelcn` | `https://open.bigmodel.cn/api/paas/v4` |
+| `deepseek` | `https://api.deepseek.com/v1`（声明了 Files API，本地文件走上传而不是内联） |
+| `opencode-go` | 订阅式端点，模型清单随 SDK 一起发布 |
+
+把要用的那一个填上密钥就能运行。默认 agent 绑的模型是 `deepseek-flash`，它属于 `deepseek` 端点。
+
+## 从源码起宿主
 
 ```bash
 pnpm install
-pnpm test
-```
+pnpm -r --filter '@ai-zen/agents-host...' build
 
-`pnpm test` 先构建 `testing`、`logger`、`host` 与 `client`，再把各包自己的套件逐个跑一遍。跑单个包就进它的目录：
-
-```bash
-cd packages/core
-npm run pretest      # tsc --noEmit -p tsconfig.test.json
-npx vitest run
-```
-
-宿主另有一套跨进程的用例，不进 `npm test`：
-
-```bash
-cd packages/host
-npx vitest run                                  # 域内用例：不起端口、不写真实磁盘
-npx vitest run --config vitest.e2e.config.ts    # 真的一套：真端口、真磁盘、真 WebSocket
-```
-
-构建在根上给了入口：`pnpm build-core`、`pnpm build-sdk`、`pnpm build-host`、`pnpm build-client`、`pnpm build-logger`、`pnpm build-testing`。
-
-## 起一台宿主
-
-```bash
-pnpm build-host
 node packages/host/dist/cli.js serve
 ```
 
-装好之后入口是 `agents-host` 这个 bin，同一条命令因此写作 `agents-host serve`。缺省只监听回环地址的 8790 端口。
+启动后打印五行：监听地址、版本、发现文件、日志目录、凭证文件。其余参数：
 
-`serve` 的参数（`packages/host/src/cli.ts`）：
-
-| 参数 | 意思 |
+| 参数 | 含义 |
 |---|---|
-| `--port <n>` | 监听这个端口。`0` 由系统分配，只有这一档放行 |
-| `--host <addr>` | 监听这个地址，压过 `--public` 推出的那一个。它本身不改变这台实例算不算本机实例，改变的是 `--public` |
-| `--public` | 监听所有网卡，而不是回环地址 |
-| `--ai-zen-dir <dir>` | 数据根，先写进 `AI_ZEN_DIR` 再让别的模块读 |
-
-端口显式给出但不是 0 到 65535 的整数时，命令行直接拒绝并打印用法，退出码 2；端口被占用时启动失败退出，不换端口重试。
-
-`stop` 按 `<数据根>/run/host.json` 里那个 pid 关掉这台机器上的宿主，问一次再动手；脚本里加 `--yes` 跳过这一问。
-
-## 拿一串凭证
-
-客户端连上来要一串令牌，握手时带上。造它的是宿主自己的管理动作，走命令行，不开服务：
+| `--port <n>` | 端口，缺省 8790 |
+| `--host <addr>` | 监听地址 |
+| `--public` | 监听所有网卡，供本机之外的客户端连接 |
+| `--ai-zen-dir <dir>` | 数据根，覆盖 `AI_ZEN_DIR` |
 
 ```bash
-node packages/host/dist/cli.js token create --note laptop   # 明文只打印这一次
-node packages/host/dist/cli.js token list                   # 列出 id 与状态
-node packages/host/dist/cli.js token revoke <id>            # 吊销一串
+node packages/host/dist/cli.js token create --note "笔记本"
+node packages/host/dist/cli.js token list
+node packages/host/dist/cli.js token revoke <id>
+node packages/host/dist/cli.js stop
 ```
 
-库里存的是这串令牌的 SHA-256 摘要，明文只在创建那一次出现；吊销影响的是此后能不能连上，已经握过手的连接不会被回头断开。
+本机实例启动时会把本机客户端的凭证写进 `<数据根>/run/token`，本机不必再执行 `token create`。给别的设备用的凭证只能由 `token create` 创建，明文只在那一次的输出里出现；数据库里存的是摘要。
 
-本机实例还会把一串能用的令牌写进 `<数据根>/run/token`，同一台机器上的客户端读它就行，不必手抄。对外实例（`--public`）不写这个文件：那台机器上的凭证只能由人当场造出来，再分发给要连的设备。
+## 不装宿主
 
-## 把客户端连上去
+只要一个答案时，`core` 与 `sdk` 就够：
 
-仓里不带界面。另有一份终端客户端（还有一份桌面端），各自在别的仓里，各自把 `@ai-zen/agents-client` 捆进自己的产物。
-
-客户端到宿主的全部交通是一条 WebSocket，tRPC 跑在上面，宿主发出来的事实从同一条连接上的一条订阅回来。令牌放在握手的 `connectionParams` 里（`{ token }`），不进 URL 查询串；验不过的连接连一个 procedure 都调不到，回 `unauthorized` 之后关闭。
-
-本机这一档不用配置地址，也不用给令牌：客户端从 `<数据根>/run/host.json` 读「谁在服务」，从同一处的 `run/token` 读那串令牌。连另一台机器上的宿主时，地址与令牌都要显式给，令牌就是上一步 `token create` 打印出来的那一串。
-
-## 不经过宿主的最小 agent
-
-这一段只用 `@ai-zen/agents-core`：没有库、没有会话行、没有连接。`start()` 的 promise 在这个 agent 死掉时才 resolve，所以要等一批跑完，等的是 `state:idle`。
-
-```ts
-import OpenAI from "openai";
-import { Agent, Message } from "@ai-zen/agents-core";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: "https://api.openai.com/v1",
-});
-
-const agent = new Agent({
-  client,
-  model: "gpt-4o",
-  messages: [Message.System("Answer in one sentence.")],
-});
-
-// on() returns the unsubscribe function; the handler receives the live message
-const offFinished = agent.on("messageFinished", ({ message }) => {
-  if (message.role === "assistant" && message.content) console.log(message.content);
-});
-
-// resolve when one batch is done and the queue is empty
-const idle = new Promise<void>((resolve) => {
-  const offIdle = agent.on("state:idle", () => {
-    offIdle();
-    resolve();
-  });
-});
-
-agent.send("What does this package do?");
-
-void agent.start();  // resolves only when the agent is dead
-await idle;          // the batch in hand finished
-agent.stop();        // drain what is queued, then die
-offFinished();
-console.log(agent.messages.at(-1)?.content);
+```bash
+pnpm add @ai-zen/agents-core @ai-zen/agents-sdk
 ```
-
-再加一层 `@ai-zen/agents-sdk`，就是两段会话互相发话：`AgentRuntime` 装上 `Agent`、留一份「谁活着」的登记，`post()` 把一条话寄给另一段会话。被投的那一段自己从闲变成忙、跑完回到闲，投的那一侧不等它。
 
 ```ts
 import {
-  AgentRuntime,
   ConfigManager,
-  PeerSessionsScopePlugin,
+  DEFAULT_AGENT_ID,
   Scope,
   allInOne,
-  type RuntimeFact,
-  type WakeMaterials,
+  createAgent,
 } from "@ai-zen/agents-sdk";
 
-// config.json and the two definitions "lead" and "helper" already exist under `base`
 const base = "/path/to/data";
 const config = new ConfigManager(`${base}/config.json`);
-const names = new Map<string, string>();
+await config.bootstrap();
 
-const runtime = new AgentRuntime({
-  openScope: async (cwd, peers) => {
-    const scope = new Scope({ getConfig: () => config.read(), agentsDir: `${base}/agents`, cwd })
-      .use(...allInOne({ mcpPaths: [`${base}/mcp.json`] }))
-      .use(new PeerSessionsScopePlugin(peers)); // the peer tools need the port from the runtime
-    await scope.init();
-    return scope;
-  },
-  open: async (input) => {
-    // a real host writes a session row here and decides the identity
-    const sessionId = `session-${names.size + 1}`;
-    names.set(sessionId, input.label ?? input.prompt);
-    const materials: WakeMaterials = {
-      cwd: base,
-      agentId: input.agentId,
-      modelId: input.modelId,
-      lineage: input.lineage,
-      history: [],
-      waiting: [],
-    };
-    return { ok: true, sessionId, materials };
-  },
-  nameOf: async (sessionId) => names.get(sessionId),
-});
+const scope = new Scope({
+  getConfig: () => config.read(),
+  agentsDir: `${base}/agents`,
+  cwd: base,
+}).use(...allInOne({}));
+await scope.init();
 
-runtime.observe((fact: RuntimeFact) => {
-  if (fact.type === "messageFinished") console.log(fact.sessionId, fact.message.content);
-});
-
-names.set("lead", "lead");
-names.set("helper", "helper");
-await runtime.wake("lead", { cwd: base, agentId: "lead", lineage: null, history: [], waiting: [] });
-await runtime.wake("helper", { cwd: base, agentId: "helper", lineage: null, history: [], waiting: [] });
-
-// the helper is woken up by this delivery, runs on its own, and comes back to idle
-console.log(await runtime.post({ from: "lead", to: "helper", content: "Say hi in one line." }));
-console.log(await runtime.status("helper"));
-
-await runtime.close();
+const agent = await createAgent(scope, DEFAULT_AGENT_ID, { lifetime: "one-shot" });
+const messages = await agent.runOnce("把这段错误日志归个类");
+console.log(messages.at(-1)?.content);
 ```
 
-这一段里的模型从 `config.json` 解析出来：端点、模型与密钥都写在那个文件里。运行时有四个端口由调用方给 —— 造一个 `Scope`（`openScope`）、开一段会话（`open`）、现读一段会话此刻叫什么（`nameOf`）、日志 —— 宿主给的就是这四格；把它们换成空实现，这一层的行为一条不变。
-
-要工具、技能、MCP 这些能力，但不要 `AgentRuntime` 时，`Scope` 与 `createAgent` 就够 —— 那份代码在[只用 core 与 Scope](scope.md)。
+这里没有数据库、没有常驻进程、没有对外接口。`bootstrap()` 补齐目录、`config.json`、默认 agent、默认子代理与出厂技能，已有文件不覆盖。
 
 ## 下一步
 
-- [架构](architecture.md) —— 四层的判据、活物的四问、事件与持久化的落点
-- [Core API](core.md) —— 一个 `Agent` 的 inbox、两个循环、两道开关、插件钩子
-- [SDK](sdk.md) —— `Scope`、模型解析、交接、运行时
-- [只用 core 与 Scope](scope.md) —— 不装 `AgentRuntime`、不碰宿主
-- [部署](deploy.md) —— 本机实例与对外实例、端口三档、凭证、升级
+- 需要它常驻、能被反复投递、能在结果回来时被唤醒：[Agent](agent.md)
+- 需要加自己的工具、技能、子代理：[能力](capabilities.md)
+- 需要 MCP：[MCP](mcp.md)
+- 需要多客户端、会话互发、进程重启后继续：[宿主](host.md)

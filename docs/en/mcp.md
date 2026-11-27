@@ -1,166 +1,102 @@
----
-title: MCP
-description: What someone configuring an MCP server needs to know — how to get one server connected, the five configuration files and the merge order, the three transports and their fields, what happens on enable and disable, how a description reaches the model, the OAuth fields that exist without an implementation, the five on-demand tools, and tasks (a handle comes back, the result is fetched by task id).
-outline: deep
----
-
 # MCP
 
-Everything on the MCP (Model Context Protocol) side lives in `@ai-zen/agents-sdk`, under `scope/plugins/mcp/`: discovery that merges five configuration files into one list, `McpConnectionManager` for connecting and disconnecting, the layer that turns servers into five tools, and one task session per server.
+MCP servers connect on demand: discovery only reads the configuration files and establishes nothing; a connection is made when the model calls `load_mcp`.
 
-This page is for someone configuring MCP servers: where the configuration lives, how to write it, when a change takes effect, what parameters the five tools take, and what shape a task has.
+## Configuration
 
-## How to use
-
-Connecting one server is three things: write an entry, let it be discovered, let the model use it.
-
-Only two files can be written by an interface: `<data root>/mcp.json` (default `~/.ai-zen/mcp.json`) for the user layer, `<project>/.ai-zen/mcp.json` for the project layer. The other three belong to someone else's repository or another tool's directory and are taken as they are (see the next section). One entry looks like this:
+One `mcp.json`, keyed by `mcpServers`. Each entry is one server, and its key is the id:
 
 ```json
 {
   "mcpServers": {
-    "github": {
+    "fs-server": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "..." },
-      "description": "GitHub repository and issue operations"
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
+      "env": { "LOG_LEVEL": "warn" },
+      "description": "Read-only view of /data"
     },
-    "postgres": {
+    "remote": {
       "type": "http",
       "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "Bearer ..." },
-      "description": "PostgreSQL data access"
+      "headers": { "X-Team": "infra" }
+    },
+    "legacy": {
+      "type": "sse",
+      "url": "https://old.example.com/sse",
+      "disabled": true
     }
   }
 }
 ```
 
-To let it be discovered: when a `Scope` starts, and whenever `scope.reload` is called, every container already built re-reads the configuration (on the host side the entry points are `/reload` and the runtime's `refreshAll()`). A server that is new is not connected on its own — no call, no process, no link.
-
-To let the model use it: it holds `load_mcp` (connect, hand back the manifest) and `call_mcp_tool` (call one tool), plus three more for resources and tasks (see [The five on-demand tools](#the-five-on-demand-tools)). `description` does its work here too: it goes into the parameter description of `load_mcp`, which is how the model decides whether the server is worth connecting.
-
-When a change takes effect, what disabling disconnects, and what the timeouts are: see [Enabling and disabling](#enabling-and-disabling).
-
-## Five configuration files
-
-One list comes from five files, nearest first, and a nearer file wins for the same name.
-
-| Layer | File | Who may write |
-|---|---|---|
-| project root | `<project>/.mcp.json` | taken as it is — shared with other tools |
-| project | `<project>/.ai-zen/mcp.json` | an interface may write it |
-| project | `<project>/.agents/mcp.json` | taken as it is |
-| user | `<data root>/mcp.json` (default `~/.ai-zen/mcp.json`) | an interface may write it |
-| user | `~/.agents/mcp.json` | taken as it is |
-
-Those five layers appear in the code under exactly these five names: `workspace`, `workspaceAiZen`, `workspaceAgents`, `user`, `userAgents`.
-
-Only the project's `.ai-zen` file and the one in the data root are written by the host; the other three live in someone else's repository or another tool's directory, and writing those would be editing someone else's files. A write keeps the file as it was apart from the named entry — keys this version does not know, keys another tool put there, all stay; deleting an entry that is not in this layer reports `not_found`, because it came from a farther layer and deleting here deletes nothing.
-
-The merge rules are four:
-
-- For the same name the nearer layer wins, and the farther entry is not even read.
-- A `disabled: true` in a near layer still counts as that layer speaking: it cancels the same name further away rather than counting as "this layer never mentioned it".
-- An entry that is not an object does not even occupy the name.
-- A file that cannot be parsed as JSON gets one log line and then counts as empty — those servers quietly disappear from the list, and that one line is the only place the reason can come from.
-
-## Three transports
-
-| Transport | Fields | What it is |
-|---|---|---|
-| `stdio` | `command`, `args`, `env` | spawn a child process, talk over stdin / stdout |
-| `http` | `url`, `headers` | Streamable HTTP: POST to send, optionally an SSE stream back |
-| `sse` | `url`, `headers` | the older HTTP + SSE: GET opens an SSE stream, POST sends |
-
-The transport can be written explicitly as `type`; `transport` and `transportType` are accepted as aliases. With none of the three, it is inferred from the fields: a `command` means `stdio`, a `url` means `http`. Writing back always writes only the standard key, `type` — once a file carries both `type` and `transport`, whichever a person edits may be the one that does not take effect.
-
-Two things that are easy to get wrong:
-
-- `args` is an array of strings, and each element is one argument, passed without a shell (the child is spawned with `shell: false`). So `"--flag value"` inside `args` passes one argument that contains a space, not two; two arguments means two elements. To run shell syntax, write it as `["-c", "..."]` or similar.
-- The child's environment starts with a small set (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`, a different set on Windows), and `env` from the configuration is layered on top, overriding by name. Put tokens in `env` rather than expecting them to already be in the parent's environment.
-
-## Enabling and disabling
-
-There is one switch for disabling: `disabled: true` on that entry. Nowhere else records "this server is off right now".
-
-What happens after disabling depends on whether the `Scope` received that change. The host tells the runtime about the change, the runtime makes every container already built re-read the configuration, and each container makes the MCP plugin discover again and reconcile by definition:
-
-| In this discovery | What happens to the connection |
+| Field | Meaning |
 |---|---|
-| it disappeared (deleted, or cancelled by `disabled: true`) | disconnect; the cached status and manifest go with it |
-| its definition changed | disconnect; the next call connects lazily under the new definition |
-| it is new | not connected on its own — no call, no process, no link |
-| not one byte changed | untouched; the connection and the manifest stay |
+| `type` | `stdio`, `http` or `sse`. When omitted it is inferred: `command` means `stdio`, `url` means `http`. The aliases `transport` and `transportType` are also accepted |
+| `command`, `args`, `env` | `stdio`: the child process and its environment |
+| `url`, `headers` | `http` / `sse`: address and request headers |
+| `oauth` | Only for `http`: `authorizationUrl`, `tokenUrl`, `clientId`, `clientSecret`, `scope` |
+| `description` | What the model is told about this server; it is listed in `load_mcp`'s parameter description |
+| `disabled` | `true` disables the entry. A disabled entry still claims the name, so a nearer `disabled` cancels a farther definition of the same name |
 
-"Definition" means the connection facts: the transport and its parameters (`command` / `args` / `env` / `url` / `headers` / `oauth`). `description` is not part of that fingerprint — it only affects the text `load_mcp` shows the model, and changing it should not drop a healthy connection.
+## Five files, merged as layers
 
-So "disabling disconnects" is a consequence of the container receiving the change, not something an interface does by pressing a button; and "enabling again" does not mean a process starts right away: connections are lazy, and the next time the model picks that server it connects under the new definition.
+The nearer layer wins, nearest first:
 
-A few things about connections themselves: the connect timeout defaults to 60 seconds, and on timeout the connection is dropped with an error, so a mistyped address cannot hang a tool forever; the idle timeout is 30 minutes for stdio and 5 minutes for http and sse, renewed on every call; when the transport drops, that server is marked disconnected and one log line is written — it does not reconnect on its own, since reconnecting happens the next time somebody needs it, and a stale manifest is never presented as the current one. The status has four values: `disconnected`, `connecting`, `connected`, `error`.
-
-## `description` is for the model
-
-`description` is not a comment. It goes into the parameter description of `load_mcp`: each allowed server takes one line, written `id: description`, and a server without one gets a single "no description" line. That is how the model knows what the server is for and whether it is worth connecting — without that text it can only guess from the name.
-
-It is also the only definition field that does not affect the connection: changing it disconnects nothing, and the new text is there at the next assembly.
-
-## OAuth: the fields are there, nothing is implemented
-
-`oauth` recognises this shape: `{ authorizationUrl, tokenUrl, clientId, clientSecret?, scope? }`, meaningful for http only. The discovery layer carries it into `McpServerDefinition` as it stands, and the connection layer never looks at it.
-
-So the fields exist, and configuring them connects nothing; do not pretend otherwise. For a server that needs authorisation today, the only way is to put the token in `headers` yourself.
-
-## The five on-demand tools
-
-MCP tools are not registered up front — how many tools a server has is only known once it is connected. The model therefore holds five tools, loaded on demand:
-
-| Tool | Parameters | What it does |
+| Layer | File | Writable by the host |
 |---|---|---|
-| `load_mcp` | `server` (the enum is exactly the allowed servers), `include_manifest` (default `true`) | connect to that server and hand back its manifest `{ tools, resources }`; with `include_manifest: false` it only connects and returns a summary `{ server, connected, tools: count, resources: count }`, for when the manifest is already in context; an already-connected server is renewed once and the same manifest is handed back |
-| `call_mcp_tool` | `server`, `tool`, `arguments` | call a tool on a connected server; if it is not connected, reply "connect with `load_mcp` first" |
-| `read_mcp_resource` | `server`, `uri` | read one resource; text comes back as it is, images and binaries are uploaded or inlined according to what the endpoint can do, and no section is dropped |
-| `get_mcp_task_result` | `server`, `task_id` | fetch the result of one task by its id (see the next section) |
-| `cancel_mcp_task` | `server`, `task_id` | ask the server to stop a task already started |
+| Project root | `<project>/mcp.json` | No: that file belongs to other tools |
+| Project host directory | `<project>/.ai-zen/mcp.json` | Yes |
+| Project shared directory | `<project>/.agents/mcp.json` | No |
+| User level | `<data root>/mcp.json` | Yes |
+| Home shared directory | `~/.agents/mcp.json` | No |
 
-`load_skill` and `call_skill_sub_agent` are not MCP tools: they come from the skills side and have nothing to do with servers; do not fold them into this table.
+Only those two layers are written, because the other three sit either in someone else's repository or in another tool's directory. Merging is "nearest wins", and the files are re-read on every call with no cache: users edit them whenever they like.
 
-Permissions have two places to look at. These five tool names always register under the `tools` dimension, so "no MCP at all" can be a clean cut; which servers count is the `mcps` dimension, matched by server name. `call_mcp_tool`, `read_mcp_resource` and the two task tools also check the server name against this container's own allow-list: the connection manager is shared globally, and judging only by "is it connected" would open a server any `Agent` connected to every container.
+Disabling, aliases and "log the file that failed to parse" are handled inside the discovery function; the host layer only answers which five files there are and which two are writable.
 
-Text is protected, media is not. When the text of one whole answer adds up to more than `maxToolOutput` (32768 characters by default), all of it is written to `result.txt` and the model gets an explanation plus the first and last 1000 characters; the judgement uses the total character count, not a per-section one — per-section, several 30k sections together would flood the request. Images and audio are not subject to this rule: they are uploaded as `file_id` or inlined as base64 according to what the endpoint can do, in their original positions.
+## At runtime
 
-## Tasks
+Tools on an MCP server do not enter the tool list. The list holds five entry points:
 
-A task is the long-running shape of an MCP call: the server accepts the call, hands back a handle at once, and the result is fetched later by task id.
-
-Who decides that a call becomes a task was reversed in the 2026-07-28 revision: **the server decides**, the client only declares that it can handle the answer. A tool states how it treats tasks in `execution.taskSupport`, and that is what we turn into a preference:
-
-| Declared | What we send |
+| Tool | What it does |
 |---|---|
-| `forbidden` (also the default when the field is absent) | no task parameters, called synchronously |
-| `optional` | we propose a task; the server may still run it through |
-| `required` | we always propose a task — without the task parameters the server refuses |
+| `load_mcp` | Connects to a server and returns its tools, resources, prompts and skills. With `include_manifest=false` it connects without fetching the manifest |
+| `call_mcp_tool` | Calls a concrete tool on that server |
+| `read_mcp_resource` | Reads a resource uri |
+| `get_mcp_task_result` | Fetches the result of a long task |
+| `cancel_mcp_task` | Cancels a long task |
 
-A preference is only our side of the conversation; whether the answer is a result or a handle is the server's call. This whole layer sits on the official extension-track package `@modelcontextprotocol/ext-tasks` (Beta, headed for core); we wrap it in one task session per connection and split the immediate result from the task handle.
+The server name in `load_mcp` is an enum drawn from the permission-filtered set: a server denied by `permissions.mcps` never appears there and cannot be connected by name either.
 
-On a task call, `call_mcp_tool` hands back a handle at once instead of waiting for the result:
+Connections live per directory: the `Scope` owns the connection manager, all sessions in one working directory share it, and `dispose()` closes everything. A failed connect rethrows the original error; retry policy is not this layer's business — which errors are worth retrying, and how long to wait, is known only to the caller.
 
-```json
-{ "task": true, "taskId": "...", "hint": "..." }
-```
+## Long tasks
 
-A terminal state is delivered into the inbox of the session that made the call (`completed` / `failed` / `cancelled`). Intermediate states are not delivered: they are not "something needs a person", and delivering each one is a flood. The delivery port is `McpTaskNoticePort`, implemented by the host: `sessionOf(agent)` says which session the caller belongs to, and `deliver(sessionId, notice)` puts the notice into that session's inbox. Delivery neither creates nor revives a session: if nobody is there any more, the notice is dropped with one log line.
+A server may declare how a tool handles tasks: `execution.taskSupport` is `forbidden` (default), `optional` or `required`. A tool that supports tasks may return a task id instead of a result.
 
-The result itself is fetched by task id with `get_mcp_task_result`. What the server stores is the result of one tool call, so it goes through the same media mapping and the same text protection as `call_mcp_tool`; if the task has not finished, the call waits for it. To give up, `cancel_mcp_task` — whether it can stop is the server's call, and the terminal notice arrives either way.
+When the task reaches a terminal state (`completed`, `failed`, `cancelled`), a notice is delivered to the queue of the session that made the call, and the notice body points at `get_mcp_task_result`. It travels the same path as background commands: high priority, arriving at that session's next fetch.
 
-A few edges:
+If there is nothing to deliver to, the notice is dropped and one line is logged: no waking, no creating, no half entry — a notice pushed by a server must not bring a dead session back.
 
-- A task id is unique only on its own server, so the handle-to-server correspondence is kept by "server + task id".
-- That correspondence lives only in this process: when the process goes, it goes — the task itself lives on the server, so asking for the result after a restart answers "no such task". When a connection drops, that server's task session is closed with it.
-- When the caller is a dispatched `SubAgent` or a one-shot `Agent`, `sessionOf` returns `undefined`: the handle still comes back and the result can still be fetched, there is just no "the task ended" notice — there is no session to report to.
+## Servers asking the user
 
-## Reading on
+During `tools/call` a server may send `elicitation/create` asking for a form. That request has to land on the session that made the call:
 
-- [SDK](sdk.md) — which `Scope` these five tools hang on, how the four permission dimensions are judged, when a container is disposed
-- [Core API](core.md) — how tools are called inside the kernel, how the result gets back to the model
-- [Deployment](deploy.md) — where the data root is, and where the two user-level configuration files sit inside it
+- The host installs `McpElicitationPlugin` on sessions; before asking, it records who can answer and under which session
+- `call_mcp_tool` pushes that record before sending the request and pops it afterwards
+- With no record — a one-shot agent, `runOnce`, a call with no question board — the answer is always `cancel`: nobody makes the decision, which is what that means. `decline` is reserved for a user's explicit refusal
+
+Tool calls within one batch run in parallel, so with two `call_mcp_tool` calls in flight the record holds the one pushed last. Parallel calls within one session are unaffected (the same session answers); parallelism across sessions is what may land on the other one.
+
+## Skills extension
+
+If a server declares the MCP Skills extension, the manifest from `load_mcp` carries a skill list as well. A skill is identified by server plus `uri`, and its body still travels through `resources/read`, so the list includes the uris of attachments — when the model sees a relative path in the body, it needs to turn that into a readable uri.
+
+## Troubleshooting
+
+| Symptom | Look at |
+|---|---|
+| No server connects at all | Whether `mcpPaths` is empty. With no paths the plugin never creates a connection manager, so an `mcp.json` on disk connects nothing and reports nothing |
+| Every server in one file disappeared | That file failed to parse. The discovery function logs one line to the log sink; with no sink nothing is recorded |
+| A nearer change does not take effect | The name is claimed by a nearer layer; or `autoRefreshTools` is `outer-loop-start` / `off`, so the next refresh is needed |

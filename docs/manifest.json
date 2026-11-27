@@ -16,21 +16,21 @@
   "sections": {
     "zh": [
       { "title": "快速开始", "path": "zh/getting-started.md" },
-      { "title": "架构", "path": "zh/architecture.md" },
-      { "title": "部署", "path": "zh/deploy.md" },
-      { "title": "Core API", "path": "zh/core.md" },
-      { "title": "SDK", "path": "zh/sdk.md" },
-      { "title": "只用 core 与 Scope", "path": "zh/scope.md" },
-      { "title": "MCP", "path": "zh/mcp.md" }
+      { "title": "Agent", "path": "zh/agent.md" },
+      { "title": "能力", "path": "zh/capabilities.md" },
+      { "title": "MCP", "path": "zh/mcp.md" },
+      { "title": "宿主", "path": "zh/host.md" },
+      { "title": "交接", "path": "zh/handoff.md" },
+      { "title": "花费", "path": "zh/cost.md" }
     ],
     "en": [
-      { "title": "Getting Started", "path": "en/getting-started.md" },
-      { "title": "Architecture", "path": "en/architecture.md" },
-      { "title": "Deployment", "path": "en/deploy.md" },
-      { "title": "Core API", "path": "en/core.md" },
-      { "title": "SDK", "path": "en/sdk.md" },
-      { "title": "Core and Scope alone", "path": "en/scope.md" },
-      { "title": "MCP", "path": "en/mcp.md" }
+      { "title": "Getting started", "path": "en/getting-started.md" },
+      { "title": "Agent", "path": "en/agent.md" },
+      { "title": "Capabilities", "path": "en/capabilities.md" },
+      { "title": "MCP", "path": "en/mcp.md" },
+      { "title": "Host", "path": "en/host.md" },
+      { "title": "Handoff", "path": "en/handoff.md" },
+      { "title": "Cost", "path": "en/cost.md" }
     ]
   }
 }
