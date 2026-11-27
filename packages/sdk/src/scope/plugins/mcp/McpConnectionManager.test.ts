@@ -120,6 +120,18 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("disconnected");
   });
 
+  it("断开之后能再连上：状态回去、清单重新拉到（真的重建了一次）", async () => {
+    await manager.connect("github", stdioConfig);
+    await manager.disconnect("github");
+
+    const manifest = await manager.connect("github", stdioConfig);
+
+    expect(manager.getState("github")).toBe("connected");
+    expect(manifest.tools.map((t) => t.name)).toEqual(["test-tool"]);
+    // 重建连接，而不是把断掉的那条拎回来用
+    expect(mockClient.connect).toHaveBeenCalledTimes(2);
+  });
+
   it("重复 connect 已连接的 server 直接返回清单", async () => {
     await manager.connect("github", stdioConfig);
 
