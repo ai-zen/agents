@@ -105,7 +105,9 @@ Beyond these four dimensions there is one more layer, decided by the assembling 
 
 ## Progressive disclosure
 
-The tool list is sent with every request, so its length is the number of loaded capabilities. Skills, MCP and sub-agents therefore do not put their content in the list; they contribute one entry point each:
+Skills already work this way: the tool list carries one `load_skill` entry point, and the body is read into the context only when the model needs it. The same approach is extended to two more kinds of capabilities — MCP servers and sub-agents — each with a single entry point as well.
+
+The tool list is sent with every request, so its length is the number of loaded capabilities. None of these three kinds put their content in the list; they contribute one entry point each:
 
 | Entry point | When it enters the context |
 |---|---|

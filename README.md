@@ -129,7 +129,9 @@ Names outside the list never appear in the model's tool list. The model does not
 
 ## Progressive disclosure: only entry points in the list
 
-The tool list is sent with every request, so loading capabilities makes it longer. Skills, MCP and sub-agents therefore do not put their content in the list; they contribute one entry point each:
+Skills already use progressive disclosure: the list carries one `load_skill` entry point and the body is read when it is needed. The same approach is extended here to MCP servers and sub-agents, each with a single entry point as well.
+
+The tool list is sent with every request, so loading capabilities makes it longer. None of these three kinds put their content in the list; they contribute one entry point each:
 
 | Entry point | When it enters the context |
 |---|---|
